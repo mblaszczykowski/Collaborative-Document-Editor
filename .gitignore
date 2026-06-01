@@ -1,0 +1,41 @@
+# Java / Gradle
+.gradle/
+build/
+out/
+*.class
+*.jar
+# Wrapper JAR MUSI być w repo — bez niego `./gradlew` nie zadziała na świeżym klonie
+# ani w CI, a to jest cały sens wrappera (odtwarzalna wersja Gradle'a).
+!gradle/wrapper/gradle-wrapper.jar
+
+# JMH
+jmh-result.json
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+
+# Local env / secrets
+.env
+.env.local
+*.local.yml
+
+# Gatling / benchmark output
+bench/results/
+bench/target/
+
+# Demo recording intermediates (GIF trafia do repo, wideo nie)
+demo/recordings/*.webm
+demo/recordings/*.mp4
+test-results/
+playwright-report/
