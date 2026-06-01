@@ -1,0 +1,104 @@
+spring:
+  application:
+    name: collabedit
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/collabedit
+    username: collabedit
+    password: collabedit
+    hikari:
+      # 10 połączeń na instancję. Uzasadnienie: obciążenie bazy w tym systemie to
+      # głównie krótkie, wsadowe INSERT-y operacji (ADR-0003) — nie długie transakcje.
+      # Przy takim profilu duża pula nie pomaga, a mnoży kontencję w Postgresie.
+      # Wartość do zweryfikowania w CP8 (czy pula nie staje się wąskim gardłem przy 250 userach).
+      maximum-pool-size: 10
+      minimum-idle: 2
+      # Krótszy niż domyślne 30 s. Jeśli nie ma połączenia przez 5 s, to znaczy, że
+      # baza jest przeciążona — chcę szybkiego błędu i widocznej metryki, a nie
+      # cichego narastania kolejki żądań.
+      connection-timeout: 5000
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Brak `clean` na produkcji — zabezpieczenie przed przypadkowym skasowaniem
+    # tabeli operations, która jest u nas źródłem prawdy (ADR-0003).
+    clean-disabled: true
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 2000ms
+
+server:
+  port: 8080
+
+# ---------------------------------------------------------------------------
+# Parametry WebSocket/STOMP — każda wartość uzasadniona w ADR-0002.
+# Nie zmieniać bez aktualizacji tamtego dokumentu.
+# ---------------------------------------------------------------------------
+collabedit:
+  websocket:
+    # 10 s: wyraźnie poniżej typowego idle timeout pośredników (nginx 60 s,
+    # wiele LB/CDN 30-60 s), więc połączenie nie zostanie zerwane jako bezczynne.
+    heartbeat-interval-ms: 10000
+    # 2,5 × interwał. Jeden zgubiony heartbeat na łączu mobilnym jest normalny;
+    # dopiero dwa z rzędu to przesłanka do uznania sesji za martwą. Fałszywe
+    # rozłączenie kosztuje pełną resynchronizację (CP6), więc wolę być zbyt luźny.
+    heartbeat-tolerance-factor: 2.5
+    # 64 KiB: pojedyncza operacja to ~100 B, ale wklejenie dużego tekstu musi przejść.
+    max-message-size-bytes: 65536
+    # 512 KiB: wolny klient nie może zablokować broadcastu do reszty. Po przepełnieniu
+    # sesja jest zamykana → klient przechodzi ścieżką reconnect+resync (CP6).
+    # Kontrolowana degradacja zamiast zatoru na całym dokumencie.
+    send-buffer-size-bytes: 524288
+    send-time-limit-ms: 20000
+
+  persistence:
+    # Batchowanie zapisu operacji (ADR-0003 pkt 5). W tym oknie operacja jest już
+    # rozesłana, ale jeszcze nie w bazie — świadomy kompromis trwałość/przepustowość,
+    # opisany w README w sekcji Failure modes.
+    op-batch-window-ms: 50
+    op-batch-max-size: 100
+    # Snapshot co 500 operacji albo po 30 s bezczynności dokumentu (ADR-0003 pkt 4).
+    # Obie wartości do skalibrowania w CP8 na podstawie zmierzonego kosztu replaya.
+    snapshot-every-n-ops: 500
+    snapshot-after-idle-ms: 30000
+
+  cluster:
+    # Sweep anti-entropy (ADR-0004). Górna granica czasu życia niewykrytego rozjazdu
+    # w scenariuszu "zgubiona ostatnia operacja + cisza na dokumencie".
+    anti-entropy-interval-ms: 30000
+    # Replika dokumentu bez klientów żyje jeszcze 5 min, zanim zwolnimy pamięć.
+    # Krócej → ciągłe przeładowywanie przy chwilowych rozłączeniach.
+    idle-document-eviction-ms: 300000
+
+  gc:
+    # Okno GC tombstone'ów: 7 dni (ADR-0005). Klient offline dłużej dostaje
+    # RESYNC_REQUIRED i eksport lokalnej kopii zamiast cichego scalenia.
+    # WARTOŚĆ ZGADNIĘTA, nie wyliczona — w produkcji dobrałbym ją z telemetrii.
+    window-days: 7
+    # Klient podłączony, ale niepotwierdzający postępu przez 60 s jest wykluczany
+    # z liczenia stableVersion, żeby jeden zawieszony klient nie blokował GC
+    # całemu dokumentowi. ~2× tolerancja heartbeatu z ADR-0002.
+    unresponsive-replica-timeout-ms: 60000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Tylko to, co faktycznie jest potrzebne. Actuator wystawiony w całości
+        # to niepotrzebna powierzchnia ataku nawet lokalnie.
+        include: health,info,prometheus,metrics
+  metrics:
+    tags:
+      application: collabedit
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+logging:
+  level:
+    dev.collabedit: DEBUG
