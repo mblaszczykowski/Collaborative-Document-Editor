@@ -1,0 +1,149 @@
+# Lokalne środowisko deweloperskie i demo.
+#
+# Zasada dla tego pliku: żadnej wartości bez komentarza, dlaczego akurat taka
+# (CLAUDE.md, "Czego unikać"). Jeśli wartość jest domyślna — też to piszę, wraz z tym,
+# kiedy przestanie wystarczać.
+#
+# Uruchomienie pełnego stacku:      docker compose up -d
+# Sam backend + zależności:         docker compose up -d postgres redis
+# Stack obserwowalności (CP7):      docker compose --profile observability up -d
+
+services:
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: collabedit-postgres
+    environment:
+      POSTGRES_DB: collabedit
+      POSTGRES_USER: collabedit
+      # Hasło jawnie w repo, bo to środowisko wyłącznie lokalne i nigdy nie wychodzi
+      # poza sieć compose'a. W produkcji: sekret z zewnętrznego magazynu — patrz sekcja
+      # "co zrobiłbym inaczej w produkcji" w README.
+      POSTGRES_PASSWORD: collabedit
+    ports:
+      # Wystawione na hosta, żeby testy integracyjne i psql działały bez wchodzenia
+      # do kontenera. Testcontainers i tak podnosi własną instancję na losowym porcie.
+      - "5432:5432"
+    command:
+      # Log wolnych zapytań powyżej 200 ms. Wartość dobrana pod ADR-0003: odczyt
+      # "stan dokumentu na czas T" (snapshot + replay ogona) to najcięższe zapytanie
+      # w systemie i chcę zobaczyć w logu, kiedy zaczyna przekraczać ten próg,
+      # zamiast dowiadywać się o tym dopiero z benchmarków w CP8.
+      - "postgres"
+      - "-c"
+      - "log_min_duration_statement=200"
+      - "-c"
+      # max_connections domyślnie 100. Pula HikariCP w aplikacji to 10 na instancję
+      # (patrz application.yml), więc 100 pokrywa kilka instancji + testy + psql
+      # z zapasem. Podnoszę świadomie, żeby test chaosu z wieloma instancjami
+      # nie wywalał się na wyczerpaniu połączeń zamiast na tym, co testuje.
+      - "max_connections=200"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collabedit -d collabedit"]
+      # 5 s to kompromis: szybki start w CI, bez zalewania logów przy długim życiu kontenera.
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: collabedit-redis
+    ports:
+      - "6379:6379"
+    command:
+      - "redis-server"
+      # BRAK persystencji (--save "") celowo. Redis jest u nas wyłącznie zawodną
+      # ścieżką szybką dla pub/sub (ADR-0004) — nie trzyma nic, czego utrata
+      # miałaby znaczenie. Źródłem prawdy jest Postgres. Włączenie AOF/RDB dawałoby
+      # fałszywe poczucie, że te dane są ważne.
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      # Limit pamięci — przy zapchaniu Redis odrzuca zapisy zamiast rosnąć w nieskończoność.
+      # To jest DOKŁADNIE ten scenariusz utraty wiadomości, który anti-entropy z ADR-0004
+      # ma naprawiać, więc chcę móc go wywołać w teście chaosu (CP8).
+      - "--maxmemory"
+      - "256mb"
+      - "--maxmemory-policy"
+      - "noeviction"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Stack obserwowalności (CP7). Osobny profil, bo do pracy nad samym CRDT
+  # niepotrzebny, a zżera pamięć.
+  # ---------------------------------------------------------------------------
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: collabedit-otel
+    profiles: ["observability"]
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./ops/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC — tym mówi aplikacja
+      - "4318:4318"   # OTLP HTTP — tym mówi przeglądarka (CP7, trace zaczyna się u klienta)
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: collabedit-prometheus
+    profiles: ["observability"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      # Exemplars: pozwalają przeskoczyć z konkretnego bucketu histogramu latencji
+      # wprost do trace'u, który go wygenerował. Bez tego "p99 jest wysokie" nie
+      # prowadzi do żadnego konkretnego żądania.
+      - "--enable-feature=exemplar-storage"
+      # 7 dni retencji — projekt portfolio, nie potrzebujemy więcej, a domyślne 15 dni
+      # bez potrzeby zajmuje miejsce.
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: collabedit-tempo
+    profiles: ["observability"]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./ops/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: collabedit-grafana
+    profiles: ["observability"]
+    environment:
+      # Anonimowy dostęp z rolą Admin — to jest lokalne demo, a logowanie na
+      # ekranie startowym psuje nagranie GIF-a z CP9. W produkcji oczywiście nie.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      # Dashboardy i źródła danych są provisionowane z repo (./ops/grafana),
+      # nie klikane ręcznie — inaczej nie da się ich odtworzyć ani zrecenzować w PR.
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+      - tempo
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  tempo-data:
