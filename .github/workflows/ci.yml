@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  # Nowy push na tę samą gałąź anuluje poprzedni przebieg — property testy
+  # potrafią trwać, a nie ma sensu czekać na wynik dla nieaktualnego commita.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  crdt-core:
+    name: crdt-core — property testy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Osobny job dla rdzenia, bo to jedyna część, która NIE potrzebuje Dockera
+      # (ADR-0001: crdt-core nie ma zależności od warstwy aplikacyjnej). Dzięki temu
+      # najważniejszy test w projekcie daje feedback najszybciej i niezależnie
+      # od tego, czy infrastruktura integracyjna działa.
+      - name: Property testy CRDT
+        run: ./gradlew :crdt-core:test
+
+      - name: Wektory konformancyjne (Java → JSON)
+        run: ./gradlew :crdt-core:test --tests '*ConformanceVectorGenerator*'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crdt-core-test-report
+          path: crdt-core/build/reports/tests/
+
+  app:
+    name: app — build + testy integracyjne
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Docker jest na runnerach GitHuba dostępny out of the box, więc Testcontainers
+      # podnosi prawdziwego Postgresa (CLAUDE.md §3.2 — bez mocków).
+      - name: Build + testy
+        run: ./gradlew :app:build
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: app-test-report
+          path: app/build/reports/tests/
+
+  frontend:
+    name: frontend — typecheck + testy + konformancja z Javą
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+        working-directory: frontend
+
+      - run: npm run typecheck
+        working-directory: frontend
+
+      - run: npm run lint
+        working-directory: frontend
+
+      # Kluczowy test spójności: implementacja TS odtwarza te same wektory,
+      # które wygenerowała implementacja w Javie (ADR-0001, sekcja o dwóch
+      # implementacjach). Rozjazd algorytmu nie może przejść po cichu.
+      - run: npm run test
+        working-directory: frontend
+
+      - run: npm run build
+        working-directory: frontend
