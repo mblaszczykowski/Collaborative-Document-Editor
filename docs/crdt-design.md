@@ -6,38 +6,59 @@ wyszły dopiero przy pisaniu kodu i które łatwo zrobić źle.
 
 ---
 
-## 1. Zegar Lamporta jest wymogiem poprawności, nie detalem
+## 1. Zegar Lamporta — co faktycznie z niego wynika, a co nie
 
 Reguła wstawiania w RGA brzmi: *znajdź origin, potem idź w prawo tak długo, jak napotkane
 elementy mają wyższy znacznik czasu niż wstawiany, i wstaw w pierwszym miejscu, gdzie
 napotkany element ma niższy*.
 
-Ta reguła jest poprawna **tylko** wtedy, gdy znacznik czasu jest zegarem Lamporta, czyli gdy
-zachodzi: *jeśli E powstało przyczynowo po S, to `ts(E) > ts(S)`*.
+Klasyczny argument za poprawnością tej reguły opiera się na tym, że znacznik jest **zegarem
+Lamporta**, czyli że *jeśli E powstało przyczynowo po S, to `ts(E) > ts(S)`*. Dzięki temu
+pominięcie rodzeństwa S pociąga za sobą pominięcie całego jego poddrzewa, a skan nie wychodzi
+poza poddrzewo originu. Implementacja to realizuje: przy odbiorze operacji zdalnej zegar jest
+podbijany do `max(clock, lamport_operacji + 1)`.
 
-Dlaczego to jest krytyczne — kontrprzykład z licznikiem sekwencyjnym per replika:
+### Czego NIE udało się potwierdzić
 
-```
-Origin O. Replika A (licznik 100) wstawia S po O.
-Replika B (licznik 3) wstawia X po S.      →  X jest DZIECKIEM S
-Replika C (licznik 50) wstawia N po O.     →  N jest RODZEŃSTWEM S
+Pierwsza wersja tego dokumentu twierdziła, że bez podbijania zegara implementacja się
+**rozjeżdża**, i podawała kontrprzykład. To twierdzenie było za mocne i zostało wycofane.
 
-Skan przy wstawianiu N:
-  pozycja O+1: S,  ts=(100,A) > (50,C)  → pomijam
-  pozycja O+2: X,  ts=(3,B)   < (50,C)  → STOP, wstawiam tutaj
+Weryfikacja: usunąłem podbijanie zegara z kodu produkcyjnego (mutacja `clock = max(clock, 0)`)
+i uruchomiłem wyszukiwanie rozbieżności brute-force — **200 000 losowych scenariuszy**,
+3–5 replik, po 30 edycji, z agresywnym przeplotem generowania i dostawy, pełną wymianą
+w losowej kolejności i podwójnym dostarczeniem każdej operacji.
 
-Wynik: O S N X  —  N wylądowało WEWNĄTRZ poddrzewa S.
-```
+**Wynik: zero rozbieżności, zero operacji utkniętych w buforze.**
 
-Struktura się rozjeżdża, bo inna replika, widząca te operacje w innej kolejności, dojdzie
-do innego wyniku. Z zegarem Lamporta `ts(X) > ts(S)` z definicji, więc X też zostaje pominięty
-i N ląduje tam, gdzie powinno — za całym poddrzewem S.
+Podany wcześniej kontrprzykład również nie odtwarza się przy ręcznym prześledzeniu: repliki
+dochodzą do tego samego wyniku, bo funkcja integracji jest deterministyczna względem
+*zbioru* obecnych elementów, a nie kolejności ich dostarczenia — a to wystarcza do zbieżności
+niezależnie od tego, czy znaczniki respektują przyczynowość.
 
-**Konsekwencja implementacyjna:** przy zastosowaniu operacji zdalnej zegar musi zostać
-podbity: `clock = max(clock, ostatni_lamport_operacji + 1)`. Pominięcie tego jest błędem,
-którego nie widać na testach dwóch replik pisających naprzemiennie — ujawnia się dopiero
-przy trzech replikach i konkretnej kolejności. Dokładnie po to jest property test
-`convergence` z losowymi permutacjami dostarczenia.
+### Co z tego wynika dla kodu
+
+Podbijanie zegara **zostaje**, ale z uczciwie nazwanego powodu:
+
+- Jest wymogiem opublikowanego dowodu poprawności RGA i standardem w każdej znanej mi
+  implementacji tej rodziny.
+- Zbieżność bez niego jest w tej implementacji **zaobserwowana, a nie udowodniona**.
+  200 tys. losowych scenariuszy to mocna przesłanka, nie dowód — a rezygnacja z warunku,
+  na którym opiera się dowód, w zamian za wynik empiryczny, jest złym interesem.
+- Gwarantuje własność, na której opierają się rozważania o zachowaniu intencji autora
+  (zwartość poddrzew) — nawet jeśli sama zbieżność jej nie potrzebuje.
+
+### Czego to nauczyło o testach
+
+Pierwotny zestaw property testów **nie wykrywał tej mutacji w ogóle** — i to niezależnie
+od tego, czy była szkodliwa. Powód był strukturalny: wszystkie scenariusze miały postać
+„najpierw wszystkie edycje lokalnie, potem cała wymiana", w której replika nigdy nie generuje
+operacji *po* odebraniu cudzej. Reguła podbijania zegara nie była więc wykonywana ani razu.
+
+Stąd property `convergenceWithInterleavedDelivery` i metoda `ReplicaSet.deliverSome` —
+scenariusz, w którym repliki wymieniają się operacjami w trakcie pisania. Dziura została
+znaleziona przez celowe wprowadzenie mutacji do kodu produkcyjnego i sprawdzenie, czy testy
+ją złapią. Nie złapały. Zestaw testów, który przechodzi na uszkodzonym kodzie, nie jest
+zestawem testów.
 
 ---
 
