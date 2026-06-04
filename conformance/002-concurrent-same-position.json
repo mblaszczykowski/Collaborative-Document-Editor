@@ -1,0 +1,25 @@
+{
+  "name" : "002-concurrent-same-position",
+  "description" : "Dwie repliki wstawiają w to samo miejsce. Operacje podane w kolejności odwrotnej do wygenerowania — wynik musi być identyczny.",
+  "operations" : [ {
+    "r" : 2,
+    "l" : 2,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 0,
+    "s" : "world"
+  }, {
+    "r" : 1,
+    "l" : 2,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 0,
+    "s" : "hello"
+  }, {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "AB"
+  } ],
+  "expectedText" : "AworldhelloB"
+}

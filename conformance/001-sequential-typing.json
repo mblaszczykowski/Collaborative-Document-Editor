@@ -1,0 +1,53 @@
+{
+  "name" : "001-sequential-typing",
+  "description" : "Jedna replika pisze ciągiem. Sprawdza podstawowe wstawianie i kompresję run-length.",
+  "operations" : [ {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "I"
+  }, {
+    "r" : 1,
+    "l" : 1,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 0,
+    "s" : "n"
+  }, {
+    "r" : 1,
+    "l" : 2,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 1,
+    "s" : "k"
+  }, {
+    "r" : 1,
+    "l" : 3,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 2,
+    "s" : "l"
+  }, {
+    "r" : 1,
+    "l" : 4,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 3,
+    "s" : "i"
+  }, {
+    "r" : 1,
+    "l" : 5,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 4,
+    "s" : "n"
+  }, {
+    "r" : 1,
+    "l" : 6,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 5,
+    "s" : "e"
+  } ],
+  "expectedText" : "Inkline"
+}

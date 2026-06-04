@@ -1,0 +1,40 @@
+{
+  "name" : "004-duplicated-operations",
+  "description" : "Każda operacja podana dwukrotnie. Sprawdza idempotencję — bez niej retransmisja po ponownym połączeniu dubluje tekst.",
+  "operations" : [ {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "xyz"
+  }, {
+    "r" : 2,
+    "l" : 3,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 2,
+    "s" : "123"
+  }, {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "xyz"
+  }, {
+    "r" : 2,
+    "l" : 6,
+    "t" : "d",
+    "g" : [ [ 1, 0, 1 ] ]
+  }, {
+    "r" : 2,
+    "l" : 3,
+    "t" : "i",
+    "or" : 1,
+    "ol" : 2,
+    "s" : "123"
+  }, {
+    "r" : 2,
+    "l" : 6,
+    "t" : "d",
+    "g" : [ [ 1, 0, 1 ] ]
+  } ],
+  "expectedText" : "yz123"
+}

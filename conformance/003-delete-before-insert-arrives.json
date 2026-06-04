@@ -1,0 +1,16 @@
+{
+  "name" : "003-delete-before-insert-arrives",
+  "description" : "Usunięcie dociera PRZED wstawieniem, którego dotyczy. Implementacja musi je zbuforować i zastosować później, zamiast zignorować lub rzucić wyjątkiem.",
+  "operations" : [ {
+    "r" : 1,
+    "l" : 6,
+    "t" : "d",
+    "g" : [ [ 1, 2, 2 ] ]
+  }, {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "abcdef"
+  } ],
+  "expectedText" : "abef"
+}

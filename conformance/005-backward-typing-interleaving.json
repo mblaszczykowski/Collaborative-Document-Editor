@@ -1,0 +1,36 @@
+{
+  "name" : "005-backward-typing-interleaving",
+  "description" : "Pisanie wstecz przez dwie repliki. Utrwala ZNANE OGRANICZENIE RGA (ADR-0001): wynik jest przeplotem. Implementacja w TS musi przeplatać TAK SAMO — zgodność jest ważniejsza niż to, czy wynik się podoba.",
+  "operations" : [ {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "c"
+  }, {
+    "r" : 1,
+    "l" : 1,
+    "t" : "i",
+    "s" : "b"
+  }, {
+    "r" : 1,
+    "l" : 2,
+    "t" : "i",
+    "s" : "a"
+  }, {
+    "r" : 2,
+    "l" : 0,
+    "t" : "i",
+    "s" : "z"
+  }, {
+    "r" : 2,
+    "l" : 1,
+    "t" : "i",
+    "s" : "y"
+  }, {
+    "r" : 2,
+    "l" : 2,
+    "t" : "i",
+    "s" : "x"
+  } ],
+  "expectedText" : "xaybzc"
+}

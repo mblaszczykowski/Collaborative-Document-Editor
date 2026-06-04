@@ -48,3 +48,11 @@ jmh {
     timeUnit = "us"
     resultFormat = "JSON"
 }
+
+// UWAGA: wtyczka JMH nie jest zgodna z configuration cache (próbuje serializować obiekt
+// Project). Zamiast wyłączać cache dla całego projektu — gdzie daje realny zysk przy
+// częstym uruchamianiu property testów — wyłączam go punktowo dla zadań JMH.
+// Uruchomienie: ./gradlew :crdt-core:jmh --no-configuration-cache
+tasks.matching { it.name.startsWith("jmh") }.configureEach {
+    notCompatibleWithConfigurationCache("wtyczka me.champeau.jmh nie wspiera configuration cache")
+}
