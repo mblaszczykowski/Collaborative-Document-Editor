@@ -20,3 +20,4 @@ decyzja okazała się gorsza, niż zakładałem.
 | [0004](0004-skalowanie-poziome.md) | Instancja backendu jako replika CRDT, Redis jako zawodna ścieżka szybka | Zaakceptowany |
 | [0005](0005-tombstone-gc.md) | GC oparty na stabilności przyczynowej, z jawnym odrzucaniem bardzo starych klientów | Zaakceptowany |
 | [0006](0006-warstwa-edytora.md) | CodeMirror 6 jako warstwa widoku, model dokumentu własny | Zaakceptowany |
+| [0007](0007-zakres-ui.md) | Język wizualny mockupu przyjęty, jego zakres funkcjonalny odrzucony | Zaakceptowany |
