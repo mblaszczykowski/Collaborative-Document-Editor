@@ -10,16 +10,22 @@ import { compareIds, id, idEquals, idPlus, type Id } from './types'
  * najpierw dzieli blok.
  */
 export class Block {
-  constructor(
-    readonly start: Id,
-    readonly text: string,
-    /** Lewy origin PIERWSZEGO znaku bloku; null oznacza początek dokumentu. */
-    readonly originLeft: Id | null,
-    public deleted: boolean,
-  ) {
+  readonly start: Id
+  readonly text: string
+  /** Lewy origin PIERWSZEGO znaku bloku; null oznacza początek dokumentu. */
+  readonly originLeft: Id | null
+  /** Jedyne pole mutowalne — oznaczenie tombstone'em to jedyna zmiana, jaka może
+      spotkać istniejący blok bez jego podziału. */
+  deleted: boolean
+
+  constructor(start: Id, text: string, originLeft: Id | null, deleted: boolean) {
     if (text.length === 0) {
       throw new Error('blok nie może być pusty')
     }
+    this.start = start
+    this.text = text
+    this.originLeft = originLeft
+    this.deleted = deleted
   }
 
   get length(): number {

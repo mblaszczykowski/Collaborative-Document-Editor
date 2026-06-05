@@ -42,7 +42,36 @@ export class RgaDocument {
   /** Operacje, których nie da się jeszcze zastosować (brakuje originu albo celu usunięcia). */
   private pending: Op[] = []
 
-  constructor(readonly replicaId: number) {}
+  private replicaIdValue: number
+
+  constructor(replicaId: number) {
+    this.replicaIdValue = replicaId
+  }
+
+  get replicaId(): number {
+    return this.replicaIdValue
+  }
+
+  /**
+   * Przyjmuje identyfikator repliki nadany przez serwer.
+   *
+   * Identyfikatory MUSZĄ być globalnie unikalne — kolizja sprawia, że algorytm uzna
+   * dwa różne znaki za ten sam i po cichu zgubi tekst jednego z autorów. Dlatego nadaje
+   * je jeden licznik w Redisie, a nie klient (ReplicaIdAllocator po stronie serwera).
+   *
+   * Rzuca, gdy replika zdążyła już cokolwiek wygenerować: zmiana identyfikatora po
+   * wygenerowaniu operacji rozspójniłaby strukturę, bo istniejące znaki nadal
+   * wskazywałyby na stary. Warunek jest asercją projektową, a nie obsługą błędu —
+   * jeśli kiedykolwiek zadziała, znaczy że kolejność inicjalizacji się zepsuła.
+   */
+  adoptReplicaId(replicaId: number): void {
+    if (this.clock > 0) {
+      throw new Error(
+        `próba zmiany identyfikatora repliki po wygenerowaniu ${this.clock} operacji`,
+      )
+    }
+    this.replicaIdValue = replicaId
+  }
 
   // ------------------------------------------------------------------
   // Operacje lokalne
@@ -57,7 +86,7 @@ export class RgaDocument {
     // nowy tekst ląduje przed nimi — zachowanie standardowe dla RGA.
     const originLeft = visibleIndex === 0 ? null : this.idAtVisible(visibleIndex - 1)
 
-    const op: InsertOp = { kind: 'insert', id: id(this.replicaId, this.clock), originLeft, text }
+    const op: InsertOp = { kind: 'insert', id: id(this.replicaIdValue, this.clock), originLeft, text }
     this.clock += opSpan(op)
     this.integrate(op)
     this.observeVersion(op)
@@ -96,7 +125,7 @@ export class RgaDocument {
       remaining -= target.length
     }
 
-    const op: DeleteOp = { kind: 'delete', id: id(this.replicaId, this.clock), targets }
+    const op: DeleteOp = { kind: 'delete', id: id(this.replicaIdValue, this.clock), targets }
     this.clock += opSpan(op)
     this.observeVersion(op)
     return op

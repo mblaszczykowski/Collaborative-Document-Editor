@@ -111,6 +111,11 @@ public class DocumentStompController {
      */
     @MessageMapping("/doc/{documentId}/join")
     public void onJoin(@DestinationVariable("documentId") UUID documentId, SimpMessageHeaderAccessor headers) {
+        messaging.convertAndSendToUser(headers.getSessionId(), "/queue/session",
+            new Messages.SessionInfo(
+                SessionAttributes.replicaId(headers), SessionAttributes.userId(headers)),
+            SessionAttributes.forUser(headers));
+
         presence.join(
             headers.getSessionId(),
             documentId,

@@ -92,6 +92,17 @@ public final class Messages {
     public record SyncResponse(List<JsonNode> ops, long headServerSeq) {
     }
 
+    /**
+     * Odpowiedź na dołączenie: identyfikator repliki nadany tej sesji.
+     *
+     * Klient NIE MOŻE go sobie wylosować. Identyfikatory replik muszą być globalnie
+     * unikalne, bo kolizja sprawia, że algorytm uzna dwa różne znaki za ten sam i po cichu
+     * zgubi tekst jednego z autorów — błąd, po którym nie zostaje w strukturze żaden ślad.
+     * Dlatego nadaje je jeden licznik w Redisie.
+     */
+    public record SessionInfo(int replicaId, String userId) {
+    }
+
     public record PresenceBroadcast(
         int replicaId,
         String userId,

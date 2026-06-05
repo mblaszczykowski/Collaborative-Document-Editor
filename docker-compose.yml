@@ -21,9 +21,12 @@ services:
       # "co zrobiłbym inaczej w produkcji" w README.
       POSTGRES_PASSWORD: collabedit
     ports:
-      # Wystawione na hosta, żeby testy integracyjne i psql działały bez wchodzenia
-      # do kontenera. Testcontainers i tak podnosi własną instancję na losowym porcie.
-      - "5432:5432"
+      # NIE 5432. Port domyślny bardzo często jest już zajęty przez Postgresa
+      # zainstalowanego lokalnie, a wtedy aplikacja łączy się do CUDZEJ bazy i wywala się
+      # komunikatem 'role "collabedit" does not exist' — mylącym, bo rola w kontenerze
+      # istnieje. Wykryte przy pierwszym uruchomieniu całości. Przesunięcie portu jest
+      # tańsze niż tłumaczenie tego każdemu, kto sklonuje repo.
+      - "55432:5432"
     command:
       # Log wolnych zapytań powyżej 200 ms. Wartość dobrana pod ADR-0003: odczyt
       # "stan dokumentu na czas T" (snapshot + replay ogona) to najcięższe zapytanie
@@ -51,7 +54,8 @@ services:
     image: redis:7-alpine
     container_name: collabedit-redis
     ports:
-      - "6379:6379"
+      # Jak wyżej — port przesunięty, żeby nie kolidować z lokalną instalacją.
+      - "56379:6379"
     command:
       - "redis-server"
       # BRAK persystencji (--save "") celowo. Redis jest u nas wyłącznie zawodną

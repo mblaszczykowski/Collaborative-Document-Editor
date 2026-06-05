@@ -1,0 +1,16 @@
+{
+  // Testy działają w Node (vitest), a nie w przeglądarce — stąd osobna konfiguracja.
+  // Dodanie typów Node do tsconfig.app.json byłoby prostsze, ale wpuszczałoby API
+  // serwerowe do kodu, który ma działać w przeglądarce, i kompilator przestałby
+  // wyłapywać ich przypadkowe użycie.
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    // vite/client musi zostać obok typów Node: bez niego znika import.meta.env
+    // i deklaracje importów CSS, przez co pliki źródłowe przestają się typować.
+    "types": ["node", "vitest/globals", "vite/client"],
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.ts", "src/**/*.tsx"],
+  "exclude": []
+}
