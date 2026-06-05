@@ -142,10 +142,25 @@ w CP8 wraz z pomiarem zużycia pamięci per otwarty dokument.
   Awaria bazy zatrzymuje zarówno zapis, jak i anti-entropy.
 - Sweep to stałe obciążenie proporcjonalne do liczby otwartych dokumentów, niezależne
   od tego, czy coś się dzieje.
-- **Detekcja luk zakłada, że `server_seq` jest gęsty** (bez dziur). Wycofana transakcja
-  zapisu zostawiłaby lukę, którą instancje interpretowałyby jako trwale brakującą operację
-  i odpytywały bazę w kółko. Mitygacja: `server_seq` nadawany **po** udanym zapisie,
-  w tej samej transakcji; do zweryfikowania testem w CP3.
+- **Detekcja luk zakłada, że `server_seq` jest gęsty** (bez dziur).
+
+  **Zweryfikowane w CP3 — założenie okazało się droższe, niż zakładałem.** Pierwsze podejście
+  (`INSERT ... ON CONFLICT DO NOTHING`) jest niepoprawne: numery są rezerwowane dla całego
+  wsadu *przed* odrzuceniem duplikatów, więc każdy duplikat zostawia dokładnie taką dziurę,
+  jakiej ten mechanizm zabrania. Ostateczne rozwiązanie:
+  1. blokada wiersza dokumentu (`SELECT next_server_seq ... FOR UPDATE`) — licznik w kolumnie,
+     nie sekwencja Postgresa, bo sekwencja gubi numery przy wycofanej transakcji,
+  2. odsiew duplikatów **jednym zapytaniem przed** przydziałem numerów, poprawny mimo
+     współbieżności właśnie dlatego, że blokada serializuje piszących do tego dokumentu,
+  3. numery przydzielane wyłącznie wierszom, które faktycznie zostaną wstawione.
+
+  **Cena, której nie było w pierwotnej analizie:** zapisy do jednego dokumentu są teraz
+  serializowane w całym klastrze. Wsadowanie co 50 ms sprawia, że pod blokadę wchodzi się
+  raz na wsad, a nie raz na naciśnięcie klawisza — ale to jest pierwsze miejsce, które
+  zacznie ograniczać przepustowość. **Do zmierzenia w CP8.**
+
+  Ciągłość numeracji jest pilnowana testem integracyjnym `serverSequenceHasNoGaps`
+  na prawdziwym Postgresie, a nie założeniem.
 
 ### Do zweryfikowania w CP8
 - Zużycie pamięci na otwarty dokument o zadanym rozmiarze × liczba instancji.

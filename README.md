@@ -1,6 +1,6 @@
 # Collaborative Document Editor
 
-> **Stan projektu: w budowie (CP1–CP2 z 9 ukończone).**
+> **Stan projektu: w budowie (CP1–CP3 z 9 ukończone).**
 > README jest pisane równolegle z kodem, sekcja po sekcji — nie na końcu. Sekcje
 > oznaczone `⏳` czekają na checkpoint, który dostarczy do nich dane. Nie ma tu
 > zdań o wydajności bez liczby ani deklaracji o funkcji, która jeszcze nie działa.
@@ -89,6 +89,28 @@ Plan pracy i checkpointy: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PL
 ## Uruchomienie
 
 **Wymagania:** JDK 21, Node 20+, Docker.
+
+<details>
+<summary>Jeśli używasz colimy zamiast Docker Desktop (rozwinąć)</summary>
+
+Testcontainers nie czyta kontekstu dockera, a Docker 29+ odrzuca API w wersji, którą
+domyślnie negocjuje docker-java. Potrzebne są trzy rzeczy — każda naprawia inny objaw
+tego samego problemu, wszystkie mylące, bo brzmią jak „brak Dockera":
+
+```bash
+# 1. wskazanie gniazda (inaczej: "Could not find a valid Docker environment")
+export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
+
+# 2. ścieżka gniazda WEWNĄTRZ maszyny wirtualnej — dla kontenera-sprzątacza Ryuk
+#    (inaczej: "error while creating mount source path ... operation not supported")
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+
+# 3. wersja API (inaczej: "client version 1.32 is too old")
+echo "api.version=1.44" > ~/.docker-java.properties
+```
+
+Na runnerach GitHuba nic z tego nie jest potrzebne — Docker jest tam natywny.
+</details>
 
 ```bash
 # Zależności infrastrukturalne

@@ -38,6 +38,15 @@
         <junit.version>5.11.4</junit.version>
         <jmh.version>1.37</jmh.version>
 
+        <!--
+          Nadpisanie wersji zarządzanej przez spring-boot-dependencies.
+          Powód konkretny: Testcontainers 1.20.x negocjuje Docker API 1.32, a Docker 29+
+          (m.in. w colimie) odrzuca wszystko poniżej 1.40. Objawia się to komunikatem
+          "Could not find a valid Docker environment", który sugeruje brak Dockera,
+          choć Docker działa — stąd ten komentarz, żeby nie diagnozować tego drugi raz.
+        -->
+        <testcontainers.version>1.21.3</testcontainers.version>
+
         <surefire.version>3.5.2</surefire.version>
         <compiler-plugin.version>3.13.0</compiler-plugin.version>
         <build-helper.version>3.6.0</build-helper.version>
@@ -85,6 +94,17 @@
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>${compiler-plugin.version}</version>
                     <configuration>
+                        <!--
+                          KONSEKWENCJA rezygnacji ze spring-boot-starter-parent: to on
+                          domyślnie włącza -parameters. Bez tej flagi nazwy parametrów
+                          metod nie trafiają do bajtkodu, a Spring nie potrafi powiązać
+                          @DestinationVariable ani @PathVariable z argumentem — wywala się
+                          dopiero W CZASIE DZIAŁANIA, komunikatem "Name for argument of
+                          type [java.util.UUID] not specified".
+                          Kompilacja przechodzi, testy jednostkowe przechodzą, psuje się
+                          wyłącznie warstwa webowa i to w runtime.
+                        -->
+                        <parameters>true</parameters>
                         <compilerArgs>
                             <arg>-Xlint:all</arg>
                             <!-- serial: nie serializujemy nic przez Serializable.
@@ -96,6 +116,7 @@
                         <execution>
                             <id>default-compile</id>
                             <configuration>
+                                <parameters>true</parameters>
                                 <compilerArgs>
                                     <arg>-Xlint:all</arg>
                                     <arg>-Xlint:-serial,-processing</arg>
