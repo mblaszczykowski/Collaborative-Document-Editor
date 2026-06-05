@@ -1,0 +1,7 @@
+# Wersja Node przypięta projektowo, nie globalnie.
+#
+# Powód konkretny: rolldown (silnik Vite 8 i Vitest 4) wymaga ^20.19.0 || >=22.12.0.
+# Przy Node 20.18 npm PO CICHU pomija natywny binding jako niespełniający `engines`,
+# instalacja kończy się sukcesem, a testy wywalają się dopiero przy uruchomieniu
+# komunikatem "Cannot find native binding", który sugeruje błąd npm, a nie wersję Node.
+nodejs 22.14.0

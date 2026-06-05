@@ -88,7 +88,7 @@ Plan pracy i checkpointy: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PL
 
 ## Uruchomienie
 
-**Wymagania:** JDK 21, Node 20+, Docker.
+**Wymagania:** JDK 21, Node 22.12+, Docker.
 
 <details>
 <summary>Jeśli używasz colimy zamiast Docker Desktop (rozwinąć)</summary>
