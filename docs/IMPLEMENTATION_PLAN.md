@@ -11,7 +11,7 @@ tutaj **i** commitujemy zmianę planu razem z powodem (historia iteracji jest cz
 | Rzecz | Status | Co zrobić |
 |---|---|---|
 | Repozytorium git | ❌ brak | `git init` + `.gitignore` + pierwszy commit. Bez tego tracimy narrację commitów wymaganą przez CLAUDE.md §2 |
-| Java | ⚠️ zainstalowana 25-ea | Celujemy w **21 LTS**. Gradle toolchain auto-provisioning (Temurin 21) — dzięki temu build jest odtwarzalny niezależnie od lokalnego JDK |
+| Java | ⚠️ domyślna 25-ea, jest też 21.0.1 | Celujemy w **21 LTS** przez `maven.compiler.release=21` — bajtkod jest ten sam niezależnie od tego, na czym Maven startuje |
 | Node | ✅ v20.18.1 | OK dla Vite 5 / React 19 |
 | **Docker** | ❌ **brak** | **BLOKADA.** Bez niego nie ma: Testcontainers (§3.2 wymagań), Postgresa lokalnie, Docker Compose, stacku Prometheus/Grafana. Potrzebne Docker Desktop albo Colima (`brew install colima docker docker-compose`) |
 | ffmpeg / gifski | ❌ brak | Potrzebne dopiero w checkpoincie 9 (GIF demo). `brew install ffmpeg gifski` |
@@ -44,7 +44,7 @@ równolegle z checkpointem 1, żeby nie stać.
    PostgreSQL             Redis (fast path)
    (źródło prawdy)        (best-effort broadcast)
                          
-crdt-core/  ← osobny moduł Gradle, ZERO zależności od Springa.
+crdt-core/  ← osobny moduł Mavena, ZERO zależności od Springa.
              Czysty algorytm + testy property-based (jqwik) + JMH.
 ```
 
@@ -138,14 +138,14 @@ Estymaty zakładają pracę z Claude Code, nie „ręcznie od zera".
 - `docs/adr/0004-skalowanie-poziome.md` — instancja jako replika + Redis fast path +
   anti-entropy z op_log; alternatywa (document affinity) i dlaczego odrzucona
 - `docs/adr/0005-tombstone-gc.md` — causal stability, kiedy wolno skasować tombstone
-- Szkielet Gradle: `settings.gradle.kts`, moduły `crdt-core`, `app`, `bench`
+- Szkielet Mavena: `pom.xml` (parent) + moduły `crdt-core`, `app`
 - `frontend/` — Vite + React + TS, pusty
 - `docker-compose.yml` — Postgres, Redis, Prometheus, Grafana, OTel Collector (z komentarzami
   *dlaczego* przy każdym nietrywialnym ustawieniu)
 - CI: GitHub Actions, na razie tylko build + lint
 - README: sekcje-zaślepki z tytułami, żeby wiadomo było co dopisujemy po drodze
 
-**Exit criteria:** `./gradlew build` i `npm run build` przechodzą, ADR-y opisują 5 decyzji,
+**Exit criteria:** `./mvnw install` i `npm run build` przechodzą, ADR-y opisują 5 decyzji,
 w każdym jest sekcja „Konsekwencje negatywne" która nie jest pusta.
 
 ---

@@ -1,0 +1,181 @@
+package dev.collabedit.app.persist;
+
+import dev.collabedit.crdt.Op;
+import dev.collabedit.crdt.OpCodec;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * Log operacji — <b>źródło prawdy</b> całego systemu (ADR-0003).
+ *
+ * <p>Tabela jest wyłącznie dopisywana. Nie ma tu metody aktualizującej ani usuwającej,
+ * i to nie jest przeoczenie: przywrócenie starej wersji dokumentu zapisujemy jako nowe
+ * operacje, bo obcięcie logu zniszczyłoby audytowalność i rozspójniło klientów, którzy
+ * są właśnie podłączeni.
+ */
+@Repository
+public class OperationStore {
+
+    private final JdbcTemplate jdbc;
+
+    public OperationStore(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    /**
+     * Dopisuje wsad operacji, nadając im kolejne wartości {@code server_seq}.
+     *
+     * <h2>Dlaczego blokada wiersza dokumentu</h2>
+     * ADR-0004 opiera wykrywanie zgubionych wiadomości Redisa na <b>ciągłości</b>
+     * {@code server_seq} — dziura w numeracji oznacza „brakuje mi operacji". Sekwencja
+     * Postgresa tej własności nie daje (zostawia dziury przy wycofanej transakcji), więc
+     * licznik żyje w kolumnie {@code documents.next_server_seq} i jest przydzielany pod
+     * blokadą wiersza.
+     *
+     * <h2>Dlaczego duplikaty są odsiewane PRZED przydziałem numerów</h2>
+     * Gdyby polegać na {@code ON CONFLICT DO NOTHING}, część wsadu zostałaby odrzucona
+     * <i>po</i> zarezerwowaniu dla niej numerów — i zostawiłaby dokładnie taką dziurę,
+     * jakiej ADR-0004 zabrania. Odsiew działa poprawnie mimo współbieżności, bo blokada
+     * wiersza dokumentu serializuje wszystkich piszących do tego dokumentu, również
+     * z innych instancji.
+     *
+     * <p>Kosztem jest serializacja zapisów <b>w obrębie jednego dokumentu</b>. Jest ona
+     * akceptowalna, bo zapisy i tak są wsadowane co 50 ms — pod blokadę wchodzi się raz
+     * na wsad, a nie raz na naciśnięcie klawisza. Do zweryfikowania w CP8, przy ilu
+     * jednocześnie piszących ta blokada zaczyna być wąskim gardłem.
+     *
+     * @return operacje faktycznie dopisane, wraz z nadanymi im numerami; pusta lista gdy
+     *         cały wsad okazał się duplikatem
+     */
+    @Transactional
+    public List<StoredOperation> append(UUID documentId, List<PendingOperation> operations) {
+        Long nextSeq = jdbc.queryForObject(
+            "SELECT next_server_seq FROM documents WHERE id = ? FOR UPDATE",
+            Long.class, documentId);
+        if (nextSeq == null) {
+            throw new IllegalArgumentException("nie ma dokumentu " + documentId);
+        }
+
+        Set<String> alreadyStored = existingKeys(documentId, operations);
+
+        List<Object[]> rows = new ArrayList<>(operations.size());
+        List<StoredOperation> appended = new ArrayList<>(operations.size());
+        Instant now = Instant.now();
+        long seq = nextSeq;
+        for (PendingOperation pending : operations) {
+            Op op = pending.op();
+            if (!alreadyStored.add(key(op))) {
+                continue;
+            }
+            rows.add(new Object[] {
+                documentId,
+                op.id().replicaId(),
+                op.id().lamport(),
+                seq,
+                op instanceof Op.Insert ? "i" : "d",
+                OpCodec.encode(op),
+                pending.userId()
+            });
+            appended.add(new StoredOperation(op, seq, pending.userId(), now));
+            seq++;
+        }
+
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+
+        jdbc.batchUpdate(
+            "INSERT INTO operations (doc_id, replica_id, lamport, server_seq, op_type, payload, user_id) "
+                + "VALUES (?, ?, ?, ?, ?, ?::jsonb, ?)",
+            rows);
+        jdbc.update("UPDATE documents SET next_server_seq = ?, updated_at = now() WHERE id = ?",
+            seq, documentId);
+
+        return appended;
+    }
+
+    /** Klucze operacji z wsadu, które są już w bazie — odsiew duplikatów jednym zapytaniem. */
+    private Set<String> existingKeys(UUID documentId, List<PendingOperation> operations) {
+        if (operations.isEmpty()) {
+            return new HashSet<>();
+        }
+        StringBuilder placeholders = new StringBuilder();
+        List<Object> args = new ArrayList<>();
+        args.add(documentId);
+        for (PendingOperation pending : operations) {
+            if (!placeholders.isEmpty()) {
+                placeholders.append(", ");
+            }
+            placeholders.append("(?, ?)");
+            args.add(pending.op().id().replicaId());
+            args.add(pending.op().id().lamport());
+        }
+        List<String> found = jdbc.query(
+            "SELECT replica_id, lamport FROM operations WHERE doc_id = ? "
+                + "AND (replica_id, lamport) IN (" + placeholders + ")",
+            (rs, rowNum) -> rs.getInt("replica_id") + ":" + rs.getLong("lamport"),
+            args.toArray());
+        return new HashSet<>(found);
+    }
+
+    private static String key(Op op) {
+        return op.id().replicaId() + ":" + op.id().lamport();
+    }
+
+    /**
+     * Operacje o {@code server_seq} większym niż podany — kursor resynchronizacji klienta
+     * po ponownym połączeniu (CP6) oraz naprawy repliki po zgubionej wiadomości Redisa
+     * (ADR-0004).
+     */
+    public List<StoredOperation> loadAfter(UUID documentId, long afterServerSeq) {
+        return jdbc.query(
+            "SELECT payload, server_seq, user_id, created_at FROM operations "
+                + "WHERE doc_id = ? AND server_seq > ? ORDER BY server_seq",
+            (rs, rowNum) -> new StoredOperation(
+                OpCodec.decode(rs.getString("payload")),
+                rs.getLong("server_seq"),
+                rs.getString("user_id"),
+                rs.getTimestamp("created_at").toInstant()),
+            documentId, afterServerSeq);
+    }
+
+    /**
+     * Operacje z przedziału {@code (from, to]} — potrzebne przy odtwarzaniu stanu
+     * „na moment T" ponad snapshotem (ADR-0003, CP5).
+     */
+    public List<StoredOperation> loadRange(UUID documentId, long afterServerSeq, long throughServerSeq) {
+        return jdbc.query(
+            "SELECT payload, server_seq, user_id, created_at FROM operations "
+                + "WHERE doc_id = ? AND server_seq > ? AND server_seq <= ? ORDER BY server_seq",
+            (rs, rowNum) -> new StoredOperation(
+                OpCodec.decode(rs.getString("payload")),
+                rs.getLong("server_seq"),
+                rs.getString("user_id"),
+                rs.getTimestamp("created_at").toInstant()),
+            documentId, afterServerSeq, throughServerSeq);
+    }
+
+    /** Najwyższy zapisany {@code server_seq}; 0 gdy dokument nie ma jeszcze operacji. */
+    public long maxServerSeq(UUID documentId) {
+        Long value = jdbc.queryForObject(
+            "SELECT COALESCE(MAX(server_seq), 0) FROM operations WHERE doc_id = ?",
+            Long.class, documentId);
+        return value == null ? 0L : value;
+    }
+
+    /** Najwyższy {@code server_seq} zapisany nie później niż w podanym momencie (CP5). */
+    public long maxServerSeqAt(UUID documentId, java.time.Instant moment) {
+        Long value = jdbc.queryForObject(
+            "SELECT COALESCE(MAX(server_seq), 0) FROM operations WHERE doc_id = ? AND created_at <= ?",
+            Long.class, documentId, Timestamp.from(moment));
+        return value == null ? 0L : value;
+    }
+}

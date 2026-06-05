@@ -127,27 +127,85 @@ public final class RgaDocument {
     // Operacje zdalne
     // ------------------------------------------------------------------
 
+    /** Co się stało z zastosowaną operacją. */
+    public enum ApplyResult {
+        /** Operacja wniosła nową zmianę do dokumentu. */
+        APPLIED,
+        /** Operację już wcześniej widzieliśmy — nic się nie zmieniło. */
+        DUPLICATE,
+        /** Brakuje jej przyczyny (originu albo celu usunięcia); czeka w buforze. */
+        BUFFERED;
+
+        /** Czy operacja jest dla tej repliki nowością — czyli czy warto ją zapisać i rozesłać. */
+        public boolean isNews() {
+            return this != DUPLICATE;
+        }
+    }
+
     /**
      * Stosuje operację pochodzącą z innej repliki.
      *
      * <p>Bezpieczne przy dowolnej kolejności i dowolnym powtórzeniu. Operacja, której nie da
      * się jeszcze zastosować, trafia do bufora i zostanie ponowiona automatycznie.
      *
-     * @return {@code true} gdy operacja została zastosowana od razu, {@code false} gdy trafiła
-     *         do bufora oczekujących
+     * <p>Rozróżnienie {@link ApplyResult#APPLIED} od {@link ApplyResult#DUPLICATE} nie jest
+     * potrzebne samemu algorytmowi — z jego punktu widzenia to jest to samo, bo scalanie jest
+     * idempotentne. Jest potrzebne <b>warstwie wyżej</b>: duplikatu nie ma sensu zapisywać
+     * do logu ani rozsyłać po klastrze. Bez tego rozróżnienia jedyną alternatywą byłoby
+     * porównywanie tekstu przed i po, czyli kopiowanie całego dokumentu na każde naciśnięcie
+     * klawisza.
      */
-    public boolean apply(Op op) {
+    public ApplyResult apply(Op op) {
         // Zegar podbijamy nawet dla operacji zbuforowanej: reguła Lamporta dotyczy odbioru,
         // nie zastosowania. Version vector aktualizujemy dopiero po faktycznym zastosowaniu,
         // bo oznacza on "mam to zintegrowane", a nie "widziałem w sieci".
         observeClock(op);
+        if (isAlreadyKnown(op)) {
+            return ApplyResult.DUPLICATE;
+        }
         if (tryApply(op)) {
             observeVersion(op);
             drainPending();
-            return true;
+            return ApplyResult.APPLIED;
         }
         pending.add(op);
-        return false;
+        return ApplyResult.BUFFERED;
+    }
+
+    /**
+     * Czy tę konkretną operację już widzieliśmy.
+     *
+     * <p>Dla wstawienia: czy znak o tym identyfikatorze jest w strukturze. Dla usunięcia:
+     * czy wszystkie objęte nim znaki są już tombstone'ami. Ta druga odpowiedź bywa fałszywie
+     * pozytywna — jeśli ktoś inny usunął dokładnie ten sam zakres, uznamy operację za znaną
+     * mimo że jest nowa. Skutek jest wyłącznie taki, że nie zapiszemy jej do logu; stan
+     * dokumentu pozostaje poprawny, bo usunięcie jest idempotentne. Świadomy kompromis:
+     * dokładne rozróżnienie wymagałoby pamiętania identyfikatorów wszystkich usunięć.
+     */
+    private boolean isAlreadyKnown(Op op) {
+        return switch (op) {
+            case Op.Insert insert -> blocks.locateId(insert.id()) != null;
+            case Op.Delete delete -> isEntirelyDeleted(delete);
+        };
+    }
+
+    private boolean isEntirelyDeleted(Op.Delete op) {
+        for (Op.Range range : op.targets()) {
+            long cursor = range.start().lamport();
+            long end = cursor + range.length();
+            while (cursor < end) {
+                BlockList.Locator loc = blocks.locateId(new Id(range.start().replicaId(), cursor));
+                if (loc == null) {
+                    return false;
+                }
+                Block block = blocks.get(loc.blockIndex());
+                if (!block.deleted()) {
+                    return false;
+                }
+                cursor += block.length() - loc.offset();
+            }
+        }
+        return true;
     }
 
     public void applyAll(Iterable<Op> ops) {
@@ -356,6 +414,37 @@ public final class RgaDocument {
             }
         }
         return false;
+    }
+
+    // ------------------------------------------------------------------
+    // Snapshoty (ADR-0003)
+    // ------------------------------------------------------------------
+
+    /** Migawka pełnego stanu do zapisania jako cache w bazie. */
+    public DocumentSnapshot snapshot() {
+        List<Block> copies = new ArrayList<>(blocks.size());
+        for (Block block : blocks) {
+            copies.add(new Block(block.start(), block.text(), block.originLeft(), block.deleted()));
+        }
+        return new DocumentSnapshot(DocumentSnapshot.CURRENT_FORMAT_VERSION, clock, maxSeen, copies);
+    }
+
+    /**
+     * Odtwarza replikę z migawki.
+     *
+     * <p>Bloki są wstawiane po kolei bez uruchamiania algorytmu integracji — migawka
+     * zapisuje je już w porządku dokumentu. To jest cała oszczędność, dla której snapshoty
+     * istnieją: odtworzenie jest liniowe zamiast kosztować pełne przetworzenie historii.
+     */
+    public static RgaDocument restore(int replicaId, BlockList storage, DocumentSnapshot snapshot) {
+        RgaDocument document = new RgaDocument(replicaId, storage);
+        for (Block block : snapshot.blocks()) {
+            storage.insert(storage.size(),
+                new Block(block.start(), block.text(), block.originLeft(), block.deleted()));
+        }
+        document.clock = snapshot.clock();
+        document.maxSeen.putAll(snapshot.maxSeen());
+        return document;
     }
 
     // ------------------------------------------------------------------

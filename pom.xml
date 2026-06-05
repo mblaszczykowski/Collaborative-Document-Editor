@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>dev.collabedit</groupId>
+    <artifactId>collaborative-document-editor</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>Collaborative Document Editor</name>
+
+    <!--
+      ŚWIADOMA DECYZJA: projekt NIE dziedziczy po spring-boot-starter-parent.
+
+      Powód wynika wprost z ADR-0001: crdt-core ma nie mieć nic wspólnego ze Springiem.
+      Gdyby parentem był starter Boota, każdy moduł — łącznie z rdzeniem algorytmu —
+      dziedziczyłby zarządzanie zależnościami Springa, jego wtyczki i konwencje.
+      Granica architektoniczna, którą deklarujemy w ADR-ze, byłaby wtedy tylko deklaracją.
+
+      Zamiast tego importujemy spring-boot-dependencies jako BOM w dependencyManagement,
+      więc wersje są spójne, ale zależność jest w jedną stronę i dotyczy tylko modułu app.
+    -->
+
+    <modules>
+        <module>crdt-core</module>
+        <module>app</module>
+    </modules>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>21</maven.compiler.release>
+
+        <spring-boot.version>3.5.0</spring-boot.version>
+        <jackson.version>2.18.2</jackson.version>
+        <jqwik.version>1.9.2</jqwik.version>
+        <assertj.version>3.26.3</assertj.version>
+        <junit.version>5.11.4</junit.version>
+        <jmh.version>1.37</jmh.version>
+
+        <surefire.version>3.5.2</surefire.version>
+        <compiler-plugin.version>3.13.0</compiler-plugin.version>
+        <build-helper.version>3.6.0</build-helper.version>
+        <exec-plugin.version>3.5.0</exec-plugin.version>
+
+        <!--
+          Liczba prób w testach property-based.
+          Domyślnie 1000 ze STAŁYM ziarnem: determinizm w CI, kontrprzykład odtwarzalny
+          jednym poleceniem. Nocny build uruchamia `mvn test -Pthorough`, który podnosi
+          to do 10 000 i losuje ziarno — bo jego zadaniem jest SZUKAĆ nowych kontrprzykładów,
+          a nie powtarzać te same tysiąc przypadków.
+        -->
+        <jqwik.tries>1000</jqwik.tries>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>net.jqwik</groupId>
+                <artifactId>jqwik</artifactId>
+                <version>${jqwik.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.assertj</groupId>
+                <artifactId>assertj-core</artifactId>
+                <version>${assertj.version}</version>
+                <scope>test</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${compiler-plugin.version}</version>
+                    <configuration>
+                        <compilerArgs>
+                            <arg>-Xlint:all</arg>
+                            <!-- serial: nie serializujemy nic przez Serializable.
+                                 processing: generatory JMH i tak sypią szumem. -->
+                            <arg>-Xlint:-serial,-processing</arg>
+                        </compilerArgs>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>default-compile</id>
+                            <configuration>
+                                <compilerArgs>
+                                    <arg>-Xlint:all</arg>
+                                    <arg>-Xlint:-serial,-processing</arg>
+                                    <!--
+                                      Ostrzeżenia jako błędy TYLKO w kodzie produkcyjnym.
+                                      W projekcie portfolio "build przechodzi, ale wypluwa
+                                      czterdzieści warningów" to zły sygnał, a zero jest
+                                      łatwiej utrzymać od początku niż posprzątać na końcu.
+                                      Kod testowy jest wyłączony celowo: tam pojawia się
+                                      kod generowany (JMH) i konstrukcje, w których warning
+                                      bywa zamierzony.
+                                    -->
+                                    <arg>-Werror</arg>
+                                </compilerArgs>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${surefire.version}</version>
+                    <configuration>
+                        <!--
+                          UWAGA, PUŁAPKA: domyślne wzorce Surefire to *Test, Test*, *Tests,
+                          *TestCase. Klasy property testów nazywają się *Properties, więc bez
+                          tej listy NIE URUCHAMIAJĄ SIĘ — a build i tak jest zielony.
+                          Wykryte przy migracji z Gradle'a: liczba testów spadła z 15 do 5,
+                          bez jednego błędu. Najgroźniejszy rodzaj regresji w konfiguracji
+                          buildu to ten, który niczego nie psuje, tylko przestaje sprawdzać.
+                        -->
+                        <includes>
+                            <include>**/*Test.java</include>
+                            <include>**/*Tests.java</include>
+                            <include>**/*Properties.java</include>
+                            <include>**/*IT.java</include>
+                        </includes>
+                        <systemPropertyVariables>
+                            <jqwik.tries.default>${jqwik.tries}</jqwik.tries.default>
+                            <jqwik.failures.after.default>PREVIOUS_SEED</jqwik.failures.after.default>
+                            <jqwik.reporting.usejunitplatform>true</jqwik.reporting.usejunitplatform>
+                        </systemPropertyVariables>
+                    </configuration>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>build-helper-maven-plugin</artifactId>
+                    <version>${build-helper.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>exec-maven-plugin</artifactId>
+                    <version>${exec-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
+    <profiles>
+        <!--
+          Nocny build: losowe ziarno i 10x więcej prób. Kontrprzykład znaleziony nocą
+          trafia do repo jako zwykły test regresyjny.
+        -->
+        <profile>
+            <id>thorough</id>
+            <properties>
+                <jqwik.tries>10000</jqwik.tries>
+            </properties>
+        </profile>
+    </profiles>
+</project>

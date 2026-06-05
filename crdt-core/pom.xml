@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.collabedit</groupId>
+        <artifactId>collaborative-document-editor</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>crdt-core</artifactId>
+    <name>crdt-core — algorytm RGA</name>
+
+    <!--
+      ŚWIADOME OGRANICZENIE: ten moduł nie ma i nie będzie miał zależności od Springa
+      ani od czegokolwiek z warstwy aplikacyjnej (ADR-0001). Jedyna zależność produkcyjna
+      to Jackson, i tylko do serializacji operacji na potrzeby transportu i persystencji.
+      Jeśli kiedykolwiek pojawi się tu org.springframework, to znaczy, że granica przeciekła
+      i trzeba się cofnąć, a nie dopisać wyjątek.
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JMH w zakresie testowym: benchmarki są częścią weryfikacji, a nie artefaktu. -->
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>${jmh.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>${jmh.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              src/jmh/java jako dodatkowy katalog źródeł testowych.
+              Osobny katalog, a nie src/test/java, bo benchmarki to inny rodzaj kodu niż
+              testy: nie mają asercji, trwają minuty i nie mają się uruchamiać w CI przy
+              każdym pushu. Surefire ich nie podnosi, bo nie pasują do wzorca *Test.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>add-jmh-sources</id>
+                        <phase>generate-test-sources</phase>
+                        <goals>
+                            <goal>add-test-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>src/jmh/java</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              Uruchomienie benchmarków:  mvn -pl crdt-core -Pbenchmark test-compile exec:exec
+              Wynik trafia do crdt-core/target/jmh-result.json i stamtąd do README.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>run-benchmarks</id>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>java</executable>
+                            <classpathScope>test</classpathScope>
+                            <arguments>
+                                <argument>-classpath</argument>
+                                <classpath/>
+                                <argument>org.openjdk.jmh.Main</argument>
+                                <!-- 3 iteracje rozgrzewki: JIT na strukturach z dużą liczbą
+                                     obiektów potrzebuje chwili, zanim wynik przestaje dryfować. -->
+                                <argument>-wi</argument><argument>3</argument>
+                                <argument>-i</argument><argument>5</argument>
+                                <argument>-f</argument><argument>1</argument>
+                                <argument>-tu</argument><argument>us</argument>
+                                <argument>-rf</argument><argument>json</argument>
+                                <argument>-rff</argument>
+                                <argument>${project.build.directory}/jmh-result.json</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -6,8 +6,8 @@ on:
   pull_request:
 
 concurrency:
-  # Nowy push na tę samą gałąź anuluje poprzedni przebieg — property testy
-  # potrafią trwać, a nie ma sensu czekać na wynik dla nieaktualnego commita.
+  # Nowy push na tę samą gałąź anuluje poprzedni przebieg — property testy potrafią
+  # trwać, a nie ma sensu czekać na wynik dla nieaktualnego commita.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
@@ -23,24 +23,32 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-
-      - uses: gradle/actions/setup-gradle@v4
+          cache: maven
 
       # Osobny job dla rdzenia, bo to jedyna część, która NIE potrzebuje Dockera
       # (ADR-0001: crdt-core nie ma zależności od warstwy aplikacyjnej). Dzięki temu
-      # najważniejszy test w projekcie daje feedback najszybciej i niezależnie
-      # od tego, czy infrastruktura integracyjna działa.
+      # najważniejszy test w projekcie daje feedback najszybciej i niezależnie od tego,
+      # czy infrastruktura integracyjna w ogóle wstała.
       - name: Property testy CRDT
-        run: ./gradlew :crdt-core:test
+        run: ./mvnw -B -pl crdt-core test
 
-      - name: Wektory konformancyjne (Java → JSON)
-        run: ./gradlew :crdt-core:test --tests '*ConformanceVectorGenerator*'
+      # Wektory konformancyjne są generowane przez testy. Jeśli po ich uruchomieniu
+      # katalog conformance/ różni się od tego w repo, znaczy że ktoś zmienił algorytm
+      # i nie zaktualizował korpusu — a wtedy suite w TypeScripcie sprawdza nieaktualny
+      # wzorzec i cała ochrona przed rozjazdem obu implementacji przestaje działać.
+      - name: Wektory konformancyjne są aktualne
+        run: |
+          if ! git diff --quiet -- conformance/; then
+            echo "::error::Wektory konformancyjne rozjechały się z implementacją."
+            git diff --stat -- conformance/
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: crdt-core-test-report
-          path: crdt-core/build/reports/tests/
+          name: crdt-core-surefire
+          path: crdt-core/target/surefire-reports/
 
   app:
     name: app — build + testy integracyjne
@@ -52,19 +60,18 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          cache: maven
 
-      - uses: gradle/actions/setup-gradle@v4
-
-      # Docker jest na runnerach GitHuba dostępny out of the box, więc Testcontainers
+      # Docker jest na runnerach GitHuba dostępny bez konfiguracji, więc Testcontainers
       # podnosi prawdziwego Postgresa (CLAUDE.md §3.2 — bez mocków).
       - name: Build + testy
-        run: ./gradlew :app:build
+        run: ./mvnw -B install
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: app-test-report
-          path: app/build/reports/tests/
+          name: app-surefire
+          path: app/target/surefire-reports/
 
   frontend:
     name: frontend — typecheck + testy + konformancja z Javą
@@ -87,9 +94,9 @@ jobs:
       - run: npm run lint
         working-directory: frontend
 
-      # Kluczowy test spójności: implementacja TS odtwarza te same wektory,
-      # które wygenerowała implementacja w Javie (ADR-0001, sekcja o dwóch
-      # implementacjach). Rozjazd algorytmu nie może przejść po cichu.
+      # Kluczowy test spójności: implementacja w TypeScripcie odtwarza te same wektory,
+      # które wygenerowała implementacja w Javie (ADR-0001, sekcja o dwóch implementacjach).
+      # Rozjazd algorytmu nie może przejść po cichu.
       - run: npm run test
         working-directory: frontend
 

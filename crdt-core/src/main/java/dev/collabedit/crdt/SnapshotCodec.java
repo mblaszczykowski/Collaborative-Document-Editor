@@ -1,0 +1,114 @@
+package dev.collabedit.crdt;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+
+/**
+ * Kodowanie {@link DocumentSnapshot} do postaci binarnej.
+ *
+ * <p>Binarnie, a nie JSON-em, bo snapshot dużego dokumentu z długą historią to najcięższy
+ * pojedynczy obiekt w systemie, a jego rozmiar wprost przekłada się na czas otwarcia dokumentu.
+ * JSON kosztowałby tu kilkukrotnie więcej przy zerowej korzyści — snapshotu nikt nie czyta
+ * oczami, w przeciwieństwie do operacji w logu, gdzie {@link OpCodec} celowo używa JSON-a.
+ *
+ * <p>Warstwa GZIP na wierzchu: tekst dokumentu kompresuje się bardzo dobrze, a koszt
+ * procesora jest pomijalny wobec ruchu na dysku i w sieci.
+ *
+ * <h2>Format (wersja 1)</h2>
+ * <pre>
+ *   int    formatVersion
+ *   long   clock
+ *   int    liczba wpisów version vectora
+ *     int  replicaId, long maxLamport
+ *   int    liczba bloków
+ *     int  replicaId, long startLamport
+ *     bool ma origin, [int replicaId, long lamport]
+ *     bool deleted
+ *     UTF  tekst
+ * </pre>
+ *
+ * <p>Bloki zapisane są <b>w kolejności dokumentu</b>, więc odtworzenie nie wymaga ponownego
+ * uruchamiania algorytmu integracji — wystarczy je wczytać po kolei. To jest cała oszczędność
+ * czasu, dla której snapshoty istnieją.
+ */
+public final class SnapshotCodec {
+
+    private SnapshotCodec() {
+    }
+
+    public static byte[] encode(DocumentSnapshot snapshot) {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(new GZIPOutputStream(bytes))) {
+            out.writeInt(snapshot.formatVersion());
+            out.writeLong(snapshot.clock());
+
+            out.writeInt(snapshot.maxSeen().size());
+            for (Map.Entry<Integer, Long> entry : snapshot.maxSeen().entrySet()) {
+                out.writeInt(entry.getKey());
+                out.writeLong(entry.getValue());
+            }
+
+            out.writeInt(snapshot.blocks().size());
+            for (Block block : snapshot.blocks()) {
+                out.writeInt(block.start().replicaId());
+                out.writeLong(block.start().lamport());
+                boolean hasOrigin = block.originLeft() != null;
+                out.writeBoolean(hasOrigin);
+                if (hasOrigin) {
+                    out.writeInt(block.originLeft().replicaId());
+                    out.writeLong(block.originLeft().lamport());
+                }
+                out.writeBoolean(block.deleted());
+                out.writeUTF(block.text());
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("nie da się zakodować snapshotu", e);
+        }
+        return bytes.toByteArray();
+    }
+
+    /**
+     * @return odczytany snapshot, albo {@code null} gdy danych nie da się odczytać.
+     *         Zwracanie {@code null} zamiast rzucania wyjątku jest celowe: snapshot to cache,
+     *         a nieczytelny cache ma prowadzić do odtworzenia z logu, a nie do awarii.
+     */
+    public static DocumentSnapshot decode(byte[] data) {
+        try (DataInputStream in = new DataInputStream(
+            new GZIPInputStream(new ByteArrayInputStream(data)))) {
+
+            int formatVersion = in.readInt();
+            if (formatVersion != DocumentSnapshot.CURRENT_FORMAT_VERSION) {
+                return null;
+            }
+            long clock = in.readLong();
+
+            int versionEntries = in.readInt();
+            Map<Integer, Long> maxSeen = new HashMap<>(versionEntries);
+            for (int i = 0; i < versionEntries; i++) {
+                maxSeen.put(in.readInt(), in.readLong());
+            }
+
+            int blockCount = in.readInt();
+            List<Block> blocks = new ArrayList<>(blockCount);
+            for (int i = 0; i < blockCount; i++) {
+                Id start = new Id(in.readInt(), in.readLong());
+                Id originLeft = in.readBoolean() ? new Id(in.readInt(), in.readLong()) : null;
+                boolean deleted = in.readBoolean();
+                blocks.add(new Block(start, in.readUTF(), originLeft, deleted));
+            }
+            return new DocumentSnapshot(formatVersion, clock, maxSeen, blocks);
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+}

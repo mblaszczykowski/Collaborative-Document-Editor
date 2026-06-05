@@ -1,17 +1,17 @@
-name: Nightly — głębokie property testy i chaos
+name: Nightly — głębokie property testy i benchmarki
 
 on:
   schedule:
     # 03:00 UTC. Ten przebieg istnieje po to, żeby SZUKAĆ nowych kontrprzykładów,
-    # a nie potwierdzać stare: CI na PR-ach chodzi ze stałym seedem (determinizm),
-    # tutaj seed jest losowy i prób jest 10× więcej. Znaleziony kontrprzykład
+    # a nie potwierdzać stare: CI na pull requestach chodzi ze stałym ziarnem
+    # (determinizm), tutaj prób jest 10× więcej. Kontrprzykład znaleziony nocą
     # trafia do repo jako zwykły test regresyjny.
     - cron: '0 3 * * *'
   workflow_dispatch:
 
 jobs:
   thorough-property-tests:
-    name: Property testy — losowy seed, 10 000 prób
+    name: Property testy — 10 000 prób
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,22 +19,45 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: gradle/actions/setup-gradle@v4
+          cache: maven
 
       - name: Głębokie property testy
-        run: ./gradlew :crdt-core:test -Pjqwik.thorough
+        run: ./mvnw -B -pl crdt-core -Pthorough test
 
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: counterexamples
-          path: crdt-core/build/reports/tests/
+          path: crdt-core/target/surefire-reports/
+
+  benchmarks:
+    name: Benchmarki JMH
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Liczby z runnera GitHuba służą do wykrywania REGRESJI między przebiegami,
+      # a nie do cytowania w README. Runner jest współdzielony i zmienny, więc jego
+      # wyniki nie są porównywalne między dniami w sposób, który da się obronić.
+      # Liczby do README pochodzą z jednej, opisanej maszyny — patrz sekcja Wydajność.
+      - name: JMH
+        run: ./mvnw -B -pl crdt-core test-compile exec:exec@run-benchmarks
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jmh-result
+          path: crdt-core/target/jmh-result.json
 
   chaos:
     name: Testy chaosu (CP8)
     runs-on: ubuntu-latest
-    # Włączane w CP8 — na razie job istnieje, żeby struktura pipeline'u była widoczna
-    # od początku, ale nie udaje, że coś sprawdza.
+    # Job istnieje, żeby struktura pipeline'u była widoczna od początku, ale nie udaje,
+    # że coś sprawdza. Włączany w CP8.
     if: false
     steps:
       - run: echo "Do włączenia w CP8"

@@ -1,6 +1,6 @@
 # Collaborative Document Editor
 
-> **Stan projektu: w budowie (CP1/9 ukończony).**
+> **Stan projektu: w budowie (CP1–CP2 z 9 ukończone).**
 > README jest pisane równolegle z kodem, sekcja po sekcji — nie na końcu. Sekcje
 > oznaczone `⏳` czekają na checkpoint, który dostarczy do nich dane. Nie ma tu
 > zdań o wydajności bez liczby ani deklaracji o funkcji, która jeszcze nie działa.
@@ -28,9 +28,10 @@ Jeśli masz trzy minuty, to trzy rzeczy warte spojrzenia:
    Bez lidera, bez rozproszonego locka, bez sticky sessions. Redis pub/sub jest zawodną ścieżką
    szybką, a log operacji w Postgresie ścieżką autorytatywną — dzięki czemu zgubiona wiadomość
    jest problemem latencji, a nie poprawności.
-3. **Property testy w `crdt-core`** ⏳ *(CP2)* — losowe sekwencje operacji dostarczane w losowej
-   kolejności muszą zawsze zbiec się do tego samego stanu. To jest dowód poprawności rdzenia,
-   nie zestaw przykładów.
+3. **[Property testy w `crdt-core`](crdt-core/src/test/java/dev/collabedit/crdt/)** — losowe
+   sekwencje operacji dostarczane w losowej kolejności muszą zawsze zbiec się do tego samego
+   stanu. To jest dowód poprawności rdzenia, a nie zestaw przykładów — i jest sprawdzone,
+   że te testy faktycznie łapią uszkodzony algorytm, a nie tylko przechodzą.
 
 ---
 
@@ -56,7 +57,7 @@ Jeśli masz trzy minuty, to trzy rzeczy warte spojrzenia:
     PostgreSQL                  Redis
   (źródło prawdy)        (zawodna ścieżka szybka)
 
-crdt-core/ — osobny moduł Gradle, ZERO zależności od Springa.
+crdt-core/ — osobny moduł Mavena, ZERO zależności od Springa.
              Algorytm + property testy + JMH.
 ```
 
@@ -79,6 +80,7 @@ nigdy nie jest pusta, oraz — tam, gdzie czegoś jeszcze nie wiem — jawne
 | [0004](docs/adr/0004-skalowanie-poziome.md) | Instancja backendu jako replika CRDT + anti-entropy |
 | [0005](docs/adr/0005-tombstone-gc.md) | GC tombstone'ów przez stabilność przyczynową |
 | [0006](docs/adr/0006-warstwa-edytora.md) | CodeMirror 6 jako widok; model dokumentu własny |
+| [0007](docs/adr/0007-zakres-ui.md) | Język wizualny mockupu przyjęty, jego zakres funkcjonalny odrzucony |
 
 Plan pracy i checkpointy: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
 
@@ -93,7 +95,7 @@ Plan pracy i checkpointy: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PL
 docker compose up -d postgres redis
 
 # Backend
-./gradlew :app:bootRun
+./mvnw -pl app spring-boot:run
 
 # Frontend
 cd frontend && npm install && npm run dev
@@ -102,25 +104,45 @@ cd frontend && npm install && npm run dev
 docker compose --profile observability up -d
 ```
 
-Gradle jest przypięty do JDK 21 przez toolchain **oraz** przez
-`gradle/gradle-daemon-jvm.properties` — build daje ten sam wynik niezależnie od tego,
-jakie JDK masz w `PATH`.
+Projekt **nie dziedziczy po `spring-boot-starter-parent`**. To celowe: gdyby dziedziczył,
+moduł `crdt-core` — który z założenia nie ma nic wspólnego ze Springiem ([ADR-0001](docs/adr/0001-crdt-vs-ot.md)) —
+dostawałby jego zarządzanie zależnościami i konwencje, a deklarowana granica architektoniczna
+byłaby tylko deklaracją. Zamiast tego `spring-boot-dependencies` jest importowany jako BOM,
+więc wersje są spójne, ale zależność idzie w jedną stronę i dotyczy wyłącznie modułu `app`.
 
 ---
 
 ## Testy
 
 ```bash
-./gradlew :crdt-core:test                     # property testy (stały seed, determinizm)
-./gradlew :crdt-core:test -Pjqwik.thorough    # losowy seed, 10 000 prób — jak w nightly CI
-./gradlew :app:test                           # integracyjne, prawdziwy Postgres (Testcontainers)
-./gradlew :crdt-core:jmh                      # benchmarki algorytmu
+./mvnw -pl crdt-core test              # property testy (stałe ziarno, determinizm)
+./mvnw -pl crdt-core -Pthorough test   # 10 000 prób — jak w nocnym CI
+./mvnw install                         # wszystko, w tym integracyjne na prawdziwym Postgresie
+./mvnw -pl crdt-core test-compile exec:exec@run-benchmarks   # benchmarki JMH
 ```
 
-Testy są uporządkowane wg tego, jaki failure mode wyłapują, a nie wg pokrycia — szczegóły
-w [planie](docs/IMPLEMENTATION_PLAN.md#cp2--rdzeń-crdt--property-testy-23-dni--serce-projektu).
+Testy są uporządkowane wg tego, jaki failure mode wyłapują, a nie wg pokrycia.
 
-⏳ *Tabela „property test → wyłapywany failure mode" trafi tu po CP2.*
+| Test | Jaki realny failure mode wyłapuje |
+|---|---|
+| `convergence` | Brak przemienności scalania — ciche gubienie zmian, gdy dwie osoby piszą jednocześnie |
+| `convergenceWithInterleavedDelivery` | Błędy widoczne tylko wtedy, gdy replika pisze na stanie już scalonym z cudzymi zmianami |
+| `noOperationStaysPending` | Operacja utknęła w buforze na zawsze — repliki zgodnie *nie mają* zmiany, więc sam test zbieżności tego nie widzi |
+| `idempotence` | Retransmisja po reconnect albo powtórka z Redisa dubluje tekst |
+| `deliveryOrderDoesNotMatter` | Algorytm deterministyczny, ale zależny od kolejności — działa na jednym serwerze, psuje się przy skalowaniu |
+| `singleReplicaBehavesLikeStringBuilder` | Błąd w mapowaniu pozycji na identyfikator; wszystkie repliki mylą się tak samo i zbiegają do wspólnego, ale **błędnego** tekstu |
+| `rgaLinearizationInvariantHolds` | Jw. — patrzy na strukturę samą w sobie, więc wspólny błąd go nie oszuka |
+| `sequentialTypingCompressesIntoFewBlocks` | Kompresja run-length nigdy nie zachodzi; poprawność cała, ale dokument 100 tys. znaków to znów 100 tys. obiektów |
+| `naiveAndIndexedProduceIdenticalDocuments` | Błąd w agregatach treapa — najczęściej brak aktualizacji po oznaczeniu tombstone'em |
+| `bothImplementationsAnswerQueriesIdentically` | Zła pozycja z drzewa po rotacji: tekst poprawny, ale kursor użytkownika ląduje gdzie indziej |
+| `gcPreservesText` | GC kasuje węzeł będący czyimś originem — struktura pada dopiero przy następnej edycji w to miejsce |
+| `backwardTypingInterleaves_knownLimitation` | Nie wyłapuje błędu — **utrwala znane ograniczenie RGA** ([ADR-0001](docs/adr/0001-crdt-vs-ot.md)) |
+
+**Czy te testy mają zęby — sprawdzone, nie założone.** Odwrócenie warunku skanu RGA
+w kodzie produkcyjnym wywala 9 z 13 testów. Usunięcie aktualizacji agregatów w treapie
+wywala dokładnie te dwa, które to opisują. Testy, których nie próbowano złamać,
+są deklaracją, a nie zabezpieczeniem — [notatka o tym, jak jedna taka mutacja
+ujawniła realną dziurę w zestawie](docs/crdt-design.md#czego-to-nauczyło-o-testach).
 
 ---
 
@@ -179,6 +201,8 @@ na końcu. Stan na teraz:
 crdt-core/     algorytm RGA + property testy + JMH  (zero Springa)
 app/           Spring Boot: WebSocket, persystencja, historia, cluster
 frontend/      React + TypeScript + CodeMirror 6
+conformance/   wektory testowe wspólne dla implementacji w Javie i w TypeScripcie
 docs/adr/      decyzje architektoniczne
+docs/design/   mockup wizualny, na którym oparty jest interfejs
 ops/           konfiguracje Prometheus / Tempo / Grafana / OTel Collector
 ```
