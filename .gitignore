@@ -27,9 +27,11 @@ dist/
 bench/results/
 bench/target/
 
-# Demo recording intermediates (GIF trafia do repo, wideo nie)
-demo/recordings/*.webm
-demo/recordings/*.mp4
+# Demo recording intermediates (GIF trafia do repo, wideo nie).
+# Ścieżka musi zgadzać się z RECORDINGS w tools/make-gif.sh — poprzednia wersja
+# wskazywała demo/recordings/, katalog który nigdy nie istniał, więc reguła nie
+# obejmowała niczego i 1,5 MB nagrań wylądowało w historii repozytorium.
+frontend/demo-recordings/
 test-results/
 playwright-report/
 .playwright/
