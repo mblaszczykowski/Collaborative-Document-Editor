@@ -45,12 +45,28 @@ public class TokenService {
 
     public String issue(Principal principal) {
         String payload = String.join("|",
-            principal.userId(),
-            principal.displayName(),
-            principal.color(),
+            field(principal.userId()),
+            field(principal.displayName()),
+            field(principal.color()),
             Long.toString(Instant.now().plus(LIFETIME).getEpochSecond()));
         String encoded = ENCODER.encodeToString(payload.getBytes(StandardCharsets.UTF_8));
         return encoded + "." + ENCODER.encodeToString(sign(encoded));
+    }
+
+    /**
+     * Koduje pojedyncze pole ładunku.
+     *
+     * <p>Separatorem pól jest {@code |}, a {@code displayName} pochodzi wprost od użytkownika
+     * — bez tego kodowania nazwa zawierająca {@code |} rozbijała ładunek na więcej części
+     * i {@code verify} odrzucał <b>własny, poprawnie podpisany token</b>. Objawem było
+     * logowanie, które „działa" (REST zwraca token), po którym ramka {@code CONNECT} jest
+     * odrzucana bez zrozumiałego powodu.
+     *
+     * <p>Base64url jest tu wystarczający i darmowy: jego alfabet ({@code A-Z a-z 0-9 - _})
+     * z definicji nie zawiera separatora, więc podział jest jednoznaczny niezależnie od treści.
+     */
+    private static String field(String value) {
+        return ENCODER.encodeToString(value.getBytes(StandardCharsets.UTF_8));
     }
 
     public Optional<Principal> verify(String token) {
@@ -74,14 +90,28 @@ public class TokenService {
             return Optional.empty();
         }
 
-        String[] parts = new String(DECODER.decode(encoded), StandardCharsets.UTF_8).split("\\|");
+        // limit -1: bez niego puste pole na końcu zostałoby po cichu odrzucone i ładunek
+        // o poprawnej strukturze wyglądałby jak uszkodzony.
+        String[] parts = new String(DECODER.decode(encoded), StandardCharsets.UTF_8).split("\\|", -1);
         if (parts.length != 4) {
             return Optional.empty();
         }
-        if (Long.parseLong(parts[3]) < Instant.now().getEpochSecond()) {
+        try {
+            if (Long.parseLong(parts[3]) < Instant.now().getEpochSecond()) {
+                return Optional.empty();
+            }
+            return Optional.of(new Principal(
+                new String(DECODER.decode(parts[0]), StandardCharsets.UTF_8),
+                new String(DECODER.decode(parts[1]), StandardCharsets.UTF_8),
+                new String(DECODER.decode(parts[2]), StandardCharsets.UTF_8)));
+        } catch (IllegalArgumentException e) {
+            // Ładunek przeszedł weryfikację podpisu, ale nie da się go odczytać — czyli
+            // token wystawiła starsza wersja o innym formacie ładunku. Odrzucamy jak każdy
+            // nieważny token: użytkownik zaloguje się ponownie i dostanie token w nowym
+            // formacie. Wersjonowanie formatu byłoby tu kosztem bez korzyści przy 12-godzinnym
+            // czasie życia tokenu.
             return Optional.empty();
         }
-        return Optional.of(new Principal(parts[0], parts[1], parts[2]));
     }
 
     private byte[] sign(String encodedPayload) {

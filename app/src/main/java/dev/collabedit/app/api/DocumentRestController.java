@@ -54,6 +54,16 @@ public class DocumentRestController {
     }
 
     /**
+     * Górna granica długości nazwy widocznej dla innych.
+     *
+     * <p>Nazwa trafia do tokenu, do bazy i — co najistotniejsze — do <b>każdego rozgłoszenia
+     * presence</b>, czyli do wiadomości wysyłanej wielokrotnie na sekundę do wszystkich
+     * uczestników dokumentu. Bez limitu jeden użytkownik z nazwą o długości megabajta
+     * obciąża łącze wszystkich pozostałych. 64 znaki mieszczą każde realne imię i nazwisko.
+     */
+    private static final int MAX_DISPLAY_NAME_LENGTH = 64;
+
+    /**
      * Logowanie — <b>bez hasła</b>. Podajesz nazwę, dostajesz tożsamość.
      *
      * <p>Świadome uproszczenie opisane w README: zakresem projektu jest spójność danych
@@ -64,6 +74,9 @@ public class DocumentRestController {
     public LoginResponse login(@RequestBody LoginRequest request) {
         String displayName = request.displayName() == null || request.displayName().isBlank()
             ? "Gość" : request.displayName().trim();
+        if (displayName.length() > MAX_DISPLAY_NAME_LENGTH) {
+            displayName = displayName.substring(0, MAX_DISPLAY_NAME_LENGTH);
+        }
         String userId = UUID.randomUUID().toString();
         String color = PALETTE[Math.floorMod(displayName.hashCode(), PALETTE.length)];
 
