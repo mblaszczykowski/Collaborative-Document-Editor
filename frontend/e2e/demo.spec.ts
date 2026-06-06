@@ -49,7 +49,7 @@ async function joinAs(browser: Browser, name: string, documentId: string): Promi
   const page = await context.newPage()
   await page.goto(`${APP}/?doc=${documentId}`)
   await page.getByPlaceholder('Twoje imię').fill(name)
-  await page.getByRole('button', { name: 'Wejdź' }).click()
+  await page.getByRole('button', { name: 'Rozpocznij' }).click()
   await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
   return page
 }
@@ -80,8 +80,12 @@ test('demo: współbieżna edycja, praca offline i cofnięcie wersji', async ({ 
   await anna.waitForTimeout(900)
 
   // --- SCENA 2: Marek traci sieć, pisze dalej, wraca ----------------------
-  await marek.getByRole('button', { name: 'Odetnij sieć' }).click()
-  await marek.waitForTimeout(500)
+  // Prawdziwe odcięcie sieci przeglądarce — w interfejsie widać to jako „Praca offline",
+  // czyli dokładnie to, co zobaczy użytkownik z padniętym wi-fi. Żadnego panelu
+  // diagnostycznego na nagraniu.
+  await marek.context().setOffline(true)
+  await expect(marek.locator('.save-state.offline')).toBeVisible({ timeout: 20_000 })
+  await marek.waitForTimeout(600)
   // Fokus MUSI wrócić do edytora. Po kliknięciu przycisku zostaje on aktywnym elementem,
   // a wpisywany tekst zaczyna się od spacji — która na przycisku działa jak kliknięcie
   // i po cichu przywraca łączność. Scena wyglądała wtedy poprawnie aż do momentu,
@@ -95,14 +99,13 @@ test('demo: współbieżna edycja, praca offline i cofnięcie wersji', async ({ 
   await anna.keyboard.type(' A ten w tym samym czasie online.', { delay: TYPING_DELAY })
   await anna.waitForTimeout(700)
 
-  await marek.getByRole('button', { name: 'Przywróć łączność' }).click()
-  await expect(anna.locator('.cm-content')).toContainText('bez sieci', { timeout: 20_000 })
-  await expect(marek.locator('.cm-content')).toContainText('online', { timeout: 20_000 })
+  await marek.context().setOffline(false)
+  await expect(anna.locator('.cm-content')).toContainText('bez sieci', { timeout: 30_000 })
+  await expect(marek.locator('.cm-content')).toContainText('online', { timeout: 30_000 })
   await anna.waitForTimeout(1200)
 
   // --- SCENA 3: cofnięcie do wcześniejszej wersji -------------------------
-  await anna.locator('.rp-tab', { hasText: 'Historia' }).click()
-  await anna.waitForTimeout(900)
+  // Historia jest widoczna od razu — panel boczny nie ma już zakładek.
   await anna.locator('.history-entry').last().click()
   await expect(anna.locator('.history-preview')).not.toContainText('Odtwarzam', {
     timeout: 10_000,

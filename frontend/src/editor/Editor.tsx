@@ -2,7 +2,8 @@ import { Annotation, EditorState } from '@codemirror/state'
 import { EditorView, keymap, drawSelection } from '@codemirror/view'
 import { defaultKeymap } from '@codemirror/commands'
 import { useEffect, useRef } from 'react'
-import { RgaDocument } from '../crdt/document'
+import type { RgaDocument } from '../crdt/document'
+import type { UndoManager } from '../crdt/undo'
 import type { Id, Op } from '../crdt/types'
 import { changesToOps, minimalChange } from './bridge'
 import { remoteCursorsField, setRemoteCursors, type RemoteCursor } from './remoteCursors'
@@ -27,11 +28,13 @@ const remoteChange = Annotation.define<boolean>()
 
 export interface EditorProps {
   document: RgaDocument
-  /** Tekst początkowy, pobrany REST-em przy otwarciu dokumentu. */
-  initialText: string
+  undo: UndoManager
   remoteCursors: RemoteCursor[]
   onLocalOps: (ops: Op[]) => void
   onCursorMove: (head: Id | null, anchor: Id | null) => void
+  /** Cofnięcie i ponowienie — obsługiwane wyżej, bo generują operacje do rozesłania. */
+  onUndo: () => void
+  onRedo: () => void
   /** Rejestruje funkcję, którą warstwa wyżej wywoła po scaleniu operacji zdalnych. */
   registerRemoteApply: (apply: () => void) => void
   readOnly?: boolean
@@ -47,9 +50,17 @@ export function Editor(props: EditorProps) {
     if (!host.current) return
 
     const state = EditorState.create({
-      doc: props.initialText,
+      // Dokument startuje pusty i wypełnia się z operacji przysłanych przez serwer.
+      doc: '',
       extensions: [
-        // history() świadomie POMINIĘTE — patrz komentarz nad komponentem.
+        // history() świadomie POMINIĘTE (patrz komentarz nad komponentem), ale skróty
+        // MUSZĄ działać — edytor, w którym Ctrl+Z nic nie robi, jest zepsuty.
+        // Kierujemy je do UndoManagera, który cofa WYŁĄCZNIE własne operacje użytkownika.
+        keymap.of([
+          { key: 'Mod-z', run: () => { latest.current.onUndo(); return true }, preventDefault: true },
+          { key: 'Mod-Shift-z', run: () => { latest.current.onRedo(); return true }, preventDefault: true },
+          { key: 'Mod-y', run: () => { latest.current.onRedo(); return true }, preventDefault: true },
+        ]),
         keymap.of(defaultKeymap.filter((binding) => binding.key !== 'Mod-z' && binding.key !== 'Mod-y')),
         drawSelection(),
         remoteCursorsField,
@@ -59,7 +70,7 @@ export function Editor(props: EditorProps) {
           const current = latest.current
 
           if (update.docChanged && !update.transactions.some((t) => t.annotation(remoteChange))) {
-            const ops = changesToOps(current.document, update.changes)
+            const ops = changesToOps(current.document, update.changes, current.undo)
 
             // Niezmiennik: po każdej zmianie lokalnej tekst w CodeMirrorze i tekst w CRDT
             // muszą być identyczne. To jest ASERCJA, nie nadzieja — bez niej rozjazd obu

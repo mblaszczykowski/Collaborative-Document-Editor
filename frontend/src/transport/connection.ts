@@ -60,6 +60,16 @@ export class DocumentConnection {
   private state: ConnectionState = 'connecting'
   private reconnectAttempt = 0
   private gapDetected = false
+
+  private readonly handleBrowserOffline = () => this.setState('offline')
+  private readonly handleBrowserOnline = () => {
+    // Nie ustawiamy tu „online" — połączenie STOMP musi się dopiero podnieść.
+    // Deklarowanie gotowości przed faktycznym połączeniem byłoby tym samym błędem
+    // co pokazywanie „Zapisano" po utracie sieci, tylko w drugą stronę.
+    if (this.state === 'offline') {
+      this.setState('connecting')
+    }
+  }
   private progressTimer: number | null = null
 
   readonly simulator = new NetworkSimulator((payload) => this.publishOp(payload as Op))
@@ -96,6 +106,13 @@ export class DocumentConnection {
   }
 
   connect(): void {
+    // Przeglądarka wie o utracie łączności NATYCHMIAST, a wygaśnięcie heartbeatu zajmuje
+    // kilkanaście sekund (ADR-0002: 10 s interwału, 2,5× tolerancji). Przez ten czas
+    // wskaźnik pokazywałby „Zapisano", mimo że nic już nie dociera do serwera — czyli
+    // kłamałby dokładnie w tej jednej sytuacji, w której użytkownik musi wiedzieć prawdę.
+    window.addEventListener('offline', this.handleBrowserOffline)
+    window.addEventListener('online', this.handleBrowserOnline)
+
     const client = new Client({
       brokerURL: `ws://${window.location.hostname}:8080/ws`,
       connectHeaders: { token: this.token },
@@ -334,6 +351,8 @@ export class DocumentConnection {
   }
 
   disconnect(): void {
+    window.removeEventListener('offline', this.handleBrowserOffline)
+    window.removeEventListener('online', this.handleBrowserOnline)
     if (this.progressTimer !== null) {
       window.clearInterval(this.progressTimer)
       this.progressTimer = null

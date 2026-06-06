@@ -1,6 +1,6 @@
 # ADR-0007 — Zakres UI: przyjmujemy język wizualny mockupu, odrzucamy jego zakres funkcjonalny
 
-- **Status:** Zaakceptowany
+- **Status:** Zaakceptowany, **zrewidowany** (patrz sekcja na końcu)
 - **Data:** 2026-08-14
 - **Dotyczy checkpointów:** CP4, CP5, CP6
 - **Materiał źródłowy:** [`docs/design/mockup-inkline.html`](../design/mockup-inkline.html)
@@ -153,3 +153,53 @@ nie wnosi nic poza kosztem.
   użytkownikach w jednym akapicie, czy chorągiewki zaczynają się nakładać.
 - Czy strona o stałej szerokości 620 px dobrze znosi okno podzielone na pół (scenariusz
   demo: dwie przeglądarki obok siebie) — jeśli nie, potrzebny jest wariant zwężony.
+
+
+---
+
+## Rewizja: diagnostyka znika z interfejsu użytkownika
+
+**Decyzja o umieszczeniu symulatora sieci w toolbarze i podglądu replik CRDT w panelu
+bocznym została cofnięta.**
+
+### Co było nie tak
+
+Pierwotne rozumowanie brzmiało: „każdy widoczny element ma coś robić, a te dwa pokazują
+dokładnie to, czego projekt dowodzi". Rozumowanie jest poprawne co do **wartości** tych
+narzędzi i błędne co do **adresata interfejsu**.
+
+Użytkownik edytora nie wie, czym jest tombstone ani version vector, i nie ma obowiązku
+wiedzieć. Suwak „utrata pakietów" nad dokumentem nie sprawia, że produkt wygląda na
+przemyślany — sprawia, że wygląda na stanowisko laboratoryjne. Pomyliłem dwie rzeczy:
+to, co warto **pokazać recenzentowi repozytorium**, z tym, co ma zobaczyć **użytkownik
+otwierający edytor**. To pierwsze należy do README, ADR-ów i testów. To drugie ma wyglądać
+na skończony produkt.
+
+### Co zamiast tego
+
+| Element | Było | Jest |
+|---|---|---|
+| Toolbar | suwaki opóźnienia, jitteru, straty, „Odetnij sieć" | cofnij / ponów — jedyne dwie akcje, które faktycznie są |
+| Panel prawy | zakładki „Repliki" i „Historia" | historia zmian, bez zakładek |
+| Pasek górny | stan połączenia w języku protokołu | tytuł dokumentu, „Zapisano" / „Praca offline", awatary, „Udostępnij" |
+| Pasek stanu | znaki, bloki, tombstone'y, bufor | liczba słów i znaków, ile osób online |
+
+Diagnostyka **nie zniknęła** — jest pod `?debug=1`, poza zasięgiem przypadkowego
+użytkownika, i nadal napędza testy chaosu.
+
+### Skutki uboczne, które okazały się poprawkami
+
+Rewizja wymusiła dwie zmiany, które trzeba było zrobić niezależnie:
+
+1. **Cofanie musiało zacząć działać.** Wcześniej `history()` CodeMirrora było wyłączone
+   (słusznie — cofałoby cudze zmiany), ale nic go nie zastąpiło. Ctrl+Z nie robił nic,
+   co w edytorze tekstu jest brakiem widocznym w pierwszej minucie użycia. Powstał
+   `UndoManager` cofający **wyłącznie własne operacje**, ze scalaniem ciągłego pisania
+   w jeden krok — bez tego Ctrl+Z zdejmowałby po jednej literze.
+
+2. **Demo przestało polegać na symulatorze.** Scenariusz offline odcina teraz sieć
+   **naprawdę** (`context.setOffline`), a nie wstrzymuje wysyłkę w aplikacji. Test stał się
+   przez to mocniejszy: obejmuje zerwanie WebSocketa, ponowne połączenie i resynchronizację,
+   czyli pełną ścieżkę użytkownika z padniętym wi-fi. Przy okazji wyszło, że interfejs
+   pokazywał „Zapisano" jeszcze kilkanaście sekund po utracie łączności — do czasu wygaśnięcia
+   heartbeatu. Dodany nasłuch zdarzeń `online`/`offline` przeglądarki naprawia to natychmiast.

@@ -87,7 +87,7 @@ nigdy nie jest pusta, oraz — tam, gdzie czegoś jeszcze nie wiem — jawne
 | [0004](docs/adr/0004-skalowanie-poziome.md) | Instancja backendu jako replika CRDT + anti-entropy |
 | [0005](docs/adr/0005-tombstone-gc.md) | GC tombstone'ów przez stabilność przyczynową |
 | [0006](docs/adr/0006-warstwa-edytora.md) | CodeMirror 6 jako widok; model dokumentu własny |
-| [0007](docs/adr/0007-zakres-ui.md) | Język wizualny mockupu przyjęty, jego zakres funkcjonalny odrzucony |
+| [0007](docs/adr/0007-zakres-ui.md) | Język wizualny mockupu przyjęty; diagnostyka usunięta z interfejsu użytkownika (decyzja zrewidowana) |
 
 Diagramy (architektura, droga pojedynczej edycji, stany połączenia):
 [`docs/architektura.md`](docs/architektura.md).
@@ -307,12 +307,16 @@ i okazały się gorsze, niż zakładałem.
   w ciemno. Port jest mechaniczny.
 
 **Zakres produktu**
+- **Diagnostyka jest pod `?debug=1`.** Symulator sieci i podgląd stanu CRDT były przez
+  pewien czas widoczne w interfejsie; to była pomyłka co do adresata
+  ([ADR-0007](docs/adr/0007-zakres-ui.md), sekcja o rewizji). Użytkownik ma widzieć produkt,
+  nie stanowisko pomiarowe.
 - **Brak formatowania tekstu.** Rich text w CRDT to inny algorytm (Peritext), nie dodatek —
   markery muszą przetrwać współbieżne wstawienia w środek zakresu. Świadomie poza zakresem
   ([ADR-0007](docs/adr/0007-zakres-ui.md)).
 - **Brak komentarzy i uprawnień.** Jw.
-- **Cofanie zmian nie jest świadome CRDT.** Historia CodeMirrora jest wyłączona, ale własne
-  undo na operacjach CRDT (cofające tylko własne zmiany) nie powstało.
+- **Cofanie działa tylko w obrębie sesji.** `UndoManager` cofa własne operacje i scala
+  ciągłe pisanie w jeden krok, ale stos żyje w pamięci karty i znika po przeładowaniu.
 
 **Infrastruktura i eksploatacja**
 - **Uwierzytelnianie bez hasła**, token podpisany HMAC, bez unieważniania i rotacji klucza.

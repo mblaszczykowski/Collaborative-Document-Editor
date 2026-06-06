@@ -34,22 +34,37 @@ class CaretWidget extends WidgetType {
   private readonly name: string
   private readonly color: string
   private readonly typing: boolean
+  private readonly position: number
 
-  constructor(name: string, color: string, typing: boolean) {
+  constructor(name: string, color: string, typing: boolean, position: number) {
     super()
     this.name = name
     this.color = color
     this.typing = typing
+    this.position = position
   }
 
+  /**
+   * Pozycja JEST częścią tożsamości widgetu.
+   *
+   * Gdyby jej tu nie było, CodeMirror uznałby przesunięty kursor za ten sam widget
+   * i użył ponownie tego samego węzła DOM — a wtedy animacja pojawienia się imienia
+   * nie zaczęłaby się od nowa i chorągiewka nie pokazywałaby się przy ruchu kursora.
+   */
   eq(other: CaretWidget): boolean {
-    return other.name === this.name && other.color === this.color && other.typing === this.typing
+    return (
+      other.name === this.name &&
+      other.color === this.color &&
+      other.typing === this.typing &&
+      other.position === this.position
+    )
   }
 
   toDOM(): HTMLElement {
     const caret = document.createElement('span')
     caret.className = 'remote-caret'
-    caret.style.color = this.color
+    // Własność niestandardowa, nie `color` — patrz komentarz przy .remote-caret w styles.css.
+    caret.style.setProperty('--caret', this.color)
     const flag = document.createElement('span')
     flag.className = 'remote-caret-flag'
     flag.textContent = this.typing ? `${this.name} …` : this.name
@@ -83,7 +98,7 @@ function buildDecorations(cursors: RemoteCursor[], documentLength: number): Deco
 
     decorations.push(
       Decoration.widget({
-        widget: new CaretWidget(cursor.displayName, cursor.color, cursor.typing),
+        widget: new CaretWidget(cursor.displayName, cursor.color, cursor.typing, cursor.head),
         // side: 1 stawia widget PO pozycji, dzięki czemu kursor własny użytkownika
         // i cudzy w tym samym miejscu nie nachodzą na siebie wizualnie.
         side: 1,

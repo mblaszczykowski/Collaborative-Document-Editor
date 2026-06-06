@@ -70,35 +70,50 @@ button { font-family: inherit; cursor: pointer; }
 }
 .avatar:first-child { margin-left: 0; }
 
-.conn-state {
+.menu-divider { width: 1px; height: 16px; background: var(--chrome-line); }
+.doc-title { font-size: 12.5px; color: var(--text-dim); }
+
+/* Wskaźnik zapisu — język produktu, nie protokołu. */
+.save-state {
   display: flex; align-items: center; gap: 5px;
-  font-size: 11.5px; color: var(--text-faint);
-  font-family: var(--mono);
+  font-size: 11.5px; color: var(--text-faint); white-space: nowrap;
 }
-.conn-dot { width: 7px; height: 7px; border-radius: 50%; }
-.conn-online .conn-dot { background: var(--ok); }
-.conn-resyncing .conn-dot { background: var(--warn); }
-.conn-offline .conn-dot, .conn-connecting .conn-dot { background: var(--bad); }
+.save-state svg { width: 11px; height: 11px; }
+.save-state.saved { color: var(--ok); }
+.save-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.save-state.offline { color: var(--bad); }
+.save-state.pending { color: var(--warn); }
 
-/* ===== TOOLBAR — symulator sieci zamiast formatowania (ADR-0007) ===== */
-.toolbar {
-  height: 38px; flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+.loading { padding: 24px; color: var(--text-faint); }
+
+/* ===== TOOLBAR — wyłącznie cofnij/ponów. Oba działają; nic tu nie jest atrapą. ===== */
+.editor-toolbar {
+  height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 2px;
   padding: 0 10px; background: var(--chrome); border-bottom: 1px solid var(--chrome-line);
-  overflow-x: auto;
 }
-.tb-sep { width: 1px; height: 20px; background: var(--chrome-line); margin: 0 4px; flex-shrink: 0; }
-.tb-btn {
-  height: 26px; padding: 0 9px; border-radius: 4px; border: 1px solid transparent;
-  background: transparent; color: var(--text); font-size: 12px; white-space: nowrap;
+.tb-icon {
+  width: 28px; height: 26px; border: none; border-radius: 4px; background: transparent;
+  color: #3d3d3d; display: flex; align-items: center; justify-content: center;
 }
-.tb-btn:hover:not(:disabled) { background: var(--hover); }
-.tb-btn:disabled { color: var(--text-faint); cursor: default; }
-.tb-btn.danger { color: var(--bad); border-color: #e0c4b8; }
-.tb-btn.danger.on { background: var(--bad); color: #fff; border-color: var(--bad); }
+.tb-icon svg { width: 15px; height: 15px; }
+.tb-icon:hover { background: var(--hover); }
 
-.tb-slider { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim); }
-.tb-slider input { width: 84px; }
-.tb-slider .value { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); min-width: 44px; }
+/* ===== PASEK DIAGNOSTYCZNY — tylko przy ?debug=1 ===== */
+.diagnostics {
+  height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+  padding: 0 10px; background: #2a2a2a; color: #d8d8d8;
+  font-family: var(--mono); font-size: 11px;
+}
+.diag-label { font-weight: 500; letter-spacing: 0.06em; color: #8a8a8a; }
+.diag-slider { display: flex; align-items: center; gap: 6px; }
+.diag-slider input { width: 80px; }
+.diag-slider .value { color: #8a8a8a; min-width: 42px; }
+.diag-btn {
+  height: 22px; padding: 0 10px; border-radius: 4px;
+  border: 1px solid #5a5a5a; background: transparent; color: #d8d8d8; font-size: 11px;
+}
+.diag-btn.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+.diag-stats { margin-left: auto; color: #8a8a8a; }
 
 /* ===== UKŁAD ===== */
 .body-row { flex: 1; display: flex; min-height: 0; }
@@ -121,6 +136,7 @@ button { font-family: inherit; cursor: pointer; }
 .sb-item.active::before {
   content: ''; position: absolute; left: -8px; top: 3px; bottom: 3px; width: 2px; background: var(--text);
 }
+.sb-new { color: var(--text-faint); margin-top: 4px; }
 
 /* ===== KANWA ===== */
 .canvas-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -138,18 +154,48 @@ button { font-family: inherit; cursor: pointer; }
 .editor-host .cm-line { padding: 0; }
 .editor-host .cm-cursor { border-left-color: var(--text); }
 
-/* Kursor innego użytkownika — wygląd z mockupu (.cursor-caret) */
+/*
+  Kursor innego użytkownika — wygląd z mockupu (.cursor-caret).
+
+  Kolor jedzie WŁASNOŚCIĄ NIESTANDARDOWĄ `--caret`, a nie przez `currentColor`.
+  Pierwsza wersja ustawiała na chorągiewce jednocześnie `color: #fff` (tekst) i
+  `background: currentColor` (tło) — a `currentColor` rozwija się do wartości `color`
+  TEGO SAMEGO elementu, więc tło wychodziło białe. Na ciemnym tle byłoby to widać od razu;
+  na białej kartce chorągiewki zamieniały się w niewidoczne prostokąty i błąd przetrwał
+  aż do obejrzenia nagrania.
+*/
 .remote-caret {
-  position: relative; display: inline-block; width: 2px; height: 1em;
-  background: currentColor; vertical-align: -0.15em; margin: 0 -1px;
+  position: relative; display: inline-block; width: 2px; height: 1.15em;
+  background: var(--caret); vertical-align: -0.2em; margin: 0 -1px;
   animation: caret-blink 1.1s steps(1) infinite;
 }
-@keyframes caret-blink { 50% { opacity: 0.25; } }
+@keyframes caret-blink { 50% { opacity: 0.3; } }
+/*
+  Imię pojawia się na chwilę po ruchu kursora i gaśnie — tak jak w Google Docs.
+
+  Chorągiewka wisząca na stałe zasłania tekst LINIJKĘ WYŻEJ: przy interlinii 1,85
+  odstęp między wierszami ma kilka pikseli, a etykieta siedemnaście, więc nie ma jej
+  gdzie zmieścić. Zamiast walczyć z układem, pokazujemy imię wtedy, gdy jest potrzebne
+  (ktoś właśnie się przesunął lub pisze), a poza tym zostaje sama kolorowa kreska.
+  Najechanie myszą przywraca etykietę na żądanie.
+*/
 .remote-caret-flag {
-  position: absolute; bottom: 100%; left: 0; margin-bottom: 2px;
-  font-family: var(--sans); font-size: 9.5px; font-weight: 600; line-height: 1;
-  color: #fff; background: currentColor; padding: 2px 6px 2.5px;
+  position: absolute; bottom: 100%; left: -1px; margin-bottom: 3px;
+  font-family: var(--sans); font-size: 10px; font-weight: 600; line-height: 1;
+  letter-spacing: 0.01em;
+  color: #fff; background: var(--caret); padding: 3px 6px 3.5px;
   border-radius: 3px 3px 3px 0; white-space: nowrap; z-index: 5;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  animation: flag-reveal 2.6s ease-out forwards;
+}
+@keyframes flag-reveal {
+  0%, 70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.remote-caret:hover .remote-caret-flag {
+  animation: none;
+  opacity: 1;
 }
 
 /* ===== PASEK STANU ===== */
@@ -162,17 +208,16 @@ button { font-family: inherit; cursor: pointer; }
 .statusbar-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
 .statusbar .metric { font-family: var(--mono); }
 
-/* ===== PANEL PRAWY — podgląd replik CRDT (ADR-0007) ===== */
+/* ===== PANEL PRAWY — historia zmian ===== */
 .rightpanel {
   width: 280px; flex-shrink: 0; background: var(--chrome);
   border-left: 1px solid var(--chrome-line); display: flex; flex-direction: column; min-height: 0;
 }
-.rp-tabs { display: flex; border-bottom: 1px solid var(--chrome-line); flex-shrink: 0; }
-.rp-tab {
-  padding: 9px 14px; font-size: 12px; color: var(--text-faint);
-  border: none; border-bottom: 2px solid transparent; background: transparent;
+.rp-header {
+  padding: 11px 14px; font-size: 12px; font-weight: 600; color: var(--text);
+  border-bottom: 1px solid var(--chrome-line); flex-shrink: 0;
 }
-.rp-tab.active { color: var(--text); font-weight: 600; border-bottom-color: var(--text); }
+.rp-empty { font-size: 12px; color: var(--text-faint); }
 .rp-body { flex: 1; overflow-y: auto; padding: 12px; }
 
 .rp-hint {
@@ -198,7 +243,11 @@ button { font-family: inherit; cursor: pointer; }
   background: var(--page); padding: 32px; border-radius: 8px; width: 320px;
   box-shadow: 0 0 0 1px var(--page-line), 0 4px 16px rgba(0, 0, 0, 0.08);
 }
-.login-card h1 { font-family: var(--serif); font-size: 22px; margin: 0 0 4px; }
+.login-brand {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 17px; font-weight: 600; margin-bottom: 6px;
+}
+.login-brand .brand-mark { width: 17px; height: 17px; }
 .login-card p { font-size: 12px; color: var(--text-faint); margin: 0 0 20px; line-height: 1.5; }
 .login-card input {
   width: 100%; padding: 8px 10px; border: 1px solid var(--chrome-line);

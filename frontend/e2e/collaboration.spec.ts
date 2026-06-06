@@ -34,7 +34,7 @@ async function joinAs(browser: Browser, name: string, documentId: string): Promi
   const page = await context.newPage()
   await page.goto(`${APP}/?doc=${documentId}`)
   await page.getByPlaceholder('Twoje imię').fill(name)
-  await page.getByRole('button', { name: 'Wejdź' }).click()
+  await page.getByRole('button', { name: 'Rozpocznij' }).click()
   await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
   return page
 }
@@ -67,7 +67,10 @@ async function documentText(page: Page): Promise<string> {
  * a modele już nie.
  */
 async function crdtCharacters(page: Page): Promise<string> {
-  return (await page.locator('.statusbar .metric').first().innerText()).trim()
+  // `data-testid`, nie klasa CSS: licznik jest odczytem ze stanu CRDT, więc test ma się
+  // trzymać jego tożsamości, a nie stylowania — inaczej każda zmiana wyglądu paska stanu
+  // psuje testy z powodów niemających nic wspólnego z zachowaniem.
+  return (await page.getByTestId('char-count').innerText()).trim()
 }
 
 test('dwie osoby piszą jednocześnie i widzą ten sam tekst', async ({ browser, request }) => {
@@ -127,8 +130,10 @@ test('odcięcie sieci nie blokuje pisania, a po powrocie zmiany się scalają', 
   await typeInto(anna, 'baza. ')
   await expect(marek.locator('.cm-content')).toContainText('baza.', { timeout: 10_000 })
 
-  // Marek odcina sobie sieć symulatorem i pisze dalej — lokalnie ma działać normalnie.
-  await marek.getByRole('button', { name: 'Odetnij sieć' }).click()
+  // PRAWDZIWE odcięcie sieci przeglądarce — zrywa też WebSocket, więc test obejmuje
+  // ponowne połączenie i resynchronizację, a nie tylko wstrzymanie wysyłki.
+  await marek.context().setOffline(true)
+  await expect(marek.locator('.save-state.offline')).toBeVisible({ timeout: 20_000 })
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('End')
   await marek.keyboard.type('offline', { delay: 25 })
@@ -143,10 +148,10 @@ test('odcięcie sieci nie blokuje pisania, a po powrocie zmiany się scalają', 
   await anna.keyboard.press('End')
   await anna.keyboard.type('online', { delay: 25 })
 
-  await marek.getByRole('button', { name: 'Przywróć łączność' }).click()
+  await marek.context().setOffline(false)
 
-  await expect(anna.locator('.cm-content')).toContainText('offline', { timeout: 15_000 })
-  await expect(marek.locator('.cm-content')).toContainText('online', { timeout: 15_000 })
+  await expect(anna.locator('.cm-content')).toContainText('offline', { timeout: 30_000 })
+  await expect(marek.locator('.cm-content')).toContainText('online', { timeout: 30_000 })
 
   expect(await documentText(anna)).toBe(await documentText(marek))
   expect(await crdtCharacters(anna)).toBe(await crdtCharacters(marek))
@@ -167,18 +172,17 @@ test('historia pozwala cofnąć dokument do wcześniejszej wersji', async ({ bro
   await typeInto(anna, 'wersja dobra')
   // Odczekanie na potwierdzenie zapisu: historia czyta log operacji, więc wpis pojawi się
   // dopiero po zapisie, a nie po samym rozgłoszeniu (ADR-0003).
-  await expect(anna.locator('.statusbar .metric').first()).toContainText('12 znaków')
+  await expect(anna.getByTestId('char-count')).toContainText('12 znaków')
   await marek.waitForTimeout(500)
 
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('End')
   await marek.keyboard.type(' ZEPSUTA', { delay: 25 })
-  await expect(anna.locator('.statusbar .metric').first()).toContainText('20 znaków')
+  await expect(anna.getByTestId('char-count')).toContainText('20 znaków')
   await anna.waitForTimeout(500)
 
-  // Selektor zawężony do zakładki: dokumenty w panelu bocznym też nazywają się „Historia",
-  // bo tworzy je ten test.
-  await anna.locator('.rp-tab', { hasText: 'Historia' }).click()
+  // Historia jest widoczna od razu — panel boczny nie ma zakładek, bo nie ma już czego
+  // przełączać: podgląd stanu CRDT zniknął z interfejsu użytkownika.
   const entries = anna.locator('.history-entry')
   await expect(entries.first()).toBeVisible({ timeout: 10_000 })
 
@@ -215,8 +219,12 @@ test('operacje przeżywają przeładowanie strony i docierają po powrocie', asy
   await typeInto(anna, 'poczatek ')
   await expect(marek.locator('.cm-content')).toContainText('poczatek', { timeout: 10_000 })
 
-  // Marek odcina sieć i pisze — operacje trafiają do bufora, ale nie do serwera.
-  await marek.getByRole('button', { name: 'Odetnij sieć' }).click()
+  // PRAWDZIWE odcięcie sieci przeglądarce, nie symulator w aplikacji.
+  // Symulator wstrzymywał tylko wysyłkę operacji; `setOffline` zrywa też połączenie
+  // WebSocket, więc test obejmuje pełną ścieżkę: utrata łączności → praca lokalna →
+  // ponowne połączenie → resynchronizacja. To jest ta sama droga, którą przechodzi
+  // użytkownik z padniętym wi-fi.
+  await marek.context().setOffline(true)
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('Control+End')
   await marek.keyboard.type('zbuforowane', { delay: 25 })
@@ -224,6 +232,7 @@ test('operacje przeżywają przeładowanie strony i docierają po powrocie', asy
 
   // ...i ZAMYKA KARTĘ przeładowaniem. Bufor w pamięci przepadłby w tym momencie razem
   // z całym stanem strony — dlatego niepotwierdzone operacje są też w IndexedDB.
+  await marek.context().setOffline(false)
   await marek.reload()
   await expect(marek.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
 
@@ -231,6 +240,41 @@ test('operacje przeżywają przeładowanie strony i docierają po powrocie', asy
   // dolatują do serwera i stamtąd do Anny — mimo że powstały w innej sesji przeglądarki.
   await expect(anna.locator('.cm-content')).toContainText('zbuforowane', { timeout: 20_000 })
   expect(await documentText(marek)).toBe(await documentText(anna))
+
+  await anna.context().close()
+  await marek.context().close()
+})
+
+
+test('cofnięcie zdejmuje własną zmianę, ale nie cudzą', async ({ browser, request }) => {
+  const documentId = await freshDocument(request, 'Cofanie')
+  const anna = await joinAs(browser, 'Anna', documentId)
+  const marek = await joinAs(browser, 'Marek', documentId)
+
+  await typeInto(anna, 'zdanie Anny. ')
+  await expect(marek.locator('.cm-content')).toContainText('Anny', { timeout: 10_000 })
+
+  await marek.locator('.cm-content').click()
+  await marek.keyboard.press('ControlOrMeta+a')
+  await marek.keyboard.press('ArrowRight')
+  await marek.keyboard.type('zdanie Marka.', { delay: 25 })
+  await expect(anna.locator('.cm-content')).toContainText('Marka', { timeout: 10_000 })
+
+  // Anna cofa. Zdejmuje SWOJE zdanie, a zdanie Marka musi zostać nietknięte —
+  // undo na tekście (historia CodeMirrora) zdjęłoby oba i skasowało cudzą pracę.
+  await anna.locator('.cm-content').click()
+  await anna.keyboard.press('ControlOrMeta+z')
+
+  await expect(anna.locator('.cm-content')).not.toContainText('Anny', { timeout: 10_000 })
+  await expect(anna.locator('.cm-content')).toContainText('Marka')
+
+  // Cofnięcie jest zwykłą operacją, więc dociera też do drugiej przeglądarki.
+  await expect(marek.locator('.cm-content')).not.toContainText('Anny', { timeout: 10_000 })
+  expect(await documentText(marek)).toBe(await documentText(anna))
+
+  // Ponowienie przywraca zdjęty tekst.
+  await anna.keyboard.press('ControlOrMeta+Shift+z')
+  await expect(anna.locator('.cm-content')).toContainText('Anny', { timeout: 10_000 })
 
   await anna.context().close()
   await marek.context().close()

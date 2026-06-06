@@ -32,6 +32,11 @@ import org.springframework.stereotype.Component;
  *       <td>Jak często Redis gubi wiadomości. Wartość zero przez długi czas znaczy,
  *           że mechanizm naprawczy z ADR-0004 nie jest testowany w praktyce —
  *           czyli że nie wiadomo, czy działa.</td></tr>
+ *   <tr><td>{@code ws_sessions_closed_total{reason}}</td>
+ *       <td>Dlaczego kończą się sesje. Wartość {@code slow_client_buffer_overflow} rosnąca
+ *           wraz z liczbą klientów jest wprost odpowiedzią na otwarte pytanie z README
+ *           („Punkt degradacji"): klient nie nadąża z odbiorem, serwer zrywa mu sesję,
+ *           a on wraca reconnectem — więc z zewnątrz nie widać nic poza rozjazdem.</td></tr>
  *   <tr><td>{@code crdt_pending_operations}</td>
  *       <td>Ile operacji czeka na swoją przyczynę. Wartość utrzymująca się powyżej zera
  *           oznacza trwale brakującą operację, czyli uszkodzenie — a nie przejściowy
@@ -47,6 +52,9 @@ import org.springframework.stereotype.Component;
 @Component
 public class DocumentMetrics {
 
+    /** Trzymany, bo liczniki z tagiem powstają na żądanie — patrz {@link #recordSessionClose}. */
+    private final MeterRegistry registry;
+
     private final Timer mergeDuration;
     private final Timer serverLatency;
     private final Timer persistDuration;
@@ -59,6 +67,7 @@ public class DocumentMetrics {
     private final AtomicInteger activeSessions = new AtomicInteger();
 
     public DocumentMetrics(MeterRegistry registry, DocumentRegistry documents) {
+        this.registry = registry;
         this.mergeDuration = Timer.builder("crdt.merge.duration")
             .description("Czas scalenia jednej operacji do repliki w pamięci")
             // Percentyle liczone po stronie aplikacji, a nie z histogramu w Prometheusie.
@@ -177,5 +186,22 @@ public class DocumentMetrics {
 
     public void sessionClosed() {
         activeSessions.decrementAndGet();
+    }
+
+    /**
+     * Odnotowuje POWÓD zamknięcia sesji. Nie rusza licznika aktywnych sesji — ten schodzi
+     * w {@link #sessionClosed()}, wołanym ze ścieżki presence. Dwa zdarzenia opisują to samo
+     * rozłączenie i zdublowane odejmowanie zjechałoby z licznikiem poniżej zera.
+     *
+     * <p>Licznik jest tworzony na żądanie, bo tag {@code reason} jest częścią jego tożsamości.
+     * Micrometer zwraca ten sam obiekt dla tej samej pary nazwa+tagi, więc nie powstaje
+     * nowy licznik na każde rozłączenie.
+     */
+    public void recordSessionClose(String reason) {
+        Counter.builder("ws.sessions.closed.total")
+            .description("Zakończone sesje WebSocket wg powodu zamknięcia")
+            .tag("reason", reason)
+            .register(registry)
+            .increment();
     }
 }

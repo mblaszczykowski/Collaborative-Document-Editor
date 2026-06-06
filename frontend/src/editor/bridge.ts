@@ -1,5 +1,6 @@
 import type { ChangeSet, Text } from '@codemirror/state'
 import type { RgaDocument } from '../crdt/document'
+import type { UndoManager } from '../crdt/undo'
 import type { Op } from '../crdt/types'
 
 /**
@@ -20,7 +21,11 @@ import type { Op } from '../crdt/types'
  * który przy pojedynczej zmianie (czyli przy zwykłym pisaniu) w ogóle się nie ujawnia
  * i wychodzi dopiero przy wklejeniu z wielokrotnym zaznaczeniem albo przy „zamień wszystko".
  */
-export function changesToOps(document: RgaDocument, changes: ChangeSet): Op[] {
+export function changesToOps(
+  document: RgaDocument,
+  changes: ChangeSet,
+  undo?: UndoManager,
+): Op[] {
   const collected: { fromA: number; toA: number; inserted: string }[] = []
   changes.iterChanges((fromA, toA, _fromB, _toB, inserted: Text) => {
     collected.push({ fromA, toA, inserted: inserted.toString() })
@@ -29,11 +34,20 @@ export function changesToOps(document: RgaDocument, changes: ChangeSet): Op[] {
   const ops: Op[] = []
   for (let i = collected.length - 1; i >= 0; i--) {
     const change = collected[i]
+
     if (change.toA > change.fromA) {
+      // Tekst i kotwicę trzeba odczytać PRZED usunięciem — potem jednego nie ma,
+      // a drugie ma inną pozycję.
+      const removed = document.text.slice(change.fromA, change.toA)
+      const anchor = change.fromA > 0 ? document.idAtVisible(change.fromA - 1) : null
       ops.push(document.delete(change.fromA, change.toA - change.fromA))
+      undo?.recordDelete(anchor, removed)
     }
+
     if (change.inserted.length > 0) {
-      ops.push(document.insert(change.fromA, change.inserted))
+      const op = document.insert(change.fromA, change.inserted)
+      ops.push(op)
+      undo?.recordInsert(op.id, change.inserted.length)
     }
   }
   return ops
