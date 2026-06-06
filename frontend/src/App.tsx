@@ -251,6 +251,7 @@ function DocumentWorkspace(props: {
       const link = new DocumentConnection(documentId, session.token, 0, {
         onSession: (replicaId) => model.adoptReplicaId(replicaId),
         versionVector: () => model.version,
+        hasOperation: (replicaId, lamport) => model.contains({ replicaId, lamport }),
         onRemoteOps: (ops) => {
           model.applyAll(ops)
           applyRemote.current()

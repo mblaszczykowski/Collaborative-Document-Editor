@@ -168,16 +168,87 @@ ujawniła realną dziurę w zestawie](docs/crdt-design.md#czego-to-nauczyło-o-t
 
 ---
 
-## Wydajność ⏳ *(CP8)*
+## Wydajność
 
-Sekcja zostanie wypełniona liczbami z metodologią pomiaru i specyfikacją maszyny:
-throughput, latencja propagacji p50/p95/p99 w funkcji liczby użytkowników, punkt degradacji
-przy rosnącym rozmiarze dokumentu, narzut pamięciowy tombstone'ów przed i po GC.
+Wszystkie liczby pochodzą z jednej maszyny: **MacBook, Apple Silicon (aarch64), 10 rdzeni,
+JDK 25-ea, 4 GB sterty JVM**, Postgres i Redis w kontenerach na tej samej maszynie.
+Liczba bez maszyny jest bezużyteczna, więc podaję ją przy każdej tabeli.
 
-Uwaga metodologiczna, którą warto zapisać zawczasu: **„latencja propagacji" to dwie różne
-liczby** — czas serwerowy (przyjęcie → rozesłanie, jeden zegar) i czas end-to-end (klient →
-klient, dwa zegary). Ta druga jest mierzona wyłącznie w harnessie benchmarkowym, gdzie
-nadawca i odbiorca dzielą jeden zegar monotoniczny. Nie będą tu mieszane.
+### Struktura indeksująca: O(n) kontra O(log n)
+
+Benchmark JMH (`./mvnw -pl crdt-core exec:exec@run-benchmarks`), średni czas operacji
+w mikrosekundach, 3 iteracje rozgrzewki + 5 pomiarowych po 2 s.
+
+| Operacja | Dokument | `ArrayBlockList` | `TreapBlockList` | Różnica |
+|---|---:|---:|---:|---:|
+| Pozycja w tekście → identyfikator | 1 000 | 0,367 µs | 0,065 µs | 5,6× |
+| | 10 000 | 5,510 µs | 0,149 µs | 37× |
+| | 100 000 | **60,2 µs** | **0,286 µs** | **210×** |
+| Identyfikator → pozycja | 1 000 | 0,187 µs | 0,068 µs | 2,7× |
+| | 10 000 | 2,863 µs | 0,122 µs | 23× |
+| | 100 000 | **40,3 µs** | **0,210 µs** | **192×** |
+| Pełne wstawienie | 100 000 | 684 µs | 4,66 µs | 147× |
+| Odczyt całego tekstu | 100 000 | 310 µs | 429 µs | **0,72× (treap WOLNIEJSZY)** |
+
+Kształt jest ważniejszy od pojedynczych liczb. Przy dziesięciokrotnym wzroście dokumentu
+wyszukiwanie w wersji naiwnej rośnie **15× i 11×** (liniowo), a w treapie **2,3× i 1,9×**
+(logarytmicznie). To jest dokładnie ta różnica, dla której warto było napisać drugą
+implementację — i którą widać dopiero po zmierzeniu, a nie po przeczytaniu złożoności.
+
+**Odczyt całego tekstu jest w treapie wolniejszy o 40%** i nie jest to błąd pomiaru:
+przejście drzewa ma gorszą lokalność pamięci niż iteracja po tablicy. Ta operacja wykonuje
+się raz przy otwarciu dokumentu, a wyszukiwanie — na każde naciśnięcie klawisza, więc
+kompromis jest oczywisty. Ale jest to kompromis, a nie darmowa poprawa, i zamiatanie
+go pod dywan byłoby nieuczciwe wobec liczb.
+
+### Propagacja zmian między klientami
+
+Harness własny, nie Gatling — uzasadnienie w `LoadHarnessIT`: interesująca wielkość to
+odstęp między zdarzeniami u **dwóch różnych klientów**, więc oba końce muszą dzielić jeden
+zegar. Klienci i serwer działają w jednym procesie, latencja sieci ≈ 0; liczby opisują
+koszt systemu, nie doświadczenie użytkownika przez internet.
+
+Każdy klient wykonuje 40 wstawień **na początek dokumentu** (nie na koniec — pisanie ciągiem
+kompresuje się do jednego bloku i omija ścieżkę, która faktycznie skaluje się z rozmiarem).
+
+| Dokument | Klienci | p50 | p95 | p99 | Zbieżność |
+|---:|---:|---:|---:|---:|---|
+| pusty | 2 | 22 ms | 30 ms | 31 ms | 52 ms |
+| pusty | 10 | 112 ms | 145 ms | 151 ms | 162 ms |
+| 10 000 znaków | 2 | 8,6 ms | 8,7 ms | 8,8 ms | 59 ms |
+| 10 000 znaków | 10 | 26 ms | 39 ms | 41 ms | 61 ms |
+| 10 000 znaków | 25 | 191 ms | 281 ms | 286 ms | 290 ms |
+| 100 000 znaków | 2 | 3,0 ms | 3,4 ms | 3,4 ms | 59 ms |
+| 100 000 znaków | 10 | 29 ms | 55 ms | 56 ms | 103 ms |
+| 100 000 znaków | 50 | 553 ms | 811 ms | 834 ms | 871 ms |
+
+**Rozmiar dokumentu praktycznie nie wpływa na latencję** — 100 tys. znaków wypada nie gorzej
+niż dokument pusty. To potwierdza, że po wymianie indeksu na treap wąskim gardłem przestała
+być struktura danych.
+
+### Punkt degradacji — i czego o nim NIE wiem
+
+**Powyżej ~10 jednoczesnych klientów w jednym dokumencie zbieżność przestaje być
+powtarzalna.** W kolejnych przebiegach te same scenariusze przy 25 i 50 klientach raz się
+zbiegają, raz nie — a przy braku zbieżności część klientów zostaje trwale kilka operacji
+poniżej stanu serwera.
+
+Co wiem na pewno:
+- **Serwer ma zawsze komplet operacji.** Nic nie ginie w zapisie — log jest kompletny
+  w każdym przebiegu. To nie jest utrata danych.
+- Gubi się **dostawa** do części klientów. Statystyki WebSocketa pokazują błędy transportu.
+- Dwa błędy wykryte po drodze zostały naprawione i wyraźnie poprawiły sytuację:
+  odpowiedź na resynchronizację przekraczająca limit rozmiaru ramki
+  ([ADR-0002](docs/adr/0002-transport.md)) oraz brak wykrywania luk po stronie klienta.
+
+Czego **nie** rozstrzygnąłem: czy pozostała niestabilność leży po stronie systemu, czy
+stanowiska pomiarowego. Przy 50 klientach w jednym procesie razem z serwerem, Postgresem
+i Redisem na dziesięciu rdzeniach harness sam jest poważnym konsumentem procesora, a każdy
+klient wykonuje pełną pracę CRDT. Rozstrzygnięcie wymaga rozdzielenia klientów i serwera
+na osobne maszyny — czego nie zrobiłem.
+
+Zapisuję to jako **otwarte pytanie, nie jako wynik**. Tabela z samymi zielonymi znaczkami
+byłaby tu łatwiejsza do napisania i mniej prawdziwa.
 
 ---
 

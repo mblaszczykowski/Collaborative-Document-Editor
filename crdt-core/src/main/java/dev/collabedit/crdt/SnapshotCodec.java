@@ -46,6 +46,30 @@ public final class SnapshotCodec {
     private SnapshotCodec() {
     }
 
+    /**
+     * Zapis tekstu bloku jako długość + bajty UTF-8.
+     *
+     * <p>NIE {@code writeUTF}: ta metoda koduje długość na dwóch bajtach i wywala się przy
+     * tekście dłuższym niż 64 KB, komunikatem „encoded string too long". Blok run-length
+     * po scaleniu ciągłego pisania spokojnie przekracza ten rozmiar — wykryte przy pierwszym
+     * uruchomieniu harnessu obciążeniowego na dokumencie o 100 tys. znaków, gdzie snapshoty
+     * przestały się zapisywać, a jedynym objawem był wpis w logu.
+     *
+     * <p>Błąd był niewidoczny dla wszystkich wcześniejszych testów, bo żaden nie tworzył
+     * pojedynczego bloku większego niż kilkadziesiąt znaków.
+     */
+    private static void writeLongString(DataOutputStream out, String text) throws IOException {
+        byte[] bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
+        out.write(bytes);
+    }
+
+    private static String readLongString(DataInputStream in) throws IOException {
+        byte[] bytes = new byte[in.readInt()];
+        in.readFully(bytes);
+        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     public static byte[] encode(DocumentSnapshot snapshot) {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(new GZIPOutputStream(bytes))) {
@@ -69,7 +93,7 @@ public final class SnapshotCodec {
                     out.writeLong(block.originLeft().lamport());
                 }
                 out.writeBoolean(block.deleted());
-                out.writeUTF(block.text());
+                writeLongString(out, block.text());
             }
         } catch (IOException e) {
             throw new UncheckedIOException("nie da się zakodować snapshotu", e);
@@ -104,7 +128,7 @@ public final class SnapshotCodec {
                 Id start = new Id(in.readInt(), in.readLong());
                 Id originLeft = in.readBoolean() ? new Id(in.readInt(), in.readLong()) : null;
                 boolean deleted = in.readBoolean();
-                blocks.add(new Block(start, in.readUTF(), originLeft, deleted));
+                blocks.add(new Block(start, readLongString(in), originLeft, deleted));
             }
             return new DocumentSnapshot(formatVersion, clock, maxSeen, blocks);
         } catch (IOException | RuntimeException e) {

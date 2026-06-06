@@ -66,6 +66,33 @@
               testy: nie mają asercji, trwają minuty i nie mają się uruchamiać w CI przy
               każdym pushu. Surefire ich nie podnosi, bo nie pasują do wzorca *Test.
             -->
+            <!--
+              Procesor adnotacji JMH zadeklarowany JAWNIE.
+
+              Od JDK 23 javac nie uruchamia procesorów znalezionych na ścieżce klas bez
+              wyraźnego wskazania. Objaw jest mylący: kompilacja przechodzi, benchmarki się
+              budują, a dopiero uruchomienie kończy się „Unable to find the resource:
+              /META-INF/BenchmarkList" — czyli komunikatem, który nic nie mówi o przyczynie.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default-testCompile</id>
+                        <configuration>
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>org.openjdk.jmh</groupId>
+                                    <artifactId>jmh-generator-annprocess</artifactId>
+                                    <version>${jmh.version}</version>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>build-helper-maven-plugin</artifactId>
@@ -109,6 +136,14 @@
                                      obiektów potrzebuje chwili, zanim wynik przestaje dryfować. -->
                                 <argument>-wi</argument><argument>3</argument>
                                 <argument>-i</argument><argument>5</argument>
+                                <!-- 2 s na iterację zamiast domyślnych 10 s. Pełna macierz
+                                     to 24 kombinacje (2 implementacje × 3 rozmiary × 4 operacje);
+                                     przy domyślnych ustawieniach przebieg trwa pół godziny,
+                                     a przy tych ~7 minut przy tej samej stabilności wyniku —
+                                     mierzone operacje trwają mikrosekundy, więc 2 s to i tak
+                                     setki tysięcy powtórzeń. -->
+                                <argument>-r</argument><argument>2s</argument>
+                                <argument>-w</argument><argument>2s</argument>
                                 <argument>-f</argument><argument>1</argument>
                                 <argument>-tu</argument><argument>us</argument>
                                 <argument>-rf</argument><argument>json</argument>

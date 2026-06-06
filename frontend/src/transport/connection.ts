@@ -40,6 +40,8 @@ export interface PresenceEntry {
 export interface ConnectionHandlers {
   /** Identyfikator repliki nadany przez serwer — przychodzi zanim padnie pierwsza operacja. */
   onSession: (replicaId: number) => void
+  /** Czy replika ma już operację o podanym identyfikatorze — do wykrywania luk. */
+  hasOperation: (replicaId: number, lamport: number) => boolean
   onRemoteOps: (ops: Op[]) => void
   /** Aktualny version vector repliki — raportowany serwerowi na potrzeby GC (ADR-0005). */
   versionVector: () => Map<number, number>
@@ -57,6 +59,7 @@ export class DocumentConnection {
   private lastServerSeq = 0
   private state: ConnectionState = 'connecting'
   private reconnectAttempt = 0
+  private gapDetected = false
   private progressTimer: number | null = null
 
   readonly simulator = new NetworkSimulator((payload) => this.publishOp(payload as Op))
@@ -158,6 +161,16 @@ export class DocumentConnection {
 
   private reportProgress(): void {
     if (!this.client?.connected) return
+    if (this.gapDetected) {
+      this.gapDetected = false
+      // Prosimy od zera: duplikaty są nieszkodliwe (idempotencja z ADR-0001), a wyliczanie
+      // dokładnego punktu startu wymagałoby wiedzy, której właśnie nam brakuje.
+      this.setState('resyncing')
+      this.client.publish({
+        destination: `/app/doc/${this.documentId}/sync`,
+        body: JSON.stringify({ sinceServerSeq: 0, version: {} }),
+      })
+    }
     this.client.publish({
       destination: `/app/doc/${this.documentId}/progress`,
       body: JSON.stringify({
@@ -218,6 +231,21 @@ export class DocumentConnection {
   private onAcks(message: IMessage): void {
     const acks = JSON.parse(message.body) as { r: number; l: number; serverSeq: number }[]
     for (const ack of acks) {
+      // WYKRYWANIE LUK.
+      //
+      // Rozgłoszenie przez WebSocket potrafi zawieść przy błędzie transportu albo
+      // przepełnieniu bufora, a klient, który jest POŁĄCZONY, nie ma skąd o tym wiedzieć —
+      // resynchronizuje się tylko przy ponownym połączeniu, którego wtedy nie ma. Wykryte
+      // harnessem obciążeniowym: przy 25+ klientach serwer miał komplet operacji, a część
+      // klientów była trwale w tyle i nigdy nie nadrabiała.
+      //
+      // Potwierdzenie niesie TOŻSAMOŚĆ operacji, więc jej brak u nas jest jednoznacznym
+      // sygnałem, że rozgłoszenie do nas nie dotarło. Kursor `lastServerSeq` do niczego
+      // by się tu nie przydał — rośnie od potwierdzeń, więc byłby „na bieżąco" mimo luki.
+      if (!this.handlers.hasOperation(ack.r, ack.l)) {
+        this.gapDetected = true
+      }
+
       const key = `${ack.r}@${ack.l}`
       const acknowledged = this.unacknowledged.get(key)
       this.unacknowledged.delete(key)

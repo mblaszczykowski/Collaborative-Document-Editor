@@ -356,6 +356,16 @@ export class RgaDocument {
     return null
   }
 
+  /**
+   * Czy znak o podanym identyfikatorze jest w strukturze — również jako tombstone.
+   *
+   * Używane do wykrywania luk: potwierdzenie zapisu niesie tożsamość operacji, więc brak
+   * tej operacji u nas oznacza, że jej rozgłoszenie nie dotarło.
+   */
+  contains(target: Id): boolean {
+    return this.locateId(target) !== null
+  }
+
   /** Kopia bloków w kolejności dokumentu — do diagnostyki i porównań z wersją w Javie. */
   describeBlocks(): string[] {
     return this.blocks.map((block) => block.describe())

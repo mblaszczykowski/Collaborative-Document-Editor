@@ -96,9 +96,6 @@ public class DocumentStompController {
                               Messages.SyncRequest request,
                               SimpMessageHeaderAccessor headers) {
         List<StoredOperation> missing = documents.operationsSince(documentId, request.sinceServerSeq());
-        List<com.fasterxml.jackson.databind.JsonNode> encoded =
-            missing.stream().map(stored -> (com.fasterxml.jackson.databind.JsonNode)
-                OpCodec.toJson(stored.op())).toList();
 
         // Zgłoszony version vector klienta służy WYŁĄCZNIE do wyliczenia stabilności
         // przyczynowej dla GC (ADR-0005). Wybór operacji do dosłania opiera się na
@@ -109,9 +106,7 @@ public class DocumentStompController {
                 replicaId, VersionVector.of(request.version()), System.currentTimeMillis());
         }
 
-        messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
-            new Messages.SyncResponse(encoded, documents.headServerSeq(documentId)),
-            SessionAttributes.forUser(headers));
+        sendSync(headers, documentId, missing);
     }
 
     /**
@@ -123,6 +118,19 @@ public class DocumentStompController {
      */
     @MessageMapping("/doc/{documentId}/join")
     public void onJoin(@DestinationVariable("documentId") UUID documentId, SimpMessageHeaderAccessor headers) {
+        // Załadowanie repliki jest tu KONIECZNE, nie optymalizacyjne.
+        //
+        // Instancja odrzuca wiadomości klastrowe dotyczące dokumentów, których nie trzyma
+        // w pamięci (ADR-0004 — nie ma powodu mnożyć pamięci dla dokumentu bez klientów).
+        // Bez tej linii instancja, do której klient tylko DOŁĄCZYŁ, nigdy nie ładowała
+        // repliki, więc konsekwentnie ignorowała wszystkie operacje z klastra i klient
+        // nie widział ani jednej cudzej zmiany.
+        //
+        // Błąd był niewidoczny dla wszystkich wcześniejszych testów, bo każdy z nich miał
+        // wszystkich klientów na JEDNEJ instancji. Znalazł go dopiero test chaosu
+        // z dwoma instancjami (ClusterChaosIT).
+        registry.get(documentId);
+
         messaging.convertAndSendToUser(headers.getSessionId(), "/queue/session",
             new Messages.SessionInfo(
                 SessionAttributes.replicaId(headers), SessionAttributes.userId(headers)),
@@ -159,6 +167,57 @@ public class DocumentStompController {
             SessionAttributes.replicaId(headers),
             VersionVector.of(report.version()),
             System.currentTimeMillis());
+
+        // UWAGA: NIE dosyłamy tu operacji na podstawie zgłoszonego kursora.
+        //
+        // Kusiło, żeby porównać `sinceServerSeq` klienta z czołem logu i dopchnąć różnicę —
+        // ale kursor klienta rośnie od POTWIERDZEŃ, które są rozgłaszane wszystkim. Klient,
+        // który zgubił rozgłoszenie operacji, ale dostał jej potwierdzenie, zgłosiłby więc
+        // kursor „na bieżąco" mimo brakującej operacji. Mechanizm wyglądałby na działający
+        // i nie robiłby nic.
+        //
+        // Wykrywanie luk jest po stronie klienta i opiera się na tym, że potwierdzenie niesie
+        // TOŻSAMOŚĆ operacji: klient sprawdza, czy ma u siebie operację, której potwierdzenie
+        // właśnie dostał (patrz connection.ts). Jeśli nie — sam prosi o resynchronizację.
+    }
+
+    /**
+     * Ile operacji mieści się w jednej odpowiedzi na resynchronizację.
+     *
+     * <p>ADR-0002 ustala limit 64 KiB na wiadomość. Operacja to rzędu 60–100 bajtów, więc
+     * 300 operacji daje ramkę bezpiecznie poniżej limitu nawet przy wstawianiu dłuższych
+     * fragmentów tekstu.
+     */
+    private static final int SYNC_CHUNK = 300;
+
+    /**
+     * Odsyła brakujące operacje — <b>w porcjach</b>.
+     *
+     * <p>Pierwsza wersja wysyłała je w jednej wiadomości i był to realny błąd, wykryty
+     * dopiero harnessem obciążeniowym (CP8): odpowiedź dla dokumentu o 100 tys. znaków
+     * przekraczała limit rozmiaru ramki z ADR-0002, więc <b>klient, który najbardziej
+     * potrzebował danych, nie mógł ich dostać</b>. Objawem było trwałe zatrzymanie się
+     * części klientów kilka operacji poniżej stanu serwera — bez żadnego błędu w logu.
+     *
+     * <p>Kolejność porcji nie ma znaczenia dla poprawności (scalanie jest przemienne),
+     * a porcja zgubiona po drodze zostanie wykryta tym samym mechanizmem co pierwotna luka.
+     */
+    private void sendSync(SimpMessageHeaderAccessor headers, UUID documentId,
+                          List<StoredOperation> operations) {
+        long head = documents.headServerSeq(documentId);
+        if (operations.isEmpty()) {
+            messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
+                new Messages.SyncResponse(List.of(), head), SessionAttributes.forUser(headers));
+            return;
+        }
+        for (int from = 0; from < operations.size(); from += SYNC_CHUNK) {
+            List<com.fasterxml.jackson.databind.JsonNode> chunk =
+                operations.subList(from, Math.min(from + SYNC_CHUNK, operations.size())).stream()
+                    .map(stored -> (com.fasterxml.jackson.databind.JsonNode) OpCodec.toJson(stored.op()))
+                    .toList();
+            messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
+                new Messages.SyncResponse(chunk, head), SessionAttributes.forUser(headers));
+        }
     }
 
     @MessageMapping("/doc/{documentId}/presence")
