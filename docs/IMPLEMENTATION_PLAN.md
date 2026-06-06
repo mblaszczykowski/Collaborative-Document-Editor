@@ -1,5 +1,11 @@
 # Plan implementacji — Collaborative Document Editor
 
+> **Status: wszystkie 9 checkpointów zamkniętych.** Dokument zostaje w repo jako zapis tego,
+> co było planowane — łącznie z miejscami, w których plan się nie sprawdził. Najważniejsze
+> odstępstwa: Gradle zastąpiony Mavenem (CP1), Gatling zastąpiony własnym harnessem (CP8),
+> a zasięg GC okazał się węższy, niż zakładał ADR-0005 (CP6). Wszystkie trzy są opisane
+> w miejscach, których dotyczą.
+
 Dokument roboczy. Powstał przed pierwszą linijką kodu, na bazie `idea.md` i `CLAUDE.md`.
 Aktualizowany w miarę postępu — jeśli decyzja z planu okaże się zła w praktyce, poprawiamy
 tutaj **i** commitujemy zmianę planu razem z powodem (historia iteracji jest częścią artefaktu).

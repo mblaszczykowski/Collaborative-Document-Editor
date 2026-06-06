@@ -131,10 +131,21 @@ Wartości żyją w `application.yml` z komentarzem przy każdej, nie w kodzie.
   znaczy to, że wskaźnik „offline" w UI może się pojawić z opóźnieniem — mitygacją po stronie
   klienta jest dodatkowo nasłuchiwanie zdarzeń `navigator.onLine` i błędów socketu (CP6).
 
-### Do zweryfikowania w CP8
-- Udział narzutu STOMP+JSON w całkowitym ruchu przy pełnym obciążeniu (bajty nagłówków
-  vs bajty operacji).
-- Czy tolerancja 2,5× heartbeatu daje akceptowalnie mało fałszywych rozłączeń przy
-  symulowanym jitterze — to sprawdzi test chaosu.
-- Czy limit bufora 512 KiB jest trafiony: ile sesji zostaje zamkniętych z powodu przepełnienia
-  przy 250 userach.
+### Zweryfikowane w CP8
+
+- **Limit 64 KiB na wiadomość okazał się mieć konsekwencję, której nie przewidziałem.**
+  Nie dotyczy pojedynczej operacji (te mają ~100 B), tylko **odpowiedzi na resynchronizację**:
+  klient proszący o zaległości dużego dokumentu dostawał jedną ramkę grubo powyżej limitu,
+  która po prostu nie docierała. Efekt: klient, który najbardziej potrzebował danych, nie mógł
+  ich dostać, i zostawał trwale w tyle — bez żadnego błędu w logu. Naprawione wysyłaniem
+  w porcjach po 300 operacji. Limit zostaje bez zmian; błędem było założenie, że dotyczy
+  wyłącznie ruchu przyrostowego.
+- **Bufor 512 KiB nie okazał się wąskim gardłem** przy 50 klientach — statystyki brokera
+  nie wykazały ani jednego zamknięcia sesji z powodu przepełnienia. Odnotowano natomiast
+  błędy transportu, których źródła nie ustaliłem (patrz README, punkt degradacji).
+- **Narzutu STOMP+JSON nie zmierzyłem osobno.** Wyniki pokazały, że wąskim gardłem nie jest
+  rozmiar ramki, więc optymalizacja formatu (serializacja binarna zamiast JSON) pozostaje
+  nieuzasadniona danymi — czyli dokładnie tam, gdzie powinna zostać.
+- **Tolerancji heartbeatu nie udało się sensownie sprawdzić**: klienci i serwer działali na
+  jednej maszynie, więc jitter, przed którym ta wartość ma chronić, praktycznie nie występował.
+  Zostaje jako wartość uzasadniona rozumowaniem, nie pomiarem.

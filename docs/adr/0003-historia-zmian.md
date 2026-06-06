@@ -144,7 +144,19 @@ snapshots    (CACHE — wolno skasować w każdej chwili)
   jeśli będzie bolało, mitygacją jest replay przyrostowy przy przewijaniu timeline'u
   (trzymamy stan i dokładamy operacje) zamiast odtwarzania od snapshotu za każdym razem.
 
-### Do zweryfikowania w CP8
-- Faktyczny czas odtworzenia dokumentu z 10k / 100k / 1M operacji, przy snapshotach i bez.
-- Kalibracja progu 500 operacji na podstawie zmierzonego kosztu replaya.
-- Rozmiar logu w MB na 1 MB finalnego tekstu — czyli ile realnie kosztuje pełna historia.
+### Zweryfikowane w CP8
+
+- **Serializacja snapshotu miała błąd, który ujawnił się dopiero przy dużym dokumencie.**
+  `DataOutputStream.writeUTF` koduje długość na dwóch bajtach i wywala się powyżej 64 KB —
+  a blok run-length po scaleniu ciągłego pisania spokojnie ten rozmiar przekracza. Skutkiem
+  było **ciche zaprzestanie zapisywania snapshotów** dla dokumentów o 100 tys. znaków;
+  jedynym objawem był wpis w logu, a system działał dalej, tylko wolniej się otwierał.
+  To jest dokładnie ten rodzaj awarii, przed którym broni traktowanie snapshotu jako cache'u:
+  nic nie zginęło. Naprawione, test regresyjny w `SnapshotCodecTest`.
+- **Równoważność „z snapshotami" i „bez snapshotów" jest testowana wprost** i przechodzi —
+  zarówno dla bieżącego stanu, jak i dla podróży w czasie. Bez tego testu powyższy błąd
+  mógłby przejść niezauważony jako „coś jest wolniejsze".
+- **Progu 500 operacji ani rozmiaru logu nie skalibrowałem pomiarem.** Wyniki wydajnościowe
+  pokazały, że wąskim gardłem jest dostawa do klientów, a nie odczyt z bazy, więc kalibracja
+  tego progu byłaby optymalizacją miejsca, które nie boli. Zostaje wartość dobrana
+  rozumowaniem, oznaczona jako niezweryfikowana.
