@@ -34,10 +34,13 @@ public class PresenceService {
 
     private final SimpMessagingTemplate messaging;
     private final DocumentRegistry registry;
+    private final dev.collabedit.app.observability.DocumentMetrics metrics;
 
-    public PresenceService(SimpMessagingTemplate messaging, DocumentRegistry registry) {
+    public PresenceService(SimpMessagingTemplate messaging, DocumentRegistry registry,
+                           dev.collabedit.app.observability.DocumentMetrics metrics) {
         this.messaging = messaging;
         this.registry = registry;
+        this.metrics = metrics;
     }
 
     public record Participant(
@@ -55,8 +58,10 @@ public class PresenceService {
 
     public void join(String sessionId, UUID documentId, int replicaId,
                      String userId, String displayName, String color) {
-        bySession.put(sessionId, new Participant(sessionId, documentId, replicaId,
-            userId, displayName, color, null, null, null, null, false));
+        if (bySession.put(sessionId, new Participant(sessionId, documentId, replicaId,
+            userId, displayName, color, null, null, null, null, false)) == null) {
+            metrics.sessionOpened();
+        }
         broadcast(documentId);
     }
 
@@ -79,6 +84,7 @@ public class PresenceService {
         if (gone == null) {
             return;
         }
+        metrics.sessionClosed();
         // Replika, która się rozłączyła, przestaje blokować wyliczenie stabilności
         // przyczynowej dla GC (ADR-0005). Bez tego jedna zamknięta karta przeglądarki
         // wstrzymywałaby kompakcję tombstone'ów do końca życia procesu.

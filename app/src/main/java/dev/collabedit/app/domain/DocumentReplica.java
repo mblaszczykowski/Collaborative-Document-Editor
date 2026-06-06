@@ -109,7 +109,7 @@ public class DocumentReplica {
      * @return {@code true} gdy operacja wniosła coś nowego; {@code false} gdy była duplikatem
      *         i nie ma czego zapisywać ani rozsyłać
      */
-    public boolean merge(Op op, String userId, long nowMillis) {
+    public boolean merge(Op op, String userId, String traceparent, long nowMillis) {
         lock.lock();
         try {
             RgaDocument.ApplyResult result = document.apply(op);
@@ -119,7 +119,7 @@ public class DocumentReplica {
                 // i poprawne — brakuje im tylko przyczyny, która dotrze później. Odkładanie
                 // ich zapisu do czasu integracji oznaczałoby, że pad instancji gubi operację,
                 // którą już przyjęliśmy od klienta.
-                unwritten.add(new PendingOperation(op, userId));
+                unwritten.add(new PendingOperation(op, userId, traceparent));
                 operationsSinceSnapshot++;
             }
             return result.isNews();
@@ -135,7 +135,7 @@ public class DocumentReplica {
     public void enqueueForWrite(Op op, String userId, long nowMillis) {
         lock.lock();
         try {
-            unwritten.add(new PendingOperation(op, userId));
+            unwritten.add(new PendingOperation(op, userId, null));
             operationsSinceSnapshot++;
             lastActivityMillis = nowMillis;
         } finally {

@@ -84,6 +84,31 @@ collabedit:
     # całemu dokumentowi. ~2× tolerancja heartbeatu z ADR-0002.
     unresponsive-replica-timeout-ms: 60000
 
+# ---------------------------------------------------------------------------
+# Śledzenie rozproszone (CP7). Metryki NIE idą tą drogą — te eksportuje Micrometer
+# prosto do Prometheusa. Dwa kanały zamiast jednego, bo Micrometer daje percentyle
+# liczone w aplikacji, a metryki OTel wymagałyby liczenia ich z kubełków po stronie
+# Prometheusa i traciłyby dokładność dla pojedynczej instancji.
+# ---------------------------------------------------------------------------
+otel:
+  service:
+    name: collabedit
+  traces:
+    exporter: otlp
+  metrics:
+    exporter: none
+  logs:
+    exporter: none
+  exporter:
+    otlp:
+      endpoint: http://localhost:4317
+      protocol: grpc
+  # Próbkowanie: WSZYSTKO. Przy tej skali trace jest narzędziem diagnostycznym,
+  # a nie źródłem kosztów — a próbkowanie 10% sprawiłoby, że interesujący nas przypadek
+  # (rzadka rozbieżność, jedna wolna operacja) najczęściej by się nie zapisał.
+  # W produkcji przy tysiącach operacji na sekundę: próbkowanie zależne od czasu trwania.
+  traces_sampler: always_on
+
 management:
   endpoints:
     web:

@@ -46,6 +46,7 @@
           choć Docker działa — stąd ten komentarz, żeby nie diagnozować tego drugi raz.
         -->
         <testcontainers.version>1.21.3</testcontainers.version>
+        <otel.version>2.13.3</otel.version>
 
         <surefire.version>3.5.2</surefire.version>
         <compiler-plugin.version>3.13.0</compiler-plugin.version>
@@ -68,6 +69,13 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
                 <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.opentelemetry.instrumentation</groupId>
+                <artifactId>opentelemetry-instrumentation-bom</artifactId>
+                <version>${otel.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

@@ -1,0 +1,158 @@
+{
+  "uid": "collabedit-main",
+  "title": "Inkline — edycja współbieżna",
+  "description": "Panele dobrane pod pytania, na które trzeba umieć odpowiedzieć o TYM systemie, a nie pod listę 'co zwykle się mierzy'. Każdy wiersz ma opis mówiący, co zła wartość oznacza.",
+  "tags": ["collabedit", "crdt"],
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "row",
+      "title": "Czy system nadąża",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latencja serwerowa operacji (p50 / p95 / p99)",
+      "description": "Przyjęcie operacji → rozesłanie do klientów tej instancji. JEDEN zegar, więc jedyna latencja, której liczbę można podać bez zastrzeżeń. Latencja klient→klient jest mierzona wyłącznie w harnessie benchmarkowym (CP8) i tu jej NIE MA — celowo, bo wymagałaby porównania dwóch różnych zegarów.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 5 } } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(op_server_latency_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(op_server_latency_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(op_server_latency_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Czas scalenia CRDT (p95)",
+      "description": "Sam algorytm, bez transportu i zapisu. To jest miejsce, w którym widać różnicę między indeksem O(n) a O(log n) — wartość rosnąca wraz z rozmiarem dokumentu oznacza, że struktura indeksująca przestała nadążać.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(crdt_merge_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "scalenie p95"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(op_persist_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "zapis wsadu p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Operacje na sekundę",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        { "expr": "sum(rate(crdt_merges_total[1m]))", "legendFormat": "scalone" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Aktywne sesje i dokumenty w pamięci",
+      "description": "Liczba dokumentów w pamięci jest istotna, bo ADR-0004 świadomie mnoży zużycie pamięci przez liczbę instancji trzymających ten sam dokument.",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 9 },
+      "targets": [
+        { "expr": "sum(ws_sessions_active)", "legendFormat": "sesje" },
+        { "expr": "sum(doc_loaded_count)", "legendFormat": "dokumenty" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Operacje bez przyczyny",
+      "description": "Operacje czekające na swój origin. Chwilowe wartości > 0 są normalne (sieć zmienia kolejność). Wartość UTRZYMUJĄCA SIĘ powyżej zera oznacza trwale brakującą operację, czyli uszkodzenie logu — patrz ADR-0004.",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [{ "expr": "sum(crdt_pending_operations)" }]
+    },
+    {
+      "type": "row",
+      "title": "Czy mechanizmy naprawcze działają",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Naprawy luk w numeracji (zgubione wiadomości Redis)",
+      "description": "ADR-0004: Redis pub/sub gubi wiadomości i to jest przewidziane, a nie awaryjne. UWAGA — wartość stale zerowa NIE jest dobrą wiadomością: znaczy, że mechanizm naprawczy nigdy się nie uruchomił, czyli nie wiadomo, czy w ogóle działa. Test chaosu z CP8 wywołuje go celowo.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "targets": [
+        { "expr": "sum(rate(cluster_gap_repairs_total[5m]))", "legendFormat": "naprawy/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Udział tombstone'ów",
+      "description": "Znaki usunięte, ale nadal obecne w strukturze. Wartość rosnąca monotonicznie oznacza, że GC nie działa — najczęściej dlatego, że jeden zawieszony klient blokuje stabilność przyczynową całemu dokumentowi (ADR-0005). Uwaga: nawet działający GC nie zejdzie do zera, bo tombstone w środku tekstu jest originem następnego bloku i nie wolno go usunąć.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "red", "value": 0.8 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "max(doc_tombstone_ratio)", "legendFormat": "udział tombstonów" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Znaki odzyskane przez GC",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 25 },
+      "targets": [
+        {
+          "expr": "sum(rate(crdt_gc_removed_characters_total[5m]))",
+          "legendFormat": "znaki/s"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Operacje odrzucone (RESYNC_REQUIRED)",
+      "description": "Klienci offline dłużej niż okno GC, których zmian nie dało się scalić (ADR-0005). Każde takie zdarzenie oznacza użytkownika, który zobaczył komunikat o odzyskanym szkicu — czyli realną, choć kontrolowaną, niedogodność.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 25 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [{ "expr": "sum(op_rejected_stale_total)" }]
+    }
+  ]
+}

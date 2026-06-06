@@ -5,6 +5,8 @@ import dev.collabedit.app.config.CollabEditProperties;
 import dev.collabedit.app.persist.OperationStore;
 import dev.collabedit.app.persist.PendingOperation;
 import dev.collabedit.app.persist.SnapshotStore;
+import dev.collabedit.app.observability.DocumentMetrics;
+import dev.collabedit.app.observability.EditTracer;
 import dev.collabedit.app.persist.StoredOperation;
 import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.RgaDocument;
@@ -51,6 +53,8 @@ public class DocumentService {
     private final SnapshotStore snapshots;
     private final ClusterBus cluster;
     private final CollabEditProperties properties;
+    private final DocumentMetrics metrics;
+    private final EditTracer tracer;
 
     /** Wywoływane przy rozgłoszeniu operacji; podpinane przez warstwę WebSocket. */
     private volatile BiConsumer<UUID, List<StoredOperation>> onBroadcast = (id, ops) -> { };
@@ -58,12 +62,15 @@ public class DocumentService {
 
     public DocumentService(DocumentRegistry registry, OperationStore operations,
                            SnapshotStore snapshots, ClusterBus cluster,
-                           CollabEditProperties properties) {
+                           CollabEditProperties properties, DocumentMetrics metrics,
+                           EditTracer tracer) {
         this.registry = registry;
         this.operations = operations;
         this.snapshots = snapshots;
         this.cluster = cluster;
         this.properties = properties;
+        this.metrics = metrics;
+        this.tracer = tracer;
     }
 
     @PostConstruct
@@ -113,16 +120,37 @@ public class DocumentService {
         // (cicha korupcja treści) albo go ignorować (cicha utrata pracy). Obie
         // alternatywy są gorsze niż uczciwe "nie potrafię tego scalić".
         if (replica.isPermanentlyUnanchored(op)) {
+            metrics.recordStaleRejection();
             throw new ResyncRequiredException(
                 "operacja " + op.id() + " wskazuje na znak usunięty przez garbage collection");
         }
 
-        if (!replica.merge(op, userId, System.currentTimeMillis())) {
+        // Dwa osobne pomiary, bo odpowiadają na dwa różne pytania: ile trwa sam algorytm
+        // (skaluje się z rozmiarem dokumentu) i ile trwa cała obsługa po stronie serwera
+        // (obejmuje też rozesłanie). Jeden zbiorczy timer nie pozwoliłby ich rozdzielić,
+        // a przy diagnozie wolnej propagacji to jest pierwsze pytanie.
+        var wholeCall = metrics.startTimer();
+        boolean isNews;
+        // Kontekst pobrany TERAZ, dopóki jesteśmy w spanie przyjęcia operacji. Wsad zapisu
+        // wykona się później, na innym wątku, gdzie tego kontekstu już nie będzie.
+        String traceparent = tracer.currentTraceparent();
+        var merging = metrics.startTimer();
+        try (var span = tracer.startStage("crdt.merge")) {
+            isNews = replica.merge(op, userId, traceparent, System.currentTimeMillis());
+            span.attribute("collabedit.op.news", String.valueOf(isNews));
+        }
+        metrics.recordMerge(merging);
+
+        if (!isNews) {
             // Duplikat — nie ma czego zapisywać ani rozsyłać. Zdarza się przy retransmisji
             // po ponownym połączeniu, więc jest sytuacją normalną, a nie błędem.
             return;
         }
-        onFastPath.accept(documentId, List.of(op));
+        try (var span = tracer.startStage("op.broadcast.local")) {
+            onFastPath.accept(documentId, List.of(op));
+            span.attribute("collabedit.document", documentId.toString());
+        }
+        metrics.recordServerLatency(wholeCall);
     }
 
     // ------------------------------------------------------------------
@@ -152,7 +180,15 @@ public class DocumentService {
             return;
         }
 
-        List<StoredOperation> appended = operations.append(replica.documentId(), batch);
+        var persisting = metrics.startTimer();
+        List<StoredOperation> appended;
+        try (var span = tracer.startBatch("op.persist",
+            batch.stream().map(PendingOperation::traceparent).toList())) {
+            appended = operations.append(replica.documentId(), batch);
+            span.attribute("collabedit.batch.size", batch.size());
+            span.attribute("collabedit.batch.written", appended.size());
+        }
+        metrics.recordPersist(persisting);
         if (appended.isEmpty()) {
             return;
         }
@@ -179,6 +215,7 @@ public class DocumentService {
         var snapshot = replica.withLock(document -> {
             int removed = stable.isEmpty() ? 0 : document.gc(stable);
             if (removed > 0) {
+                metrics.recordGc(removed);
                 log.debug("GC dokumentu {}: usunięto {} znaków tombstone'ów", replica.documentId(), removed);
             }
             return document.snapshot();
@@ -240,6 +277,7 @@ public class DocumentService {
     private void repairFrom(DocumentReplica replica, long fromServerSeq) {
         List<StoredOperation> missing = operations.loadAfter(replica.documentId(), fromServerSeq);
         List<Op> applied = applyRemote(replica, missing);
+        metrics.recordGapRepair(applied.size());
         if (!applied.isEmpty()) {
             onFastPath.accept(replica.documentId(), applied);
         }

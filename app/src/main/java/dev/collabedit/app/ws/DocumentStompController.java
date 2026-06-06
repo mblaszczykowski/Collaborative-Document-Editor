@@ -2,6 +2,7 @@ package dev.collabedit.app.ws;
 
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
+import dev.collabedit.app.observability.EditTracer;
 import dev.collabedit.app.persist.StoredOperation;
 import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.OpCodec;
@@ -33,13 +34,16 @@ public class DocumentStompController {
     private final DocumentRegistry registry;
     private final PresenceService presence;
     private final SimpMessagingTemplate messaging;
+    private final EditTracer tracer;
 
     public DocumentStompController(DocumentService documents, DocumentRegistry registry,
-                                   PresenceService presence, SimpMessagingTemplate messaging) {
+                                   PresenceService presence, SimpMessagingTemplate messaging,
+                                   EditTracer tracer) {
         this.documents = documents;
         this.registry = registry;
         this.presence = presence;
         this.messaging = messaging;
+        this.tracer = tracer;
     }
 
     /**
@@ -64,7 +68,12 @@ public class DocumentStompController {
         }
 
         String userId = SessionAttributes.userId(headers);
-        try {
+        // Span otwierany TUTAJ, a nie w warstwie domenowej: to jest punkt, w którym operacja
+        // wchodzi do systemu i w którym jest jeszcze dostęp do nagłówków ramki z kontekstem
+        // śledzenia przysłanym przez przeglądarkę.
+        try (var span = tracer.startReceive(headers, documentId,
+            SessionAttributes.replicaId(headers), op instanceof Op.Insert ? "insert" : "delete")) {
+            span.attribute("collabedit.op.lamport", op.id().lamport());
             documents.submit(documentId, op, userId);
         } catch (DocumentService.ResyncRequiredException e) {
             log.info("Odrzucono operację {} w dokumencie {}: {}", op.id(), documentId, e.getMessage());

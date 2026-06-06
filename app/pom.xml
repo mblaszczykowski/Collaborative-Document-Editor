@@ -61,6 +61,13 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Tracing (CP7). Starter instrumentuje HTTP i JDBC automatycznie; spany
+             dla ścieżki CRDT tworzymy ręcznie, bo to ona jest tu interesująca. -->
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-spring-boot-starter</artifactId>
+        </dependency>
+
         <!-- Metryki → Prometheus (CP7) -->
         <dependency>
             <groupId>io.micrometer</groupId>

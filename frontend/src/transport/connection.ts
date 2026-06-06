@@ -1,6 +1,7 @@
 import { Client, type IMessage, type StompSubscription } from '@stomp/stompjs'
 import { decodeOp, encodeOp, type WireOp } from '../crdt/codec'
 import type { Id, Op } from '../crdt/types'
+import { traceOperation } from '../observability/tracing'
 import { offlineStore } from './offlineStore'
 import { NetworkSimulator } from './simulator'
 
@@ -252,10 +253,20 @@ export class DocumentConnection {
       // i czeka w buforze. Wyśle się przy ponownym połączeniu.
       return
     }
-    this.client.publish({
-      destination: `/app/doc/${this.documentId}/op`,
-      body: JSON.stringify({ op: encodeOp(op) }),
-    })
+    // Kontekst śledzenia wędruje NAGŁÓWKIEM RAMKI, nie w treści operacji. Dzięki temu
+    // format przewodowy operacji pozostaje niezależny od tego, czy śledzenie jest włączone
+    // (ADR-0002: nagłówki STOMP są jedynym miejscem na metadane per wiadomość).
+    traceOperation(
+      'edit.submit',
+      { 'collabedit.op.type': op.kind, 'collabedit.op.lamport': op.id.lamport },
+      (traceparent) => {
+        this.client?.publish({
+          destination: `/app/doc/${this.documentId}/op`,
+          body: JSON.stringify({ op: encodeOp(op) }),
+          headers: traceparent === undefined ? {} : { traceparent },
+        })
+      },
+    )
   }
 
   sendPresence(cursor: Id | null, anchor: Id | null, typing: boolean): void {
