@@ -1,11 +1,12 @@
 # Collaborative Document Editor
 
-> **Stan projektu: w budowie (CP1–CP3 z 9 ukończone).**
-> README jest pisane równolegle z kodem, sekcja po sekcji — nie na końcu. Sekcje
-> oznaczone `⏳` czekają na checkpoint, który dostarczy do nich dane. Nie ma tu
-> zdań o wydajności bez liczby ani deklaracji o funkcji, która jeszcze nie działa.
+![Demo: dwie osoby edytują jednocześnie, jedna traci sieć, zmiany scalają się po powrocie, wersja zostaje cofnięta](docs/demo.gif)
 
-<!-- CP9: tutaj trafia GIF demo, PRZED jakimkolwiek tekstem. -->
+*Dwie przeglądarki, jeden dokument. Współbieżna edycja tego samego akapitu, praca po odcięciu
+sieci, scalenie po powrocie łączności i cofnięcie do wcześniejszej wersji — bez konfliktu
+i bez utraty ani jednego znaku. Nagranie powstaje ze
+[skryptu](frontend/e2e/demo.spec.ts), nie z ręcznego klikania, więc pokazuje dokładnie to,
+co sprawdza CI.*
 
 Edytor tekstu czasu rzeczywistego: wielu użytkowników edytuje ten sam dokument jednocześnie,
 bez konfliktów i bez utraty zmian — również przy słabym łączu, przy jednoczesnej edycji tego
@@ -19,19 +20,25 @@ i porównanie z gotowymi rozwiązaniami są w [ADR-0001](docs/adr/0001-crdt-vs-o
 
 ## Co tu jest ciekawego
 
-Jeśli masz trzy minuty, to trzy rzeczy warte spojrzenia:
+Jeśli masz trzy minuty:
 
-1. **[ADR-0001](docs/adr/0001-crdt-vs-ot.md) — wybór CRDT vs OT**, wraz z jawnie udokumentowaną
-   **słabością wybranego algorytmu** (anomalia przeplotu w RGA) i testem, który tę słabość
-   demonstruje zamiast ją ukrywać.
-2. **[ADR-0004](docs/adr/0004-skalowanie-poziome.md) — każda instancja backendu jest repliką CRDT.**
-   Bez lidera, bez rozproszonego locka, bez sticky sessions. Redis pub/sub jest zawodną ścieżką
-   szybką, a log operacji w Postgresie ścieżką autorytatywną — dzięki czemu zgubiona wiadomość
-   jest problemem latencji, a nie poprawności.
-3. **[Property testy w `crdt-core`](crdt-core/src/test/java/dev/collabedit/crdt/)** — losowe
-   sekwencje operacji dostarczane w losowej kolejności muszą zawsze zbiec się do tego samego
-   stanu. To jest dowód poprawności rdzenia, a nie zestaw przykładów — i jest sprawdzone,
-   że te testy faktycznie łapią uszkodzony algorytm, a nie tylko przechodzą.
+1. **[Testy zostały sprawdzone pod kątem tego, czy w ogóle łapią błędy](docs/crdt-design.md#czego-to-nauczyło-o-testach).**
+   Wprowadziłem mutację do kodu produkcyjnego i cały zestaw property testów przeszedł — bo
+   wszystkie scenariusze miały jedną, wspólną lukę. Przy okazji **wycofałem z dokumentacji
+   tezę, której nie udało mi się potwierdzić**: 200 tys. losowych scenariuszy pokazało,
+   że algorytm zbiega się również bez warunku, który uważałem za konieczny.
+2. **[ADR-0004](docs/adr/0004-skalowanie-poziome.md) — każda instancja backendu jest repliką
+   CRDT.** Bez lidera, bez rozproszonego locka, bez sticky sessions. Redis to zawodna ścieżka
+   szybka, log operacji w Postgresie — autorytatywna. Zgubiona wiadomość jest przez to
+   problemem latencji, a nie poprawności; [test chaosu](app/src/test/java/dev/collabedit/app/ClusterChaosIT.java)
+   zatrzymuje Redisa w trakcie pisania i sprawdza, że tak faktycznie jest.
+3. **[Wydajność](#wydajność) z liczbami i z tym, czego nie wiem.** Treap jest 210× szybszy
+   od skanowania liniowego przy 100 tys. znaków — i 1,4× **wolniejszy** przy odczycie całości.
+   Punkt degradacji jest opisany razem z otwartym pytaniem, którego nie rozstrzygnąłem.
+
+Trzy błędy w tym projekcie znalazły testy, a nie przegląd kodu: dublowanie dokumentu przy
+otwarciu, snapshot niezapisywalny powyżej 64 KB i odpowiedź na resynchronizację przekraczająca
+limit ramki. Wszystkie trzy są opisane w commitach i w komentarzach w miejscu naprawy.
 
 ---
 
@@ -82,6 +89,9 @@ nigdy nie jest pusta, oraz — tam, gdzie czegoś jeszcze nie wiem — jawne
 | [0006](docs/adr/0006-warstwa-edytora.md) | CodeMirror 6 jako widok; model dokumentu własny |
 | [0007](docs/adr/0007-zakres-ui.md) | Język wizualny mockupu przyjęty, jego zakres funkcjonalny odrzucony |
 
+Diagramy (architektura, droga pojedynczej edycji, stany połączenia):
+[`docs/architektura.md`](docs/architektura.md).
+Szczegóły implementacyjne algorytmu: [`docs/crdt-design.md`](docs/crdt-design.md).
 Plan pracy i checkpointy: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
 
 ---
@@ -140,7 +150,9 @@ więc wersje są spójne, ale zależność idzie w jedną stronę i dotyczy wył
 ./mvnw -pl crdt-core test              # property testy (stałe ziarno, determinizm)
 ./mvnw -pl crdt-core -Pthorough test   # 10 000 prób — jak w nocnym CI
 ./mvnw install                         # wszystko, w tym integracyjne na prawdziwym Postgresie
-./mvnw -pl crdt-core test-compile exec:exec@run-benchmarks   # benchmarki JMH
+./mvnw -pl crdt-core exec:exec@run-benchmarks                # benchmarki JMH (~7 min)
+./mvnw -pl app test -Dtest=LoadHarnessIT -Dbenchmark=true    # harness obciążeniowy (~10 min)
+cd frontend && npm run e2e                                   # dwie przeglądarki (wymaga działającego stacku)
 ```
 
 Testy są uporządkowane wg tego, jaki failure mode wyłapują, a nie wg pokrycia.
@@ -252,45 +264,109 @@ byłaby tu łatwiejsza do napisania i mniej prawdziwa.
 
 ---
 
-## Failure modes ⏳ *(CP9, uzupełniane na bieżąco)*
+## Failure modes
 
-Co dokładnie dzieje się, gdy coś pójdzie nie tak. Część jest już rozstrzygnięta w ADR-ach:
+Co dokładnie dzieje się, gdy coś pójdzie nie tak. Każdy wiersz ma źródło decyzji, a te
+oznaczone jako zweryfikowane mają test, który to sprawdza.
 
-| Scenariusz | Zachowanie | Źródło decyzji |
+| Scenariusz | Zachowanie | Zweryfikowane |
 |---|---|---|
-| Utrata połączenia w trakcie edycji | Edycja lokalna działa dalej, operacje trafiają do bufora; po powrocie wymiana version vectorów i scalenie | ⏳ CP6 |
-| Pad instancji między rozesłaniem a zapisem operacji | Operacja jest u innych klientów, ale nie w bazie → klient retransmituje ją po reconnect, bo bufor zwalnia dopiero po `ack` potwierdzającym **zapis**, nie rozesłanie | [ADR-0003](docs/adr/0003-historia-zmian.md) |
-| Zgubiona wiadomość Redis pub/sub | Wykrycie luki w `server_seq` → dociągnięcie z Postgresa. W najgorszym przypadku (zgubiona ostatnia operacja + cisza) rozjazd trwa do 30 s, do sweepu anti-entropy | [ADR-0004](docs/adr/0004-skalowanie-poziome.md) |
-| Dwóch userów edytuje ten sam znak | Obie operacje zachowane, deterministyczny porządek wg `(counter, replicaId)`; brak arbitra | [ADR-0001](docs/adr/0001-crdt-vs-ot.md) |
-| Klient offline dłużej niż okno GC (7 dni) | Operacje **odrzucone jawnie** (`RESYNC_REQUIRED`), lokalna wersja zapisana jako osobny dokument „Odzyskany szkic". Świadomie nie udajemy scalenia, bo informacja o pozycji znaków została utracona | [ADR-0005](docs/adr/0005-tombstone-gc.md) |
-| Bardzo duży dokument | ⏳ CP8 — punkt degradacji do zmierzenia | |
+| **Utrata połączenia w trakcie edycji** | Edycja lokalna działa dalej. Operacje trafiają do bufora w IndexedDB i przeżywają zamknięcie karty. Po powrocie klient wymienia kursor z serwerem i dosyła zaległości. | `e2e: odcięcie sieci`, `e2e: bufor trwały` |
+| **Pad instancji między rozgłoszeniem a zapisem** | Operacja jest u innych klientów, ale nie w bazie. Klient retransmituje ją po ponownym połączeniu, bo bufor zwalnia dopiero po potwierdzeniu **zapisu**, nie rozgłoszenia. | [ADR-0003](docs/adr/0003-historia-zmian.md) |
+| **Utrata repliki z pamięci / restart instancji** | Stan odtwarzany z logu operacji: najbliższy snapshot + ogon. Skasowanie wszystkich snapshotów nie zmienia wyniku, tylko czas. | `stateSurvivesReplicaLoss`, `snapshotsAreOnlyACache` |
+| **Awaria Redisa w trakcie edycji** | Edycja i zapis działają dalej — Redis jest ścieżką szybką, nie krytyczną. Instancje rozjeżdżają się na czas awarii, a przegląd anti-entropy dociąga różnicę z logu. | `redisOutageIsRepairedByAntiEntropy` |
+| **Zgubione rozgłoszenie do klienta** | Klient wykrywa lukę po potwierdzeniu operacji, której u siebie nie ma, i sam prosi o resynchronizację. Kursor `server_seq` by tu nie wystarczył — rośnie od potwierdzeń, więc byłby „na bieżąco" mimo braku. | wykryte i naprawione w CP8 |
+| **Dwoje ludzi edytuje ten sam znak** | Obie zmiany zachowane, deterministyczny porządek wg `(lamport, replicaId)`, bez arbitra. | `concurrentEditOfSameCharacterKeepsBoth`, property `convergence` |
+| **Klient offline dłużej niż okno GC (7 dni)** | Operacje **odrzucone jawnie** (`RESYNC_REQUIRED`), lokalna wersja zapisana jako osobny dokument „Odzyskany szkic". Świadomie nie udajemy scalenia — informacja o pozycji tych znaków została utracona. | `staleOperationIsRejectedExplicitly` |
+| **Operacja wyprzedza swoją przyczynę** | Trafia do bufora i jest ponawiana po każdym udanym scaleniu. NIE jest mylona z sytuacją powyżej — warunek odmowy wymaga jednocześnie braku originu i pozycji poniżej granicy GC. | `operationAheadOfItsCauseIsNotRejected` |
+| **Bardzo duży dokument** | Rozmiar praktycznie nie wpływa na latencję (100 tys. znaków ≈ dokument pusty) po wymianie indeksu na treap. Tombstone'y rosną z liczbą edycji, a GC odzyskuje mniej, niż zakładałem. | sekcja [Wydajność](#wydajność), [ADR-0005](docs/adr/0005-tombstone-gc.md) |
+| **Ponad ~10 klientów w jednym dokumencie** | Zbieżność przestaje być powtarzalna. Serwer zawsze ma komplet operacji; gubi się dostawa do części klientów. **Przyczyny nie rozstrzygnąłem** — patrz [Punkt degradacji](#punkt-degradacji--i-czego-o-nim-nie-wiem). | zmierzone, nierozwiązane |
 
 ---
 
-## Co zrobiłbym inaczej w produkcji ⏳ *(CP9)*
+## Co zrobiłbym inaczej w produkcji
 
-Lista świadomych uproszczeń narasta w trakcie pracy, żeby nie odtwarzać jej z pamięci
-na końcu. Stan na teraz:
+Lista świadomych uproszczeń i znanych granic. Powstawała **w trakcie** pracy, a nie
+z pamięci na końcu — dlatego zawiera też rzeczy, które wyszły dopiero przy implementacji
+i okazały się gorsze, niż zakładałem.
 
-- **Brak formatowania tekstu (rich text)** — zakres celowo zawężony do zwykłego tekstu,
-  żeby zejść głębiej w problem rdzeniowy zamiast szerzej (`idea.md`, sekcja Ryzyka).
-- **Fugue odrzucone na rzecz RGA** — RGA ma udokumentowaną anomalię przeplotu, Fugue jej
-  nie ma. Powód odrzucenia był budżetowy, nie techniczny ([ADR-0001](docs/adr/0001-crdt-vs-ot.md)).
-- **Algorytm istnieje w dwóch implementacjach** (Java + TypeScript). Mitygacja przez korpus
-  wektorów konformancyjnych w CI, ale koszt każdej zmiany w algorytmie jest podwojony.
-- **Okno GC 7 dni to wartość zgadnięta**, nie wyliczona — w produkcji dobrałbym ją
-  z telemetrii długości sesji offline ([ADR-0005](docs/adr/0005-tombstone-gc.md)).
-- **GC odzyskuje mniej, niż zakładałem.** Tombstone w środku tekstu jest originem
-  następnego bloku, więc nie wolno go usunąć niezależnie od stabilności przyczynowej —
-  kolekcjonowalny jest praktycznie tylko ogon dokumentu. Właściwą odpowiedzią jest
-  porzucanie **treści** skasowanych węzłów przy zachowaniu ich w strukturze (tak robi Yjs);
-  wymaga to zmiany reprezentacji bloku i unieważnia format snapshotu, więc nie mieści się
-  w zakresie. Rozwinięcie w [ADR-0005](docs/adr/0005-tombstone-gc.md#faktyczny-zasięg-gc--zweryfikowane-w-cp6-wynik-gorszy-od-zakładanego).
-- **Redis bez persystencji, log operacji rośnie bez ograniczeń** — w produkcji potrzebna
-  archiwizacja starych segmentów logu i kompakcja ([ADR-0003](docs/adr/0003-historia-zmian.md)).
-- **Brak SockJS fallback** — klient za proxy blokującym `Upgrade` nie połączy się wcale
-  ([ADR-0002](docs/adr/0002-transport.md)).
-- ⏳ dalsze pozycje dochodzą wraz z kolejnymi checkpointami.
+**Algorytm**
+- **Fugue zamiast RGA.** RGA ma udokumentowaną anomalię przeplotu: pisanie wstecz przez
+  dwie osoby daje przeplecione litery ([test, który to utrwala](crdt-core/src/test/java/dev/collabedit/crdt/RgaInterleavingTest.java)).
+  Fugue tego nie ma. Odrzucone z powodu budżetu, nie technicznego.
+- **GC odzyskuje mniej, niż zakłada [ADR-0005](docs/adr/0005-tombstone-gc.md).** Tombstone
+  w środku tekstu jest originem następnego bloku, więc nie wolno go usunąć niezależnie od
+  stabilności przyczynowej — kolekcjonowalny jest praktycznie tylko ogon dokumentu. Właściwą
+  odpowiedzią jest porzucanie **treści** skasowanych węzłów przy zachowaniu ich w strukturze
+  (tak robi Yjs); wymaga zmiany reprezentacji bloku i unieważnia format snapshotu.
+- **Dwie implementacje jednego algorytmu** (Java + TypeScript) to dług: każda zmiana kosztuje
+  podwójnie. Korpus wektorów konformancyjnych chroni przed cichym rozjazdem, ale nie przed
+  kosztem. W produkcji: jedna implementacja skompilowana do WebAssembly.
+- **Indeks po stronie klienta jest naiwny (O(n)).** Po stronie serwera treap wszedł po
+  zmierzeniu; odpowiedniego pomiaru w przeglądarce nie zrobiłem, więc nie optymalizowałem
+  w ciemno. Port jest mechaniczny.
+
+**Zakres produktu**
+- **Brak formatowania tekstu.** Rich text w CRDT to inny algorytm (Peritext), nie dodatek —
+  markery muszą przetrwać współbieżne wstawienia w środek zakresu. Świadomie poza zakresem
+  ([ADR-0007](docs/adr/0007-zakres-ui.md)).
+- **Brak komentarzy i uprawnień.** Jw.
+- **Cofanie zmian nie jest świadome CRDT.** Historia CodeMirrora jest wyłączona, ale własne
+  undo na operacjach CRDT (cofające tylko własne zmiany) nie powstało.
+
+**Infrastruktura i eksploatacja**
+- **Uwierzytelnianie bez hasła**, token podpisany HMAC, bez unieważniania i rotacji klucza.
+  Token unieważniony w trakcie sesji nie zrywa połączenia, bo sprawdzamy go raz, przy `CONNECT`.
+- **Log operacji rośnie bez ograniczeń.** Potrzebna archiwizacja starych segmentów do storage'u
+  obiektowego i kompakcja.
+- **Presence jest lokalne dla instancji** — klient podłączony do innej instancji nie pojawia
+  się na liście obecnych. Wymaga osobnego kanału i wygasania wpisów.
+- **Klient odtwarza cały log przy otwarciu dokumentu.** Serwer wewnętrznie używa snapshotów;
+  klient powinien dostawać zserializowany snapshot CRDT, a nie komplet operacji.
+- **Brak rate limitingu i shardingu dokumentów.** Jeden dokument z bardzo wieloma
+  użytkownikami zawsze obciąża tyle instancji, ile trzyma go w pamięci.
+- **Zapisy do jednego dokumentu są serializowane** blokadą wiersza, bo ciągłość `server_seq`
+  jest wymogiem wykrywania luk. To pierwsze miejsce, które ograniczy przepustowość.
+- **Brak SockJS fallback** — klient za proxy blokującym `Upgrade` nie połączy się wcale.
+- **Okno GC (7 dni) to wartość zgadnięta**, nie wyliczona z telemetrii.
+
+**Otwarte, nierozstrzygnięte**
+- Powyżej ~10 jednoczesnych klientów zbieżność przestaje być powtarzalna. Wiem, że serwer
+  ma komplet operacji i że gubi się dostawa; **nie wiem**, czy przyczyna leży w systemie,
+  czy w stanowisku pomiarowym. Rozstrzygnięcie wymaga rozdzielenia klientów i serwera
+  na osobne maszyny.
+
+---
+
+## Obserwowalność
+
+```bash
+docker compose --profile observability up -d   # Prometheus, Tempo, Grafana na :3001
+```
+
+Pojedyncze naciśnięcie klawisza tworzy **jeden trace obejmujący dwie usługi**: span
+`edit.submit` powstaje w przeglądarce, a `op.receive`, `crdt.merge` i `op.broadcast.local`
+po stronie serwera. Kontekst wędruje nagłówkiem ramki STOMP, bo uścisk dłoni WebSocketa
+zdarza się raz na sesję i nagłówek HTTP opisywałby całą sesję zamiast jednej edycji.
+
+Zapis do logu jest powiązany **linkami**, nie zagnieżdżeniem: obejmuje wiele operacji naraz
+i dzieje się na innym wątku, więc zagnieżdżenie pokazywałoby pozostałym trace'om czas cudzego
+zapisu.
+
+[Dashboard](ops/grafana/dashboards/collabedit.json) jest plikiem w repo, nie stanem klikniętym
+w interfejsie. Każdy panel ma opis mówiący, co **zła** wartość oznacza — łącznie z tym, że
+stale zerowa liczba napraw luk w numeracji nie jest dobrą wiadomością, tylko sygnałem, że
+mechanizm naprawczy nigdy się nie uruchomił.
+
+---
+
+## Nagranie demo
+
+```bash
+./tools/reset-demo-data.sh          # czyści dokumenty po testach
+cd frontend && npm run demo         # nagrywa scenariusz (Playwright)
+cd .. && ./tools/make-gif.sh        # wideo → docs/demo.gif
+```
 
 ---
 
@@ -304,4 +380,23 @@ conformance/   wektory testowe wspólne dla implementacji w Javie i w TypeScripc
 docs/adr/      decyzje architektoniczne
 docs/design/   mockup wizualny, na którym oparty jest interfejs
 ops/           konfiguracje Prometheus / Tempo / Grafana / OTel Collector
+tools/         skrypty pomocnicze (nagranie demo, czyszczenie danych)
 ```
+
+---
+
+## Stan projektu
+
+Wszystkie dziewięć checkpointów z [planu](docs/IMPLEMENTATION_PLAN.md) jest zamkniętych.
+README było pisane równolegle z kodem, sekcja po sekcji — nie odtwarzane z pamięci na końcu.
+
+| Warstwa | Testy |
+|---|---:|
+| `crdt-core` — property, niezmienniki, konformancja, snapshoty | 20 |
+| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra | 14 |
+| `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 33 |
+| end-to-end — dwie prawdziwe przeglądarki | 5 |
+| **razem** | **72** |
+
+Harness obciążeniowy i benchmarki JMH są wyłączone z normalnego przebiegu — trwają minuty
+i nie są testami poprawności. Uruchamiane jawnie, polecenia w sekcji [Testy](#testy).
