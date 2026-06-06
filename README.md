@@ -209,6 +209,12 @@ na końcu. Stan na teraz:
   wektorów konformancyjnych w CI, ale koszt każdej zmiany w algorytmie jest podwojony.
 - **Okno GC 7 dni to wartość zgadnięta**, nie wyliczona — w produkcji dobrałbym ją
   z telemetrii długości sesji offline ([ADR-0005](docs/adr/0005-tombstone-gc.md)).
+- **GC odzyskuje mniej, niż zakładałem.** Tombstone w środku tekstu jest originem
+  następnego bloku, więc nie wolno go usunąć niezależnie od stabilności przyczynowej —
+  kolekcjonowalny jest praktycznie tylko ogon dokumentu. Właściwą odpowiedzią jest
+  porzucanie **treści** skasowanych węzłów przy zachowaniu ich w strukturze (tak robi Yjs);
+  wymaga to zmiany reprezentacji bloku i unieważnia format snapshotu, więc nie mieści się
+  w zakresie. Rozwinięcie w [ADR-0005](docs/adr/0005-tombstone-gc.md#faktyczny-zasięg-gc--zweryfikowane-w-cp6-wynik-gorszy-od-zakładanego).
 - **Redis bez persystencji, log operacji rośnie bez ograniczeń** — w produkcji potrzebna
   archiwizacja starych segmentów logu i kompakcja ([ADR-0003](docs/adr/0003-historia-zmian.md)).
 - **Brak SockJS fallback** — klient za proxy blokującym `Upgrade` nie połączy się wcale

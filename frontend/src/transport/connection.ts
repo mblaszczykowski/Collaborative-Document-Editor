@@ -1,6 +1,7 @@
 import { Client, type IMessage, type StompSubscription } from '@stomp/stompjs'
 import { decodeOp, encodeOp, type WireOp } from '../crdt/codec'
 import type { Id, Op } from '../crdt/types'
+import { offlineStore } from './offlineStore'
 import { NetworkSimulator } from './simulator'
 
 /**
@@ -39,6 +40,8 @@ export interface ConnectionHandlers {
   /** Identyfikator repliki nadany przez serwer — przychodzi zanim padnie pierwsza operacja. */
   onSession: (replicaId: number) => void
   onRemoteOps: (ops: Op[]) => void
+  /** Aktualny version vector repliki — raportowany serwerowi na potrzeby GC (ADR-0005). */
+  versionVector: () => Map<number, number>
   onPresence: (entries: PresenceEntry[]) => void
   onStateChange: (state: ConnectionState, pendingCount: number) => void
   onError: (code: string, message: string) => void
@@ -52,6 +55,8 @@ export class DocumentConnection {
   private readonly unacknowledged = new Map<string, Op>()
   private lastServerSeq = 0
   private state: ConnectionState = 'connecting'
+  private reconnectAttempt = 0
+  private progressTimer: number | null = null
 
   readonly simulator = new NetworkSimulator((payload) => this.publishOp(payload as Op))
 
@@ -71,6 +76,21 @@ export class DocumentConnection {
     this.lastServerSeq = initialServerSeq
   }
 
+  /**
+   * Wczytuje operacje niepotwierdzone z poprzedniej sesji przeglądarki.
+   *
+   * Wywoływane przed połączeniem: operacje z zamkniętej karty muszą trafić do bufora,
+   * zanim ruszy resynchronizacja, inaczej pierwszy przebieg ich nie wyśle.
+   */
+  async restoreOfflineBuffer(): Promise<Op[]> {
+    const stored = await offlineStore.pending(this.documentId)
+    for (const op of stored) {
+      this.unacknowledged.set(keyOf(op.id), op)
+    }
+    this.setState(this.state)
+    return stored
+  }
+
   connect(): void {
     const client = new Client({
       brokerURL: `ws://${window.location.hostname}:8080/ws`,
@@ -81,12 +101,18 @@ export class DocumentConnection {
       heartbeatIncoming: 10_000,
       heartbeatOutgoing: 10_000,
 
-      // Ponowne łączenie z narastającym odstępem. Stały krótki odstęp przy awarii serwera
-      // zamieniłby wszystkich klientów w źródło obciążenia dokładnie wtedy, gdy serwer
-      // najmniej może je znieść.
+      // Odstęp między próbami wyliczamy sami (patrz nextReconnectDelay). Stały krótki
+      // odstęp przy awarii serwera zamieniłby wszystkich klientów w źródło obciążenia
+      // dokładnie wtedy, gdy serwer najmniej może je znieść.
       reconnectDelay: 1000,
+      beforeConnect: () => {
+        client.reconnectDelay = this.nextReconnectDelay()
+      },
 
-      onConnect: () => this.onConnected(),
+      onConnect: () => {
+        this.reconnectAttempt = 0
+        this.onConnected()
+      },
       onWebSocketClose: () => this.setState('offline'),
       onStompError: (frame) =>
         this.handlers.onError('STOMP_ERROR', frame.headers['message'] ?? 'błąd protokołu'),
@@ -121,6 +147,40 @@ export class DocumentConnection {
 
     client.publish({ destination: `/app/doc/${this.documentId}/join`, body: '{}' })
     this.resynchronize()
+
+    // Okresowy raport postępu. Bez niego serwer nie ma skąd wiedzieć, dokąd doszła ta
+    // replika, a stableVersion — a więc i GC tombstone'ów — stoi w miejscu (ADR-0005).
+    // 15 s jest krótsze niż 60-sekundowy próg uznania repliki za niereagującą, więc
+    // aktywny klient nigdy nie zostanie wykluczony z rachunku przez samo milczenie.
+    this.progressTimer = window.setInterval(() => this.reportProgress(), 15_000)
+  }
+
+  private reportProgress(): void {
+    if (!this.client?.connected) return
+    this.client.publish({
+      destination: `/app/doc/${this.documentId}/progress`,
+      body: JSON.stringify({
+        sinceServerSeq: this.lastServerSeq,
+        version: Object.fromEntries(this.handlers.versionVector()),
+      }),
+    })
+  }
+
+  /**
+   * Odstęp do kolejnej próby połączenia: wykładniczy, z losowym rozrzutem.
+   *
+   * Wykładniczy, bo awaria serwera zwykle trwa dłużej niż sekundę i dobijanie się co
+   * sekundę tylko ją przedłuża. Z rozrzutem, bo bez niego wszyscy klienci rozłączeni
+   * tym samym zdarzeniem wracają DOKŁADNIE w tej samej chwili — i sami wywołują drugą
+   * awarię tuż po tym, jak serwer wstał. Rozrzut ±30% rozkłada ich w czasie.
+   *
+   * Górna granica 30 s: powyżej użytkownik zdąży uznać, że aplikacja jest zepsuta,
+   * a zysk dla serwera jest już znikomy.
+   */
+  private nextReconnectDelay(): number {
+    const base = Math.min(1000 * 2 ** this.reconnectAttempt, 30_000)
+    this.reconnectAttempt++
+    return Math.round(base * (0.7 + Math.random() * 0.6))
   }
 
   /**
@@ -157,7 +217,12 @@ export class DocumentConnection {
   private onAcks(message: IMessage): void {
     const acks = JSON.parse(message.body) as { r: number; l: number; serverSeq: number }[]
     for (const ack of acks) {
-      this.unacknowledged.delete(`${ack.r}@${ack.l}`)
+      const key = `${ack.r}@${ack.l}`
+      const acknowledged = this.unacknowledged.get(key)
+      this.unacknowledged.delete(key)
+      if (acknowledged !== undefined) {
+        void offlineStore.forget(this.documentId, acknowledged)
+      }
       // Kursor przesuwamy na podstawie POTWIERDZEŃ, nie rozgłoszeń, bo tylko potwierdzenie
       // niesie server_seq. Rozgłoszenia z zasady go nie mają — patrz Messages.java.
       this.lastServerSeq = Math.max(this.lastServerSeq, ack.serverSeq)
@@ -173,6 +238,10 @@ export class DocumentConnection {
   /** Wysyła operację lokalną. Trafia do bufora do czasu potwierdzenia zapisu. */
   send(op: Op): void {
     this.unacknowledged.set(keyOf(op.id), op)
+    // Zapis do IndexedDB jest asynchroniczny i CELOWO nie blokuje wysyłki: operacja ma
+    // polecieć natychmiast, a trwałość bufora jest zabezpieczeniem na wypadek zamknięcia
+    // karty, nie warunkiem wysłania.
+    void offlineStore.remember(this.documentId, op)
     this.setState(this.state)
     this.simulator.transmit(op)
   }
@@ -212,7 +281,24 @@ export class DocumentConnection {
     this.handlers.onStateChange(state, this.pendingCount)
   }
 
+  /**
+   * Porzuca bufor po odmowie scalenia (ADR-0005).
+   *
+   * Wywoływane wyłącznie po `RESYNC_REQUIRED`. Treść tych operacji jest wtedy ratowana
+   * osobno, jako odzyskany szkic — bufor czyścimy dopiero potem, żeby nie próbowały
+   * w nieskończoność.
+   */
+  async abandonBuffer(): Promise<void> {
+    this.unacknowledged.clear()
+    await offlineStore.clear(this.documentId)
+    this.setState(this.state)
+  }
+
   disconnect(): void {
+    if (this.progressTimer !== null) {
+      window.clearInterval(this.progressTimer)
+      this.progressTimer = null
+    }
     for (const subscription of this.subscriptions) subscription.unsubscribe()
     this.subscriptions = []
     void this.client?.deactivate()

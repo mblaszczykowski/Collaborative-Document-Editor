@@ -1,6 +1,7 @@
 package dev.collabedit.app.domain;
 
 import dev.collabedit.app.persist.PendingOperation;
+import dev.collabedit.crdt.Id;
 import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.RgaDocument;
 import dev.collabedit.crdt.TreapBlockList;
@@ -48,6 +49,16 @@ public class DocumentReplica {
     private int operationsSinceSnapshot;
 
     private volatile long lastActivityMillis;
+
+    /**
+     * Granica, poniżej której tombstone'y zostały już fizycznie usunięte.
+     *
+     * <p>Bez zapamiętania tej wartości nie da się odróżnić dwóch sytuacji, które z zewnątrz
+     * wyglądają identycznie: operacja przyszła przed swoją przyczyną (poczeka w buforze,
+     * normalne) od operacji, której przyczyna została skasowana przez GC (nie doczeka się
+     * nigdy — ADR-0005). Pierwsza wymaga cierpliwości, druga jawnej odmowy.
+     */
+    private volatile VersionVector gcWatermark = VersionVector.empty();
 
     /**
      * Version vectory podłączonych klientów — podstawa wyliczenia stabilności przyczynowej
@@ -168,6 +179,36 @@ public class DocumentReplica {
 
     public void snapshotTaken() {
         operationsSinceSnapshot = 0;
+    }
+
+    public void recordGc(VersionVector stable) {
+        this.gcWatermark = stable;
+    }
+
+    public VersionVector gcWatermark() {
+        return gcWatermark;
+    }
+
+    /**
+     * Czy operacja jest trwale nieosadzalna, bo jej punkt zaczepienia został usunięty przez GC.
+     *
+     * <p>To jest sytuacja z ADR-0005: klient był offline dłużej niż okno GC i wraca
+     * z operacją wskazującą na tombstone, którego już nie ma. Informacja o pozycji tych
+     * znaków została bezpowrotnie utracona — <b>nie da się tego uczciwie scalić</b>.
+     *
+     * <p>Warunek jest celowo wąski: origin musi być JEDNOCZEŚNIE nieobecny i poniżej granicy
+     * GC. Sama nieobecność nic nie znaczy (operacja mogła wyprzedzić swoją przyczynę),
+     * a sama pozycja poniżej granicy też nie (znak mógł nadal żyć, bo GC usuwa wyłącznie
+     * tombstone'y). Zbyt szeroki warunek odrzucałby poprawne operacje — czyli gubiłby
+     * pracę użytkownika w imię ochrony przed jej gubieniem.
+     */
+    public boolean isPermanentlyUnanchored(Op op) {
+        if (!(op instanceof Op.Insert insert) || insert.originLeft() == null) {
+            return false;
+        }
+        Id origin = insert.originLeft();
+        return withLock(document -> !document.contains(origin))
+            && origin.lamport() <= gcWatermark.get(origin.replicaId());
     }
 
     public int operationsSinceSnapshot() {

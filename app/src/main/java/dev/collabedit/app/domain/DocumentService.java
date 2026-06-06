@@ -99,8 +99,24 @@ public class DocumentService {
         onFastPath.accept(documentId, List.of(op));
     }
 
+    /** Rzucane, gdy operacji nie da się już scalić, bo GC usunął jej punkt zaczepienia. */
+    public static class ResyncRequiredException extends RuntimeException {
+        public ResyncRequiredException(String message) {
+            super(message);
+        }
+    }
+
     public void submit(UUID documentId, Op op, String userId) {
         DocumentReplica replica = registry.get(documentId);
+
+        // ADR-0005: odmawiamy JAWNIE, zamiast doklejać tekst w przypadkowe miejsce
+        // (cicha korupcja treści) albo go ignorować (cicha utrata pracy). Obie
+        // alternatywy są gorsze niż uczciwe "nie potrafię tego scalić".
+        if (replica.isPermanentlyUnanchored(op)) {
+            throw new ResyncRequiredException(
+                "operacja " + op.id() + " wskazuje na znak usunięty przez garbage collection");
+        }
+
         if (!replica.merge(op, userId, System.currentTimeMillis())) {
             // Duplikat — nie ma czego zapisywać ani rozsyłać. Zdarza się przy retransmisji
             // po ponownym połączeniu, więc jest sytuacją normalną, a nie błędem.
@@ -170,6 +186,9 @@ public class DocumentService {
 
         snapshots.save(replica.documentId(), seq, snapshot);
         replica.snapshotTaken();
+        if (!stable.isEmpty()) {
+            replica.recordGc(stable);
+        }
     }
 
     // ------------------------------------------------------------------

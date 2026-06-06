@@ -495,6 +495,17 @@ public final class RgaDocument {
         return blocks;
     }
 
+    /**
+     * Czy znak o podanym identyfikatorze jest w strukturze — również jako tombstone.
+     *
+     * <p>Potrzebne do odróżnienia dwóch bardzo różnych sytuacji, które z zewnątrz wyglądają
+     * tak samo: „operacja przyszła przed swoją przyczyną" (przejściowe, poczeka w buforze)
+     * od „przyczyna została skasowana przez GC" (trwałe, nie da się już scalić — ADR-0005).
+     */
+    public boolean contains(Id id) {
+        return blocks.locateId(id) != null;
+    }
+
     /** Identyfikator znaku o podanym indeksie w widocznym tekście — pozycja kursora (ADR-0006). */
     public Id idAtVisible(int visibleIndex) {
         BlockList.Locator loc = blocks.locateVisible(visibleIndex);

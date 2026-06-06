@@ -1,6 +1,7 @@
 package dev.collabedit.app.api;
 
 import dev.collabedit.app.auth.TokenService;
+import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
 import java.util.List;
 import java.util.UUID;
@@ -29,11 +30,14 @@ public class DocumentRestController {
 
     private final JdbcTemplate jdbc;
     private final DocumentService documents;
+    private final DocumentRegistry registry;
     private final TokenService tokens;
 
-    public DocumentRestController(JdbcTemplate jdbc, DocumentService documents, TokenService tokens) {
+    public DocumentRestController(JdbcTemplate jdbc, DocumentService documents,
+                                  DocumentRegistry registry, TokenService tokens) {
         this.jdbc = jdbc;
         this.documents = documents;
+        this.registry = registry;
         this.tokens = tokens;
     }
 
@@ -87,6 +91,36 @@ public class DocumentRestController {
         String title = request.title() == null || request.title().isBlank()
             ? "Dokument bez tytułu" : request.title();
         jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, title);
+        return new DocumentSummary(id, title);
+    }
+
+    public record RecoveredRequest(String title, String text) {
+    }
+
+    /**
+     * Tworzy dokument z odzyskaną treścią.
+     *
+     * <p>Ścieżka ratunkowa z ADR-0005: klient był offline dłużej niż okno GC, jego operacje
+     * wskazują na tombstone'y, których już nie ma, i <b>nie da się ich uczciwie scalić</b>.
+     * Zamiast doklejać tekst w przypadkowe miejsce albo go zgubić, zapisujemy lokalną wersję
+     * jako osobny dokument i mówimy o tym użytkownikowi wprost.
+     *
+     * <p>Treść jest wstawiana jako zwykłe operacje repliki serwera — nowy dokument nie jest
+     * więc niczym szczególnym i od pierwszej chwili ma pełną historię, jak każdy inny.
+     */
+    @PostMapping("/documents/recovered")
+    public DocumentSummary createRecovered(@RequestBody RecoveredRequest request) {
+        UUID id = UUID.randomUUID();
+        String title = request.title() == null || request.title().isBlank()
+            ? "Odzyskany szkic" : request.title();
+        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, title);
+
+        String text = request.text() == null ? "" : request.text();
+        if (!text.isEmpty()) {
+            var replica = registry.get(id);
+            var op = replica.withLock(model -> model.insert(0, text));
+            documents.submitAlreadyMerged(id, op, null);
+        }
         return new DocumentSummary(id, title);
     }
 

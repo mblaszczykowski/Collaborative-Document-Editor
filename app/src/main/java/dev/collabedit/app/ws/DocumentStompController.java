@@ -66,6 +66,9 @@ public class DocumentStompController {
         String userId = SessionAttributes.userId(headers);
         try {
             documents.submit(documentId, op, userId);
+        } catch (DocumentService.ResyncRequiredException e) {
+            log.info("Odrzucono operację {} w dokumencie {}: {}", op.id(), documentId, e.getMessage());
+            sendError(headers, "RESYNC_REQUIRED", e.getMessage());
         } catch (RuntimeException e) {
             log.warn("Odrzucono operację {} w dokumencie {}: {}", op.id(), documentId, e.toString());
             sendError(headers, "OPERATION_REJECTED", e.getMessage());
@@ -123,6 +126,30 @@ public class DocumentStompController {
             SessionAttributes.userId(headers),
             SessionAttributes.displayName(headers),
             SessionAttributes.color(headers));
+    }
+
+    /**
+     * Okresowy raport postępu repliki.
+     *
+     * <p>Istnieje wyłącznie po to, żeby GC tombstone'ów mógł się w ogóle odbyć (ADR-0005).
+     * Stabilność przyczynowa to element wspólny version vectorów wszystkich żywych replik —
+     * bez regularnych raportów serwer zna wyłącznie stan sprzed ostatniej resynchronizacji
+     * i granica GC stoi w miejscu, przez co tombstone'y rosną w nieskończoność.
+     *
+     * <p>Osobny kanał zamiast doklejania tego do resynchronizacji: resynchronizacja odpytuje
+     * bazę o brakujące operacje, a raport postępu ma być tani i częsty.
+     */
+    @MessageMapping("/doc/{documentId}/progress")
+    public void onProgress(@DestinationVariable("documentId") UUID documentId,
+                           Messages.SyncRequest report,
+                           SimpMessageHeaderAccessor headers) {
+        if (report.version() == null || report.version().isEmpty()) {
+            return;
+        }
+        registry.get(documentId).reportProgress(
+            SessionAttributes.replicaId(headers),
+            VersionVector.of(report.version()),
+            System.currentTimeMillis());
     }
 
     @MessageMapping("/doc/{documentId}/presence")

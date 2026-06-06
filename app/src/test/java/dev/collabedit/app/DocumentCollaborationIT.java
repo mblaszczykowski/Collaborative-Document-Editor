@@ -40,6 +40,26 @@ class DocumentCollaborationIT extends IntegrationTestBase {
     @Autowired
     SnapshotStore snapshots;
 
+
+    /**
+     * Czeka na powstanie snapshotu.
+     *
+     * <p>Potwierdzenie zapisu jest rozsyłane PRZED zrobieniem snapshotu — świadomie, bo
+     * potwierdzenie zwalnia bufor klienta i nie ma powodu, żeby czekało na zapis cache'u.
+     * Test, który po odebraniu potwierdzenia od razu sprawdzał liczbę snapshotów, był przez
+     * to niestabilny: przechodził pojedynczo, a padał w pełnym przebiegu. Poprawka jest po
+     * stronie testu, bo to jego założenie było błędne, a nie kolejność w kodzie produkcyjnym.
+     */
+    private void awaitSnapshot(UUID document) throws InterruptedException {
+        for (int attempt = 0; attempt < 200; attempt++) {
+            if (snapshots.count(document) > 0) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("nie powstał żaden snapshot dla dokumentu " + document);
+    }
+
     private UUID newDocument(String title) {
         UUID id = UUID.randomUUID();
         jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, title);
@@ -116,9 +136,7 @@ class DocumentCollaborationIT extends IntegrationTestBase {
             anna.awaitCondition(() -> anna.lastAckSeq() >= 40, PATIENCE, "wszystko zapisane");
         }
 
-        assertThat(snapshots.count(document))
-            .as("test nie dotknął ścieżki snapshotowania, więc niczego nie dowodzi")
-            .isPositive();
+        awaitSnapshot(document);
 
         String withSnapshots = documents.textOf(document);
 

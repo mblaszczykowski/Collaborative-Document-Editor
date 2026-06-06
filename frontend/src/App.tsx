@@ -151,6 +151,7 @@ function DocumentWorkspace(props: {
     partitioned: false,
   })
   const [stats, setStats] = useState({ characters: 0, tombstones: 0, blocks: 0, pending: 0 })
+  const [recovery, setRecovery] = useState<{ title: string; id: string } | null>(null)
 
   const document = useRef<RgaDocument | null>(null)
   const connection = useRef<DocumentConnection | null>(null)
@@ -166,6 +167,29 @@ function DocumentWorkspace(props: {
       pending: model.pendingCount,
     })
   }, [])
+
+  /**
+   * Reakcja na odmowę scalenia (ADR-0005).
+   *
+   * Serwer odmówił, bo punkt zaczepienia tych operacji został usunięty przez GC — czyli
+   * byliśmy offline dłużej niż okno GC. Informacja o pozycji tego tekstu jest bezpowrotnie
+   * utracona i NIE MA sposobu, żeby go uczciwie wstawić z powrotem.
+   *
+   * Zamiast udawać, że się udało (doklejenie na koniec = cicha korupcja treści) albo
+   * milczeć (= cicha utrata pracy użytkownika), ratujemy lokalną wersję jako osobny
+   * dokument i mówimy o tym wprost. To jest jedyne uczciwe zachowanie w tej sytuacji.
+   */
+  const recoverAfterRejection = useCallback(
+    async (model: RgaDocument, link: DocumentConnection) => {
+      const rescued = await api.createRecovered(
+        `Odzyskany szkic — ${new Date().toLocaleString('pl-PL')}`,
+        model.text,
+      )
+      await link.abandonBuffer()
+      setRecovery({ title: rescued.title, id: rescued.id })
+    },
+    [],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -195,6 +219,7 @@ function DocumentWorkspace(props: {
 
       const link = new DocumentConnection(documentId, session.token, 0, {
         onSession: (replicaId) => model.adoptReplicaId(replicaId),
+        versionVector: () => model.version,
         onRemoteOps: (ops) => {
           model.applyAll(ops)
           applyRemote.current()
@@ -205,10 +230,20 @@ function DocumentWorkspace(props: {
           setConnectionState(nextState)
           setPendingCount(pending)
         },
-        onError: (code, message) => console.error(`[${code}] ${message}`),
+        onError: (code, message) => {
+          if (code === 'RESYNC_REQUIRED') {
+            void recoverAfterRejection(model, link)
+            return
+          }
+          console.error(`[${code}] ${message}`)
+        },
       })
       link.simulator.onChange(setNetwork)
-      link.connect()
+
+      // Operacje z POPRZEDNIEJ sesji przeglądarki (zamknięta karta, uśpiony laptop)
+      // muszą trafić do bufora ZANIM ruszy resynchronizacja, inaczej pierwszy przebieg
+      // ich nie wyśle i czekałyby do następnego rozłączenia.
+      void link.restoreOfflineBuffer().then(() => link.connect())
       connection.current = link
     })
 
@@ -217,7 +252,7 @@ function DocumentWorkspace(props: {
       connection.current?.disconnect()
       connection.current = null
     }
-  }, [documentId, session.token, refreshStats])
+  }, [documentId, session.token, refreshStats, recoverAfterRejection])
 
   const onLocalOps = useCallback(
     (ops: Op[]) => {
@@ -304,6 +339,14 @@ function DocumentWorkspace(props: {
             <div className="page">
               <h1>{title}</h1>
               <div className="meta-line">{peopleLabel(presence.length)} w dokumencie</div>
+              {recovery !== null && (
+                <div className="recovery-banner">
+                  <strong>Twoich zmian nie dało się scalić.</strong> Byłeś offline dłużej niż
+                  okno czyszczenia historii, więc miejsce, do którego pisałeś, przestało
+                  istnieć. Twoja wersja została zapisana jako{' '}
+                  <a href={`?doc=${recovery.id}`}>{recovery.title}</a>. Nic nie przepadło.
+                </div>
+              )}
               {ready && document.current && (
                 <Editor
                   document={document.current}

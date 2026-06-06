@@ -104,6 +104,37 @@ Utrata pracy bez powiadomienia jest znacznie gorsza niż jawne „nie potrafię 
 oto twoja kopia". Ta decyzja jest opisana w README w sekcji Failure modes, bo jest to
 prawdziwe ograniczenie systemu, a nie szczegół implementacyjny.
 
+### Faktyczny zasięg GC — zweryfikowane w CP6, wynik gorszy od zakładanego
+
+Warunek „węzeł nie jest originem żadnego istniejącego bloku" jest konieczny dla poprawności,
+ale okazał się **znacznie bardziej ograniczający, niż zakładałem przy pisaniu tej decyzji**.
+
+W RGA każdy blok pamięta swojego lewego origina. Usunięcie znaku w środku tekstu dzieli blok
+na trzy części, a część leżąca za tombstone'em jest do niego zaczepiona. Tombstone jest więc
+originem i **nie wolno go usunąć — niezależnie od tego, jak dawno powstał i jak stabilny
+przyczynowo jest**.
+
+Praktyczna konsekwencja: kolekcjonowalne są wyłącznie tombstone'y, do których nic nie referuje,
+czyli w praktyce **ogon dokumentu** i fragmenty, w których usunięto całe sąsiedztwo. Tekst
+kasowany w środku akapitu zostaje w strukturze na zawsze.
+
+**Dlaczego nie „przepiąć" referencji do originu tombstone'u.** Kuszące, i przy stabilności
+przyczynowej wygląda na bezpieczne. Nie jest: reguła wstawiania RGA porównuje znaczniki czasu
+elementów napotkanych po originie, więc usunięcie węzła ze ścieżki skanowania zmienia miejsce,
+w którym wyląduje *przyszłe* wstawienie zaczepione o ten sam origin. Replika po kompakcji
+i replika przed kompakcją umieściłyby ten sam nowy znak w różnych miejscach — czyli
+rozjechałyby się. Stabilność przyczynowa mówi, że wszyscy w końcu wiedzą; nie mówi,
+że wiedzą jednocześnie.
+
+**Co byłoby właściwą odpowiedzią.** To, co robi Yjs: nie usuwać węzła, tylko **porzucić jego
+treść**, zostawiając samą długość. Struktura i wszystkie referencje pozostają nienaruszone,
+a odzyskana pamięć jest proporcjonalna do rozmiaru skasowanego tekstu — czyli do tego, co
+faktycznie boli. Narzut samych węzłów zostaje, ale jest o rząd wielkości mniejszy.
+
+Nie zaimplementowane — wymaga zmiany reprezentacji {@code Block} i unieważnia format
+snapshotu oraz korpus wektorów konformancyjnych. Trafia do sekcji „co zrobiłbym inaczej
+w produkcji" jako **znany, nazwany brak**, a nie jako przeoczenie.
+
 ### Metryki (CP7)
 
 - `doc_tombstone_ratio` — tombstone'y / wszystkie węzły. Wysoka wartość utrzymująca się

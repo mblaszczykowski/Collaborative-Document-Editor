@@ -233,3 +233,12 @@ button { font-family: inherit; cursor: pointer; }
   background: var(--text); color: #fff; font-size: 12px; font-weight: 500;
 }
 .history-restore:disabled { background: var(--text-faint); }
+
+/* Komunikat o odmowie scalenia (ADR-0005) — celowo widoczny, a nie dyskretny:
+   utrata możliwości scalenia jest istotna dla użytkownika i musi być zauważona. */
+.recovery-banner {
+  border: 1px solid #e0c4b8; border-left: 3px solid var(--bad);
+  background: #fdf6f3; border-radius: 4px; padding: 10px 12px; margin-bottom: 20px;
+  font-family: var(--sans); font-size: 12px; line-height: 1.55; color: #4a2c1f;
+}
+.recovery-banner a { color: var(--bad); }

@@ -77,6 +77,13 @@ export const api = {
 
   listDocuments: () => request<DocumentSummary[]>('/documents'),
 
+  /** Ratunkowy zapis lokalnej wersji po odmowie scalenia (ADR-0005). */
+  createRecovered: (title: string, text: string) =>
+    request<DocumentSummary>('/documents/recovered', {
+      method: 'POST',
+      body: JSON.stringify({ title, text }),
+    }),
+
   createDocument: (title: string) =>
     request<DocumentSummary>('/documents', { method: 'POST', body: JSON.stringify({ title }) }),
 
