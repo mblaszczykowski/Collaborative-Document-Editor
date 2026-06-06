@@ -19,9 +19,40 @@ import type { NetworkConditions } from './transport/simulator'
  * a zamiast komentarzy — **podgląd stanu replik CRDT**. Obie zamiany są celowe: każdy
  * widoczny element ma coś robić, a te dwa pokazują dokładnie to, czego ten projekt dowodzi.
  */
+/**
+ * Sesja przeżywa przeładowanie strony.
+ *
+ * `sessionStorage`, nie `localStorage`: tożsamość ma być związana z KARTĄ, nie z przeglądarką.
+ * Przy `localStorage` dwie karty otwarte obok siebie dzieliłyby konto — a to jest dokładnie
+ * scenariusz demo („dwóch użytkowników w dwóch oknach"), więc dzielenie tożsamości psułoby
+ * najważniejszą rzecz do pokazania.
+ *
+ * Bez tego przeładowanie strony wyrzuca użytkownika na ekran logowania, a wraz z nim znika
+ * podłączenie do dokumentu — mimo że operacje z poprzedniej sesji czekają w IndexedDB
+ * i nie mają jak dolecieć.
+ */
+const SESSION_KEY = 'inkline.session'
+
+function loadSession(): Session | null {
+  const stored = sessionStorage.getItem(SESSION_KEY)
+  if (stored === null) return null
+  try {
+    return JSON.parse(stored) as Session
+  } catch {
+    sessionStorage.removeItem(SESSION_KEY)
+    return null
+  }
+}
+
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null)
-  return session ? <Workspace session={session} /> : <Login onLogin={setSession} />
+  const [session, setSession] = useState<Session | null>(loadSession)
+
+  function remember(next: Session): void {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(next))
+    setSession(next)
+  }
+
+  return session ? <Workspace session={session} /> : <Login onLogin={remember} />
 }
 
 function Login({ onLogin }: { onLogin: (session: Session) => void }) {

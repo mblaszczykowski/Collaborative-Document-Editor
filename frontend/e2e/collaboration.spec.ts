@@ -203,3 +203,35 @@ test('historia pozwala cofnąć dokument do wcześniejszej wersji', async ({ bro
   await anna.context().close()
   await marek.context().close()
 })
+
+test('operacje przeżywają przeładowanie strony i docierają po powrocie', async ({
+  browser,
+  request,
+}) => {
+  const documentId = await freshDocument(request, 'Bufor trwały')
+  const anna = await joinAs(browser, 'Anna', documentId)
+  const marek = await joinAs(browser, 'Marek', documentId)
+
+  await typeInto(anna, 'poczatek ')
+  await expect(marek.locator('.cm-content')).toContainText('poczatek', { timeout: 10_000 })
+
+  // Marek odcina sieć i pisze — operacje trafiają do bufora, ale nie do serwera.
+  await marek.getByRole('button', { name: 'Odetnij sieć' }).click()
+  await marek.locator('.cm-content').click()
+  await marek.keyboard.press('Control+End')
+  await marek.keyboard.type('zbuforowane', { delay: 25 })
+  await expect(anna.locator('.cm-content')).not.toContainText('zbuforowane')
+
+  // ...i ZAMYKA KARTĘ przeładowaniem. Bufor w pamięci przepadłby w tym momencie razem
+  // z całym stanem strony — dlatego niepotwierdzone operacje są też w IndexedDB.
+  await marek.reload()
+  await expect(marek.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
+
+  // Po odtworzeniu strony bufor jest wczytywany PRZED resynchronizacją, więc operacje
+  // dolatują do serwera i stamtąd do Anny — mimo że powstały w innej sesji przeglądarki.
+  await expect(anna.locator('.cm-content')).toContainText('zbuforowane', { timeout: 20_000 })
+  expect(await documentText(marek)).toBe(await documentText(anna))
+
+  await anna.context().close()
+  await marek.context().close()
+})
