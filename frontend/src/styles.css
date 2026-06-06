@@ -208,3 +208,28 @@ button { font-family: inherit; cursor: pointer; }
   width: 100%; padding: 9px; border: none; border-radius: 5px;
   background: var(--text); color: #fff; font-size: 13px; font-weight: 500;
 }
+
+/* ===== HISTORIA — wygląd wpisu z mockupu (.history-entry) ===== */
+.history-entry {
+  padding: 6px 8px; border-radius: 4px; width: 100%; border: none;
+  background: transparent; text-align: left; display: block;
+}
+.history-entry:hover { background: var(--hover); }
+.history-entry.selected { background: var(--active); }
+.history-entry .h-top { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+.history-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.history-entry .h-time { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+.history-entry .h-desc { font-size: 11px; color: var(--text-faint); padding-left: 12px; margin-top: 2px; }
+.history-entry .h-desc .added { color: var(--ok); }
+.history-entry .h-desc .removed { color: var(--bad); }
+
+.history-preview {
+  border: 1px solid var(--chrome-line); border-radius: 5px; background: #fff;
+  padding: 9px 10px; margin: 8px 0; font-family: var(--serif); font-size: 12px;
+  line-height: 1.6; color: #333; max-height: 160px; overflow-y: auto; white-space: pre-wrap;
+}
+.history-restore {
+  width: 100%; padding: 7px; border: none; border-radius: 5px;
+  background: var(--text); color: #fff; font-size: 12px; font-weight: 500;
+}
+.history-restore:disabled { background: var(--text-faint); }

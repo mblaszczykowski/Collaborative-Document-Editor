@@ -39,7 +39,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
+export interface Version {
+  throughServerSeq: number
+  userId: string
+  displayName: string
+  color: string
+  at: string
+  operationCount: number
+  charactersInserted: number
+  charactersDeleted: number
+}
+
 export const api = {
+  history: (documentId: string) =>
+    request<Version[]>(`/documents/${documentId}/history`),
+
+  textAt: (documentId: string, throughServerSeq: number) =>
+    request<{ throughServerSeq: number; text: string }>(
+      `/documents/${documentId}/history/at?seq=${throughServerSeq}`,
+    ),
+
+  /**
+   * Przywraca stan z przeszłości.
+   *
+   * Nie ma tu nic do zrobienia po stronie klienta poza wywołaniem — przywrócenie wraca
+   * do wszystkich podłączonych przeglądarek zwykłym kanałem operacji, bo jest zwykłą
+   * zmianą (ADR-0003 pkt 6). Ten sam mechanizm, ten sam kod, żadnej ścieżki specjalnej.
+   */
+  restore: (documentId: string, throughServerSeq: number) =>
+    request<{ operationsGenerated: number; text: string }>(
+      `/documents/${documentId}/history/restore`,
+      { method: 'POST', body: JSON.stringify({ throughServerSeq }) },
+    ),
+
   login: (displayName: string) =>
     request<Session>('/login', { method: 'POST', body: JSON.stringify({ displayName }) }),
 

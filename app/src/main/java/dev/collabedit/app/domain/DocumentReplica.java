@@ -117,6 +117,21 @@ public class DocumentReplica {
         }
     }
 
+    /**
+     * Dopisuje do wsadu operację, która została już scalona (przywracanie wersji, CP5).
+     * Pomija scalanie, bo operacja powstała na tej właśnie replice.
+     */
+    public void enqueueForWrite(Op op, String userId, long nowMillis) {
+        lock.lock();
+        try {
+            unwritten.add(new PendingOperation(op, userId));
+            operationsSinceSnapshot++;
+            lastActivityMillis = nowMillis;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** Wyjmuje wsad do zapisu i czyści bufor. */
     public List<PendingOperation> drainUnwritten() {
         lock.lock();

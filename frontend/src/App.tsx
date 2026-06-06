@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type DocumentSummary, type Session } from './api'
+import { api, type DocumentSummary, type Session, type Version } from './api'
 import { RgaDocument } from './crdt/document'
 import type { Id, Op } from './crdt/types'
 import { Editor } from './editor/Editor'
@@ -332,12 +332,16 @@ function DocumentWorkspace(props: {
           </div>
         </div>
 
-        <ReplicaPanel
+        <RightPanel
+          documentId={documentId}
           stats={stats}
           presence={presence}
           session={session}
-          connectionState={connectionState}
           pendingCount={pendingCount}
+          // Historia przeładowuje się po każdej zmianie długości dokumentu — czyli po
+          // każdej edycji własnej i cudzej. Wystarczająco dokładne dla osi czasu, a nie
+          // wymaga osobnego kanału powiadomień.
+          revision={stats.characters}
         />
       </div>
     </>
@@ -452,11 +456,148 @@ function labelFor(state: ConnectionState): string {
  * lepiej, że pod spodem faktycznie działa opisana struktura danych, niż możliwość
  * zobaczenia tombstone'ów i narastania bufora na żywo.
  */
-function ReplicaPanel(props: {
+function RightPanel(props: {
+  documentId: string
   stats: { characters: number; tombstones: number; blocks: number; pending: number }
   presence: PresenceEntry[]
   session: Session
-  connectionState: ConnectionState
+  pendingCount: number
+  revision: number
+}) {
+  const [tab, setTab] = useState<'replicas' | 'history'>('replicas')
+  return (
+    <aside className="rightpanel">
+      <div className="rp-tabs">
+        <button
+          className={`rp-tab${tab === 'replicas' ? ' active' : ''}`}
+          onClick={() => setTab('replicas')}
+        >
+          Repliki
+        </button>
+        <button
+          className={`rp-tab${tab === 'history' ? ' active' : ''}`}
+          onClick={() => setTab('history')}
+        >
+          Historia
+        </button>
+      </div>
+      <div className="rp-body">
+        {tab === 'replicas' ? (
+          <ReplicaTab
+            stats={props.stats}
+            presence={props.presence}
+            session={props.session}
+            pendingCount={props.pendingCount}
+          />
+        ) : (
+          <HistoryTab documentId={props.documentId} revision={props.revision} />
+        )}
+      </div>
+    </aside>
+  )
+}
+
+/**
+ * Oś czasu dokumentu.
+ *
+ * Historia nie jest tu osobnym mechanizmem — jest odczytem logu operacji, który i tak
+ * musi istnieć jako źródło prawdy (ADR-0003). Przywrócenie wersji też nie jest operacją
+ * specjalną: serwer generuje zwykłe operacje sprowadzające dokument do dawnego stanu,
+ * a one wracają do wszystkich przeglądarek tym samym kanałem co każda inna edycja.
+ * Dlatego po kliknięciu „Przywróć" nie ma tu nic do zrobienia — tekst zmieni się sam.
+ */
+function HistoryTab({ documentId, revision }: { documentId: string; revision: number }) {
+  const [versions, setVersions] = useState<Version[]>([])
+  const [selected, setSelected] = useState<Version | null>(null)
+  const [preview, setPreview] = useState<string | null>(null)
+  const [restoring, setRestoring] = useState(false)
+
+  useEffect(() => {
+    void api.history(documentId).then(setVersions)
+  }, [documentId, revision])
+
+  async function select(version: Version) {
+    setSelected(version)
+    setPreview(null)
+    setPreview((await api.textAt(documentId, version.throughServerSeq)).text)
+  }
+
+  async function restore() {
+    if (selected === null) return
+    setRestoring(true)
+    try {
+      await api.restore(documentId, selected.throughServerSeq)
+      setSelected(null)
+      setPreview(null)
+    } finally {
+      setRestoring(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="rp-hint">
+        Każdy wpis to ciąg zmian jednego autora. Historia jest odczytem logu operacji,
+        a nie osobnym zapisem — dlatego sięga do pojedynczej zmiany, a nie do najbliższego
+        zapisanego punktu (ADR-0003).
+      </div>
+
+      {versions.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>Brak zmian.</div>
+      )}
+
+      {versions.map((version) => (
+        <div key={version.throughServerSeq}>
+          <button
+            className={`history-entry${
+              selected?.throughServerSeq === version.throughServerSeq ? ' selected' : ''
+            }`}
+            onClick={() => void select(version)}
+          >
+            <div className="h-top">
+              <span className="history-dot" style={{ background: version.color }} />
+              {version.displayName}
+              <span className="h-time">{formatTime(version.at)}</span>
+            </div>
+            <div className="h-desc">
+              {version.charactersInserted > 0 && (
+                <span className="added">+{version.charactersInserted}</span>
+              )}
+              {version.charactersInserted > 0 && version.charactersDeleted > 0 && ' '}
+              {version.charactersDeleted > 0 && (
+                <span className="removed">−{version.charactersDeleted}</span>
+              )}
+              {' · '}
+              {version.operationCount} op.
+            </div>
+          </button>
+
+          {selected?.throughServerSeq === version.throughServerSeq && (
+            <>
+              <div className="history-preview">{preview ?? 'Odtwarzam stan…'}</div>
+              <button className="history-restore" onClick={restore} disabled={restoring}>
+                {restoring ? 'Przywracam…' : 'Przywróć tę wersję'}
+              </button>
+            </>
+          )}
+        </div>
+      ))}
+    </>
+  )
+}
+
+function formatTime(iso: string): string {
+  const at = new Date(iso)
+  const secondsAgo = Math.floor((Date.now() - at.getTime()) / 1000)
+  if (secondsAgo < 60) return `${secondsAgo}s temu`
+  if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)}m temu`
+  return at.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+}
+
+function ReplicaTab(props: {
+  stats: { characters: number; tombstones: number; blocks: number; pending: number }
+  presence: PresenceEntry[]
+  session: Session
   pendingCount: number
 }) {
   const { stats } = props
@@ -464,14 +605,7 @@ function ReplicaPanel(props: {
   const tombstoneRatio = total === 0 ? 0 : Math.round((stats.tombstones / total) * 100)
 
   return (
-    <aside className="rightpanel">
-      <div className="rp-tabs">
-        <button className="rp-tab active">Repliki</button>
-        <button className="rp-tab" disabled title="Dochodzi w CP5">
-          Historia
-        </button>
-      </div>
-      <div className="rp-body">
+    <>
         <div className="rp-hint">
           Stan struktury CRDT w tej przeglądarce. Tombstone to znak usunięty, ale nadal
           obecny w strukturze — nie da się go skasować, dopóki może być punktem zaczepienia
@@ -518,7 +652,6 @@ function ReplicaPanel(props: {
             <div className="vv">replika {entry.replicaId}</div>
           </div>
         ))}
-      </div>
-    </aside>
+    </>
   )
 }

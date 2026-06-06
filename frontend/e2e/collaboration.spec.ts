@@ -154,3 +154,52 @@ test('odcięcie sieci nie blokuje pisania, a po powrocie zmiany się scalają', 
   await anna.context().close()
   await marek.context().close()
 })
+
+test('historia pozwala cofnąć dokument do wcześniejszej wersji', async ({ browser, request }) => {
+  const documentId = await freshDocument(request, 'Historia')
+  const anna = await joinAs(browser, 'Anna', documentId)
+  // DWÓCH autorów, nie jeden: oś czasu grupuje kolejne zmiany tego samego autora w jeden
+  // wpis (okno 2 minut), więc gdyby oba fragmenty napisała Anna, powstałaby JEDNA wersja
+  // i „cofnięcie do poprzedniej" nie miałoby do czego wrócić. Pierwsza wersja tego testu
+  // właśnie tak wyglądała i przechodziła obok sedna.
+  const marek = await joinAs(browser, 'Marek', documentId)
+
+  await typeInto(anna, 'wersja dobra')
+  // Odczekanie na potwierdzenie zapisu: historia czyta log operacji, więc wpis pojawi się
+  // dopiero po zapisie, a nie po samym rozgłoszeniu (ADR-0003).
+  await expect(anna.locator('.statusbar .metric').first()).toContainText('12 znaków')
+  await marek.waitForTimeout(500)
+
+  await marek.locator('.cm-content').click()
+  await marek.keyboard.press('End')
+  await marek.keyboard.type(' ZEPSUTA', { delay: 25 })
+  await expect(anna.locator('.statusbar .metric').first()).toContainText('20 znaków')
+  await anna.waitForTimeout(500)
+
+  // Selektor zawężony do zakładki: dokumenty w panelu bocznym też nazywają się „Historia",
+  // bo tworzy je ten test.
+  await anna.locator('.rp-tab', { hasText: 'Historia' }).click()
+  const entries = anna.locator('.history-entry')
+  await expect(entries.first()).toBeVisible({ timeout: 10_000 })
+
+  // Wpisy są od najnowszych; ostatni to najstarszy stan.
+  await entries.last().click()
+  await expect(anna.locator('.history-preview')).not.toContainText('Odtwarzam', {
+    timeout: 10_000,
+  })
+
+  await anna.getByRole('button', { name: 'Przywróć tę wersję' }).click()
+
+  // Przywrócenie wraca zwykłym kanałem operacji — edytor ma się zaktualizować sam,
+  // bez przeładowania strony. To jest sedno decyzji z ADR-0003 pkt 6.
+  await expect(anna.locator('.cm-content')).not.toContainText('ZEPSUTA', { timeout: 15_000 })
+  expect(await documentText(anna)).toContain('wersja dobra')
+
+  // Przywrócenie wraca zwykłym kanałem operacji, więc DRUGA przeglądarka też ma je
+  // zobaczyć bez odświeżania — to jest cała teza ADR-0003 pkt 6.
+  await expect(marek.locator('.cm-content')).not.toContainText('ZEPSUTA', { timeout: 15_000 })
+  expect(await documentText(marek)).toBe(await documentText(anna))
+
+  await anna.context().close()
+  await marek.context().close()
+})

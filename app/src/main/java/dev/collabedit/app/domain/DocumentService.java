@@ -85,6 +85,20 @@ public class DocumentService {
     // Kroki 1–2: przyjęcie operacji od klienta
     // ------------------------------------------------------------------
 
+    /**
+     * Przyjmuje operację, która została już scalona do repliki serwera.
+     *
+     * <p>Używane przy przywracaniu wersji z historii (ADR-0003 pkt 6): operacje powstają
+     * na replice serwera, więc są już częścią jej stanu i trzeba je tylko zapisać
+     * i rozgłosić. Ponowne scalanie byłoby nieszkodliwe, ale mylące — z kodu ma wynikać,
+     * że to nie jest ta sama ścieżka co operacja od klienta.
+     */
+    public void submitAlreadyMerged(UUID documentId, Op op, String userId) {
+        DocumentReplica replica = registry.get(documentId);
+        replica.enqueueForWrite(op, userId, System.currentTimeMillis());
+        onFastPath.accept(documentId, List.of(op));
+    }
+
     public void submit(UUID documentId, Op op, String userId) {
         DocumentReplica replica = registry.get(documentId);
         if (!replica.merge(op, userId, System.currentTimeMillis())) {
