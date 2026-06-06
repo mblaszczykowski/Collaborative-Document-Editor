@@ -207,4 +207,30 @@ class DocumentCollaborationIT extends IntegrationTestBase {
                 .isEqualTo(Long.valueOf(count));
         }
     }
+
+    @Test
+    @DisplayName("dokument, który ucichł, dostaje snapshot mimo niedobicia progu operacji")
+    void quietDocumentIsSnapshottedBelowOperationThreshold() throws Exception {
+        UUID document = newDocument("Cisza");
+
+        try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 151)) {
+            // PIĘĆ operacji przy progu dwudziestu (IntegrationTestBase). Ścieżka
+            // „snapshot co N operacji" nie ma tu prawa zadziałać — jeśli snapshot powstanie,
+            // to wyłącznie dzięki wykryciu ciszy.
+            for (int i = 0; i < 5; i++) {
+                anna.insert(i, "x");
+            }
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 5, PATIENCE, "zapis potwierdzony");
+        }
+
+        // Bez tego mechanizmu dokument edytowany krótkimi sesjami NIGDY nie dostaje snapshotu:
+        // każda sesja zostawia kilka operacji, próg nie zostaje przekroczony, a ogon logu
+        // do odtworzenia rośnie z każdym otwarciem. Objaw jest podstępny, bo poprawność
+        // jest cała — psuje się wyłącznie czas ładowania, i to stopniowo.
+        awaitSnapshot(document);
+
+        assertThat(snapshots.count(document))
+            .as("dokument ucichł na dłużej niż snapshot-after-idle-ms, a snapshot nie powstał")
+            .isPositive();
+    }
 }

@@ -60,9 +60,16 @@ collabedit:
     # rozesłana, ale jeszcze nie w bazie — świadomy kompromis trwałość/przepustowość,
     # opisany w README w sekcji Failure modes.
     op-batch-window-ms: 50
+    # Górna granica ROZMIARU wsadu, niezależna od okna czasowego. Zapis trzyma blokadę
+    # wiersza dokumentu (OperationStore), więc długość transakcji to długość, przez którą
+    # wszyscy inni piszący do tego dokumentu czekają — również z innych instancji.
+    # Nadmiar zostaje w buforze i wychodzi w następnym oknie: stały rytm zapisu jest tu
+    # lepszy niż jedna wielka transakcja zatrzymująca dokument.
     op-batch-max-size: 100
-    # Snapshot co 500 operacji albo po 30 s bezczynności dokumentu (ADR-0003 pkt 4).
-    # Obie wartości do skalibrowania w CP8 na podstawie zmierzonego kosztu replaya.
+    # Snapshot po 500 operacjach ALBO po 30 s ciszy (ADR-0003 pkt 4) — dwa progi, bo łapią
+    # dwa różne przypadki. Próg operacji obsługuje dokument intensywnie edytowany; próg
+    # ciszy obsługuje ten edytowany krótkimi sesjami, który inaczej nigdy nie dobiłby do 500
+    # i przy każdym otwarciu odtwarzałby coraz dłuższy ogon logu.
     snapshot-every-n-ops: 500
     snapshot-after-idle-ms: 30000
 

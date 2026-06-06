@@ -60,6 +60,10 @@ public abstract class IntegrationTestBase {
         // Snapshot co 20 operacji zamiast co 500 — chcemy, żeby testy DOTYKAŁY ścieżki
         // snapshotowania i GC, a nie omijały jej dlatego, że nie generują dość operacji.
         registry.add("collabedit.persistence.snapshot-every-n-ops", () -> 20);
+        // Cisza rozpoznawana po 500 ms zamiast po 30 s. Wartość produkcyjna oznaczałaby
+        // test trwający pół minuty na samym czekaniu; skrócenie nie zmienia sprawdzanego
+        // zachowania, bo próg jest porównaniem, a nie zależnością czasową.
+        registry.add("collabedit.persistence.snapshot-after-idle-ms", () -> 500);
 
         // Bez tego każdy test próbuje wysyłać trace'y do nieistniejącego kolektora
         // i zaśmieca wyjście ostrzeżeniami o nieudanym eksporcie. Obserwowalność nie

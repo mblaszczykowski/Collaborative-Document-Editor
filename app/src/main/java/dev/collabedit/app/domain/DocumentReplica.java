@@ -143,15 +143,32 @@ public class DocumentReplica {
         }
     }
 
-    /** Wyjmuje wsad do zapisu i czyści bufor. */
-    public List<PendingOperation> drainUnwritten() {
+    /**
+     * Wyjmuje wsad do zapisu, najwyżej {@code limit} operacji.
+     *
+     * <p>Górna granica nie jest ozdobna. Bez niej jedna transakcja może objąć dowolnie wiele
+     * operacji — a {@link dev.collabedit.app.persist.OperationStore#append} trzyma przy tym
+     * blokadę wiersza dokumentu, czyli blokuje <b>wszystkich piszących do tego dokumentu,
+     * również z innych instancji</b>. Wsad ograniczony to ograniczony czas trzymania blokady.
+     *
+     * <p>Reszta zostaje w buforze i wyjdzie w następnym oknie, czyli za
+     * {@code op-batch-window-ms}. Opóźnienie jest tu właściwym zachowaniem: przy nagłym
+     * zalewie operacji wolimy stały, przewidywalny rytm zapisu niż jedną wielką transakcję,
+     * która na czas swojego trwania zatrzymuje dokument.
+     */
+    public List<PendingOperation> drainUnwritten(int limit) {
         lock.lock();
         try {
             if (unwritten.isEmpty()) {
                 return List.of();
             }
-            List<PendingOperation> batch = List.copyOf(unwritten);
-            unwritten.clear();
+            if (unwritten.size() <= limit) {
+                List<PendingOperation> batch = List.copyOf(unwritten);
+                unwritten.clear();
+                return batch;
+            }
+            List<PendingOperation> batch = List.copyOf(unwritten.subList(0, limit));
+            unwritten.subList(0, limit).clear();
             return batch;
         } finally {
             lock.unlock();

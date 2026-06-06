@@ -165,17 +165,52 @@ public class DocumentService {
      */
     @Scheduled(fixedDelayString = "${collabedit.persistence.op-batch-window-ms:50}")
     public void flushAll() {
+        long now = System.currentTimeMillis();
         for (DocumentReplica replica : registry.loaded()) {
             try {
                 flush(replica);
+                snapshotIfQuiet(replica, now);
             } catch (RuntimeException e) {
                 log.error("Nie udało się zapisać wsadu dla dokumentu {}", replica.documentId(), e);
             }
         }
     }
 
+    /**
+     * Snapshot dokumentu, który ucichł (ADR-0003 pkt 4).
+     *
+     * <p>Próg liczby operacji łapie dokumenty <b>intensywnie edytowane</b>. Nie łapie tego,
+     * który dostał sto zmian i zamilkł — a to jest właśnie przypadek, w którym snapshot ma
+     * największą wartość: dokument bez klientów zostanie za chwilę zwolniony z pamięci
+     * ({@code idle-document-eviction-ms}) i przy następnym otwarciu odtwarzany z logu.
+     * Bez tego ogon do odtworzenia rośnie z każdą sesją edycji.
+     *
+     * <p>Sprawdzane w pętli {@code flushAll}, a nie osobnym {@code @Scheduled}: ta pętla i tak
+     * przechodzi po załadowanych dokumentach, więc porównanie dwóch liczb jest tu darmowe,
+     * a próg działa z dokładnością do okna wsadowania zamiast do własnego interwału.
+     */
+    private void snapshotIfQuiet(DocumentReplica replica, long nowMillis) {
+        if (replica.operationsSinceSnapshot() == 0) {
+            return;
+        }
+        if (nowMillis - replica.lastActivityMillis() < properties.persistence().snapshotAfterIdleMs()) {
+            return;
+        }
+        // Niezapisane operacje mają pierwszeństwo: snapshot ponad stanem, którego nie ma
+        // jeszcze w logu, zapisywałby się z numerem server_seq sprzed tych operacji
+        // i przy odtwarzaniu zostałyby one zastosowane drugi raz. Byłoby to nieszkodliwe
+        // (idempotencja), ale snapshot przestałby odpowiadać swojemu numerowi.
+        if (replica.unwrittenCount() > 0) {
+            return;
+        }
+        log.debug("Dokument {} ucichł — snapshot {} operacji po ostatnim",
+            replica.documentId(), replica.operationsSinceSnapshot());
+        takeSnapshot(replica);
+    }
+
     private void flush(DocumentReplica replica) {
-        List<PendingOperation> batch = replica.drainUnwritten();
+        List<PendingOperation> batch =
+            replica.drainUnwritten(properties.persistence().opBatchMaxSize());
         if (batch.isEmpty()) {
             return;
         }
@@ -202,10 +237,15 @@ public class DocumentService {
         maybeSnapshot(replica);
     }
 
+    /** Snapshot po przekroczeniu progu liczby operacji — ścieżka dokumentu aktywnego. */
     private void maybeSnapshot(DocumentReplica replica) {
         if (!replica.snapshotDue(properties.persistence().snapshotEveryNOps())) {
             return;
         }
+        takeSnapshot(replica);
+    }
+
+    private void takeSnapshot(DocumentReplica replica) {
         // GC tombstone'ów dzieje się PRZY snapshotowaniu, a nie jako osobny proces (ADR-0005):
         // snapshot i tak przepisuje całą strukturę, więc kompakcja jest w tym miejscu darmowa.
         VersionVector stable = replica.stableVersion(
