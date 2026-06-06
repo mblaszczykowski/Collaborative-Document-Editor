@@ -54,10 +54,54 @@ jobs:
           path: crdt-core/target/jmh-result.json
 
   chaos:
-    name: Testy chaosu (CP8)
+    name: Chaos klastra — 10 przebiegów pod rząd
     runs-on: ubuntu-latest
-    # Job istnieje, żeby struktura pipeline'u była widoczna od początku, ale nie udaje,
-    # że coś sprawdza. Włączany w CP8.
-    if: false
+    # ClusterChaosIT wykonuje się już przy KAŻDYM pull requeście, bo job `app` w ci.yml
+    # woła `mvnw install`, a to uruchamia wszystkie testy modułu. Powtarzanie tego samego
+    # tutaj byłoby duplikatem bez wartości.
+    #
+    # Ten job robi coś, czego pojedynczy przebieg zrobić nie może: szuka NIEDETERMINIZMU.
+    # Test chaosu zatrzymuje Redisa w trakcie pisania i polega na przeglądzie anti-entropy,
+    # więc jego wynik zależy od uszeregowania zdarzeń w czasie. Test, który przechodzi
+    # raz, mógł przejść przypadkiem; test, który przechodzi dziesięć razy pod rząd przy
+    # różnym obciążeniu runnera, jest przesłanką znacznie mocniejszą.
+    #
+    # To jest ta sama zasada, co przy property testach powyżej — nocny przebieg SZUKA
+    # kontrprzykładów, zamiast potwierdzać te już znalezione.
     steps:
-      - run: echo "Do włączenia w CP8"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Testcontainers podnosi Postgresa i Redisa sam (IntegrationTestBase), więc ten job
+      # nie potrzebuje `services:` — w odróżnieniu od joba e2e, gdzie stack musi żyć
+      # poza JVM, bo używa go przeglądarka.
+      - run: ./mvnw -B install -DskipTests
+
+      - name: Chaos klastra ×10
+        run: |
+          failed=0
+          for run in $(seq 1 10); do
+            echo "::group::przebieg $run/10"
+            if ! ./mvnw -B -pl app test -Dtest=ClusterChaosIT; then
+              failed=$((failed + 1))
+              echo "::error::Przebieg $run nie przeszedł"
+              # Raporty nadpisują się między przebiegami, więc odkładamy ten nieudany.
+              mkdir -p failed-runs
+              cp -r app/target/surefire-reports "failed-runs/run-$run"
+            fi
+            echo "::endgroup::"
+          done
+          echo "Nieudane przebiegi: $failed/10"
+          # Jedna porażka na dziesięć to NIE jest szum — to jest dokładnie ten
+          # niedeterminizm, którego ten job szuka. Nie tolerujemy żadnej.
+          [ "$failed" -eq 0 ]
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: chaos-failed-runs
+          path: failed-runs/
