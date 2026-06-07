@@ -437,10 +437,10 @@ README było pisane równolegle z kodem, sekcja po sekcji — nie odtwarzane z p
 | Warstwa | Testy |
 |---|---:|
 | `crdt-core` — property, niezmienniki, konformancja, snapshoty | 20 |
-| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra | 39 |
+| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra | 63 |
 | `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 33 |
-| end-to-end — dwie prawdziwe przeglądarki | 5 |
-| **razem** | **97** |
+| end-to-end — dwie prawdziwe przeglądarki | 6 |
+| **razem** | **122** |
 
 Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
 trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami
