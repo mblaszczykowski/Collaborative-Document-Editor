@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type DocumentSummary, type Session, type Version } from './api'
+import { api, type DocumentSummary, type Session } from './api'
 import { RgaDocument } from './crdt/document'
 import { UndoManager } from './crdt/undo'
 import type { Id, Op } from './crdt/types'
@@ -11,6 +11,11 @@ import {
   type PresenceEntry,
 } from './transport/connection'
 import type { NetworkConditions } from './transport/simulator'
+import { DiagnosticsBar } from './ui/DiagnosticsBar'
+import { initials, peopleLabel, shiftAfter, wordCount } from './ui/format'
+import { HistoryPanel } from './ui/HistoryPanel'
+import { SaveIndicator } from './ui/SaveIndicator'
+import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
 
 /**
  * Powłoka aplikacji.
@@ -24,29 +29,6 @@ import type { NetworkConditions } from './transport/simulator'
  * „utrata pakietów" nad dokumentem sprawia, że produkt wygląda na stanowisko laboratoryjne.
  * Diagnostyka nie znika — przenosi się tam, gdzie jej miejsce.
  */
-
-const SESSION_KEY = 'inkline.session'
-
-/** Tryb diagnostyczny — wyłącznie do pracy nad projektem i testów chaosu. */
-const DEBUG = new URLSearchParams(window.location.search).has('debug')
-
-/**
- * Sesja przeżywa przeładowanie strony.
- *
- * `sessionStorage`, nie `localStorage`: tożsamość ma być związana z KARTĄ, nie z przeglądarką.
- * Przy `localStorage` dwie karty otwarte obok siebie dzieliłyby konto — czyli scenariusz
- * „dwie osoby w dwóch oknach" przestałby działać.
- */
-function loadSession(): Session | null {
-  const stored = sessionStorage.getItem(SESSION_KEY)
-  if (stored === null) return null
-  try {
-    return JSON.parse(stored) as Session
-  } catch {
-    sessionStorage.removeItem(SESSION_KEY)
-    return null
-  }
-}
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(loadSession)
@@ -447,211 +429,3 @@ function DocumentWorkspace(props: {
  * („resynchronizacja", „N operacji w buforze"). Użytkownik ma wiedzieć, czy jego praca
  * jest bezpieczna — nie jak działa transport.
  */
-function SaveIndicator({ state, pending }: { state: ConnectionState; pending: number }) {
-  if (state === 'offline') {
-    return (
-      <span className="save-state offline">
-        <span className="save-dot" />
-        Praca offline
-      </span>
-    )
-  }
-  if (pending > 0) {
-    return (
-      <span className="save-state pending">
-        <span className="save-dot" />
-        Zapisywanie…
-      </span>
-    )
-  }
-  if (state === 'connecting' || state === 'resyncing') {
-    return (
-      <span className="save-state pending">
-        <span className="save-dot" />
-        Łączenie…
-      </span>
-    )
-  }
-  return (
-    <span className="save-state saved">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-        <polyline points="20 6 9 17 4 12" />
-      </svg>
-      Zapisano
-    </span>
-  )
-}
-
-function HistoryPanel({ documentId, revision }: { documentId: string; revision: number }) {
-  const [versions, setVersions] = useState<Version[]>([])
-  const [selected, setSelected] = useState<Version | null>(null)
-  const [preview, setPreview] = useState<string | null>(null)
-  const [restoring, setRestoring] = useState(false)
-
-  useEffect(() => {
-    void api.history(documentId).then(setVersions)
-  }, [documentId, revision])
-
-  async function select(version: Version) {
-    setSelected(version)
-    setPreview(null)
-    setPreview((await api.textAt(documentId, version.throughServerSeq)).text)
-  }
-
-  async function restore() {
-    if (selected === null) return
-    setRestoring(true)
-    try {
-      await api.restore(documentId, selected.throughServerSeq)
-      setSelected(null)
-      setPreview(null)
-    } finally {
-      setRestoring(false)
-    }
-  }
-
-  return (
-    <aside className="rightpanel">
-      <div className="rp-header">Historia zmian</div>
-      <div className="rp-body">
-        {versions.length === 0 && <div className="rp-empty">Brak zmian.</div>}
-
-        {versions.map((version) => (
-          <div key={version.throughServerSeq}>
-            <button
-              className={`history-entry${
-                selected?.throughServerSeq === version.throughServerSeq ? ' selected' : ''
-              }`}
-              onClick={() => void select(version)}
-            >
-              <div className="h-top">
-                <span className="history-dot" style={{ background: version.color }} />
-                {version.displayName}
-                <span className="h-time">{formatTime(version.at)}</span>
-              </div>
-              <div className="h-desc">
-                {version.charactersInserted > 0 && (
-                  <span className="added">+{version.charactersInserted}</span>
-                )}
-                {version.charactersInserted > 0 && version.charactersDeleted > 0 && ' '}
-                {version.charactersDeleted > 0 && (
-                  <span className="removed">−{version.charactersDeleted}</span>
-                )}
-              </div>
-            </button>
-
-            {selected?.throughServerSeq === version.throughServerSeq && (
-              <>
-                <div className="history-preview">{preview ?? 'Wczytuję…'}</div>
-                <button className="history-restore" onClick={restore} disabled={restoring}>
-                  {restoring ? 'Przywracam…' : 'Przywróć tę wersję'}
-                </button>
-              </>
-            )}
-          </div>
-        ))}
-      </div>
-    </aside>
-  )
-}
-
-/**
- * Pasek diagnostyczny — WYŁĄCZNIE przy `?debug=1`.
- *
- * Symulator sieci napędza demo i testy chaosu, a podgląd stanu CRDT był nieoceniony przy
- * pracy nad algorytmem. Żadna z tych rzeczy nie ma prawa pojawić się przed użytkownikiem:
- * pierwsza sprawia, że produkt wygląda na stanowisko laboratoryjne, druga posługuje się
- * pojęciami, których nie ma obowiązku znać.
- */
-function DiagnosticsBar(props: {
-  network: NetworkConditions
-  onChange: (patch: Partial<NetworkConditions>) => void
-  document: RgaDocument | null
-  characters: number
-}) {
-  const { network, onChange, document: model } = props
-  return (
-    <div className="diagnostics">
-      <span className="diag-label">DIAGNOSTYKA</span>
-
-      <label className="diag-slider">
-        opóźnienie
-        <input
-          type="range"
-          min={0}
-          max={2000}
-          step={50}
-          value={network.latencyMs}
-          onChange={(event) => onChange({ latencyMs: Number(event.target.value) })}
-        />
-        <span className="value">{network.latencyMs} ms</span>
-      </label>
-
-      <label className="diag-slider">
-        strata
-        <input
-          type="range"
-          min={0}
-          max={50}
-          step={5}
-          value={Math.round(network.packetLoss * 100)}
-          onChange={(event) => onChange({ packetLoss: Number(event.target.value) / 100 })}
-        />
-        <span className="value">{Math.round(network.packetLoss * 100)}%</span>
-      </label>
-
-      <button
-        className={`diag-btn${network.partitioned ? ' on' : ''}`}
-        onClick={() => onChange({ partitioned: !network.partitioned })}
-      >
-        {network.partitioned ? 'Przywróć łączność' : 'Odetnij sieć'}
-      </button>
-
-      {model && (
-        <span className="diag-stats">
-          bloki {model.blockCount} · tombstony {model.tombstoneCount} · bez przyczyny{' '}
-          {model.pendingCount}
-        </span>
-      )}
-    </div>
-  )
-}
-
-function shiftAfter(index: number | null): number | null {
-  return index === null ? null : index + 1
-}
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join('')
-}
-
-/** Przybliżenie: średnie polskie słowo to około sześciu znaków plus spacja. */
-function wordCount(characters: number): string {
-  const words = Math.max(0, Math.round(characters / 7))
-  if (words === 1) return '1 słowo'
-  const last = words % 10
-  const lastTwo = words % 100
-  if (last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14)) return `${words} słowa`
-  return `${words} słów`
-}
-
-/** Polska odmiana: 1 osoba, 2–4 osoby, 5+ osób, ale 12–14 osób. */
-function peopleLabel(count: number): string {
-  const lastTwo = count % 100
-  const last = count % 10
-  if (count === 1) return '1 osoba'
-  if (last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14)) return `${count} osoby`
-  return `${count} osób`
-}
-
-function formatTime(iso: string): string {
-  const at = new Date(iso)
-  const secondsAgo = Math.floor((Date.now() - at.getTime()) / 1000)
-  if (secondsAgo < 60) return `${secondsAgo} s temu`
-  if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)} min temu`
-  return at.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
-}
