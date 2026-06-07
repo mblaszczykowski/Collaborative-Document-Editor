@@ -256,6 +256,30 @@ public class DocumentReplica {
     public record OutboundBatch(List<PendingOperation> broadcast, List<PendingOperation> writes) {
     }
 
+    /**
+     * Czy replika ma cokolwiek do wysłania albo zapisania — sprawdzane <b>bez blokady</b>.
+     *
+     * <p>Pętla {@code flushAll} chodzi co 50 ms po wszystkich załadowanych dokumentach.
+     * Przy jednym dokumencie zajęcie blokady było niezauważalne; przy pięciuset to dziesięć
+     * tysięcy zajęć blokady na sekundę, z czego w normalnym ruchu prawie wszystkie
+     * na pustych buforach.
+     *
+     * <p>Odczyt bez blokady jest tu <b>bezpieczny mimo wyścigu</b>, a nie dlatego, że wyścigu
+     * nie ma. Możliwe pomyłki są dwie i obie są nieszkodliwe:
+     * <ul>
+     *   <li>fałszywie POZYTYWNA — wejdziemy pod blokadę i zastaniemy pusto; kosztuje jedno
+     *       niepotrzebne zajęcie blokady,</li>
+     *   <li>fałszywie NEGATYWNA — operacja dodana dokładnie w trakcie sprawdzania poczeka
+     *       do następnego okna, czyli 50 ms. Nie ginie: bufory są opróżniane w całości,
+     *       a nie przyrostowo.</li>
+     * </ul>
+     * Rozmiary są odczytywane z {@code ArrayList} bez synchronizacji — w najgorszym razie
+     * zobaczymy nieaktualną wartość, a nie uszkodzoną, bo {@code size} to zwykły {@code int}.
+     */
+    public boolean hasPendingWork() {
+        return !unwritten.isEmpty() || !pendingBroadcast.isEmpty();
+    }
+
     public int unwrittenCount() {
         lock.lock();
         try {

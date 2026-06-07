@@ -79,6 +79,9 @@ public class DocumentService {
     @PostConstruct
     void subscribeToCluster() {
         cluster.onMessage(this::onClusterMessage);
+        // Odsiew po nazwie kanału, PRZED parsowaniem ładunku. Subskrypcja jest wzorcowa,
+        // więc bez tego każda instancja czytałaby JSON całego ruchu klastra.
+        cluster.interestedIn(registry::isLoaded);
     }
 
     /** Rozgłoszenie operacji do klientów tej instancji (krok 2) — bez numeru {@code server_seq}. */
@@ -214,7 +217,12 @@ public class DocumentService {
         long now = System.currentTimeMillis();
         for (DocumentReplica replica : registry.loaded()) {
             try {
-                flush(replica);
+                // Bezblokadowe sprawdzenie, czy jest co robić. Przy wielu otwartych
+                // dokumentach większość przebiegów tej pętli trafia na puste bufory,
+                // a samo zajęcie blokady kosztuje więcej niż odczyt dwóch rozmiarów.
+                if (replica.hasPendingWork()) {
+                    flush(replica);
+                }
                 snapshotIfQuiet(replica, now);
             } catch (RuntimeException e) {
                 log.error("Nie udało się zapisać wsadu dla dokumentu {}", replica.documentId(), e);

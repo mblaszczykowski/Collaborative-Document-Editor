@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.collabedit.crdt.OpCodec;
 import dev.collabedit.app.persist.StoredOperation;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -50,6 +51,20 @@ public class ClusterBus implements MessageListener {
     private final StringRedisTemplate redis;
     private volatile Consumer<ClusterMessage> handler = message -> { };
 
+    /**
+     * Czy ta instancja w ogóle interesuje się danym dokumentem.
+     *
+     * <p>Sprawdzane <b>przed</b> odczytaniem treści wiadomości. Subskrypcja jest wzorcowa
+     * (jeden wzorzec na wszystkie dokumenty — patrz {@code RedisConfig}), więc każda instancja
+     * dostaje ruch WSZYSTKICH dokumentów w klastrze. Przy jednym dokumencie nie miało to
+     * znaczenia; przy tysiącu oznacza parsowanie JSON-a całego ruchu klastra na każdej
+     * instancji, żeby w większości przypadków wyrzucić wynik.
+     *
+     * <p>Identyfikator dokumentu jest już w NAZWIE KANAŁU, więc odsiew nic nie kosztuje —
+     * pod warunkiem, że zrobi się go przed parsowaniem. To jest cała zmiana.
+     */
+    private volatile java.util.function.Predicate<UUID> interested = id -> true;
+
     public ClusterBus(StringRedisTemplate redis) {
         this.redis = redis;
     }
@@ -60,6 +75,30 @@ public class ClusterBus implements MessageListener {
 
     public void onMessage(Consumer<ClusterMessage> handler) {
         this.handler = handler;
+    }
+
+    /** Ustawia filtr dokumentów, którymi ta instancja się interesuje. Patrz {@link #interested}. */
+    public void interestedIn(java.util.function.Predicate<UUID> predicate) {
+        this.interested = predicate;
+    }
+
+    /**
+     * Wyciąga identyfikator dokumentu z nazwy kanału {@code collabedit:doc:{uuid}:ops}.
+     *
+     * @return {@code null}, gdy nazwa nie pasuje do wzorca — wtedy wiadomość pomijamy,
+     *         bo nie wiadomo, czego dotyczy
+     */
+    static UUID documentIdOf(String channel) {
+        int start = "collabedit:doc:".length();
+        int end = channel.lastIndexOf(":ops");
+        if (!channel.startsWith("collabedit:doc:") || end <= start) {
+            return null;
+        }
+        try {
+            return UUID.fromString(channel.substring(start, end));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /** Wiadomość klastrowa: operacje jednego dokumentu wraz z nadanymi numerami. */
@@ -108,6 +147,14 @@ public class ClusterBus implements MessageListener {
 
     @Override
     public void onMessage(Message message, byte[] pattern) {
+        // Odsiew PRZED parsowaniem treści — identyfikator dokumentu jest w nazwie kanału,
+        // więc nie ma powodu czytać ładunku wiadomości, która i tak zostanie odrzucona.
+        // Przy tysiącu dokumentów w klastrze to jest różnica między parsowaniem całego
+        // ruchu na każdej instancji a parsowaniem własnego.
+        UUID channelDocument = documentIdOf(new String(message.getChannel(), StandardCharsets.UTF_8));
+        if (channelDocument == null || !interested.test(channelDocument)) {
+            return;
+        }
         try {
             JsonNode payload = OpCodec.mapper().readTree(message.getBody());
             if (instanceId.equals(payload.path("from").asText())) {
