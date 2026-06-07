@@ -138,6 +138,56 @@ button { font-family: inherit; cursor: pointer; }
 }
 .sb-new { color: var(--text-faint); margin-top: 4px; }
 
+/* --- lista dokumentów: wyszukiwanie, podgląd, kosz (CP11) --- */
+
+.sb-search {
+  width: 100%; box-sizing: border-box; margin-bottom: 8px;
+  padding: 5px 8px; border-radius: 4px; font-size: 12.5px;
+  border: 1px solid var(--chrome-line); background: var(--bg); color: var(--text);
+}
+.sb-search::placeholder { color: var(--text-faint); }
+.sb-search:focus { outline: none; border-color: var(--text-faint); }
+
+/* Wiersz mieści pozycję i przycisk usuwania. Przycisk pojawia się dopiero pod kursorem:
+   lista dokumentów ma pokazywać dokumenty, a nie rząd krzyżyków. */
+.sb-row { display: flex; align-items: center; gap: 2px; }
+.sb-row .sb-item { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; gap: 1px; }
+
+.sb-title { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-preview {
+  display: block; width: 100%; font-size: 11px; color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.sb-delete, .sb-restore {
+  flex-shrink: 0; border: none; background: transparent; cursor: pointer;
+  color: var(--text-faint); font-size: 15px; line-height: 1;
+  padding: 2px 5px; border-radius: 4px; opacity: 0;
+}
+.sb-row:hover .sb-delete, .sb-row:hover .sb-restore { opacity: 1; }
+.sb-delete:hover, .sb-restore:hover { background: var(--hover); color: var(--text); }
+/* Klawiatura musi widzieć to, co widzi mysz — inaczej usuwanie jest niedostępne
+   dla kogoś, kto nie używa wskaźnika. */
+.sb-delete:focus-visible, .sb-restore:focus-visible { opacity: 1; outline: 1px solid var(--text-faint); }
+
+.sb-rename {
+  flex: 1; min-width: 0; padding: 4px 6px; font-size: 12.5px;
+  border: 1px solid var(--text-faint); border-radius: 4px;
+  background: var(--bg); color: var(--text);
+}
+.sb-rename:focus { outline: none; }
+
+.sb-item.deleted { flex: 1; color: var(--text-faint); text-decoration: line-through; }
+
+.sb-empty, .sb-note { padding: 4px 6px; font-size: 11px; color: var(--text-faint); }
+.sb-note { margin-top: 6px; line-height: 1.4; }
+
+.sb-trash-toggle {
+  width: 100%; margin-top: 10px; padding: 4px 6px; border: none; background: transparent;
+  text-align: left; font-size: 11px; color: var(--text-faint); border-radius: 4px;
+}
+.sb-trash-toggle:hover { background: var(--hover); color: var(--text-dim); }
+
 /* ===== KANWA ===== */
 .canvas-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .canvas-wrap { flex: 1; overflow-y: auto; display: flex; justify-content: center; padding: 28px 32px 60px; }

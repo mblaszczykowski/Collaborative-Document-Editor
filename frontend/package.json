@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
-    "e2e": "playwright test e2e/collaboration.spec.ts",
+    "e2e": "playwright test e2e/collaboration.spec.ts e2e/documents.spec.ts",
     "demo": "playwright test e2e/demo.spec.ts"
   },
   "dependencies": {

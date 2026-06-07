@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
+import { freshDocument, joinAs, typeInto } from './helpers'
 
 /**
  * Test end-to-end na prawdziwych przeglądarkach.
@@ -13,9 +14,6 @@ import { expect, test, type APIRequestContext, type Browser, type Page } from '@
  * odtworzoną wersję zdarzeń.
  */
 
-const APP = 'http://localhost:5173'
-const API = 'http://localhost:8080/api'
-
 /**
  * Świeży dokument na każdy test.
  *
@@ -24,25 +22,8 @@ const API = 'http://localhost:8080/api'
  * przez osobny dokument jest tańsza niż czyszczenie bazy między testami i nie wymaga
  * dostępu do niej z poziomu testu.
  */
-async function freshDocument(request: APIRequestContext, title: string): Promise<string> {
-  const response = await request.post(`${API}/documents`, { data: { title } })
-  return (await response.json()).id as string
-}
 
-async function joinAs(browser: Browser, name: string, documentId: string): Promise<Page> {
-  const context = await browser.newContext()
-  const page = await context.newPage()
-  await page.goto(`${APP}/?doc=${documentId}`)
-  await page.getByPlaceholder('Twoje imię').fill(name)
-  await page.getByRole('button', { name: 'Rozpocznij' }).click()
-  await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
-  return page
-}
 
-async function typeInto(page: Page, text: string): Promise<void> {
-  await page.locator('.cm-content').click()
-  await page.keyboard.type(text, { delay: 25 })
-}
 
 /**
  * Sam tekst dokumentu, bez chorągiewek kursorów.

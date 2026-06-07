@@ -12,6 +12,7 @@ import {
 } from './transport/connection'
 import type { NetworkConditions } from './transport/simulator'
 import { DiagnosticsBar } from './ui/DiagnosticsBar'
+import { DocumentList } from './ui/DocumentList'
 import { initials, peopleLabel, shiftAfter, wordCount } from './ui/format'
 import { HistoryPanel } from './ui/HistoryPanel'
 import { SaveIndicator } from './ui/SaveIndicator'
@@ -81,11 +82,16 @@ function Workspace({ session }: { session: Session }) {
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
   const [openId, setOpenId] = useState<string | null>(null)
 
+  const refresh = useCallback(async () => {
+    const list = await api.listDocuments()
+    setDocuments(list)
+    return list
+  }, [])
+
   useEffect(() => {
-    void api.listDocuments().then(async (list) => {
+    void refresh().then(async (list) => {
       const requested = new URLSearchParams(window.location.search).get('doc')
       if (requested !== null) {
-        setDocuments(list)
         setOpenId(requested)
         return
       }
@@ -95,22 +101,40 @@ function Workspace({ session }: { session: Session }) {
         setOpenId(created.id)
         return
       }
-      setDocuments(list)
       setOpenId(list[0].id)
     })
+  }, [refresh])
+
+  /**
+   * Adres jest źródłem prawdy o tym, co jest otwarte.
+   *
+   * `pushState`, nie `replaceState`: przycisk „wstecz" przeglądarki ma wracać
+   * do poprzedniego dokumentu. Przy `replaceState` historia przeglądarki nie zawierała
+   * przełączeń, więc „wstecz" wyrzucało użytkownika z aplikacji — zachowanie, którego
+   * nikt się nie spodziewa po liście dokumentów.
+   */
+  const select = useCallback((id: string) => {
+    setOpenId(id)
+    const url = new URL(window.location.href)
+    url.searchParams.set('doc', id)
+    window.history.pushState({ doc: id }, '', url)
+  }, [])
+
+  // Nawigacja przeglądarki (wstecz/dalej) musi przełączać dokument, inaczej adres
+  // i zawartość rozjeżdżają się po pierwszym kliknięciu „wstecz".
+  useEffect(() => {
+    const onPop = () => {
+      const requested = new URLSearchParams(window.location.search).get('doc')
+      if (requested !== null) setOpenId(requested)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
   }, [])
 
   async function createDocument() {
     const created = await api.createDocument('Dokument bez tytułu')
     setDocuments((current) => [created, ...current])
     select(created.id)
-  }
-
-  function select(id: string): void {
-    setOpenId(id)
-    const url = new URL(window.location.href)
-    url.searchParams.set('doc', id)
-    window.history.replaceState(null, '', url)
   }
 
   return openId ? (
@@ -121,6 +145,7 @@ function Workspace({ session }: { session: Session }) {
       documents={documents}
       onSelect={select}
       onCreate={createDocument}
+      onRefresh={() => void refresh()}
     />
   ) : (
     <div className="app">
@@ -135,6 +160,8 @@ function DocumentWorkspace(props: {
   documents: DocumentSummary[]
   onSelect: (id: string) => void
   onCreate: () => void
+  /** Lista wymaga odświeżenia — po zmianie nazwy, usunięciu albo przywróceniu. */
+  onRefresh: () => void
 }) {
   const { session, documentId } = props
 
@@ -343,21 +370,13 @@ function DocumentWorkspace(props: {
       )}
 
       <div className="body-row">
-        <aside className="sidebar">
-          <div className="sb-section-label">Dokumenty</div>
-          {props.documents.map((entry) => (
-            <button
-              key={entry.id}
-              className={`sb-item${entry.id === documentId ? ' active' : ''}`}
-              onClick={() => props.onSelect(entry.id)}
-            >
-              {entry.title}
-            </button>
-          ))}
-          <button className="sb-item sb-new" onClick={props.onCreate}>
-            + Nowy dokument
-          </button>
-        </aside>
+        <DocumentList
+          documents={props.documents}
+          openId={documentId}
+          onSelect={props.onSelect}
+          onCreate={props.onCreate}
+          onChanged={props.onRefresh}
+        />
 
         <main className="canvas-col">
           <div className="editor-toolbar">
