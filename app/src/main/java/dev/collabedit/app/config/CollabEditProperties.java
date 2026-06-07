@@ -32,10 +32,11 @@ public record CollabEditProperties(
         double heartbeatToleranceFactor,
         int maxMessageSizeBytes,
         int sendBufferSizeBytes,
-        long sendTimeLimitMs
+        long sendTimeLimitMs,
+        long broadcastWindowMs
     ) {
         static WebSocket defaults() {
-            return new WebSocket(10_000, 2.5, 65_536, 524_288, 20_000);
+            return new WebSocket(10_000, 2.5, 65_536, 524_288, 20_000, 10);
         }
 
         /** Po jakim czasie bez heartbeatu uznajemy sesję za martwą. */

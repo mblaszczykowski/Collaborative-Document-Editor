@@ -45,6 +45,16 @@ public class DocumentReplica {
     /** Operacje przyjęte, ale jeszcze niezapisane. Wsad opróżniany co {@code opBatchWindowMs}. */
     private final List<PendingOperation> unwritten = new ArrayList<>();
 
+    /**
+     * Operacje scalone, ale jeszcze nierozgłoszone. Opróżniane co {@code broadcastWindowMs}.
+     *
+     * <p>Osobna lista od {@link #unwritten}, bo <b>oba wsady mają inne rytmy i inne cele</b>:
+     * rozgłoszenie odpowiada za to, co użytkownik widzi (szybko, 10 ms), a zapis za trwałość
+     * (rzadziej, 50 ms, bo dotyka dysku i blokady wiersza). Jedna wspólna lista wymusiłaby
+     * wspólne tempo, czyli albo wolniejsze rozgłaszanie, albo częstsze transakcje.
+     */
+    private final List<PendingOperation> pendingBroadcast = new ArrayList<>();
+
     /** Ile operacji przybyło od ostatniego snapshotu — próg z ADR-0003. */
     private int operationsSinceSnapshot;
 
@@ -119,7 +129,9 @@ public class DocumentReplica {
                 // i poprawne — brakuje im tylko przyczyny, która dotrze później. Odkładanie
                 // ich zapisu do czasu integracji oznaczałoby, że pad instancji gubi operację,
                 // którą już przyjęliśmy od klienta.
-                unwritten.add(new PendingOperation(op, userId, traceparent));
+                PendingOperation pending = new PendingOperation(op, userId, traceparent);
+                unwritten.add(pending);
+                pendingBroadcast.add(pending);
                 operationsSinceSnapshot++;
             }
             return result.isNews();
@@ -135,8 +147,27 @@ public class DocumentReplica {
     public void enqueueForWrite(Op op, String userId, long nowMillis) {
         lock.lock();
         try {
-            unwritten.add(new PendingOperation(op, userId, null));
+            PendingOperation pending = new PendingOperation(op, userId, null);
+            unwritten.add(pending);
+            pendingBroadcast.add(pending);
             operationsSinceSnapshot++;
+            lastActivityMillis = nowMillis;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Dopisuje do rozgłoszenia operację, której NIE zapisujemy — bo jest już w logu.
+     *
+     * <p>Ścieżka operacji przyjętych z klastra i dociągniętych przy naprawie luki (ADR-0004).
+     * Trafiły do bazy na innej instancji, więc ponowny zapis byłby duplikatem, ale klienci
+     * podłączeni tutaj muszą je zobaczyć.
+     */
+    public void enqueueForBroadcast(Op op, long nowMillis) {
+        lock.lock();
+        try {
+            pendingBroadcast.add(new PendingOperation(op, null, null));
             lastActivityMillis = nowMillis;
         } finally {
             lock.unlock();
@@ -175,10 +206,69 @@ public class DocumentReplica {
         }
     }
 
+    /** Wyjmuje wszystko, co czeka na rozgłoszenie. Bez limitu — patrz {@link OutboundBatch}. */
+    public List<PendingOperation> drainBroadcast() {
+        lock.lock();
+        try {
+            if (pendingBroadcast.isEmpty()) {
+                return List.of();
+            }
+            List<PendingOperation> batch = List.copyOf(pendingBroadcast);
+            pendingBroadcast.clear();
+            return batch;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Wsad wychodzący: co rozgłosić i co zapisać, wyjęte <b>jednym zajęciem blokady</b>.
+     *
+     * <p>Atomowość nie jest tu ozdobą, tylko warunkiem poprawności. Klient wykrywa zgubione
+     * rozgłoszenia po tym, że dostał POTWIERDZENIE operacji, której u siebie nie ma
+     * (patrz {@code connection.ts}). Gdyby oba bufory opróżniać osobno, operacja mogła
+     * wejść między jedno a drugie: trafiłaby do wsadu zapisu, dostała potwierdzenie —
+     * a rozgłoszenie czekałoby jeszcze jedno okno. Klient uznałby to za lukę i poprosił
+     * o pełną resynchronizację. Mechanizm ratunkowy odpalałby się wtedy regularnie
+     * przy całkowicie zdrowym systemie.
+     *
+     * <p>Rozgłoszenie nie ma limitu rozmiaru, a zapis ma. To celowe: limit zapisu chroni
+     * czas trzymania blokady wiersza w bazie, a rozgłoszenie żadnej blokady nie trzyma.
+     * Ograniczenie go oznaczałoby tylko odsunięcie w czasie tego, co użytkownik ma zobaczyć.
+     *
+     * @param writeLimit górna granica liczby operacji w wsadzie zapisu
+     */
+    public OutboundBatch drainForFlush(int writeLimit) {
+        lock.lock();
+        try {
+            // Blokada jest reentrantna, a trzymanie jej z zewnątrz gwarantuje, że między
+            // tymi dwoma wyjęciami nikt nie dołoży operacji.
+            return new OutboundBatch(drainBroadcast(), drainUnwritten(writeLimit));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * @param broadcast operacje do rozesłania klientom tej instancji
+     * @param writes    operacje do dopisania do logu operacji
+     */
+    public record OutboundBatch(List<PendingOperation> broadcast, List<PendingOperation> writes) {
+    }
+
     public int unwrittenCount() {
         lock.lock();
         try {
             return unwritten.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public int pendingBroadcastCount() {
+        lock.lock();
+        try {
+            return pendingBroadcast.size();
         } finally {
             lock.unlock();
         }

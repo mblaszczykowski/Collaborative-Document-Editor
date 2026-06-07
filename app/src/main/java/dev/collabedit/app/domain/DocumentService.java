@@ -25,7 +25,7 @@ import org.springframework.stereotype.Service;
  *
  * <pre>
  *   klient ──op──► 1. scalenie do repliki w pamięci      (natychmiast)
- *                  2. rozgłoszenie do własnych klientów  (natychmiast)
+ *                  2. rozgłoszenie do własnych klientów  (wsadowo, co 10 ms)
  *                  3. zapis do logu operacji             (wsadowo, co 50 ms)
  *                  4. potwierdzenie z numerem server_seq (po zapisie)
  *                  5. publikacja do Redisa               (po zapisie, best-effort)
@@ -34,7 +34,10 @@ import org.springframework.stereotype.Service;
  * <p>Kolejność nie jest dowolna:
  * <ul>
  *   <li><b>Rozgłoszenie przed zapisem</b>, bo to ono odpowiada za to, co użytkownik widzi.
- *       Czekanie na dysk dodałoby opóźnienie do najbardziej zauważalnej rzeczy w systemie.</li>
+ *       Czekanie na dysk dodałoby opóźnienie do najbardziej zauważalnej rzeczy w systemie.
+ *       Oba wsady są wyjmowane jednym zajęciem blokady i rozgłoszenie idzie pierwsze —
+ *       potwierdzenie, które wyprzedzi rozgłoszenie, klient uzna za lukę i poprosi
+ *       o pełną resynchronizację (patrz {@link DocumentReplica#drainForFlush}).</li>
  *   <li><b>Potwierdzenie po zapisie</b>, bo dopiero wtedy wolno klientowi zwolnić operację
  *       z bufora offline. Inaczej pad instancji w tym oknie zostawia operację, którą inni
  *       już widzą, a której nikt nie potrafi odtworzyć.</li>
@@ -102,8 +105,8 @@ public class DocumentService {
      */
     public void submitAlreadyMerged(UUID documentId, Op op, String userId) {
         DocumentReplica replica = registry.get(documentId);
+        // Kolejkuje do zapisu ORAZ do rozgłoszenia — obie ścieżki wychodzą wsadowo.
         replica.enqueueForWrite(op, userId, System.currentTimeMillis());
-        onFastPath.accept(documentId, List.of(op));
     }
 
     /** Rzucane, gdy operacji nie da się już scalić, bo GC usunął jej punkt zaczepienia. */
@@ -146,11 +149,54 @@ public class DocumentService {
             // po ponownym połączeniu, więc jest sytuacją normalną, a nie błędem.
             return;
         }
-        try (var span = tracer.startStage("op.broadcast.local")) {
-            onFastPath.accept(documentId, List.of(op));
-            span.attribute("collabedit.document", documentId.toString());
-        }
+        // Operacja jest już w buforze rozgłoszeniowym (dodał ją merge) i wyjdzie
+        // w najbliższym oknie — patrz broadcastAll. Tu nie ma nic do zrobienia.
         metrics.recordServerLatency(wholeCall);
+    }
+
+    // ------------------------------------------------------------------
+    // Krok 2: rozgłoszenie — wsadowo (ADR-0002, ADR-0004)
+    // ------------------------------------------------------------------
+
+    /**
+     * Rozsyła zebrane operacje wszystkich dokumentów.
+     *
+     * <p><b>Dlaczego wsadowo, skoro ADR-0004 mówił „natychmiast".</b> Rozgłoszenie jedno-po-jednym
+     * znaczy jedna ramka na naciśnięcie klawisza <b>razy liczba odbiorców</b>. Liczba ramek rośnie
+     * więc z kwadratem liczby klientów, a każda niesie kilkadziesiąt bajtów treści w kopercie
+     * STOMP porównywalnego rozmiaru. Przy 50 klientach kolejka wysyłkowa wolniejszego z nich
+     * przekracza {@code send-buffer-size-bytes} i Spring zrywa mu sesję — co jest dokładnie
+     * tym objawem, który README opisywał jako nierozstrzygnięty („część klientów trwale w tyle,
+     * serwer ma komplet operacji").
+     *
+     * <p>Kosztem jest opóźnienie do {@code broadcast-window-ms}. Przy 10 ms jest ono
+     * o rząd wielkości poniżej progu zauważalności w pisaniu i o rząd wielkości poniżej
+     * zmierzonych latencji propagacji (22–553 ms), więc kompromis nie jest bliski.
+     */
+    @Scheduled(fixedDelayString = "${collabedit.websocket.broadcast-window-ms:10}")
+    public void broadcastAll() {
+        for (DocumentReplica replica : registry.loaded()) {
+            try {
+                broadcast(replica.documentId(), replica.drainBroadcast());
+            } catch (RuntimeException e) {
+                log.error("Nie udało się rozgłosić operacji dokumentu {}", replica.documentId(), e);
+            }
+        }
+    }
+
+    private void broadcast(UUID documentId, List<PendingOperation> batch) {
+        if (batch.isEmpty()) {
+            return;
+        }
+        // Kontekst śledzenia wiążemy LINKAMI, nie zagnieżdżeniem — tak samo jak przy zapisie.
+        // Wsad obejmuje operacje wielu użytkowników i wykonuje się na wątku schedulera,
+        // więc zagnieżdżenie pokazywałoby każdemu z nich czas cudzych operacji.
+        try (var span = tracer.startBatch("op.broadcast.local",
+            batch.stream().map(PendingOperation::traceparent).toList())) {
+            span.attribute("collabedit.document", documentId.toString());
+            span.attribute("collabedit.batch.size", batch.size());
+            onFastPath.accept(documentId, batch.stream().map(PendingOperation::op).toList());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -209,8 +255,14 @@ public class DocumentService {
     }
 
     private void flush(DocumentReplica replica) {
-        List<PendingOperation> batch =
-            replica.drainUnwritten(properties.persistence().opBatchMaxSize());
+        // Oba bufory wyjmowane RAZEM, jednym zajęciem blokady, i rozgłoszenie idzie PIERWSZE.
+        // Powód w DocumentReplica.drainForFlush: potwierdzenie zapisu, które wyprzedzi
+        // rozgłoszenie, klient interpretuje jako lukę i prosi o pełną resynchronizację.
+        DocumentReplica.OutboundBatch outbound =
+            replica.drainForFlush(properties.persistence().opBatchMaxSize());
+        broadcast(replica.documentId(), outbound.broadcast());
+
+        List<PendingOperation> batch = outbound.writes();
         if (batch.isEmpty()) {
             return;
         }
@@ -292,15 +344,18 @@ public class DocumentService {
             repairFrom(replica, replica.appliedServerSeq());
         }
 
-        List<Op> applied = applyRemote(replica, message.operations());
-        if (!applied.isEmpty()) {
-            onFastPath.accept(message.documentId(), applied);
-        }
+        applyRemote(replica, message.operations());
         replica.advanceServerSeq(message.operations().getLast().serverSeq());
     }
 
-    private List<Op> applyRemote(DocumentReplica replica, List<StoredOperation> incoming) {
-        List<Op> applied = new java.util.ArrayList<>(incoming.size());
+    /**
+     * Scala operacje pochodzące z klastra albo z naprawy luki i kolejkuje je do rozgłoszenia.
+     *
+     * @return ile z nich było nowością dla tej repliki
+     */
+    private int applyRemote(DocumentReplica replica, List<StoredOperation> incoming) {
+        long now = System.currentTimeMillis();
+        int applied = 0;
         for (StoredOperation stored : incoming) {
             // Operacje z klastra są już w logu — scalamy je do repliki w pamięci,
             // ale NIE dopisujemy ponownie. Stąd bezpośrednie wejście w RgaDocument
@@ -308,7 +363,8 @@ public class DocumentService {
             RgaDocument.ApplyResult result =
                 replica.withLock(document -> document.apply(stored.op()));
             if (result.isNews()) {
-                applied.add(stored.op());
+                replica.enqueueForBroadcast(stored.op(), now);
+                applied++;
             }
         }
         return applied;
@@ -316,11 +372,7 @@ public class DocumentService {
 
     private void repairFrom(DocumentReplica replica, long fromServerSeq) {
         List<StoredOperation> missing = operations.loadAfter(replica.documentId(), fromServerSeq);
-        List<Op> applied = applyRemote(replica, missing);
-        metrics.recordGapRepair(applied.size());
-        if (!applied.isEmpty()) {
-            onFastPath.accept(replica.documentId(), applied);
-        }
+        metrics.recordGapRepair(applyRemote(replica, missing));
         if (!missing.isEmpty()) {
             replica.advanceServerSeq(missing.getLast().serverSeq());
         }

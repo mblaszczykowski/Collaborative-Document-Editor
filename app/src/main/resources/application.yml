@@ -54,6 +54,16 @@ collabedit:
     # Kontrolowana degradacja zamiast zatoru na całym dokumencie.
     send-buffer-size-bytes: 524288
     send-time-limit-ms: 20000
+    # Okno sklejania rozgłoszeń. Bez niego każde naciśnięcie klawisza to osobna ramka
+    # dla KAŻDEGO odbiorcy — przy N klientach liczba ramek rośnie z kwadratem N i przy
+    # 50 klientach przepełnia bufor powyżej (metryka ws_sessions_closed_total{reason}).
+    #
+    # 10 ms, bo to jest poniżej progu, na którym człowiek zauważa opóźnienie w pisaniu
+    # (~50-100 ms), a jednocześnie wystarcza, żeby skleić serię znaków wpisywanych
+    # w tempie 5-10 na sekundę przez kilku użytkowników naraz. Wartość musi być WYRAŹNIE
+    # mniejsza od op-batch-window-ms: potwierdzenie zapisu nie może wyprzedzić rozgłoszenia,
+    # bo klient wykrywa luki właśnie po potwierdzeniu operacji, której u siebie nie ma.
+    broadcast-window-ms: 10
 
   persistence:
     # Batchowanie zapisu operacji (ADR-0003 pkt 5). W tym oknie operacja jest już

@@ -78,12 +78,37 @@ wiadomości.
 klient ──op──► instancja A
                  │
                  ├─ 1. merge do lokalnej repliki   (natychmiast)
-                 ├─ 2. broadcast do własnych klientów (natychmiast)
+                 ├─ 2. broadcast do własnych klientów (wsadowo, co 10 ms)
                  ├─ 3. INSERT do operations         (ŹRÓDŁO PRAWDY, ADR-0003)
                  └─ 4. PUBLISH doc:{id}:ops         (best-effort, może zginąć)
                              │
                     instancja B ─ SUBSCRIBE ─► merge + broadcast
 ```
+
+> **Zmiana w kroku 2, wprowadzona w CP10.** Pierwotnie było tu „natychmiast", jedna ramka
+> na operację. Jest to zachowanie, które **z definicji nie skaluje się z liczbą klientów**:
+> operacja wychodzi w tylu ramkach, ilu jest odbiorców, więc łączna liczba ramek rośnie
+> z kwadratem liczby klientów. Przy 50 klientach × 40 operacjach to 100 tys. ramek.
+>
+> To jest argument z arytmetyki, a nie z pomiaru — i warto go odróżnić od hipotezy o tym,
+> **co konkretnie** psuło się w scenariuszu opisanym w README jako nierozstrzygnięty
+> („część klientów trwale w tyle"). Przypuszczenie było takie, że kolejka wysyłkowa
+> przekracza `send-buffer-size-bytes` i Spring zrywa sesję kodem 4500. **Przypuszczenie
+> to jest sprzeczne z ustaleniem z CP8** zapisanym w ADR-0002: statystyki brokera nie
+> wykazały wtedy ani jednego zamknięcia z powodu przepełnienia bufora. Dlatego CP10 dokłada
+> najpierw metrykę `ws_sessions_closed_total{reason}`, która mierzy to wprost, zamiast przez
+> zbiorcze statystyki brokera — a wnioski są dopisane niżej, po pomiarze.
+>
+> Niezależnie od tego, co okaże się przyczyną rozjazdu, sklejanie ramek jest uzasadnione samo
+> w sobie: kwadratowy wzrost liczby ramek jest własnością konstrukcji, a nie objawem błędu.
+>
+> Okno 10 ms jest o rząd wielkości poniżej progu zauważalności w pisaniu i o rząd wielkości
+> poniżej zmierzonych latencji propagacji, więc kompromis nie jest bliski. Musi być
+> **wyraźnie krótsze niż `op-batch-window-ms`** — potwierdzenie zapisu, które wyprzedzi
+> rozgłoszenie, klient interpretuje jako lukę i prosi o pełną resynchronizację. Dla pewności
+> oba bufory są opróżniane jednym zajęciem blokady, z rozgłoszeniem przed zapisem
+> (`DocumentReplica.drainForFlush`), więc nie polegamy wyłącznie na relacji między okresami
+> dwóch schedulerów.
 
 **Anti-entropy (read-repair) — mechanizm, który zamienia zawodny broadcast w bezpieczny:**
 
