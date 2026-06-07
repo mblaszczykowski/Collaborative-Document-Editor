@@ -153,6 +153,24 @@
         }
       },
       "targets": [{ "expr": "sum(op_rejected_stale_total)" }]
+    },
+    {
+      "type": "row",
+      "title": "Czy klienci nadążają za rozgłoszeniami",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rozłączenia sesji wg powodu",
+      "description": "Panel istnieje po to, żeby zamknąć otwarte pytanie z README (sekcja 'Punkt degradacji'): dlaczego powyżej ~10 klientów w jednym dokumencie część z nich zostaje trwale w tyle, mimo że serwer ma komplet operacji. ZŁĄ WARTOŚCIĄ jest rosnące slow_client_buffer_overflow — klient nie nadąża z odbiorem, jego kolejka wysyłkowa przekracza send-buffer-size-bytes (ADR-0002) i serwer zrywa mu sesję. Klient wraca ścieżką reconnect+resync, więc z zewnątrz wygląda to na chwilowy przestój, a nie na utratę dostaw. Jeśli ta seria rośnie wraz z liczbą klientów, wąskim gardłem jest ROZGŁASZANIE, a nie scalanie CRDT. UWAGA: wartość stale zerowa przy jednoczesnym rozjeżdżaniu się klientów NIE znaczy, że jest dobrze — znaczy, że przyczyna leży gdzie indziej i hipotezę trzeba odrzucić.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 5 } } },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(ws_sessions_closed_total[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
     }
   ]
 }

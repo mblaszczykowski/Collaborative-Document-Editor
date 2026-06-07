@@ -39,6 +39,8 @@ class DocumentCollaborationIT extends IntegrationTestBase {
     DocumentService documents;
     @Autowired
     SnapshotStore snapshots;
+    @Autowired
+    io.micrometer.core.instrument.MeterRegistry meters;
 
 
     /**
@@ -232,5 +234,34 @@ class DocumentCollaborationIT extends IntegrationTestBase {
         assertThat(snapshots.count(document))
             .as("dokument ucichł na dłużej niż snapshot-after-idle-ms, a snapshot nie powstał")
             .isPositive();
+    }
+
+    @Test
+    @DisplayName("zakończenie sesji trafia do metryki z powodem — listener jest podpięty")
+    void sessionCloseIsRecordedWithReason() throws Exception {
+        UUID document = newDocument("Metryka rozłączeń");
+        double before = closedSessions();
+
+        try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 161)) {
+            anna.insert(0, "x");
+            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "sesja żyje i zapisuje");
+        }
+
+        // Samo mapowanie kodu na tag jest sprawdzone jednostkowo. Ten test odpowiada na inne
+        // pytanie: czy @EventListener jest w ogóle wołany. Metryka, która nigdy nie rośnie,
+        // wygląda na dowód braku problemu, a jest dowodem braku pomiaru.
+        for (int attempt = 0; attempt < 200 && closedSessions() <= before; attempt++) {
+            Thread.sleep(20);
+        }
+
+        assertThat(closedSessions())
+            .as("rozłączenie klienta nie zwiększyło ws.sessions.closed.total — listener nie jest wpięty")
+            .isGreaterThan(before);
+    }
+
+    private double closedSessions() {
+        return meters.find("ws.sessions.closed.total").counters().stream()
+            .mapToDouble(io.micrometer.core.instrument.Counter::count)
+            .sum();
     }
 }
