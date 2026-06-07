@@ -1,5 +1,6 @@
 package dev.collabedit.app.ws;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
 import dev.collabedit.app.observability.EditTracer;
@@ -211,9 +212,9 @@ public class DocumentStompController {
             return;
         }
         for (int from = 0; from < operations.size(); from += SYNC_CHUNK) {
-            List<com.fasterxml.jackson.databind.JsonNode> chunk =
+            List<JsonNode> chunk =
                 operations.subList(from, Math.min(from + SYNC_CHUNK, operations.size())).stream()
-                    .map(stored -> (com.fasterxml.jackson.databind.JsonNode) OpCodec.toJson(stored.op()))
+                    .map(stored -> (JsonNode) OpCodec.toJson(stored.op()))
                     .toList();
             messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
                 new Messages.SyncResponse(chunk, head), SessionAttributes.forUser(headers));

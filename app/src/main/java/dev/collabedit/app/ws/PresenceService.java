@@ -1,6 +1,7 @@
 package dev.collabedit.app.ws;
 
 import dev.collabedit.app.domain.DocumentRegistry;
+import dev.collabedit.app.observability.DocumentMetrics;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -34,10 +35,10 @@ public class PresenceService {
 
     private final SimpMessagingTemplate messaging;
     private final DocumentRegistry registry;
-    private final dev.collabedit.app.observability.DocumentMetrics metrics;
+    private final DocumentMetrics metrics;
 
     public PresenceService(SimpMessagingTemplate messaging, DocumentRegistry registry,
-                           dev.collabedit.app.observability.DocumentMetrics metrics) {
+                           DocumentMetrics metrics) {
         this.messaging = messaging;
         this.registry = registry;
         this.metrics = metrics;

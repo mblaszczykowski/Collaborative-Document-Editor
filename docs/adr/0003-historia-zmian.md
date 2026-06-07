@@ -160,3 +160,20 @@ snapshots    (CACHE — wolno skasować w każdej chwili)
   pokazały, że wąskim gardłem jest dostawa do klientów, a nie odczyt z bazy, więc kalibracja
   tego progu byłaby optymalizacją miejsca, które nie boli. Zostaje wartość dobrana
   rozumowaniem, oznaczona jako niezweryfikowana.
+
+### Zweryfikowane w CP10
+
+- **Punkt 4 tej decyzji opisywał mechanizm, którego nie było w kodzie.** „Snapshot po
+  bezczynności łapie dokumenty, które nigdy nie osiągną 500 operacji" brzmiało jak opis
+  zachowania systemu, a było opisem zamiaru: jedyną zaimplementowaną ścieżką był próg liczby
+  operacji, sprawdzany przy zapisie wsadu. Dokument bez nowych operacji nie wchodzi do tej
+  ścieżki w ogóle, więc próg bezczynności **nie mógł zadziałać z definicji**, niezależnie
+  od wartości w konfiguracji.
+- Skutkiem było to, że dokument edytowany krótkimi sesjami po kilka zmian nigdy nie dostawał
+  snapshotu, a ogon logu do odtworzenia rósł z każdym otwarciem. Poprawność cała — psuł się
+  wyłącznie czas ładowania, i to stopniowo, więc bez metryki nie ma tego jak zauważyć.
+- Zaimplementowane w CP10 wraz z testem, który używa **pięciu** operacji przy progu
+  dwudziestu, żeby ścieżka „co N operacji" nie mogła zaliczyć go przypadkiem.
+- Lekcja ogólniejsza niż sam błąd: ADR opisujący decyzję i ADR opisujący stan systemu czyta
+  się tak samo, a znaczą co innego. Wartość konfiguracyjna z uzasadnieniem w komentarzu
+  wygląda na działającą — i nikt jej nie sprawdza właśnie dlatego, że wygląda.

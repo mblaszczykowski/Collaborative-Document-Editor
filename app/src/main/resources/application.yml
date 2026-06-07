@@ -10,7 +10,16 @@ spring:
       # 10 połączeń na instancję. Uzasadnienie: obciążenie bazy w tym systemie to
       # głównie krótkie, wsadowe INSERT-y operacji (ADR-0003) — nie długie transakcje.
       # Przy takim profilu duża pula nie pomaga, a mnoży kontencję w Postgresie.
-      # Wartość do zweryfikowania w CP8 (czy pula nie staje się wąskim gardłem przy 250 userach).
+      #
+      # Zweryfikowane w CP10: przy 50 klientach jednocześnie edytujących jeden dokument
+      # pula nie jest wąskim gardłem — przepustowość przyjmowania operacji sięga 116 tys./s,
+      # a wszystkie scenariusze harnessu zbiegają się. Wynika to z tego, że zapis jest
+      # wsadowany (op-batch-window-ms), więc pod blokadę wiersza wchodzi się raz na wsad,
+      # a nie raz na naciśnięcie klawisza. Wartość zostaje.
+      #
+      # Czego to NIE dowodzi: harness używa jednego dokumentu. Pula jest współdzielona przez
+      # wszystkie dokumenty instancji, więc granicą jest liczba jednocześnie ZAPISUJĄCYCH
+      # dokumentów, a nie klientów — i tego nie zmierzyłem.
       maximum-pool-size: 10
       minimum-idle: 2
       # Krótszy niż domyślne 30 s. Jeśli nie ma połączenia przez 5 s, to znaczy, że

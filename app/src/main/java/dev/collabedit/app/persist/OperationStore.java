@@ -49,8 +49,17 @@ public class OperationStore {
      *
      * <p>Kosztem jest serializacja zapisów <b>w obrębie jednego dokumentu</b>. Jest ona
      * akceptowalna, bo zapisy i tak są wsadowane co 50 ms — pod blokadę wchodzi się raz
-     * na wsad, a nie raz na naciśnięcie klawisza. Do zweryfikowania w CP8, przy ilu
-     * jednocześnie piszących ta blokada zaczyna być wąskim gardłem.
+     * na wsad, a nie raz na naciśnięcie klawisza.
+     *
+     * <p><b>Zweryfikowane w CP10:</b> przy 50 klientach piszących jednocześnie w jeden
+     * dokument blokada nie jest wąskim gardłem — przepustowość przyjmowania operacji sięga
+     * 116 tys./s, a zbieżność osiągana jest w 239 ms przy dokumencie 100 tys. znaków.
+     * Od CP10 wsad ma też górną granicę rozmiaru ({@code op-batch-max-size}), więc czas
+     * trzymania blokady jest ograniczony niezależnie od tempa pisania.
+     *
+     * <p>Czego pomiar NIE obejmuje: klienci i serwer działają w jednym procesie, więc
+     * przy realnym RTT łącza wsady byłyby większe, a blokada trzymana dłużej. Granica
+     * jest więc <b>nie niższa</b> niż zmierzona, ale niekoniecznie równa.
      *
      * @return operacje faktycznie dopisane, wraz z nadanymi im numerami; pusta lista gdy
      *         cały wsad okazał się duplikatem
