@@ -4,9 +4,15 @@
 # (CLAUDE.md, "Czego unikać"). Jeśli wartość jest domyślna — też to piszę, wraz z tym,
 # kiedy przestanie wystarczać.
 #
-# Uruchomienie pełnego stacku:      docker compose up -d
-# Sam backend + zależności:         docker compose up -d postgres redis
-# Stack obserwowalności (CP7):      docker compose --profile observability up -d
+# Sama infrastruktura (do pracy nad kodem):  docker compose up -d
+#     backend uruchamiasz wtedy z IDE albo przez ./mvnw -pl app spring-boot:run
+# Cała aplikacja, bez instalowania czegokolwiek poza Dockerem:
+#     docker compose --profile app up -d      → frontend na http://localhost:5173
+# Stack obserwowalności (CP7):                docker compose --profile observability up -d
+#
+# Poprzednia wersja tego nagłówka obiecywała, że `docker compose up -d` podnosi "pełny
+# stack", podczas gdy w pliku były wyłącznie postgres i redis, a Dockerfile'i nie było
+# wcale. Komentarz opisujący nieistniejące zachowanie jest gorszy niż jego brak.
 
 services:
 
@@ -78,6 +84,59 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Aplikacja. Osobny profil `app`, bo przy pracy nad kodem uruchamia się backend
+  # z IDE albo przez `mvnw spring-boot:run` — obraz jest wtedy zbędnym krokiem
+  # przebudowy przy każdej zmianie. Profil istnieje dla kogoś, kto chce ZOBACZYĆ
+  # działającą aplikację, nie nad nią pracować.
+  # ---------------------------------------------------------------------------
+
+  app:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: collabedit-app
+    profiles: ["app"]
+    environment:
+      # Adresy WEWNĄTRZ sieci compose'a — nazwy usług i porty domyślne, nie te
+      # przesunięte z myślą o hoście. Kontener nie ma konfliktu z lokalnym Postgresem,
+      # bo nie widzi hosta.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/collabedit
+      SPRING_DATASOURCE_USERNAME: collabedit
+      SPRING_DATASOURCE_PASSWORD: collabedit
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      # Kolektor jest w osobnym profilu, więc domyślnie go nie ma. Bez wyłączenia
+      # aplikacja zasypuje log ostrzeżeniami o nieudanym eksporcie trace'ów —
+      # hałasem, który wygląda jak awaria, a jest brakiem opcjonalnej usługi.
+      OTEL_SDK_DISABLED: "true"
+      # Sekret jawnie w repo z tego samego powodu co hasło Postgresa: środowisko jest
+      # wyłącznie lokalne. Nazwa mówi wprost, czym to nie jest — domyślna wartość
+      # w TokenService brzmi tak samo i tak samo nie nadaje się na produkcję.
+      COLLABEDIT_AUTH_SECRET: lokalny-sekret-nie-do-produkcji
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: collabedit-frontend
+    profiles: ["app"]
+    ports:
+      # 5173 jak w trybie deweloperskim Vite — dzięki temu adres jest ten sam
+      # niezależnie od sposobu uruchomienia, a origin dopuszczony w WebSocketConfig
+      # (`http://localhost:*`) zgadza się bez zmian w kodzie.
+      - "5173:80"
+    depends_on:
+      app:
+        condition: service_healthy
 
   # ---------------------------------------------------------------------------
   # Stack obserwowalności (CP7). Osobny profil, bo do pracy nad samym CRDT
