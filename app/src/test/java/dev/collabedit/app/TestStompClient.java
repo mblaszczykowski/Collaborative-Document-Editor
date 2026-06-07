@@ -64,7 +64,23 @@ public class TestStompClient implements AutoCloseable {
         this.documentId = documentId;
         this.document = new RgaDocument(replicaId, new TreapBlockList());
 
-        WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
+        // Bufor tekstowy kontenera JSR-356 ma domyślnie 8 KiB — czyli OSIEM RAZY MNIEJ niż
+        // limit ramki, który ten system deklaruje w ADR-0002 (64 KiB). Bez podniesienia go
+        // klient testowy gubi każdą wiadomość powyżej 8 KiB i wygląda to jak utrata operacji
+        // po stronie serwera.
+        //
+        // Kosztowało to jeden fałszywy alarm: po wprowadzeniu sklejania rozgłoszeń (CP10)
+        // harness pokazał brak zbieżności przy 10 klientach, a serwer miał komplet operacji.
+        // Winą obciążony byłby system, gdyby nie to, że przeglądarka takiego limitu nie ma —
+        // API WebSocket składa wiadomości wieloramkowe samo. To jest ograniczenie STANOWISKA
+        // POMIAROWEGO i musi być ustawione POWYŻEJ limitu serwera, żeby stanowisko mierzyło
+        // system, a nie siebie.
+        jakarta.websocket.WebSocketContainer container =
+            jakarta.websocket.ContainerProvider.getWebSocketContainer();
+        container.setDefaultMaxTextMessageBufferSize(1024 * 1024);
+
+        WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient(container));
+        client.setInboundMessageSizeLimit(1024 * 1024);
         client.setMessageConverter(new MappingJackson2MessageConverter());
 
         StompHeaders connectHeaders = new StompHeaders();
