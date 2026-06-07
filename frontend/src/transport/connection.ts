@@ -57,6 +57,8 @@ export class DocumentConnection {
   /** Operacje wysłane, ale jeszcze niepotwierdzone zapisem. Klucz: replicaId@lamport. */
   private readonly unacknowledged = new Map<string, Op>()
   private lastServerSeq = 0
+  /** Uczestnicy wg replicaId — scalane z delt, patrz onPresence. */
+  private readonly presence = new Map<number, PresenceEntry>()
   private state: ConnectionState = 'connecting'
   private reconnectAttempt = 0
   private gapDetected = false
@@ -153,7 +155,7 @@ export class DocumentConnection {
       ),
       client.subscribe(`/topic/doc/${this.documentId}/acks`, (message) => this.onAcks(message)),
       client.subscribe(`/topic/doc/${this.documentId}/presence`, (message) =>
-        this.handlers.onPresence(JSON.parse(message.body) as PresenceEntry[]),
+        this.onPresence(message),
       ),
       client.subscribe('/user/queue/session', (message) => {
         const info = JSON.parse(message.body) as { replicaId: number }
@@ -274,6 +276,29 @@ export class DocumentConnection {
       this.lastServerSeq = Math.max(this.lastServerSeq, ack.serverSeq)
     }
     this.setState(this.state)
+  }
+
+  /**
+   * Obecność: pełna lista albo delta pojedynczego uczestnika.
+   *
+   * Ruch kursora jest najczęstszym zdarzeniem w systemie (każdy klawisz, a przy trzymanej
+   * strzałce ~30 na sekundę), więc serwer odsyła wtedy JEDEN zmieniony wpis zamiast
+   * wszystkich uczestników. Dołączenie i odejście przychodzą jako pełna lista, bo odejście
+   * znaczy „tego wpisu już nie ma" i deltą wyrazić się nie da.
+   *
+   * Stan trzymamy tutaj, a nie w komponencie, bo scalanie delt jest własnością PROTOKOŁU —
+   * warstwa widoku ma dostawać gotową listę i nie wiedzieć, że protokół w ogóle zna delty.
+   */
+  private onPresence(message: IMessage): void {
+    const update = JSON.parse(message.body) as { full: boolean; entries: PresenceEntry[] }
+
+    if (update.full) {
+      this.presence.clear()
+    }
+    for (const entry of update.entries) {
+      this.presence.set(entry.replicaId, entry)
+    }
+    this.handlers.onPresence([...this.presence.values()])
   }
 
   private parseOps(message: IMessage): Op[] {

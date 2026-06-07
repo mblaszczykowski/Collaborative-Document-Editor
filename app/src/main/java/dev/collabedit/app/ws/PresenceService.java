@@ -65,18 +65,29 @@ public class PresenceService {
         broadcast(documentId);
     }
 
+    /**
+     * Nowa pozycja kursora jednego uczestnika.
+     *
+     * <p>Rozgłaszana jako <b>delta</b>, nie jako pełna lista. Ruch kursora jest zdarzeniem
+     * najczęstszym w systemie — powstaje przy każdym klawiszu i przy auto-powtarzaniu strzałki
+     * (~30/s) — więc odsyłanie w odpowiedzi wszystkich uczestników wszystkim daje ruch rosnący
+     * z kwadratem liczby osób, w którym prawie nic się nie zmieniło. Uzasadnienie rozróżnienia
+     * przy {@link Messages.PresenceUpdate}.
+     */
     public void updateCursor(String sessionId, Messages.ClientPresence update) {
         Participant current = bySession.get(sessionId);
         if (current == null) {
             return;
         }
-        bySession.put(sessionId, new Participant(
+        Participant moved = new Participant(
             current.sessionId(), current.documentId(), current.replicaId(),
             current.userId(), current.displayName(), current.color(),
             update.cursorReplicaId(), update.cursorLamport(),
             update.anchorReplicaId(), update.anchorLamport(),
-            update.typing()));
-        broadcast(current.documentId());
+            update.typing());
+        bySession.put(sessionId, moved);
+
+        send(moved.documentId(), new Messages.PresenceUpdate(false, List.of(wire(moved))));
     }
 
     public void leave(String sessionId) {
@@ -104,14 +115,27 @@ public class PresenceService {
         return result;
     }
 
+    /**
+     * Rozgłasza PEŁNĄ listę uczestników — używane przy dołączeniu i odejściu.
+     *
+     * <p>Odejścia nie da się wyrazić deltą: znaczy ono „tego wpisu już nie ma", a delta potrafi
+     * powiedzieć wyłącznie „ten wpis wygląda teraz tak". Trzeci rodzaj komunikatu byłby przy
+     * tej częstotliwości droższy w utrzymaniu niż wysłanie całej listy.
+     */
     private void broadcast(UUID documentId) {
-        List<Messages.PresenceBroadcast> payload = participants(documentId).stream()
-            .map(p -> new Messages.PresenceBroadcast(
-                p.replicaId(), p.userId(), p.displayName(), p.color(),
-                p.cursorReplicaId(), p.cursorLamport(),
-                p.anchorReplicaId(), p.anchorLamport(),
-                p.typing(), true))
-            .toList();
-        messaging.convertAndSend("/topic/doc/" + documentId + "/presence", payload);
+        send(documentId, new Messages.PresenceUpdate(true,
+            participants(documentId).stream().map(PresenceService::wire).toList()));
+    }
+
+    private void send(UUID documentId, Messages.PresenceUpdate update) {
+        messaging.convertAndSend("/topic/doc/" + documentId + "/presence", update);
+    }
+
+    private static Messages.PresenceBroadcast wire(Participant p) {
+        return new Messages.PresenceBroadcast(
+            p.replicaId(), p.userId(), p.displayName(), p.color(),
+            p.cursorReplicaId(), p.cursorLamport(),
+            p.anchorReplicaId(), p.anchorLamport(),
+            p.typing(), true);
     }
 }

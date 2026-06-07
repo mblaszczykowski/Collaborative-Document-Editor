@@ -116,6 +116,26 @@ public final class Messages {
     }
 
     /**
+     * Zmiana obecności — pełna lista albo pojedynczy wpis.
+     *
+     * <h2>Dlaczego to rozróżnienie w ogóle istnieje</h2>
+     * Ruch kursora jest zdarzeniem <b>najczęstszym w całym systemie</b>: powstaje przy każdym
+     * naciśnięciu klawisza i przy każdym ruchu strzałkami (auto-powtarzanie klawisza to
+     * ~30 zdarzeń na sekundę). Odsyłanie w odpowiedzi PEŁNEJ listy uczestników do WSZYSTKICH
+     * daje ruch rosnący z kwadratem liczby osób, w którym 99% treści nie uległo zmianie.
+     *
+     * <p>Dołączenie i odejście są rzadkie i wymagają pełnej listy, bo odejście trzeba wyrazić
+     * przez <b>nieobecność</b> wpisu — delta nie potrafi powiedzieć „ten człowiek zniknął",
+     * chyba że dołożylibyśmy trzeci rodzaj komunikatu. Przy tej częstotliwości pełna lista
+     * jest tańsza niż dodatkowy typ w protokole.
+     *
+     * @param full    {@code true} → zastąp całą listę; {@code false} → scal po {@code replicaId}
+     * @param entries uczestnicy: wszyscy przy {@code full}, jeden przy delcie
+     */
+    public record PresenceUpdate(boolean full, List<PresenceBroadcast> entries) {
+    }
+
+    /**
      * Błąd wymagający reakcji klienta.
      *
      * <p>{@code code} {@code RESYNC_REQUIRED} to sytuacja z ADR-0005: klient był offline

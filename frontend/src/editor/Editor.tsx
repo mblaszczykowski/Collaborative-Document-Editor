@@ -26,6 +26,9 @@ import { remoteCursorsField, setRemoteCursors, type RemoteCursor } from './remot
 /** Znacznik transakcji pochodzącej ze scalenia zdalnego — nie wolno z niej robić operacji. */
 const remoteChange = Annotation.define<boolean>()
 
+/** Najkrótszy odstęp między raportami pozycji kursora — uzasadnienie przy scheduleCursor. */
+const CURSOR_REPORT_INTERVAL_MS = 100
+
 export interface EditorProps {
   document: RgaDocument
   undo: UndoManager
@@ -48,6 +51,35 @@ export function Editor(props: EditorProps) {
 
   useEffect(() => {
     if (!host.current) return
+
+    // Ograniczenie tempa raportowania kursora.
+    //
+    // Bez tego pozycja leci przy KAŻDYM zdarzeniu edytora: każdym klawiszu, a przy trzymanej
+    // strzałce ~30 razy na sekundę (auto-powtarzanie systemu). Serwer odsyła to wszystkim
+    // uczestnikom, więc ruch rośnie z kwadratem liczby osób — i to na zdarzeniu, które nie
+    // niesie żadnej treści.
+    //
+    // 100 ms, bo kursor innego użytkownika nie musi być płynniejszy niż 10 klatek na sekundę,
+    // żeby wyglądać na żywy; poniżej tego progu dokładamy ruchu bez różnicy widocznej gołym
+    // okiem. Wariant TRAILING, nie leading: ostatnia pozycja zawsze zostaje wysłana, więc
+    // kursor nie zatrzymuje się w miejscu, w którym akurat wypadł koniec okna.
+    let cursorTimer: number | null = null
+    let pendingCursor: { head: Id | null; anchor: Id | null } | null = null
+
+    const flushCursor = () => {
+      cursorTimer = null
+      if (pendingCursor === null) return
+      const { head, anchor } = pendingCursor
+      pendingCursor = null
+      latest.current.onCursorMove(head, anchor)
+    }
+
+    const scheduleCursor = (head: Id | null, anchor: Id | null) => {
+      pendingCursor = { head, anchor }
+      if (cursorTimer === null) {
+        cursorTimer = window.setTimeout(flushCursor, CURSOR_REPORT_INTERVAL_MS)
+      }
+    }
 
     const state = EditorState.create({
       // Dokument startuje pusty i wypełnia się z operacji przysłanych przez serwer.
@@ -91,7 +123,7 @@ export function Editor(props: EditorProps) {
           }
 
           if (update.selectionSet || update.docChanged) {
-            reportCursor(update.state, current)
+            reportCursor(update.state, current, scheduleCursor)
           }
         }),
       ],
@@ -112,6 +144,7 @@ export function Editor(props: EditorProps) {
     })
 
     return () => {
+      if (cursorTimer !== null) window.clearTimeout(cursorTimer)
       editor.destroy()
       view.current = null
     }
@@ -133,12 +166,20 @@ export function Editor(props: EditorProps) {
  * null i druga strona rysuje go na końcu. To jedyny przypadek, w którym pozycja kursora
  * nie jest zakotwiczona w tekście i może „odpłynąć" przy zdalnej edycji.
  */
-function reportCursor(state: EditorState, props: EditorProps): void {
+function reportCursor(
+  state: EditorState,
+  props: EditorProps,
+  emit: (head: Id | null, anchor: Id | null) => void,
+): void {
   const selection = state.selection.main
   const documentLength = props.document.visibleLength
 
   const toId = (position: number): Id | null =>
     position > 0 && position <= documentLength ? props.document.idAtVisible(position - 1) : null
 
-  props.onCursorMove(toId(selection.head), selection.empty ? null : toId(selection.anchor))
+  // Mapowanie offsetu na identyfikator dzieje się TUTAJ, przed ograniczeniem tempa,
+  // a nie w momencie wysyłki. Gdyby odłożyć je do końca okna, dokument mógłby się w tym
+  // czasie zmienić i ten sam offset wskazywałby już inny znak — czyli kursor lądowałby
+  // w cudzym tekście. To jest dokładnie ten błąd, przed którym chroni ADR-0006.
+  emit(toId(selection.head), selection.empty ? null : toId(selection.anchor))
 }
