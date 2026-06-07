@@ -1,7 +1,28 @@
 # Plan v2 — z artefaktu w produkt
 
-> **Status: zaplanowany, nierozpoczęty.** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
+> **Status: CP10 zamknięty, CP11 w trakcie.** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
 > który opisuje checkpointy CP1–CP9 (wszystkie zamknięte). Ten dokument opisuje CP10–CP15.
+>
+> | Checkpoint | Stan | Uwagi |
+> |---|---|---|
+> | CP10 — Fundament | **zamknięty** | Otwarte pytanie z CP8 rozstrzygnięte — patrz niżej |
+> | CP11 — Multi-dokument | **w trakcie** | Zrobione: odsiew klastra, limit pamięci, schemat V2. Zostało: REST, lista i routing we froncie |
+> | CP12 — Uprawnienia | niezaczęty | |
+> | CP13 — Rich text | niezaczęty | |
+> | CP14 — Komentarze | niezaczęty | |
+> | CP15 — Pomiar + dokumentacja | niezaczęty | |
+>
+> **Najważniejszy wynik CP10, którego plan nie przewidywał.** Punkt 2.1 zakładał, że
+> brak powtarzalnej zbieżności powyżej ~10 klientów jest problemem systemu i że sklejanie
+> rozgłoszeń go naprawi. Sklejanie owszem pomogło (2,7× szybsza zbieżność przy 50 klientach),
+> ale **przyczyną braku zbieżności było stanowisko pomiarowe**: klient testowy miał domyślny
+> bufor JSR-356 o rozmiarze 8 KiB, który przepuszczał rozgłoszenia (~70 B na ramkę),
+> a zatrzymywał odpowiedzi na resynchronizację (300 operacji ≈ 15 KB) — czyli jedyny
+> mechanizm zdolny naprawić zgubioną operację. Szczegóły w README i ADR-0002.
+>
+> Hipoteza z planu o przepełnieniu bufora wysyłkowego serwera **nie potwierdziła się**:
+> metryka `ws_sessions_closed_total{reason}` nie odnotowała ani jednego takiego zamknięcia
+> przy 50 klientach.
 
 Wersja 1 była **wąskim artefaktem inżynierskim**: jeden dokument, jeden problem (zbieżność
 danych rozproszonych), maksymalna głębia. Zakres produktowy był świadomie odrzucony
