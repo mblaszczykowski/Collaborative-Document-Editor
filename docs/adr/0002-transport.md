@@ -149,3 +149,29 @@ Wartości żyją w `application.yml` z komentarzem przy każdej, nie w kodzie.
 - **Tolerancji heartbeatu nie udało się sensownie sprawdzić**: klienci i serwer działali na
   jednej maszynie, więc jitter, przed którym ta wartość ma chronić, praktycznie nie występował.
   Zostaje jako wartość uzasadniona rozumowaniem, nie pomiarem.
+
+### Zweryfikowane w CP10
+
+- **Rozgłaszanie po jednej operacji na ramkę zostało zastąpione oknem 10 ms.** Powód nie jest
+  strojeniem, tylko własnością konstrukcji: operacja wychodzi w tylu ramkach, ilu jest
+  odbiorców, więc liczba ramek rośnie z kwadratem liczby klientów. Zmierzony zysk to 2,7×
+  krótszy czas do zbieżności przy 50 klientach (szczegóły w README). Nowa wartość
+  `broadcast-window-ms` musi być wyraźnie mniejsza od `op-batch-window-ms` — uzasadnienie
+  przy samej wartości w `application.yml`.
+- **Limit 64 KiB zaczął obowiązywać w trzecim miejscu.** Po sklejeniu rozgłoszeń wsad potrafi
+  przekroczyć limit tak samo, jak robiła to odpowiedź na resynchronizację w CP8. Dzielenie
+  jest tu jednak **po bajtach, a nie po liczbie operacji**, i przy okazji ujawnia wadę
+  rozwiązania z CP8: `SYNC_CHUNK = 300` zakłada, że operacja waży ~100 B, co przestaje być
+  prawdą przy wklejeniu dużego fragmentu tekstu — jedna taka operacja to dziesiątki kilobajtów.
+  Dla ścieżki resynchronizacji limit liczony w operacjach **pozostaje niepoprawny**;
+  jest to znany dług, nie przeoczenie.
+- **Bufor 512 KiB nadal nie okazał się wąskim gardłem**, teraz mierzone wprost metryką
+  `ws_sessions_closed_total{reason}` zamiast zbiorczymi statystykami brokera. Ani jednego
+  zamknięcia z powodu przepełnienia przy 50 klientach.
+- **Ustalenie o „błędach transportu, których źródła nie ustaliłem" (CP8) ma teraz kandydata
+  na wyjaśnienie — po stronie stanowiska, nie systemu.** Klient testowy budował
+  `StandardWebSocketClient` bez konfiguracji kontenera JSR-356, którego domyślny bufor
+  tekstowy to **8 KiB**, czyli ośmiokrotnie mniej niż limit deklarowany przez ten ADR.
+  Przy jednej operacji na ramkę próg był nieosiągalny i problem spał; przy sklejaniu ujawnił
+  się natychmiast jako „brak zbieżności przy 10 klientach" — z kompletem operacji na serwerze
+  i bez błędu w logu. Przeglądarka takiego limitu nie ma. Stanowisko mierzyło siebie.

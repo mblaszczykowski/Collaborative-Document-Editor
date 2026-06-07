@@ -32,13 +32,18 @@ Jeśli masz trzy minuty:
    szybka, log operacji w Postgresie — autorytatywna. Zgubiona wiadomość jest przez to
    problemem latencji, a nie poprawności; [test chaosu](app/src/test/java/dev/collabedit/app/ClusterChaosIT.java)
    zatrzymuje Redisa w trakcie pisania i sprawdza, że tak faktycznie jest.
-3. **[Wydajność](#wydajność) z liczbami i z tym, czego nie wiem.** Treap jest 210× szybszy
+3. **[Otwarte pytanie o wydajność okazało się wadą mojego stanowiska pomiarowego,
+   nie systemu.](#punkt-degradacji--rozstrzygnięty-i-to-nie-na-korzyść-mojego-stanowiska)**
+   Przez cały CP8 „powyżej ~10 klientów zbieżność przestaje być powtarzalna" wyglądało jak
+   granica systemu. Był to domyślny bufor 8 KiB w kliencie testowym, który przepuszczał
+   rozgłoszenia, a **zatrzymywał wyłącznie odpowiedzi na resynchronizację** — czyli jedyny
+   mechanizm zdolny naprawić zgubioną operację. Treap jest przy okazji 210× szybszy
    od skanowania liniowego przy 100 tys. znaków — i 1,4× **wolniejszy** przy odczycie całości.
-   Punkt degradacji jest opisany razem z otwartym pytaniem, którego nie rozstrzygnąłem.
 
-Trzy błędy w tym projekcie znalazły testy, a nie przegląd kodu: dublowanie dokumentu przy
-otwarciu, snapshot niezapisywalny powyżej 64 KB i odpowiedź na resynchronizację przekraczająca
-limit ramki. Wszystkie trzy są opisane w commitach i w komentarzach w miejscu naprawy.
+Cztery błędy w tym projekcie znalazły testy, a nie przegląd kodu: dublowanie dokumentu przy
+otwarciu, snapshot niezapisywalny powyżej 64 KB, odpowiedź na resynchronizację przekraczająca
+limit ramki i nazwa użytkownika ze znakiem `|` unieważniająca własny token. Wszystkie są
+opisane w commitach i w komentarzach w miejscu naprawy.
 
 ---
 
@@ -152,6 +157,7 @@ więc wersje są spójne, ale zależność idzie w jedną stronę i dotyczy wył
 ./mvnw install                         # wszystko, w tym integracyjne na prawdziwym Postgresie
 ./mvnw -pl crdt-core exec:exec@run-benchmarks                # benchmarki JMH (~7 min)
 ./mvnw -pl app test -Dtest=LoadHarnessIT -Dbenchmark=true    # harness obciążeniowy (~10 min)
+./mvnw -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true   # ilu klientów zbiega się POWTARZALNIE
 cd frontend && npm run e2e                                   # dwie przeglądarki (wymaga działającego stacku)
 ```
 
@@ -225,42 +231,68 @@ kompresuje się do jednego bloku i omija ścieżkę, która faktycznie skaluje s
 
 | Dokument | Klienci | p50 | p95 | p99 | Zbieżność |
 |---:|---:|---:|---:|---:|---|
-| pusty | 2 | 22 ms | 30 ms | 31 ms | 52 ms |
-| pusty | 10 | 112 ms | 145 ms | 151 ms | 162 ms |
-| 10 000 znaków | 2 | 8,6 ms | 8,7 ms | 8,8 ms | 59 ms |
-| 10 000 znaków | 10 | 26 ms | 39 ms | 41 ms | 61 ms |
-| 10 000 znaków | 25 | 191 ms | 281 ms | 286 ms | 290 ms |
-| 100 000 znaków | 2 | 3,0 ms | 3,4 ms | 3,4 ms | 59 ms |
-| 100 000 znaków | 10 | 29 ms | 55 ms | 56 ms | 103 ms |
-| 100 000 znaków | 50 | 553 ms | 811 ms | 834 ms | 871 ms |
+| pusty | 2 | 32 ms | 33 ms | 34 ms | 53 ms |
+| pusty | 10 | 86 ms | 93 ms | 94 ms | 117 ms |
+| pusty | 25 | 92 ms | 126 ms | 130 ms | 188 ms |
+| pusty | 50 | 226 ms | 389 ms | 420 ms | 397 ms |
+| 10 000 znaków | 2 | 3,7 ms | 4,6 ms | 4,7 ms | 51 ms |
+| 10 000 znaków | 10 | 15 ms | 19 ms | 20 ms | 56 ms |
+| 10 000 znaków | 25 | 73 ms | 90 ms | 92 ms | 131 ms |
+| 10 000 znaków | 50 | 128 ms | 182 ms | 192 ms | 237 ms |
+| 100 000 znaków | 2 | 11 ms | 11 ms | 11 ms | 50 ms |
+| 100 000 znaków | 10 | 15 ms | 16 ms | 17 ms | 61 ms |
+| 100 000 znaków | 25 | 57 ms | 65 ms | 67 ms | 116 ms |
+| 100 000 znaków | 50 | 127 ms | 193 ms | 203 ms | 239 ms |
 
 **Rozmiar dokumentu praktycznie nie wpływa na latencję** — 100 tys. znaków wypada nie gorzej
 niż dokument pusty. To potwierdza, że po wymianie indeksu na treap wąskim gardłem przestała
 być struktura danych.
 
-### Punkt degradacji — i czego o nim NIE wiem
+### Co dało sklejanie rozgłoszeń
 
-**Powyżej ~10 jednoczesnych klientów w jednym dokumencie zbieżność przestaje być
-powtarzalna.** W kolejnych przebiegach te same scenariusze przy 25 i 50 klientach raz się
-zbiegają, raz nie — a przy braku zbieżności część klientów zostaje trwale kilka operacji
-poniżej stanu serwera.
+Do CP10 każda operacja szła w osobnej ramce **do każdego odbiorcy**, więc liczba ramek rosła
+z kwadratem liczby klientów. Od CP10 operacje są zbierane w okno 10 ms.
 
-Co wiem na pewno:
-- **Serwer ma zawsze komplet operacji.** Nic nie ginie w zapisie — log jest kompletny
-  w każdym przebiegu. To nie jest utrata danych.
-- Gubi się **dostawa** do części klientów. Statystyki WebSocketa pokazują błędy transportu.
-- Dwa błędy wykryte po drodze zostały naprawione i wyraźnie poprawiły sytuację:
-  odpowiedź na resynchronizację przekraczająca limit rozmiaru ramki
-  ([ADR-0002](docs/adr/0002-transport.md)) oraz brak wykrywania luk po stronie klienta.
+| Dokument | Klienci | p50 przed | p50 po | Zbieżność przed | po |
+|---:|---:|---:|---:|---:|---:|
+| 10 000 znaków | 25 | 191 ms | **73 ms** | 290 ms | **131 ms** |
+| 100 000 znaków | 50 | 553 ms | **127 ms** | 871 ms | **239 ms** |
 
-Czego **nie** rozstrzygnąłem: czy pozostała niestabilność leży po stronie systemu, czy
-stanowiska pomiarowego. Przy 50 klientach w jednym procesie razem z serwerem, Postgresem
-i Redisem na dziesięciu rdzeniach harness sam jest poważnym konsumentem procesora, a każdy
-klient wykonuje pełną pracę CRDT. Rozstrzygnięcie wymaga rozdzielenia klientów i serwera
-na osobne maszyny — czego nie zrobiłem.
+Zysk rośnie z liczbą klientów — czyli dokładnie tam, gdzie był problem. Przy dwóch klientach
+sklejać nie ma czego i widać to w liczbach (32 ms wobec 22 ms, czyli nieco gorzej: doszło
+okno oczekiwania, a nie ma z czego go zamortyzować).
 
-Zapisuję to jako **otwarte pytanie, nie jako wynik**. Tabela z samymi zielonymi znaczkami
-byłaby tu łatwiejsza do napisania i mniej prawdziwa.
+### Punkt degradacji — rozstrzygnięty, i to nie na korzyść mojego stanowiska
+
+Poprzednia wersja tego README kończyła się tutaj zdaniem „nie wiem, czy przyczyna leży
+w systemie, czy w stanowisku pomiarowym". **Leżała w stanowisku.**
+
+`TestStompClient` budował `StandardWebSocketClient` bez konfiguracji kontenera JSR-356,
+którego domyślny bufor tekstowy to **8 KiB** — ośmiokrotnie mniej niż limit ramki, który
+ten system deklaruje ([ADR-0002](docs/adr/0002-transport.md)). Każda większa wiadomość
+po prostu do klienta testowego nie docierała.
+
+Dlaczego objawiało się to jako *nieodwracalny* rozjazd, a nie jako zwykłe zgubienie ramki:
+
+1. Rozgłoszenia szły po jednej operacji na ramkę (~70 B), więc **próg był nieosiągalny**
+   i mechanizm wyglądał na sprawny.
+2. Gdy jedna operacja jednak zginęła, klient poprawnie wykrywał lukę i prosił o resynchronizację.
+3. Odpowiedź na resynchronizację jest dzielona na porcje po **300 operacji** (poprawka z CP8),
+   a to jest ok. **15 KB** — czyli powyżej 8 KiB. **Mechanizm ratunkowy był jedyną rzeczą,
+   której bufor nie przepuszczał.**
+
+Stąd dokładnie ten objaw, który był w README: serwer z kompletem operacji, część klientów
+trwale kilka operacji w tyle, brak błędu w logu. Naprawa polegająca na skróceniu porcji
+resynchronizacji „naprawiłaby" to na stanowisku i nic nie zmieniła w systemie.
+
+Po podniesieniu bufora stanowiska **wszystkie 12 scenariuszy zbiega się**, a `BroadcastFanoutIT`
+daje 3/3 powtarzalnych zbieżności dla 2, 10, 25 i 50 klientów — również na kodzie *sprzed*
+sklejania rozgłoszeń. Sklejanie uzasadnia się więc **latencją, a nie naprawą zbieżności**,
+i tak jest opisane wyżej.
+
+Czego to nie dowodzi: klienci i serwer nadal działają w jednym procesie, więc liczby opisują
+koszt systemu, nie doświadczenie przez internet. Rozdzielenie na osobne maszyny pozostaje
+niezrobione — ale nie jest już potrzebne do odpowiedzi na pytanie „system czy stanowisko".
 
 ---
 
@@ -280,7 +312,7 @@ oznaczone jako zweryfikowane mają test, który to sprawdza.
 | **Klient offline dłużej niż okno GC (7 dni)** | Operacje **odrzucone jawnie** (`RESYNC_REQUIRED`), lokalna wersja zapisana jako osobny dokument „Odzyskany szkic". Świadomie nie udajemy scalenia — informacja o pozycji tych znaków została utracona. | `staleOperationIsRejectedExplicitly` |
 | **Operacja wyprzedza swoją przyczynę** | Trafia do bufora i jest ponawiana po każdym udanym scaleniu. NIE jest mylona z sytuacją powyżej — warunek odmowy wymaga jednocześnie braku originu i pozycji poniżej granicy GC. | `operationAheadOfItsCauseIsNotRejected` |
 | **Bardzo duży dokument** | Rozmiar praktycznie nie wpływa na latencję (100 tys. znaków ≈ dokument pusty) po wymianie indeksu na treap. Tombstone'y rosną z liczbą edycji, a GC odzyskuje mniej, niż zakładałem. | sekcja [Wydajność](#wydajność), [ADR-0005](docs/adr/0005-tombstone-gc.md) |
-| **Ponad ~10 klientów w jednym dokumencie** | Zbieżność przestaje być powtarzalna. Serwer zawsze ma komplet operacji; gubi się dostawa do części klientów. **Przyczyny nie rozstrzygnąłem** — patrz [Punkt degradacji](#punkt-degradacji--i-czego-o-nim-nie-wiem). | zmierzone, nierozwiązane |
+| **50 klientów w jednym dokumencie** | Zbiega się powtarzalnie (3/3 przebiegi, 397 ms przy pustym dokumencie, 239 ms przy 100 tys. znaków). Wcześniejsza obserwacja „powyżej ~10 klientów zbieżność przestaje być powtarzalna" okazała się **wadą stanowiska pomiarowego, nie systemu** — patrz [Punkt degradacji](#punkt-degradacji--rozstrzygnięty-i-to-nie-na-korzyść-mojego-stanowiska). | `BroadcastFanoutIT`, harness CP10 |
 
 ---
 
@@ -335,9 +367,15 @@ i okazały się gorsze, niż zakładałem.
 - **Okno GC (7 dni) to wartość zgadnięta**, nie wyliczona z telemetrii.
 
 **Otwarte, nierozstrzygnięte**
-- Powyżej ~10 jednoczesnych klientów zbieżność przestaje być powtarzalna. Wiem, że serwer
-  ma komplet operacji i że gubi się dostawa; **nie wiem**, czy przyczyna leży w systemie,
-  czy w stanowisku pomiarowym. Rozstrzygnięcie wymaga rozdzielenia klientów i serwera
+- **Limit porcji resynchronizacji jest liczony w operacjach, a nie w bajtach**
+  (`SYNC_CHUNK = 300`). Zakłada to, że operacja waży ~100 B — co przestaje być prawdą przy
+  wklejeniu dużego fragmentu tekstu, bo to jest **jedna** operacja o dziesiątkach kilobajtów.
+  Ścieżka rozgłoszeń została w CP10 przeniesiona na budżet bajtowy; ścieżka resynchronizacji
+  nie. Znany dług, nie przeoczenie.
+- **Liczby wydajnościowe nadal pochodzą z jednego procesu.** Klienci, serwer, Postgres
+  i Redis dzielą dziesięć rdzeni, więc harness sam jest poważnym konsumentem procesora,
+  a latencja sieci wynosi zero. Liczby opisują koszt systemu, nie doświadczenie użytkownika
+  przez internet — do tego trzeba by je powiększyć o RTT łącza i rozdzielić stanowisko
   na osobne maszyny.
 
 ---
@@ -391,16 +429,19 @@ tools/         skrypty pomocnicze (nagranie demo, czyszczenie danych)
 
 ## Stan projektu
 
-Wszystkie dziewięć checkpointów z [planu](docs/IMPLEMENTATION_PLAN.md) jest zamkniętych.
+Wszystkie dziewięć checkpointów z [planu v1](docs/IMPLEMENTATION_PLAN.md) jest zamkniętych.
+Dalszy kierunek — rich text, komentarze, wiele dokumentów i uprawnienia — opisuje
+[plan v2](docs/PLAN-v2.md); jego pierwszy checkpoint (CP10, fundament) jest w trakcie.
 README było pisane równolegle z kodem, sekcja po sekcji — nie odtwarzane z pamięci na końcu.
 
 | Warstwa | Testy |
 |---|---:|
 | `crdt-core` — property, niezmienniki, konformancja, snapshoty | 20 |
-| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra | 14 |
+| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra | 39 |
 | `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 33 |
 | end-to-end — dwie prawdziwe przeglądarki | 5 |
-| **razem** | **72** |
+| **razem** | **97** |
 
-Harness obciążeniowy i benchmarki JMH są wyłączone z normalnego przebiegu — trwają minuty
-i nie są testami poprawności. Uruchamiane jawnie, polecenia w sekcji [Testy](#testy).
+Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
+trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami
+poprawności. Uruchamiane jawnie, polecenia w sekcji [Testy](#testy).
