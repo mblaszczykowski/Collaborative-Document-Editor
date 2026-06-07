@@ -99,6 +99,17 @@ collabedit:
     # Replika dokumentu bez klientów żyje jeszcze 5 min, zanim zwolnimy pamięć.
     # Krócej → ciągłe przeładowywanie przy chwilowych rozłączeniach.
     idle-document-eviction-ms: 300000
+    # Górna granica liczby replik w pamięci — granica POJEMNOŚCI, nie czasu.
+    #
+    # Sam próg bezczynności powyżej nie ogranicza niczego przy wielu dokumentach: sto osób
+    # otwierających sto różnych dokumentów w ciągu minuty daje sto replik, z których żadna
+    # nie jest bezczynna. Dopiero ta wartość mówi, ile pamięci wolno zająć.
+    #
+    # 200 wynika z rzędu wielkości, nie z pomiaru: replika dokumentu o 100 tys. znaków
+    # zajmuje jednostki megabajtów (bloki run-length + treap), więc 200 mieści się
+    # w domyślnej stercie z zapasem na resztę aplikacji. DO ZWERYFIKOWANIA POMIAREM
+    # zużycia pamięci na replikę — ADR-0004 wymienia to jako niezrobione od CP8.
+    max-loaded-documents: 200
 
   gc:
     # Okno GC tombstone'ów: 7 dni (ADR-0005). Klient offline dłużej dostaje

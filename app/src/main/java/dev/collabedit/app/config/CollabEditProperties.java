@@ -60,10 +60,11 @@ public record CollabEditProperties(
     /** ADR-0004 — skalowanie poziome. */
     public record Cluster(
         long antiEntropyIntervalMs,
-        long idleDocumentEvictionMs
+        long idleDocumentEvictionMs,
+        int maxLoadedDocuments
     ) {
         static Cluster defaults() {
-            return new Cluster(30_000, 300_000);
+            return new Cluster(30_000, 300_000, 200);
         }
     }
 

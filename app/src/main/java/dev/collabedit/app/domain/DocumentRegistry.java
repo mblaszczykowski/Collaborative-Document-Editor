@@ -65,7 +65,62 @@ public class DocumentRegistry {
      * cache po cichu stałby się źródłem prawdy.
      */
     public DocumentReplica get(UUID documentId) {
-        return replicas.computeIfAbsent(documentId, this::load);
+        DocumentReplica replica = replicas.computeIfAbsent(documentId, this::load);
+        enforceMemoryLimit(documentId);
+        return replica;
+    }
+
+    /**
+     * Pilnuje górnej granicy liczby replik trzymanych w pamięci.
+     *
+     * <h2>Dlaczego sam czas bezczynności nie wystarcza</h2>
+     * {@link #evictIdle} zwalnia dokumenty nietykane od pięciu minut i przy jednym wspólnym
+     * dokumencie było to całe zarządzanie pamięcią, jakiego potrzebowaliśmy. Przy wielu
+     * dokumentach ten mechanizm przestaje ograniczać cokolwiek: sto osób otwierających sto
+     * różnych dokumentów w ciągu minuty daje sto replik w pamięci, z których ŻADNA nie jest
+     * bezczynna. Granica czasowa nie jest granicą pamięci.
+     *
+     * <h2>Co jest zwalniane</h2>
+     * Najdawniej używane repliki <b>bez niezapisanych operacji</b>. Warunek jest twardy:
+     * zwolnienie repliki z niepustym buforem skasowałoby operacje już przyjęte od klienta,
+     * ale jeszcze nietrwałe. Jeśli wszystkie repliki mają pracę w toku, limit zostaje
+     * chwilowo przekroczony — bo utrata danych jest gorsza niż przekroczony limit pamięci,
+     * a bufory i tak opróżniają się co 50 ms.
+     *
+     * <p>Dokument właśnie otwierany jest wykluczany z kandydatów, inaczej przy limicie
+     * osiągniętym co do jednego mógłby zostać zwolniony w tej samej chwili, w której
+     * został załadowany — i wpaść w pętlę ładowania.
+     */
+    private void enforceMemoryLimit(UUID justLoaded) {
+        int limit = properties.cluster().maxLoadedDocuments();
+        if (replicas.size() <= limit) {
+            return;
+        }
+        List<DocumentReplica> candidates = new java.util.ArrayList<>(replicas.values());
+        candidates.removeIf(r -> r.documentId().equals(justLoaded) || r.unwrittenCount() > 0);
+        candidates.sort(java.util.Comparator.comparingLong(DocumentReplica::lastActivityMillis));
+
+        int toEvict = replicas.size() - limit;
+        int evicted = 0;
+        for (DocumentReplica replica : candidates) {
+            if (evicted >= toEvict) {
+                break;
+            }
+            if (replicas.remove(replica.documentId(), replica)) {
+                evicted++;
+            }
+        }
+        if (evicted > 0) {
+            log.info("Limit {} dokumentów w pamięci przekroczony — zwolniono {} najdawniej używanych",
+                limit, evicted);
+        } else {
+            // Nie zamiatamy pod dywan: limit jest przekroczony i nic nie dało się zwolnić.
+            // Utrzymujący się taki stan znaczy, że limit jest za niski wobec liczby
+            // JEDNOCZEŚNIE edytowanych dokumentów, a nie że mechanizm nie działa.
+            log.warn("Limit {} dokumentów w pamięci przekroczony ({}), ale żadnej repliki "
+                    + "nie dało się zwolnić — wszystkie mają niezapisane operacje",
+                limit, replicas.size());
+        }
     }
 
     private DocumentReplica load(UUID documentId) {
