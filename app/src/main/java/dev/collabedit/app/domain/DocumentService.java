@@ -2,6 +2,7 @@ package dev.collabedit.app.domain;
 
 import dev.collabedit.app.cluster.ClusterBus;
 import dev.collabedit.app.config.CollabEditProperties;
+import dev.collabedit.app.persist.DocumentCatalog;
 import dev.collabedit.app.persist.OperationStore;
 import dev.collabedit.app.persist.PendingOperation;
 import dev.collabedit.app.persist.SnapshotStore;
@@ -54,6 +55,7 @@ public class DocumentService {
     private final DocumentRegistry registry;
     private final OperationStore operations;
     private final SnapshotStore snapshots;
+    private final DocumentCatalog catalog;
     private final ClusterBus cluster;
     private final CollabEditProperties properties;
     private final DocumentMetrics metrics;
@@ -64,12 +66,13 @@ public class DocumentService {
     private volatile BiConsumer<UUID, List<Op>> onFastPath = (id, ops) -> { };
 
     public DocumentService(DocumentRegistry registry, OperationStore operations,
-                           SnapshotStore snapshots, ClusterBus cluster,
+                           SnapshotStore snapshots, DocumentCatalog catalog, ClusterBus cluster,
                            CollabEditProperties properties, DocumentMetrics metrics,
                            EditTracer tracer) {
         this.registry = registry;
         this.operations = operations;
         this.snapshots = snapshots;
+        this.catalog = catalog;
         this.cluster = cluster;
         this.properties = properties;
         this.metrics = metrics;
@@ -312,16 +315,26 @@ public class DocumentService {
             System.currentTimeMillis(), properties.gc().unresponsiveReplicaTimeoutMs());
 
         long seq = replica.appliedServerSeq();
-        var snapshot = replica.withLock(document -> {
+        // Podgląd zdejmowany pod TĄ SAMĄ blokadą co snapshot, żeby oba opisywały ten sam stan.
+        // Osobne wejście pod blokadę dałoby podgląd z innej chwili niż snapshot — niegroźne,
+        // ale wtedy „lista pokazuje co innego niż dokument" przestaje mieć jedno wyjaśnienie.
+        var captured = replica.withLock(document -> {
             int removed = stable.isEmpty() ? 0 : document.gc(stable);
             if (removed > 0) {
                 metrics.recordGc(removed);
                 log.debug("GC dokumentu {}: usunięto {} znaków tombstone'ów", replica.documentId(), removed);
             }
-            return document.snapshot();
+            String preview = document.visibleLength() <= DocumentCatalog.PREVIEW_LENGTH
+                ? document.text()
+                : document.text().substring(0, DocumentCatalog.PREVIEW_LENGTH);
+            return new Captured(document.snapshot(), preview);
         });
 
-        snapshots.save(replica.documentId(), seq, snapshot);
+        snapshots.save(replica.documentId(), seq, captured.snapshot());
+        // Podgląd dla listy dokumentów. Materializowany TUTAJ, bo to jedyny moment, w którym
+        // treść jest już w ręku — lista nie może sobie pozwolić na ładowanie repliki
+        // dla każdej pozycji (CP11).
+        catalog.updatePreview(replica.documentId(), captured.preview());
         replica.snapshotTaken();
         if (!stable.isEmpty()) {
             replica.recordGc(stable);
@@ -418,6 +431,10 @@ public class DocumentService {
     // ------------------------------------------------------------------
     // Odczyt
     // ------------------------------------------------------------------
+
+    /** Stan zdjęty pod jedną blokadą: migawka do zapisu i podgląd do listy dokumentów. */
+    private record Captured(dev.collabedit.crdt.DocumentSnapshot snapshot, String preview) {
+    }
 
     public String textOf(UUID documentId) {
         return registry.get(documentId).withLock(RgaDocument::text);

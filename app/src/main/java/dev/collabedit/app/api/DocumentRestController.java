@@ -3,14 +3,19 @@ package dev.collabedit.app.api;
 import dev.collabedit.app.auth.TokenService;
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
+import dev.collabedit.app.persist.DocumentCatalog;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -32,16 +37,16 @@ public class DocumentRestController {
     private final DocumentService documents;
     private final DocumentRegistry registry;
     private final TokenService tokens;
+    private final DocumentCatalog catalog;
 
     public DocumentRestController(JdbcTemplate jdbc, DocumentService documents,
-                                  DocumentRegistry registry, TokenService tokens) {
+                                  DocumentRegistry registry, TokenService tokens,
+                                  DocumentCatalog catalog) {
         this.jdbc = jdbc;
         this.documents = documents;
         this.registry = registry;
         this.tokens = tokens;
-    }
-
-    public record DocumentSummary(UUID id, String title) {
+        this.catalog = catalog;
     }
 
     public record DocumentState(UUID id, String title, String text, long headServerSeq) {
@@ -91,20 +96,109 @@ public class DocumentRestController {
     /** Paleta z mockupu (docs/design/mockup-inkline.html) — kolory autorów w tekście. */
     private static final String[] PALETTE = {"#C1592E", "#4C5FD5", "#2E8B6B", "#8A5CB8", "#B8862E"};
 
+    /**
+     * Lista dokumentów albo wynik wyszukiwania — jedno wejście, bo z punktu widzenia
+     * interfejsu to jest ta sama rzecz: „pokaż mi dokumenty, opcjonalnie zawężone".
+     *
+     * <p>Odpowiedź NIE zawiera treści dokumentów, tylko podgląd materializowany przy
+     * snapshotowaniu. Bez tego wypisanie stu pozycji ładowałoby sto replik CRDT do pamięci
+     * (CP11) — czyli lista dokumentów byłaby najdroższą operacją w całym systemie.
+     */
     @GetMapping("/documents")
-    public List<DocumentSummary> list() {
-        return jdbc.query("SELECT id, title FROM documents ORDER BY updated_at DESC",
-            (rs, rowNum) -> new DocumentSummary(
-                UUID.fromString(rs.getString("id")), rs.getString("title")));
+    public List<DocumentCatalog.DocumentSummary> list(
+        @RequestParam(value = "q", required = false) String query,
+        @RequestParam(value = "workspace", required = false) UUID workspaceId) {
+
+        if (query != null && !query.isBlank()) {
+            return catalog.search(query.trim(), LIST_LIMIT);
+        }
+        return catalog.list(workspaceId, LIST_LIMIT);
+    }
+
+    /**
+     * Górna granica długości listy.
+     *
+     * <p>Nie ma tu stronicowania i to jest świadome uproszczenie: interfejs pokazuje listę
+     * ostatnio zmienianych dokumentów, a nie archiwum. Limit istnieje po to, żeby zapytanie
+     * miało ograniczony koszt niezależnie od tego, ile dokumentów jest w bazie — bez niego
+     * konto z dziesiątkami tysięcy dokumentów wysyłałoby je wszystkie przy każdym otwarciu.
+     */
+    private static final int LIST_LIMIT = 200;
+
+    @GetMapping("/documents/trash")
+    public List<DocumentCatalog.DocumentSummary> trash() {
+        return catalog.listDeleted(LIST_LIMIT);
+    }
+
+    public record CreateDocumentRequest(String title, UUID workspaceId) {
     }
 
     @PostMapping("/documents")
-    public DocumentSummary create(@RequestBody DocumentSummary request) {
+    public DocumentCatalog.DocumentSummary create(@RequestBody CreateDocumentRequest request) {
         UUID id = UUID.randomUUID();
         String title = request.title() == null || request.title().isBlank()
-            ? "Dokument bez tytułu" : request.title();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, title);
-        return new DocumentSummary(id, title);
+            ? "Dokument bez tytułu" : request.title().trim();
+        catalog.create(id, title, request.workspaceId());
+        return catalog.find(id).orElseThrow();
+    }
+
+    public record RenameRequest(String title) {
+    }
+
+    @PatchMapping("/documents/{id}")
+    public ResponseEntity<Void> rename(@PathVariable UUID id, @RequestBody RenameRequest request) {
+        if (request.title() == null || request.title().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        return catalog.rename(id, request.title().trim())
+            ? ResponseEntity.noContent().build()
+            : ResponseEntity.notFound().build();
+    }
+
+    /**
+     * Chowa dokument. <b>Nie kasuje niczego.</b>
+     *
+     * <p>Tabela {@code operations} ma {@code ON DELETE CASCADE} na {@code doc_id}, więc
+     * twarde usunięcie skasowałoby log operacji — źródło prawdy z ADR-0003, wyłącznie
+     * dopisywane. Użytkownik klikający „usuń" chce, żeby dokument zniknął mu z listy,
+     * a nie żeby przestał istnieć.
+     */
+    @DeleteMapping("/documents/{id}")
+    public ResponseEntity<Void> delete(@PathVariable UUID id) {
+        return catalog.softDelete(id)
+            ? ResponseEntity.noContent().build()
+            : ResponseEntity.notFound().build();
+    }
+
+    @PostMapping("/documents/{id}/restore")
+    public ResponseEntity<Void> restore(@PathVariable UUID id) {
+        return catalog.restore(id)
+            ? ResponseEntity.noContent().build()
+            : ResponseEntity.notFound().build();
+    }
+
+    // ------------------------------------------------------------------
+    // Workspace'y
+    // ------------------------------------------------------------------
+
+    public record CreateWorkspaceRequest(String name, String ownerId) {
+    }
+
+    @GetMapping("/workspaces")
+    public List<DocumentCatalog.Workspace> workspaces(@RequestParam("owner") String ownerId) {
+        return catalog.workspacesOf(ownerId);
+    }
+
+    @PostMapping("/workspaces")
+    public DocumentCatalog.Workspace createWorkspace(@RequestBody CreateWorkspaceRequest request) {
+        UUID id = UUID.randomUUID();
+        String name = request.name() == null || request.name().isBlank()
+            ? "Bez nazwy" : request.name().trim();
+        catalog.createWorkspace(id, name, request.ownerId());
+        return catalog.workspacesOf(request.ownerId()).stream()
+            .filter(w -> w.id().equals(id))
+            .findFirst()
+            .orElseThrow();
     }
 
     public record RecoveredRequest(String title, String text) {
@@ -122,11 +216,11 @@ public class DocumentRestController {
      * więc niczym szczególnym i od pierwszej chwili ma pełną historię, jak każdy inny.
      */
     @PostMapping("/documents/recovered")
-    public DocumentSummary createRecovered(@RequestBody RecoveredRequest request) {
+    public DocumentCatalog.DocumentSummary createRecovered(@RequestBody RecoveredRequest request) {
         UUID id = UUID.randomUUID();
         String title = request.title() == null || request.title().isBlank()
             ? "Odzyskany szkic" : request.title();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, title);
+        catalog.create(id, title, null);
 
         String text = request.text() == null ? "" : request.text();
         if (!text.isEmpty()) {
@@ -134,7 +228,7 @@ public class DocumentRestController {
             var op = replica.withLock(model -> model.insert(0, text));
             documents.submitAlreadyMerged(id, op, null);
         }
-        return new DocumentSummary(id, title);
+        return catalog.find(id).orElseThrow();
     }
 
     /**
@@ -145,9 +239,12 @@ public class DocumentRestController {
      * pobierać całą historię od zera.
      */
     @GetMapping("/documents/{id}")
-    public DocumentState open(@PathVariable UUID id) {
-        String title = jdbc.queryForObject(
-            "SELECT title FROM documents WHERE id = ?", String.class, id);
-        return new DocumentState(id, title, documents.textOf(id), documents.headServerSeq(id));
+    public ResponseEntity<DocumentState> open(@PathVariable UUID id) {
+        // Przez katalog, nie zapytaniem wprost: katalog odsiewa dokumenty usunięte,
+        // więc otwarcie schowanego dokumentu daje 404, a nie pustą treść bez wyjaśnienia.
+        return catalog.find(id)
+            .map(summary -> ResponseEntity.ok(new DocumentState(
+                id, summary.title(), documents.textOf(id), documents.headServerSeq(id))))
+            .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }
