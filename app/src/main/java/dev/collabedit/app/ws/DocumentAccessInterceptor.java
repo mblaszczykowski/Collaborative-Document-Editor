@@ -42,9 +42,15 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
     private static final Logger log = LoggerFactory.getLogger(DocumentAccessInterceptor.class);
 
     private final PermissionService permissions;
+    private final RateLimiter rateLimiter = new RateLimiter();
 
     public DocumentAccessInterceptor(PermissionService permissions) {
         this.permissions = permissions;
+    }
+
+    /** Wyłącznie do diagnostyki i testów — ile sesji ma aktywne wiadra żetonów. */
+    public RateLimiter rateLimiter() {
+        return rateLimiter;
     }
 
     @Override
@@ -56,6 +62,11 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         }
 
         StompCommand command = accessor.getCommand();
+        if (command == StompCommand.DISCONNECT) {
+            // Bez tego mapy wiader rosną z liczbą sesji od startu procesu.
+            rateLimiter.forget(accessor.getSessionId());
+            return message;
+        }
         if (command != StompCommand.SUBSCRIBE && command != StompCommand.SEND) {
             return message;
         }
@@ -78,7 +89,24 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         if (command == StompCommand.SEND && !allowedToSend(role, destination)) {
             return deny(command, destination, userId, "rola " + role.wire() + " nie pozwala na tę operację");
         }
+        if (command == StompCommand.SEND && !withinRateLimit(accessor.getSessionId(), destination)) {
+            return deny(command, destination, userId, "przekroczone tempo wysyłania");
+        }
         return message;
+    }
+
+    /**
+     * Czy sesja mieści się w limicie tempa.
+     *
+     * <p>Sprawdzane PO autoryzacji, nie przed: klient bez uprawnień ma dostać odmowę
+     * z powodu braku dostępu, a nie z powodu tempa — inaczej komunikat w logu mówiłby
+     * o niewłaściwej przyczynie przy diagnozie.
+     */
+    private boolean withinRateLimit(String sessionId, String destination) {
+        long now = System.currentTimeMillis();
+        return destination.endsWith("/presence")
+            ? rateLimiter.allowPresence(sessionId, now)
+            : rateLimiter.allowOperation(sessionId, now);
     }
 
     /**
