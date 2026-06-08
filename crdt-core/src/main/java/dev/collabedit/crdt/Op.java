@@ -13,7 +13,7 @@ import java.util.List;
  * z ADR-0004 (każda instancja backendu jako równorzędna replika, zawodny broadcast)
  * jest bezpieczna.
  */
-public sealed interface Op permits Op.Insert, Op.Delete {
+public sealed interface Op permits Op.Insert, Op.Delete, Op.AddMark, Op.RemoveMark {
 
     /** Identyfikator operacji. Dla wstawienia jest to zarazem identyfikator pierwszego znaku. */
     Id id();
@@ -70,6 +70,74 @@ public sealed interface Op permits Op.Insert, Op.Delete {
                 throw new IllegalArgumentException("usunięcie bez celów nie ma sensu");
             }
             targets = List.copyOf(targets);
+        }
+
+        @Override
+        public int span() {
+            return 1;
+        }
+    }
+
+    /**
+     * Nadanie formatowania zakresowi tekstu (CP13).
+     *
+     * <h2>Dlaczego to jest OSOBNA operacja, a nie atrybut znaku</h2>
+     * Formatowanie jako atrybut znaku wygląda na prostsze i jest błędne. Rozważmy: Ania
+     * pogrubia zakres, a Bartek — nie widząc jeszcze jej zmiany — wpisuje tekst w środek
+     * tego zakresu. Przy atrybutach per znak wstawiony tekst nie ma skąd wziąć pogrubienia:
+     * w chwili powstania operacja Ani jeszcze do Bartka nie dotarła, a gdy dotrze, dotyczy
+     * znaków, których w niej nie ma. Wynik: dziura w pogrubieniu, której nikt nie zrobił.
+     *
+     * <p>Znacznik zapisany jako <b>zakres między kotwicami</b> nie ma tego problemu, bo
+     * kotwice przesuwają się razem z tekstem i tekst wstawiony w środek zakresu jest
+     * w środku zakresu — niezależnie od kolejności dostarczenia.
+     *
+     * <h2>Rozstrzyganie konfliktów</h2>
+     * Dla danego znaku i danego typu znacznika wygrywa operacja o najwyższym
+     * {@code (lamport, replicaId)} spośród tych, które ten znak obejmują. Jest to ten sam
+     * porządek totalny, którego używa reguła wstawiania RGA — bez nowego mechanizmu
+     * arbitrażu i bez nowego założenia o zegarze.
+     *
+     * @param type  rodzaj formatowania, np. {@code bold}, {@code italic}, {@code link}
+     * @param value wartość dla typów, które jej potrzebują (adres linku); {@code null} dla reszty
+     */
+    record AddMark(Id id, String type, String value, Anchor start, Anchor end) implements Op {
+
+        public AddMark {
+            if (type == null || type.isBlank()) {
+                throw new IllegalArgumentException("znacznik musi mieć typ");
+            }
+            if (start == null || end == null) {
+                throw new IllegalArgumentException("znacznik musi mieć obie kotwice");
+            }
+        }
+
+        @Override
+        public int span() {
+            return 1;
+        }
+    }
+
+    /**
+     * Zdjęcie formatowania z zakresu (CP13).
+     *
+     * <h2>Dlaczego zakres, a nie referencja do konkretnego AddMark</h2>
+     * Bo zdejmowanie formatowania nie jest cofaniem cudzej operacji. Dwoje ludzi może
+     * pogrubić zachodzące na siebie zakresy, a trzeci odgrubić ich część wspólną —
+     * i nie ma wtedy jednej operacji, którą dałoby się wskazać jako „tę do cofnięcia".
+     *
+     * <p>Zdjęcie jest więc równorzędną operacją zakresową, rozstrzyganą tym samym
+     * porządkiem co nadanie: wygrywa ta o wyższym {@code (lamport, replicaId)}.
+     */
+    record RemoveMark(Id id, String type, Anchor start, Anchor end) implements Op {
+
+        public RemoveMark {
+            if (type == null || type.isBlank()) {
+                throw new IllegalArgumentException("znacznik musi mieć typ");
+            }
+            if (start == null || end == null) {
+                throw new IllegalArgumentException("znacznik musi mieć obie kotwice");
+            }
         }
 
         @Override

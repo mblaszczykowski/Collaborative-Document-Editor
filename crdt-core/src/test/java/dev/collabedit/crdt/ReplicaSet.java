@@ -56,6 +56,34 @@ final class ReplicaSet {
         emitted.add(new Emitted(replicaIndex, replicas.get(replicaIndex).delete(position, count)));
     }
 
+    /** Nadanie formatowania (CP13); jak wyżej — operacja trafia do puli. */
+    void addMark(int replicaIndex, int from, int to, String type) {
+        emitted.add(new Emitted(replicaIndex,
+            replicas.get(replicaIndex).addMark(from, to, type, null)));
+    }
+
+    /** Zdjęcie formatowania (CP13). */
+    void removeMark(int replicaIndex, int from, int to, String type) {
+        emitted.add(new Emitted(replicaIndex,
+            replicas.get(replicaIndex).removeMark(from, to, type)));
+    }
+
+    /**
+     * Formatowanie każdej repliki — odpowiednik {@link #texts()} dla warstwy znaczników.
+     *
+     * <p>Zbieżność samego tekstu NIE dowodzi zbieżności formatowania: znaczniki mają własny
+     * zbiór operacji i własną regułę rozstrzygania, więc mogą się rozjechać przy identycznym
+     * tekście. Test porównujący wyłącznie treść przepuściłby taki błąd w całości.
+     */
+    List<List<MarkSet.Span>> formattings() {
+        return replicas.stream().map(RgaDocument::formatting).toList();
+    }
+
+    boolean allFormattingConverged() {
+        List<List<MarkSet.Span>> all = formattings();
+        return all.stream().allMatch(spans -> spans.equals(all.getFirst()));
+    }
+
     /**
      * Dostarcza każdej replice wszystkie cudze operacje w losowej kolejności.
      *

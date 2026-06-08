@@ -47,6 +47,15 @@ public final class RgaDocument {
     /** Operacje, których nie da się jeszcze zastosować (brakuje originu lub celu usunięcia). */
     private final List<Op> pending = new ArrayList<>();
 
+    /**
+     * Formatowanie jako osobna warstwa nad sekwencją znaków (CP13).
+     *
+     * <p>Osobna, bo nie jest atrybutem znaku i nie może nim być — uzasadnienie w
+     * {@link MarkSet}. Sekwencja znaków nic o niej nie wie, co jest widoczne w tym,
+     * że {@link BlockList} nie zmienił się w CP13 ani o jedno pole.
+     */
+    private final MarkSet marks = new MarkSet();
+
     public RgaDocument(int replicaId) {
         this(replicaId, new ArrayBlockList());
     }
@@ -124,6 +133,83 @@ public final class RgaDocument {
     }
 
     // ------------------------------------------------------------------
+    // Formatowanie (CP13)
+    // ------------------------------------------------------------------
+
+    /**
+     * Nadaje formatowanie zakresowi widocznego tekstu {@code [from, to)}.
+     *
+     * <h2>Wybór stron kotwic — tu decyduje się zachowanie przy pisaniu</h2>
+     * <b>Początek: {@code before(znak na pozycji from)}.</b> Tekst wpisany bezpośrednio
+     * PRZED zakresem ma do niego nie należeć, a przy tej kotwicy nowy tekst ląduje przed
+     * kotwicą, więc zostaje poza zakresem. Kotwica {@code after(znak from-1)} wskazywałaby
+     * tę samą pozycję dziś i rozeszła się jutro — formatowanie rosłoby wstecz.
+     *
+     * <b>Koniec: zależy od typu znacznika.</b> {@code before(znak na pozycji to)} sprawia,
+     * że pisanie na końcu zakresu do niego DOŁĄCZA (pogrubienie ma tak działać),
+     * a {@code after(znak to-1)} — że nie (link ma tak działać). Cała różnica między
+     * „pogrubienie rośnie przy pisaniu" a „link nie rośnie" to wybór jednej strony kotwicy.
+     *
+     * <h2>Znane ograniczenie</h2>
+     * Zakres kończący się na SAMYM KOŃCU dokumentu nie może rosnąć, bo nie ma znaku,
+     * o który zaczepić kotwicę rozszerzającą. Peritext rozwiązuje to wartownikiem końca
+     * dokumentu; tutaj tego nie ma, więc pogrubienie postawione na ostatnim słowie
+     * nie obejmie tekstu dopisanego po nim. Wymienione w README.
+     *
+     * @return operacja do rozesłania do pozostałych replik
+     */
+    public Op.AddMark addMark(int from, int to, String type, String value) {
+        Op.AddMark op = new Op.AddMark(
+            new Id(replicaId, clock), type, value, anchorStart(from), anchorEnd(to, type));
+        clock += op.span();
+        marks.apply(op);
+        observeVersion(op);
+        return op;
+    }
+
+    /** Zdejmuje formatowanie z zakresu widocznego tekstu {@code [from, to)}. */
+    public Op.RemoveMark removeMark(int from, int to, String type) {
+        Op.RemoveMark op = new Op.RemoveMark(
+            new Id(replicaId, clock), type, anchorStart(from), anchorEnd(to, type));
+        clock += op.span();
+        marks.apply(op);
+        observeVersion(op);
+        return op;
+    }
+
+    private Anchor anchorStart(int from) {
+        int length = visibleLength();
+        if (from < 0 || from >= length) {
+            throw new IndexOutOfBoundsException(
+                "początek zakresu " + from + " poza tekstem o długości " + length);
+        }
+        return Anchor.before(idAtVisible(from));
+    }
+
+    private Anchor anchorEnd(int to, String type) {
+        int length = visibleLength();
+        if (to <= 0 || to > length) {
+            throw new IndexOutOfBoundsException(
+                "koniec zakresu " + to + " poza tekstem o długości " + length);
+        }
+        // Zakres sięgający końca dokumentu nie ma znaku, o który zaczepić kotwicę
+        // rozszerzającą — patrz „znane ograniczenie" w addMark.
+        return MarkTypes.expandsAtEnd(type) && to < length
+            ? Anchor.before(idAtVisible(to))
+            : Anchor.after(idAtVisible(to - 1));
+    }
+
+    /** Formatowanie widocznego tekstu jako rozłączne odcinki, w kolejności. */
+    public List<MarkSet.Span> formatting() {
+        return marks.spans(blocks);
+    }
+
+    /** Liczba operacji znacznikowych — miara narzutu warstwy formatowania. */
+    public int markCount() {
+        return marks.size();
+    }
+
+    // ------------------------------------------------------------------
     // Operacje zdalne
     // ------------------------------------------------------------------
 
@@ -186,6 +272,11 @@ public final class RgaDocument {
         return switch (op) {
             case Op.Insert insert -> blocks.locateId(insert.id()) != null;
             case Op.Delete delete -> isEntirelyDeleted(delete);
+            // Operacje znacznikowe są kluczowane własnym identyfikatorem, więc rozpoznanie
+            // duplikatu jest dokładne i darmowe — w odróżnieniu od usunięcia, gdzie musimy
+            // wnioskować z zawartości struktury.
+            case Op.AddMark mark -> marks.contains(mark.id());
+            case Op.RemoveMark mark -> marks.contains(mark.id());
         };
     }
 
@@ -218,6 +309,8 @@ public final class RgaDocument {
         return switch (op) {
             case Op.Insert insert -> tryApplyInsert(insert);
             case Op.Delete delete -> tryApplyDelete(delete);
+            case Op.AddMark mark -> tryApplyMark(mark);
+            case Op.RemoveMark mark -> tryApplyMark(mark);
         };
     }
 
@@ -246,6 +339,21 @@ public final class RgaDocument {
         for (Op.Range range : op.targets()) {
             markRangeDeleted(range);
         }
+        return true;
+    }
+
+    /**
+     * Znacznik daje się zastosować dopiero, gdy OBIE jego kotwice są w strukturze.
+     *
+     * <p>Wcześniej trafia do bufora — dokładnie tak jak wstawienie, które wyprzedziło swój
+     * origin. Zastosowanie znacznika o nieosadzalnej kotwicy dałoby formatowanie w przypadkowym
+     * miejscu, czyli cichą korupcję wyglądu dokumentu.
+     */
+    private boolean tryApplyMark(Op op) {
+        if (!MarkSet.anchorsResolvable(op, blocks)) {
+            return false;
+        }
+        marks.apply(op);
         return true;
     }
 

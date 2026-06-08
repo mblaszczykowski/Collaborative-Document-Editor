@@ -30,7 +30,19 @@ import java.util.List;
  *             s     = tekst
  * usunięcie:  {"t":"d","r":1,"l":9,"g":[[2,3,5]]}
  *             g = zakresy [replika, początkowy lamport, długość]
+ * znacznik+:  {"t":"m","r":1,"l":11,"k":"bold","v":null,"a":[2,3,0],"b":[2,7,1]}
+ * znacznik−:  {"t":"x","r":1,"l":13,"k":"bold","a":[2,3,0],"b":[2,7,1]}
+ *             k    = rodzaj znacznika
+ *             v    = wartość (adres linku); pomijane, gdy nieużywana
+ *             a/b  = kotwice [replika, lamport, strona], gdzie strona 0=przed, 1=za
  * </pre>
+ *
+ * <h2>Rozszerzenie formatu w CP13</h2>
+ * Dyskryminatory {@code m} i {@code x} dołożone bez zmiany dotychczasowych. Format jest
+ * <b>rozszerzany, nie wersjonowany</b>: operacja wstawienia zapisana przed CP13 i po nim
+ * wygląda identycznie, więc log operacji sprzed rich textu czyta się bez żadnej migracji.
+ * Kolumna {@code operations.op_type} to {@code CHAR(1)}, a treść {@code JSONB} — schemat
+ * z V1 unosi to bez zmiany, co jest zasługą decyzji z ADR-0003, a nie szczęścia.
  */
 public final class OpCodec {
 
@@ -62,8 +74,38 @@ public final class OpCodec {
                     entry.add(range.length());
                 }
             }
+            case Op.AddMark mark -> {
+                node.put("t", "m");
+                node.put("k", mark.type());
+                if (mark.value() != null) {
+                    node.put("v", mark.value());
+                }
+                writeAnchor(node, "a", mark.start());
+                writeAnchor(node, "b", mark.end());
+            }
+            case Op.RemoveMark mark -> {
+                node.put("t", "x");
+                node.put("k", mark.type());
+                writeAnchor(node, "a", mark.start());
+                writeAnchor(node, "b", mark.end());
+            }
         }
         return node;
+    }
+
+    /** Kotwica jako {@code [replika, lamport, strona]} — strona 0 = przed, 1 = za. */
+    private static void writeAnchor(ObjectNode node, String field, Anchor anchor) {
+        ArrayNode array = node.putArray(field);
+        array.add(anchor.charId().replicaId());
+        array.add(anchor.charId().lamport());
+        array.add(anchor.side() == Anchor.Side.BEFORE ? 0 : 1);
+    }
+
+    private static Anchor readAnchor(JsonNode node, String field) {
+        JsonNode array = node.get(field);
+        return new Anchor(
+            new Id(array.get(0).asInt(), array.get(1).asLong()),
+            array.get(2).asInt() == 0 ? Anchor.Side.BEFORE : Anchor.Side.AFTER);
     }
 
     public static Op fromJson(JsonNode node) {
@@ -85,6 +127,17 @@ public final class OpCodec {
                 }
                 yield new Op.Delete(id, targets);
             }
+            case "m" -> new Op.AddMark(
+                id,
+                node.get("k").asText(),
+                node.has("v") ? node.get("v").asText() : null,
+                readAnchor(node, "a"),
+                readAnchor(node, "b"));
+            case "x" -> new Op.RemoveMark(
+                id,
+                node.get("k").asText(),
+                readAnchor(node, "a"),
+                readAnchor(node, "b"));
             default -> throw new IllegalArgumentException("nieznany typ operacji: " + type);
         };
     }
