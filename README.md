@@ -103,6 +103,18 @@ Plan pracy i checkpointy: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PL
 
 ## Uruchomienie
 
+### Najszybciej: sam Docker
+
+```bash
+docker compose --profile app up -d     # → http://localhost:5173
+```
+
+Buduje backend i frontend z tego repozytorium i podnosi całość razem z bazą i Redisem.
+Nie wymaga JDK ani Node'a. Pierwsze uruchomienie trwa kilka minut (Maven ściąga zależności),
+kolejne są natychmiastowe.
+
+### Do pracy nad kodem
+
 **Wymagania:** JDK 21, Node 22.12+, Docker.
 
 <details>

@@ -1,13 +1,13 @@
 # Plan v2 — z artefaktu w produkt
 
-> **Status: CP10 zamknięty, CP11 w trakcie.** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
+> **Status: CP10 i CP11 zamknięte, CP12 w trakcie.** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
 > który opisuje checkpointy CP1–CP9 (wszystkie zamknięte). Ten dokument opisuje CP10–CP15.
 >
 > | Checkpoint | Stan | Uwagi |
 > |---|---|---|
 > | CP10 — Fundament | **zamknięty** | Otwarte pytanie z CP8 rozstrzygnięte — patrz niżej |
-> | CP11 — Multi-dokument | **w trakcie** | Zrobione: odsiew klastra, limit pamięci, schemat V2. Zostało: REST, lista i routing we froncie |
-> | CP12 — Uprawnienia | niezaczęty | |
+> | CP11 — Multi-dokument | **zamknięty** | Odsiew klastra, limit pamięci, schemat V2, katalog, lista z wyszukiwaniem i koszem |
+> | CP12 — Uprawnienia | **w trakcie** | |
 > | CP13 — Rich text | niezaczęty | |
 > | CP14 — Komentarze | niezaczęty | |
 > | CP15 — Pomiar + dokumentacja | niezaczęty | |
