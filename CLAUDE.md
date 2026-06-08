@@ -62,7 +62,12 @@ Na końcu prac nagraj GIF/wideo (poproś mnie o instrukcję jak to zrobić, jeś
 ## Czego unikać
 
 - Gotowych bibliotek CRDT (np. Yjs) jako czarnej skrzynki bez własnej implementacji — cel jest pokazać zrozumienie algorytmu, nie umiejętność `npm install`. Można się nimi inspirować/porównać w ADR, ale core logic ma być własny
-- Nadmiarowego scope'u (rich text formatting, komentarze, multi-dokument workspace) kosztem głębi w core problemie — lepiej wąsko i dogłębnie niż szeroko i płytko
+- Nadmiarowego scope'u **kosztem głębi w core problemie** — lepiej wąsko i dogłębnie niż szeroko
+  i płytko. Do zamknięcia CP9 znaczyło to wprost: żadnego rich textu, komentarzy ani multi-dokumentu.
+  Od [ADR-0008](docs/adr/0008-rozszerzenie-zakresu.md) zakres jest rozszerzony, ale zasada NIE ulega
+  zmianie — każda nowa funkcja ma wnosić własny problem inżynierski (rich text: kotwice przeżywające
+  współbieżne wstawienia; uprawnienia: autoryzacja per typ operacji), a nie być pracą dookoła rdzenia.
+  Funkcja, która niczego nie dokłada do tezy projektu, nadal jest nadmiarowa.
 - Domyślnych configów bez komentarza dlaczego (np. "dlaczego akurat taki interwał heartbeat WebSocket")
 - README napisanego dopiero na końcu — pisz go równolegle z kodem, sekcja po sekcji, żeby nie zgadywać post factum co było ważne
 

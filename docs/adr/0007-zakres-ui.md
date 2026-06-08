@@ -1,6 +1,9 @@
 # ADR-0007 — Zakres UI: przyjmujemy język wizualny mockupu, odrzucamy jego zakres funkcjonalny
 
-- **Status:** Zaakceptowany, **zrewidowany** (patrz sekcja na końcu)
+- **Status:** **Zastąpiony przez [ADR-0008](0008-rozszerzenie-zakresu.md)** w części dotyczącej
+  zakresu funkcjonalnego. Decyzje o języku wizualnym i o ukryciu diagnostyki pozostają w mocy.
+  Nie kasuję tego dokumentu: odrzucenie zakresu było słuszne dla v1 i przestało być słuszne
+  dopiero wtedy, gdy rdzeń był gotowy — a to jest informacja, nie wstyd., **zrewidowany** (patrz sekcja na końcu)
 - **Data:** 2026-08-14
 - **Dotyczy checkpointów:** CP4, CP5, CP6
 - **Materiał źródłowy:** [`docs/design/mockup-inkline.html`](../design/mockup-inkline.html)
