@@ -47,17 +47,32 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
      * następna osoba widzi, że to jest przerwanie cyklu, a nie przeoczenie.
      */
     private final ObjectProvider<PresenceService> presence;
+    private final DocumentAccessInterceptor access;
 
     public StompConnectInterceptor(TokenService tokens, ReplicaIdAllocator replicaIds,
-                                   ObjectProvider<PresenceService> presence) {
+                                   ObjectProvider<PresenceService> presence,
+                                   DocumentAccessInterceptor access) {
         this.tokens = tokens;
         this.replicaIds = replicaIds;
         this.presence = presence;
+        this.access = access;
     }
 
+    /**
+     * Kolejność interceptorów jest istotna: <b>najpierw uwierzytelnienie, potem autoryzacja</b>.
+     *
+     * <p>{@link DocumentAccessInterceptor} odczytuje tożsamość z atrybutów sesji, które
+     * powstają dopiero przy obsłudze ramki {@code CONNECT} poniżej. Odwrotna kolejność
+     * dawałaby autoryzację widzącą pustą tożsamość — czyli odmowę dla wszystkich
+     * albo, przy nieostrożnym kodzie, przepustkę dla wszystkich.
+     */
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(new ChannelInterceptor() {
+        registration.interceptors(authentication(), access);
+    }
+
+    private ChannelInterceptor authentication() {
+        return new ChannelInterceptor() {
             @Override
             public Message<?> preSend(Message<?> message, MessageChannel channel) {
                 StompHeaderAccessor accessor =
@@ -72,7 +87,7 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
                 }
                 return message;
             }
-        });
+        };
     }
 
     private void authenticate(StompHeaderAccessor accessor) {

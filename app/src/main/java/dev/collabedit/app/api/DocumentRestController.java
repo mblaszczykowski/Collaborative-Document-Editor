@@ -3,7 +3,11 @@ package dev.collabedit.app.api;
 import dev.collabedit.app.auth.TokenService;
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
+import dev.collabedit.app.auth.PermissionService;
+import dev.collabedit.app.auth.Role;
+import dev.collabedit.app.auth.TokenAuthFilter;
 import dev.collabedit.app.persist.DocumentCatalog;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -38,15 +42,17 @@ public class DocumentRestController {
     private final DocumentRegistry registry;
     private final TokenService tokens;
     private final DocumentCatalog catalog;
+    private final PermissionService permissions;
 
     public DocumentRestController(JdbcTemplate jdbc, DocumentService documents,
                                   DocumentRegistry registry, TokenService tokens,
-                                  DocumentCatalog catalog) {
+                                  DocumentCatalog catalog, PermissionService permissions) {
         this.jdbc = jdbc;
         this.documents = documents;
         this.registry = registry;
         this.tokens = tokens;
         this.catalog = catalog;
+        this.permissions = permissions;
     }
 
     public record DocumentState(UUID id, String title, String text, long headServerSeq) {
@@ -93,6 +99,33 @@ public class DocumentRestController {
             userId, displayName, color);
     }
 
+
+    // ------------------------------------------------------------------
+    // Autoryzacja (CP12)
+    // ------------------------------------------------------------------
+
+    /**
+     * Identyfikator zalogowanego użytkownika albo {@code null}.
+     *
+     * <p>Filtr {@link TokenAuthFilter} wyłącznie USTALA tożsamość; decyzja o odmowie należy
+     * do kontrolera, bo tylko on wie, czy dana ścieżka wymaga dostępu do konkretnego
+     * dokumentu, czy jest publiczna.
+     */
+    private String callerId(HttpServletRequest request) {
+        return TokenAuthFilter.principalOf(request).map(p -> p.userId()).orElse(null);
+    }
+
+    /**
+     * 404 zamiast 403 przy braku dostępu — <b>świadomie</b>.
+     *
+     * <p>Odpowiedź „ten dokument istnieje, ale nie możesz go zobaczyć" jest sama w sobie
+     * wyciekiem: pozwala sprawdzać, które identyfikatory są prawdziwe. Z punktu widzenia
+     * kogoś bez uprawnień dokument ma po prostu nie istnieć — tak samo, jak dla ścieżki
+     * WebSocket, gdzie subskrypcja po prostu nie działa.
+     */
+    private static final org.springframework.http.HttpStatus DENIED =
+        org.springframework.http.HttpStatus.NOT_FOUND;
+
     /** Paleta z mockupu (docs/design/mockup-inkline.html) — kolory autorów w tekście. */
     private static final String[] PALETTE = {"#C1592E", "#4C5FD5", "#2E8B6B", "#8A5CB8", "#B8862E"};
 
@@ -107,12 +140,21 @@ public class DocumentRestController {
     @GetMapping("/documents")
     public List<DocumentCatalog.DocumentSummary> list(
         @RequestParam(value = "q", required = false) String query,
-        @RequestParam(value = "workspace", required = false) UUID workspaceId) {
+        @RequestParam(value = "workspace", required = false) UUID workspaceId,
+        HttpServletRequest request) {
 
-        if (query != null && !query.isBlank()) {
-            return catalog.search(query.trim(), LIST_LIMIT);
-        }
-        return catalog.list(workspaceId, LIST_LIMIT);
+        List<DocumentCatalog.DocumentSummary> found = query != null && !query.isBlank()
+            ? catalog.search(query.trim(), LIST_LIMIT)
+            : catalog.list(workspaceId, LIST_LIMIT);
+
+        // Odsiew po uprawnieniach PO stronie aplikacji, a nie w zapytaniu.
+        //
+        // Zapytanie z wbudowaną regułą dostępu byłoby szybsze, ale rozdzieliłoby tę regułę
+        // na dwa miejsca: SQL tutaj i PermissionService gdzie indziej. Dwie kopie reguły
+        // dostępu rozjeżdżają się i wtedy jedna z nich przepuszcza za dużo. Przy limicie
+        // 200 pozycji koszt odsiewu jest pomijalny, a reguła zostaje w jednym miejscu.
+        String caller = callerId(request);
+        return found.stream().filter(doc -> permissions.canRead(caller, doc.id())).toList();
     }
 
     /**
@@ -126,19 +168,33 @@ public class DocumentRestController {
     private static final int LIST_LIMIT = 200;
 
     @GetMapping("/documents/trash")
-    public List<DocumentCatalog.DocumentSummary> trash() {
-        return catalog.listDeleted(LIST_LIMIT);
+    public List<DocumentCatalog.DocumentSummary> trash(HttpServletRequest request) {
+        String caller = callerId(request);
+        // Kosz pokazuje wyłącznie dokumenty, które wołający mógłby otworzyć, gdyby nie były
+        // usunięte. Bez tego kosz byłby obejściem uprawnień — listą cudzych tytułów.
+        return catalog.listDeleted(LIST_LIMIT).stream()
+            .filter(doc -> permissions.roleOfDeleted(caller, doc.id()).isPresent())
+            .toList();
     }
 
     public record CreateDocumentRequest(String title, UUID workspaceId) {
     }
 
     @PostMapping("/documents")
-    public DocumentCatalog.DocumentSummary create(@RequestBody CreateDocumentRequest request) {
+    public DocumentCatalog.DocumentSummary create(@RequestBody CreateDocumentRequest body,
+                                                  HttpServletRequest request) {
         UUID id = UUID.randomUUID();
-        String title = request.title() == null || request.title().isBlank()
-            ? "Dokument bez tytułu" : request.title().trim();
-        catalog.create(id, title, request.workspaceId());
+        String title = body.title() == null || body.title().isBlank()
+            ? "Dokument bez tytułu" : body.title().trim();
+        catalog.create(id, title, body.workspaceId());
+
+        // Twórca zostaje właścicielem. Bez tego nikt nie mógłby zmienić widoczności
+        // dokumentu ani nadać do niego dostępu — a dokument bez właściciela jest
+        // dokumentem, którego nie da się zabezpieczyć.
+        String caller = callerId(request);
+        if (caller != null) {
+            permissions.setOwner(id, caller);
+        }
         return catalog.find(id).orElseThrow();
     }
 
@@ -146,11 +202,15 @@ public class DocumentRestController {
     }
 
     @PatchMapping("/documents/{id}")
-    public ResponseEntity<Void> rename(@PathVariable UUID id, @RequestBody RenameRequest request) {
-        if (request.title() == null || request.title().isBlank()) {
+    public ResponseEntity<Void> rename(@PathVariable UUID id, @RequestBody RenameRequest body,
+                                       HttpServletRequest request) {
+        if (!permissions.canWriteText(callerId(request), id)) {
+            return ResponseEntity.status(DENIED).build();
+        }
+        if (body.title() == null || body.title().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
-        return catalog.rename(id, request.title().trim())
+        return catalog.rename(id, body.title().trim())
             ? ResponseEntity.noContent().build()
             : ResponseEntity.notFound().build();
     }
@@ -164,14 +224,23 @@ public class DocumentRestController {
      * a nie żeby przestał istnieć.
      */
     @DeleteMapping("/documents/{id}")
-    public ResponseEntity<Void> delete(@PathVariable UUID id) {
+    public ResponseEntity<Void> delete(@PathVariable UUID id, HttpServletRequest request) {
+        // Usuwanie wymaga prawa ZAPISU, nie własności: dokument współdzielony przez zespół
+        // ma dać się schować każdemu, kto go redaguje. Odwracalność tej operacji (kosz)
+        // sprawia, że nie jest to ryzyko, którym trzeba zarządzać rolą.
+        if (!permissions.canWriteText(callerId(request), id)) {
+            return ResponseEntity.status(DENIED).build();
+        }
         return catalog.softDelete(id)
             ? ResponseEntity.noContent().build()
             : ResponseEntity.notFound().build();
     }
 
     @PostMapping("/documents/{id}/restore")
-    public ResponseEntity<Void> restore(@PathVariable UUID id) {
+    public ResponseEntity<Void> restore(@PathVariable UUID id, HttpServletRequest request) {
+        if (permissions.roleOfDeleted(callerId(request), id).filter(Role::canWriteText).isEmpty()) {
+            return ResponseEntity.status(DENIED).build();
+        }
         return catalog.restore(id)
             ? ResponseEntity.noContent().build()
             : ResponseEntity.notFound().build();
@@ -239,7 +308,13 @@ public class DocumentRestController {
      * pobierać całą historię od zera.
      */
     @GetMapping("/documents/{id}")
-    public ResponseEntity<DocumentState> open(@PathVariable UUID id) {
+    public ResponseEntity<DocumentState> open(@PathVariable UUID id, HttpServletRequest request) {
+        // NAJWAŻNIEJSZE sprawdzenie w tym kontrolerze: ten endpoint zwraca PEŁNĄ TREŚĆ
+        // dokumentu. Bez niego cała autoryzacja WebSocketa jest ozdobą, bo te same dane
+        // wychodzą jednym żądaniem GET.
+        if (!permissions.canRead(callerId(request), id)) {
+            return ResponseEntity.status(DENIED).build();
+        }
         // Przez katalog, nie zapytaniem wprost: katalog odsiewa dokumenty usunięte,
         // więc otwarcie schowanego dokumentu daje 404, a nie pustą treść bez wyjaśnienia.
         return catalog.find(id)

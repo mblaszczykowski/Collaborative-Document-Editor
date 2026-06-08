@@ -38,10 +38,31 @@ export interface DocumentState {
   headServerSeq: number
 }
 
+/**
+ * Token bieżącej sesji, doklejany do każdego żądania.
+ *
+ * Trzymany w module, a nie przekazywany do każdego wywołania: REST jest w tej aplikacji
+ * pomocniczy wobec WebSocketa, więc przeciąganie tokenu przez wszystkie wywołania
+ * zaszumiłoby je szczegółem, który nigdy się nie zmienia w trakcie sesji.
+ *
+ * Do CP12 endpointy REST były NIEUWIERZYTELNIONE — `GET /api/documents/{id}` zwracał treść
+ * dowolnego dokumentu każdemu, kto znał identyfikator. Autoryzacja WebSocketa bez tego
+ * nagłówka byłaby ozdobą, bo te same dane wychodziły jednym żądaniem GET.
+ */
+let authToken: string | null = null
+
+export function setAuthToken(token: string | null): void {
+  authToken = token
+}
+
+function authHeaders(): Record<string, string> {
+  return authToken === null ? {} : { Authorization: `Bearer ${authToken}` }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
   })
   if (!response.ok) {
     throw new Error(`${init?.method ?? 'GET'} ${path} → ${response.status}`)
@@ -59,7 +80,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function requestNoContent(path: string, init: RequestInit): Promise<void> {
   const response = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init.headers ?? {}) },
   })
   if (!response.ok) {
     throw new Error(`${init.method ?? 'GET'} ${path} → ${response.status}`)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type DocumentSummary, type Session } from './api'
+import { api, setAuthToken, type DocumentSummary, type Session } from './api'
 import { RgaDocument } from './crdt/document'
 import { UndoManager } from './crdt/undo'
 import type { Id, Op } from './crdt/types'
@@ -34,8 +34,19 @@ import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
 export default function App() {
   const [session, setSession] = useState<Session | null>(loadSession)
 
+  // Token musi być ustawiony ZANIM padnie pierwsze żądanie REST — również przy sesji
+  // odtworzonej z sessionStorage, gdzie nie ma logowania, przy którym można by go ustawić.
+  // useState z funkcją inicjalizującą wykonuje się przed pierwszym renderem, więc
+  // ustawienie tutaj wyprzedza useEffect w komponentach potomnych.
+  const [, setTokenReady] = useState(() => {
+    setAuthToken(session?.token ?? null)
+    return true
+  })
+  void setTokenReady
+
   function remember(next: Session): void {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(next))
+    setAuthToken(next.token)
     setSession(next)
   }
 
