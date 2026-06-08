@@ -534,7 +534,8 @@ public final class RgaDocument {
         for (Block block : blocks) {
             copies.add(new Block(block.start(), block.text(), block.originLeft(), block.deleted()));
         }
-        return new DocumentSnapshot(DocumentSnapshot.CURRENT_FORMAT_VERSION, clock, maxSeen, copies);
+        return new DocumentSnapshot(
+            DocumentSnapshot.CURRENT_FORMAT_VERSION, clock, maxSeen, copies, marks.all());
     }
 
     /**
@@ -552,6 +553,11 @@ public final class RgaDocument {
         }
         document.clock = snapshot.clock();
         document.maxSeen.putAll(snapshot.maxSeen());
+        // Znaczniki wracają jako operacje, więc odtworzona replika potrafi rozstrzygnąć
+        // konflikt z każdym znacznikiem, który dopiero nadejdzie — patrz SnapshotCodec.
+        for (Op mark : snapshot.marks()) {
+            document.marks.apply(mark);
+        }
         return document;
     }
 

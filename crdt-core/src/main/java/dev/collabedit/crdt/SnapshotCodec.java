@@ -95,6 +95,16 @@ public final class SnapshotCodec {
                 out.writeBoolean(block.deleted());
                 writeLongString(out, block.text());
             }
+
+            // Znaczniki (CP13) zapisywane JAKO OPERACJE, w formacie przewodowym OpCodec,
+            // a nie jako rozwiązane odcinki formatowania. Odcinki są wynikiem, nie stanem:
+            // zapisanie ich oznaczałoby, że po odtworzeniu z snapshotu replika nie potrafi
+            // już poprawnie scalić znacznika, który przyjdzie później — bo nie ma z czym
+            // rozstrzygnąć konfliktu.
+            out.writeInt(snapshot.marks().size());
+            for (Op mark : snapshot.marks()) {
+                writeLongString(out, OpCodec.encode(mark));
+            }
         } catch (IOException e) {
             throw new UncheckedIOException("nie da się zakodować snapshotu", e);
         }
@@ -130,7 +140,12 @@ public final class SnapshotCodec {
                 boolean deleted = in.readBoolean();
                 blocks.add(new Block(start, readLongString(in), originLeft, deleted));
             }
-            return new DocumentSnapshot(formatVersion, clock, maxSeen, blocks);
+            int markCount = in.readInt();
+            List<Op> marks = new ArrayList<>(markCount);
+            for (int i = 0; i < markCount; i++) {
+                marks.add(OpCodec.decode(readLongString(in)));
+            }
+            return new DocumentSnapshot(formatVersion, clock, maxSeen, blocks, marks);
         } catch (IOException | RuntimeException e) {
             return null;
         }

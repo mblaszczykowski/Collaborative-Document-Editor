@@ -232,6 +232,54 @@ class MarkTest {
     }
 
     @Test
+    @DisplayName("formatowanie przeżywa snapshot i odtworzenie repliki")
+    void markSurvivesSnapshotRoundTrip() {
+        RgaDocument original = document(1);
+        original.insert(0, "abcdef");
+        original.addMark(1, 4, MarkTypes.BOLD, null);
+        original.addMark(2, 5, MarkTypes.LINK, "https://example.test");
+
+        byte[] encoded = SnapshotCodec.encode(original.snapshot());
+        DocumentSnapshot decoded = SnapshotCodec.decode(encoded);
+        assertThat(decoded).isNotNull();
+
+        RgaDocument restored = RgaDocument.restore(1, new TreapBlockList(), decoded);
+
+        assertThat(restored.text()).isEqualTo(original.text());
+        assertThat(restored.formatting())
+            .as("restart instancji zgubił formatowanie — tekst wrócił, wygląd nie")
+            .isEqualTo(original.formatting());
+    }
+
+    @Test
+    @DisplayName("replika odtworzona ze snapshotu potrafi rozstrzygnąć konflikt ze znacznikiem, który dopiero nadejdzie")
+    void restoredReplicaStillResolvesConflicts() {
+        RgaDocument ania = document(1);
+        RgaDocument bartek = document(2);
+
+        Op.Insert base = ania.insert(0, "abcdef");
+        bartek.apply(base);
+
+        Op.AddMark bold = ania.addMark(1, 4, MarkTypes.BOLD, null);
+        bartek.apply(bold);
+
+        // Bartek zostaje odtworzony ze snapshotu, po czym dostaje ZDJĘCIE formatowania
+        // o wyższym priorytecie. Gdyby snapshot zapisywał rozwiązane odcinki zamiast
+        // operacji, nie miałby czym rozstrzygnąć tego konfliktu.
+        RgaDocument odtworzony = RgaDocument.restore(
+            2, new TreapBlockList(), SnapshotCodec.decode(SnapshotCodec.encode(bartek.snapshot())));
+
+        Op.RemoveMark unbold = ania.removeMark(1, 4, MarkTypes.BOLD);
+        odtworzony.apply(unbold);
+        bartek.apply(unbold);
+
+        assertThat(odtworzony.formatting())
+            .as("replika odtworzona ze snapshotu rozstrzygnęła konflikt inaczej niż nieodtworzona")
+            .isEqualTo(bartek.formatting());
+        assertThat(odtworzony.formatting()).isEqualTo(ania.formatting());
+    }
+
+    @Test
     @DisplayName("format przewodowy znacznika przechodzi w obie strony")
     void markSurvivesWireRoundTrip() {
         RgaDocument document = document(1);
