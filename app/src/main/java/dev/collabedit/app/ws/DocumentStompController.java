@@ -73,7 +73,7 @@ public class DocumentStompController {
         // wchodzi do systemu i w którym jest jeszcze dostęp do nagłówków ramki z kontekstem
         // śledzenia przysłanym przez przeglądarkę.
         try (var span = tracer.startReceive(headers, documentId,
-            SessionAttributes.replicaId(headers), op instanceof Op.Insert ? "insert" : "delete")) {
+            SessionAttributes.replicaId(headers), opTypeName(op))) {
             span.attribute("collabedit.op.lamport", op.id().lamport());
             documents.submit(documentId, op, userId);
         } catch (DocumentService.ResyncRequiredException e) {
@@ -83,6 +83,21 @@ public class DocumentStompController {
             log.warn("Odrzucono operację {} w dokumencie {}: {}", op.id(), documentId, e.toString());
             sendError(headers, "OPERATION_REJECTED", e.getMessage());
         }
+    }
+
+    /**
+     * Nazwa typu operacji dla atrybutu trace'u.
+     *
+     * <p>Wyczerpujący {@code switch} z tego samego powodu co w {@code OperationStore}:
+     * ternarne {@code instanceof} przy dodaniu wariantu {@link Op} skompiluje się dalej
+     * i będzie opisywać nowe operacje błędną nazwą. Skutek jest łagodniejszy niż tam
+     * (mylące dane diagnostyczne zamiast korupcji logu), ale wykrywa się go tak samo późno.
+     */
+    private static String opTypeName(Op op) {
+        return switch (op) {
+            case Op.Insert ignored -> "insert";
+            case Op.Delete ignored -> "delete";
+        };
     }
 
     /**

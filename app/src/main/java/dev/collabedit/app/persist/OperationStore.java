@@ -91,7 +91,7 @@ public class OperationStore {
                 op.id().replicaId(),
                 op.id().lamport(),
                 seq,
-                op instanceof Op.Insert ? "i" : "d",
+                opTypeCode(op),
                 OpCodec.encode(op),
                 pending.userId()
             });
@@ -162,6 +162,26 @@ public class OperationStore {
             },
             (rs, rowNum) -> rs.getInt("replica_id") + ":" + rs.getLong("lamport"));
         return new HashSet<>(found);
+    }
+
+    /**
+     * Jednoznakowy kod typu operacji w kolumnie {@code operations.op_type}.
+     *
+     * <p><b>Wyczerpujący {@code switch}, nie ternarne {@code instanceof}.</b> Poprzednia
+     * wersja brzmiała {@code op instanceof Op.Insert ? "i" : "d"} i była poprawna dokładnie
+     * tak długo, jak długo {@link Op} miał dwa warianty. {@code Op} jest interfejsem
+     * zapieczętowanym, więc kompilator wskaże wszystkie wyczerpujące {@code switch}-e
+     * przy dodaniu wariantu — ale ternarnego {@code instanceof} nie wskaże, bo ten
+     * kompiluje się dalej i po cichu zapisuje nowy typ operacji JAKO USUNIĘCIE.
+     *
+     * <p>Byłaby to korupcja źródła prawdy widoczna dopiero przy odtwarzaniu stanu z logu,
+     * czyli po awarii — w najgorszym możliwym momencie.
+     */
+    private static String opTypeCode(Op op) {
+        return switch (op) {
+            case Op.Insert ignored -> "i";
+            case Op.Delete ignored -> "d";
+        };
     }
 
     private static String key(Op op) {
