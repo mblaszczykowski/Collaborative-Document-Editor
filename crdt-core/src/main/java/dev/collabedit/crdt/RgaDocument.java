@@ -496,6 +496,28 @@ public final class RgaDocument {
                 referenced.add(block.originLeft());
             }
         }
+        // TRZECI warunek, dołożony w CP13: tombstone będący KOTWICĄ ZNACZNIKA też musi
+        // zostać. Usunięcie go sprawia, że kotwica przestaje być rozwiązywalna, a znacznik
+        // po cichu znika — formatowanie przepada bez śladu i bez błędu, przy okazji
+        // sprzątania pamięci.
+        //
+        // Konsekwencja jest niewygodna i trzeba ją nazwać: GC był już słaby (ADR-0005 —
+        // zbieralny jest praktycznie tylko ogon dokumentu), a teraz jest SŁABSZY,
+        // bo formatowanie przypina kolejne tombstone'y w środku tekstu. Im więcej
+        // formatowania, tym mniej da się odzyskać.
+        for (Op mark : marks.all()) {
+            switch (mark) {
+                case Op.AddMark add -> {
+                    referenced.add(add.start().charId());
+                    referenced.add(add.end().charId());
+                }
+                case Op.RemoveMark remove -> {
+                    referenced.add(remove.start().charId());
+                    referenced.add(remove.end().charId());
+                }
+                default -> { }
+            }
+        }
 
         int removed = 0;
         for (int i = blocks.size() - 1; i >= 0; i--) {

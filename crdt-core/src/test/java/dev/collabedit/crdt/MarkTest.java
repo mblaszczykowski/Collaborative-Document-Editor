@@ -280,6 +280,78 @@ class MarkTest {
     }
 
     @Test
+    @DisplayName("GC nie kasuje tombstone'u będącego kotwicą znacznika")
+    void garbageCollectionSparesMarkAnchors() {
+        RgaDocument document = document(1);
+        document.insert(0, "abcdef");
+
+        // Kotwica na OSTATNIM znaku dokumentu — i to jest sedno tego testu.
+        //
+        // Pierwsza wersja kotwiczyła w środku tekstu i przechodziła nawet po wyłączeniu
+        // ochrony kotwic: znak w środku jest ORIGINEM następnego, więc chroniła go już
+        // reguła z ADR-0005. Test nie sprawdzał wtedy niczego nowego. Ostatni znak nie jest
+        // originem niczego, więc jedyne, co może go uratować, to ochrona dodana w CP13.
+        //
+        // Link, nie pogrubienie: link się nie rozszerza, więc jego kotwica końcowa siedzi
+        // ZA ostatnim znakiem, a nie przed następnym (którego nie ma).
+        document.addMark(4, 6, MarkTypes.LINK, "https://example.test");
+        document.delete(5, 1);
+
+        assertThat(document.text()).isEqualTo("abcde");
+        assertThat(marksAt(document, 4)).containsKey(MarkTypes.LINK);
+
+        document.gc(VersionVector.of(Map.of(1, 1000L)));
+
+        assertThat(document.text()).isEqualTo("abcde");
+        assertThat(marksAt(document, 4))
+            .as("GC skasował kotwicę znacznika — formatowanie widocznego tekstu przepadło "
+                + "przy sprzątaniu pamięci")
+            .containsEntry(MarkTypes.LINK, "https://example.test");
+    }
+
+    @Test
+    @DisplayName("tekst wpisany w miejsce skasowanego fragmentu NIE dziedziczy jego formatowania")
+    void textTypedOverDeletedRangeDoesNotInheritItsMark() {
+        RgaDocument document = document(1);
+        document.insert(0, "abcdef");
+        document.addMark(1, 4, MarkTypes.BOLD, null);
+        document.delete(1, 3);
+        assertThat(document.text()).isEqualTo("aef");
+
+        document.insert(1, "XYZ");
+
+        // ZNANE ZACHOWANIE, nie błąd. Wstawienie na pozycji, przed którą stoją tombstone'y,
+        // ląduje PRZED nimi (patrz RgaDocument.insert) — czyli poza zakresem, którego
+        // kotwice są zaczepione w tych tombstone'ach. Edytory oparte na offsetach
+        // zachowują się tu inaczej, bo nie mają czego zachowywać.
+        //
+        // Test utrwala to zachowanie zamiast udawać, że go nie ma: jest przewidywalne
+        // i wynika wprost z reguły wstawiania RGA, a jego zmiana wymagałaby zmiany tej reguły.
+        assertThat(document.text()).isEqualTo("aXYZef");
+        assertThat(marksAt(document, 1))
+            .as("zachowanie się zmieniło — sprawdź, czy to była świadoma decyzja")
+            .doesNotContainKey(MarkTypes.BOLD);
+    }
+
+    @Test
+    @DisplayName("GC nadal zbiera tombstone'y, których nic nie kotwiczy")
+    void garbageCollectionStillCollectsUnreferenced() {
+        RgaDocument document = document(1);
+        document.insert(0, "abcdef");
+        document.delete(4, 2);   // ogon, bez znaczników
+
+        int before = document.tombstoneCount();
+        assertThat(before).isPositive();
+
+        int removed = document.gc(VersionVector.of(Map.of(1, 1000L)));
+
+        assertThat(removed)
+            .as("ochrona kotwic zablokowała GC także tam, gdzie żadnych kotwic nie ma")
+            .isPositive();
+        assertThat(document.text()).isEqualTo("abcd");
+    }
+
+    @Test
     @DisplayName("format przewodowy znacznika przechodzi w obie strony")
     void markSurvivesWireRoundTrip() {
         RgaDocument document = document(1);

@@ -179,3 +179,48 @@ w produkcji" jako **znany, nazwany brak**, a nie jako przeoczenie.
 - Czy GC realnie odpala się przy typowym wzorcu użycia, czy `stableVersion` stoi w miejscu.
 - Koszt czasowy kompakcji przy snapshotowaniu dużego dokumentu — czy nie wprowadza
   zauważalnej pauzy.
+
+---
+
+## Zweryfikowane w CP13 — i jest to wiadomość zła
+
+Rich text dokłada **trzeci warunek** do listy „kiedy tombstone'u nie wolno usunąć":
+
+1. nie jest przyczynowo stabilny (warunek pierwotny),
+2. jest originem istniejącego bloku (dołożony przy implementacji),
+3. **jest kotwicą znacznika formatowania** (CP13).
+
+Trzeci warunek wynika wprost z konstrukcji z ADR-0010: znacznik to zakres między kotwicami
+zaczepionymi w znakach, a kotwica na skasowanym znaku ma przetrwać — inaczej skasowanie
+sąsiedniego tekstu gubiłoby formatowanie. Cena jest taka, że **każdy zakres formatowania
+przypina dwa tombstone'y**, i to zwykle w środku tekstu, a nie na ogonie.
+
+GC był już słaby: README od CP6 mówi wprost, że zbieralny jest praktycznie tylko ogon
+dokumentu. Teraz jest **słabszy proporcjonalnie do ilości formatowania**. Dokument mocno
+sformatowany i mocno edytowany odzyska mniej niż taki sam dokument bez formatowania.
+
+### Czego to NIE zmienia
+
+Kierunek rozwiązania, opisany w README od CP6, pozostaje ten sam i staje się tylko
+pilniejszy: **porzucanie TREŚCI skasowanych węzłów przy zachowaniu ich w strukturze**
+(tak robi Yjs). Węzeł zachowany jako pusty punkt zaczepienia kosztuje kilkanaście bajtów
+zamiast całego tekstu, a wszystkie trzy warunki powyżej pozostają spełnione — bo wszystkie
+trzy potrzebują TOŻSAMOŚCI znaku, a nie jego treści.
+
+Plan CP13 wskazywał podniesienie wersji formatu snapshotu jako najtańszy moment na tę zmianę
+i **moment ten został przepuszczony**: format podniesiono do wersji 2 bez zmiany reprezentacji
+bloku. Powodem był brak pomiaru — nie wiem, ile pamięci realnie zajmują tombstone'y
+w dokumencie z formatowaniem, więc nie wiem, czy zmiana reprezentacji jest warta swojego
+kosztu. Pomiar należy do CP15; jeśli wypadnie źle, kolejna okazja to następne podniesienie
+wersji formatu.
+
+### Zabezpieczenie, które prawie nie zadziałało
+
+Test pilnujący trzeciego warunku w pierwszej wersji **przechodził również z wyłączoną
+ochroną kotwic**. Kotwiczył w środku tekstu, a znak w środku jest originem następnego, więc
+chronił go już warunek drugi. Wykryte mutacją; test kotwiczy teraz na ostatnim znaku
+dokumentu, który nie jest originem niczego.
+
+Jest to trzeci raz w tym projekcie, gdy mutacja ujawnia test niesprawdzający tego, co
+deklaruje — i drugi, w którym przyczyną było to, że sprawdzana własność była przypadkowo
+zapewniona przez inny, wcześniejszy mechanizm.
