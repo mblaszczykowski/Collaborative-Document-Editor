@@ -161,5 +161,6 @@
     "ol" : 2,
     "s" : "a"
   } ],
-  "expectedText" : "edaacdccdcdeeaedbe"
+  "expectedText" : "edaacdccdcdeeaedbe",
+  "expectedFormatting" : [ ]
 }

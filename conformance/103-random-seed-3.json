@@ -145,5 +145,6 @@
     "t" : "d",
     "g" : [ [ 2, 1, 1 ], [ 2, 0, 1 ] ]
   } ],
-  "expectedText" : "bceeabdfcdfae"
+  "expectedText" : "bceeabdfcdfae",
+  "expectedFormatting" : [ ]
 }

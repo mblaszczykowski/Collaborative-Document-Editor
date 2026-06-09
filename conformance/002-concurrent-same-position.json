@@ -21,5 +21,6 @@
     "t" : "i",
     "s" : "AB"
   } ],
-  "expectedText" : "AworldhelloB"
+  "expectedText" : "AworldhelloB",
+  "expectedFormatting" : [ ]
 }

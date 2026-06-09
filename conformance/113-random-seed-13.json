@@ -147,5 +147,6 @@
     "t" : "i",
     "s" : "b"
   } ],
-  "expectedText" : "fbfbeefcedafb"
+  "expectedText" : "fbfbeefcedafb",
+  "expectedFormatting" : [ ]
 }

@@ -12,5 +12,6 @@
     "t" : "i",
     "s" : "abcdef"
   } ],
-  "expectedText" : "abef"
+  "expectedText" : "abef",
+  "expectedFormatting" : [ ]
 }

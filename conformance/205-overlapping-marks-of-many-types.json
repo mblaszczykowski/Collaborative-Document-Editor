@@ -1,0 +1,81 @@
+{
+  "name" : "205-overlapping-marks-of-many-types",
+  "description" : "Zachodzące na siebie zakresy trzech typów znaczników plus zdjęcie części wspólnej. Sprawdza wyliczanie odcinków formatowania i sklejanie sąsiadujących.",
+  "operations" : [ {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "abcdefghij"
+  }, {
+    "r" : 1,
+    "l" : 10,
+    "t" : "m",
+    "k" : "bold",
+    "a" : [ 1, 0, 0 ],
+    "b" : [ 1, 6, 0 ]
+  }, {
+    "r" : 1,
+    "l" : 11,
+    "t" : "m",
+    "k" : "italic",
+    "a" : [ 1, 3, 0 ],
+    "b" : [ 1, 9, 0 ]
+  }, {
+    "r" : 1,
+    "l" : 12,
+    "t" : "m",
+    "k" : "link",
+    "v" : "https://example.test/x",
+    "a" : [ 1, 2, 0 ],
+    "b" : [ 1, 4, 1 ]
+  }, {
+    "r" : 1,
+    "l" : 13,
+    "t" : "x",
+    "k" : "italic",
+    "a" : [ 1, 4, 0 ],
+    "b" : [ 1, 7, 0 ]
+  } ],
+  "expectedText" : "abcdefghij",
+  "expectedFormatting" : [ {
+    "from" : 0,
+    "to" : 2,
+    "marks" : {
+      "bold" : null
+    }
+  }, {
+    "from" : 2,
+    "to" : 3,
+    "marks" : {
+      "link" : "https://example.test/x",
+      "bold" : null
+    }
+  }, {
+    "from" : 3,
+    "to" : 4,
+    "marks" : {
+      "link" : "https://example.test/x",
+      "italic" : null,
+      "bold" : null
+    }
+  }, {
+    "from" : 4,
+    "to" : 5,
+    "marks" : {
+      "link" : "https://example.test/x",
+      "bold" : null
+    }
+  }, {
+    "from" : 5,
+    "to" : 6,
+    "marks" : {
+      "bold" : null
+    }
+  }, {
+    "from" : 7,
+    "to" : 9,
+    "marks" : {
+      "italic" : null
+    }
+  } ]
+}

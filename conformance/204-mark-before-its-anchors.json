@@ -1,0 +1,25 @@
+{
+  "name" : "204-mark-before-its-anchors",
+  "description" : "Znacznik dociera PRZED tekstem, którego dotyczy. Musi poczekać w buforze i zostać zastosowany po dotarciu kotwic, zamiast trafić w przypadkowe miejsce.",
+  "operations" : [ {
+    "r" : 1,
+    "l" : 6,
+    "t" : "m",
+    "k" : "italic",
+    "a" : [ 1, 1, 0 ],
+    "b" : [ 1, 4, 0 ]
+  }, {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "abcdef"
+  } ],
+  "expectedText" : "abcdef",
+  "expectedFormatting" : [ {
+    "from" : 1,
+    "to" : 4,
+    "marks" : {
+      "italic" : null
+    }
+  } ]
+}

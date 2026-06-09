@@ -36,5 +36,6 @@
     "t" : "d",
     "g" : [ [ 1, 0, 1 ] ]
   } ],
-  "expectedText" : "yz123"
+  "expectedText" : "yz123",
+  "expectedFormatting" : [ ]
 }

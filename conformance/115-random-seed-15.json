@@ -155,5 +155,6 @@
     "t" : "i",
     "s" : "f"
   } ],
-  "expectedText" : "cfaebbdacfccdea"
+  "expectedText" : "cfaebbdacfccdea",
+  "expectedFormatting" : [ ]
 }

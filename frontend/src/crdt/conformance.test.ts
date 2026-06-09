@@ -17,11 +17,32 @@ import { RgaDocument } from './document'
  * po cichu w żadną stronę.
  */
 
+interface ExpectedSpan {
+  from: number
+  to: number
+  marks: Record<string, string | null>
+}
+
 interface Vector {
   name: string
   description: string
   operations: WireOp[]
   expectedText: string
+  /**
+   * Oczekiwane formatowanie (CP13). Obecne w KAŻDYM wektorze, również bez znaczników —
+   * wtedy jako pusta tablica. Pole obecne warunkowo znaczyłoby, że nie da się odróżnić
+   * „brak formatowania" od „stary wektor bez tego pola".
+   */
+  expectedFormatting: ExpectedSpan[]
+}
+
+/** Formatowanie dokumentu w kształcie porównywalnym z wektorem. */
+function describeFormatting(document: RgaDocument): ExpectedSpan[] {
+  return document.formatting().map((span) => ({
+    from: span.from,
+    to: span.to,
+    marks: Object.fromEntries(span.marks),
+  }))
 }
 
 const VECTOR_DIR = join(__dirname, '..', '..', '..', 'conformance')
@@ -47,6 +68,12 @@ describe('zgodność z implementacją w Javie', () => {
 
       expect(document.text).toBe(vector.expectedText)
       expect(document.pendingCount, 'operacje zostały w buforze').toBe(0)
+
+      // Zbieżność tekstu NIE dowodzi zbieżności formatowania: znaczniki mają własny zbiór
+      // operacji i własną regułę rozstrzygania, więc obie implementacje mogą dawać ten sam
+      // tekst i różny wygląd. Porównanie samego tekstu przepuściłoby taki rozjazd w całości.
+      expect(describeFormatting(document), 'formatowanie rozjechało się z implementacją w Javie')
+        .toEqual(vector.expectedFormatting)
     })
   }
 
@@ -66,6 +93,10 @@ describe('zgodność z implementacją w Javie', () => {
       const reversed = new RgaDocument(999)
       reversed.applyAll([...vector.operations].reverse().map(decodeOp))
       expect(reversed.text, `wektor ${vector.name} zależy od kolejności`).toBe(vector.expectedText)
+      expect(
+        describeFormatting(reversed),
+        `formatowanie wektora ${vector.name} zależy od kolejności dostarczenia`,
+      ).toEqual(vector.expectedFormatting)
     }
   })
 })

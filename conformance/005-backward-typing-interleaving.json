@@ -32,5 +32,6 @@
     "t" : "i",
     "s" : "x"
   } ],
-  "expectedText" : "xaybzc"
+  "expectedText" : "xaybzc",
+  "expectedFormatting" : [ ]
 }

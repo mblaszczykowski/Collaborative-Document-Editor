@@ -147,5 +147,6 @@
     "ol" : 5,
     "s" : "e"
   } ],
-  "expectedText" : "acffcfad"
+  "expectedText" : "acffcfad",
+  "expectedFormatting" : [ ]
 }

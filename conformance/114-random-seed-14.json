@@ -155,5 +155,6 @@
     "ol" : 5,
     "s" : "f"
   } ],
-  "expectedText" : "ecfaadaebdfec"
+  "expectedText" : "ecfaadaebdfec",
+  "expectedFormatting" : [ ]
 }

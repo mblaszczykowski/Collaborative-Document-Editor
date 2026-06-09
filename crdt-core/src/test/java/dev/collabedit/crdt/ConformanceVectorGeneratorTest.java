@@ -66,6 +66,32 @@ class ConformanceVectorGeneratorTest {
                 + "zgodność jest ważniejsza niż to, czy wynik się podoba.",
             backwardTyping()));
 
+        written.add(write("201-mark-inherited-by-concurrent-insert",
+            "Tekst wpisany w środek pogrubienia przez replikę, która pogrubienia jeszcze nie "
+                + "widziała. MUSI odziedziczyć formatowanie — to jest cały powód, dla którego "
+                + "znacznik jest zakresem między kotwicami, a nie atrybutem znaku (CP13).",
+            markInheritedByConcurrentInsert()));
+
+        written.add(write("202-mark-expansion-differs-by-type",
+            "Pogrubienie ROŚNIE przy pisaniu na jego końcu, link NIE. Cała różnica to wybór "
+                + "strony kotwicy końcowej — implementacja w TS musi wybrać tak samo.",
+            markExpansionDiffersByType()));
+
+        written.add(write("203-concurrent-add-and-remove-mark",
+            "Współbieżne nadanie i zdjęcie tego samego formatowania. Rozstrzyga porządek "
+                + "totalny (lamport, replicaId) — ten sam, którego używa reguła wstawiania RGA.",
+            concurrentAddAndRemoveMark()));
+
+        written.add(write("204-mark-before-its-anchors",
+            "Znacznik dociera PRZED tekstem, którego dotyczy. Musi poczekać w buforze "
+                + "i zostać zastosowany po dotarciu kotwic, zamiast trafić w przypadkowe miejsce.",
+            markBeforeItsAnchors()));
+
+        written.add(write("205-overlapping-marks-of-many-types",
+            "Zachodzące na siebie zakresy trzech typów znaczników plus zdjęcie części wspólnej. "
+                + "Sprawdza wyliczanie odcinków formatowania i sklejanie sąsiadujących.",
+            overlappingMarks()));
+
         // Losowe scenariusze o ustalonych ziarnach: powtarzalne, ale różnorodne.
         for (int seed = 1; seed <= 15; seed++) {
             written.add(write(String.format("1%02d-random-seed-%d", seed, seed),
@@ -74,7 +100,7 @@ class ConformanceVectorGeneratorTest {
                 randomScenario(seed)));
         }
 
-        assertThat(written).hasSize(20);
+        assertThat(written).hasSize(25);
 
         // Samosprawdzenie: każdy zapisany wektor musi być odtwarzalny przez tę samą
         // implementację, która go wygenerowała. Wektor, którego nie przechodzi nawet
@@ -142,6 +168,64 @@ class ConformanceVectorGeneratorTest {
         return ops;
     }
 
+    // --- scenariusze formatowania (CP13) ---
+
+    private static List<Op> markInheritedByConcurrentInsert() {
+        RgaDocument ania = new RgaDocument(1);
+        RgaDocument bartek = new RgaDocument(2);
+        Op base = ania.insert(0, "abcdef");
+        bartek.apply(base);
+
+        Op bold = ania.addMark(1, 5, MarkTypes.BOLD, null);
+        // Bartek NIE widział jeszcze pogrubienia.
+        Op inserted = bartek.insert(3, "XY");
+
+        return List.of(base, inserted, bold);
+    }
+
+    private static List<Op> markExpansionDiffersByType() {
+        RgaDocument document = new RgaDocument(1);
+        List<Op> ops = new ArrayList<>();
+        ops.add(document.insert(0, "abcdef"));
+        ops.add(document.addMark(1, 3, MarkTypes.BOLD, null));
+        ops.add(document.addMark(4, 6, MarkTypes.LINK, "https://example.test"));
+        // Wstawienia tuż za każdym z zakresów — pogrubienie ma je objąć, link nie.
+        ops.add(document.insert(3, "X"));
+        ops.add(document.insert(document.visibleLength(), "Y"));
+        return ops;
+    }
+
+    private static List<Op> concurrentAddAndRemoveMark() {
+        RgaDocument ania = new RgaDocument(1);
+        RgaDocument bartek = new RgaDocument(2);
+        Op base = ania.insert(0, "abcdefgh");
+        bartek.apply(base);
+
+        Op bold = ania.addMark(1, 6, MarkTypes.BOLD, null);
+        Op unbold = bartek.removeMark(3, 8, MarkTypes.BOLD);
+
+        // Kolejność odwrotna do wygenerowania — wynik musi być identyczny.
+        return List.of(unbold, bold, base);
+    }
+
+    private static List<Op> markBeforeItsAnchors() {
+        RgaDocument document = new RgaDocument(1);
+        Op base = document.insert(0, "abcdef");
+        Op bold = document.addMark(1, 4, MarkTypes.ITALIC, null);
+        return List.of(bold, base);
+    }
+
+    private static List<Op> overlappingMarks() {
+        RgaDocument document = new RgaDocument(1);
+        List<Op> ops = new ArrayList<>();
+        ops.add(document.insert(0, "abcdefghij"));
+        ops.add(document.addMark(0, 6, MarkTypes.BOLD, null));
+        ops.add(document.addMark(3, 9, MarkTypes.ITALIC, null));
+        ops.add(document.addMark(2, 5, MarkTypes.LINK, "https://example.test/x"));
+        ops.add(document.removeMark(4, 7, MarkTypes.ITALIC));
+        return ops;
+    }
+
     private static List<Op> randomScenario(long seed) {
         Random random = new Random(seed);
         ReplicaSet replicas = new ReplicaSet(3, ArrayBlockList::new);
@@ -184,10 +268,48 @@ class ConformanceVectorGeneratorTest {
         operations.forEach(op -> ops.add(OpCodec.toJson(op)));
         root.put("expectedText", fresh.text());
 
+        // Oczekiwane formatowanie zapisujemy ZAWSZE, również dla wektorów bez znaczników —
+        // wtedy jako pustą tablicę. Pole obecne warunkowo znaczyłoby, że implementacja
+        // w TS musi zgadywać, czy jego brak to „brak formatowania", czy „stary wektor",
+        // a różnicy między tymi dwoma nie da się wtedy wykryć.
+        ArrayNode formatting = root.putArray("expectedFormatting");
+        for (MarkSet.Span span : fresh.formatting()) {
+            ObjectNode entry = formatting.addObject();
+            entry.put("from", span.from());
+            entry.put("to", span.to());
+            ObjectNode marks = entry.putObject("marks");
+            span.marks().forEach((type, value) -> {
+                if (value == null) {
+                    marks.putNull(type);
+                } else {
+                    marks.put(type, value);
+                }
+            });
+        }
+
         String fileName = name + ".json";
         Files.writeString(OUTPUT.resolve(fileName),
             OpCodec.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(root) + "\n");
         return fileName;
+    }
+
+    /** Formatowanie jako tekst JSON — do porównania z zapisanym wzorcem. */
+    private static String describeFormatting(RgaDocument document) {
+        ArrayNode formatting = OpCodec.mapper().createArrayNode();
+        for (MarkSet.Span span : document.formatting()) {
+            ObjectNode entry = formatting.addObject();
+            entry.put("from", span.from());
+            entry.put("to", span.to());
+            ObjectNode marks = entry.putObject("marks");
+            span.marks().forEach((type, value) -> {
+                if (value == null) {
+                    marks.putNull(type);
+                } else {
+                    marks.put(type, value);
+                }
+            });
+        }
+        return formatting.toString();
     }
 
     private static void verifyVector(Path path) throws IOException {
@@ -204,6 +326,11 @@ class ConformanceVectorGeneratorTest {
                 .as("wektor %s nie odtwarza się na %s", path.getFileName(),
                     storage.getClass().getSimpleName())
                 .isEqualTo(root.get("expectedText").asText());
+
+            assertThat(describeFormatting(document))
+                .as("wektor %s daje inne FORMATOWANIE na %s", path.getFileName(),
+                    storage.getClass().getSimpleName())
+                .isEqualTo(root.get("expectedFormatting").toString());
         }
     }
 }

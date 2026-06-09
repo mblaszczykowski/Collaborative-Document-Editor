@@ -1,17 +1,25 @@
 import { Block } from './block'
+import { MarkSet, type Span } from './marks'
 import {
+  anchorAfter,
+  anchorBefore,
   compareIds,
   id,
   idEquals,
   idPlus,
+  isMarkOp,
+  markExpandsAtEnd,
   opMaxLamport,
   opSpan,
+  type AddMarkOp,
+  type Anchor,
   type ApplyResult,
   type DeleteOp,
   type Id,
   type InsertOp,
   type Op,
   type Range,
+  type RemoveMarkOp,
 } from './types'
 
 interface Locator {
@@ -41,6 +49,14 @@ export class RgaDocument {
   private readonly maxSeen = new Map<number, number>()
   /** Operacje, których nie da się jeszcze zastosować (brakuje originu albo celu usunięcia). */
   private pending: Op[] = []
+
+  /**
+   * Formatowanie jako osobna warstwa nad sekwencją znaków (CP13).
+   *
+   * Osobna, bo nie jest atrybutem znaku i nie może nim być — uzasadnienie w `marks.ts`
+   * i po stronie Javy. Widać to w tym, że `Block` nie zmienił się w CP13 ani o jedno pole.
+   */
+  private readonly marks = new MarkSet()
 
   private replicaIdValue: number
 
@@ -135,6 +151,97 @@ export class RgaDocument {
   // Operacje zdalne
   // ------------------------------------------------------------------
 
+  // ------------------------------------------------------------------
+  // Formatowanie (CP13)
+  // ------------------------------------------------------------------
+
+  /**
+   * Nadaje formatowanie zakresowi widocznego tekstu [from, to).
+   *
+   * Wybór stron kotwic decyduje o zachowaniu przy pisaniu — początek zawsze `before`
+   * (formatowanie nie rośnie wstecz), koniec zależnie od typu znacznika. Pełne uzasadnienie
+   * przy `addMark` w wersji Javy; tutaj musi zgadzać się co do znaku, bo obie strony
+   * tworzą operacje niezależnie.
+   */
+  addMark(from: number, to: number, type: string, value: string | null): AddMarkOp {
+    const op: AddMarkOp = {
+      kind: 'addMark',
+      id: id(this.replicaId, this.clock),
+      type,
+      value,
+      start: this.anchorStart(from),
+      end: this.anchorEnd(to, type),
+    }
+    this.clock += opSpan(op)
+    this.marks.apply(op)
+    this.observeVersion(op)
+    return op
+  }
+
+  removeMark(from: number, to: number, type: string): RemoveMarkOp {
+    const op: RemoveMarkOp = {
+      kind: 'removeMark',
+      id: id(this.replicaId, this.clock),
+      type,
+      start: this.anchorStart(from),
+      end: this.anchorEnd(to, type),
+    }
+    this.clock += opSpan(op)
+    this.marks.apply(op)
+    this.observeVersion(op)
+    return op
+  }
+
+  private anchorStart(from: number): Anchor {
+    const length = this.visibleLength
+    if (from < 0 || from >= length) {
+      throw new RangeError(`początek zakresu ${from} poza tekstem o długości ${length}`)
+    }
+    return anchorBefore(this.idAtVisible(from))
+  }
+
+  private anchorEnd(to: number, type: string): Anchor {
+    const length = this.visibleLength
+    if (to <= 0 || to > length) {
+      throw new RangeError(`koniec zakresu ${to} poza tekstem o długości ${length}`)
+    }
+    // Zakres sięgający końca dokumentu nie ma znaku, o który zaczepić kotwicę
+    // rozszerzającą — znane ograniczenie, opisane po stronie Javy.
+    return markExpandsAtEnd(type) && to < length
+      ? anchorBefore(this.idAtVisible(to))
+      : anchorAfter(this.idAtVisible(to - 1))
+  }
+
+  /** Formatowanie widocznego tekstu jako rozłączne odcinki, w kolejności. */
+  formatting(): Span[] {
+    return this.marks.spans((anchor) => this.anchorPosition(anchor))
+  }
+
+  get markCount(): number {
+    return this.marks.size
+  }
+
+  /**
+   * Pozycja kotwicy w widocznych współrzędnych.
+   *
+   * Kotwica na tombstonie nie znika — wskazuje szczelinę między widocznymi znakami, które
+   * go otaczają. Dzięki temu skasowanie sformatowanego tekstu i wpisanie nowego w to samo
+   * miejsce zachowuje formatowanie zamiast je gubić.
+   */
+  private anchorPosition(anchor: Anchor): number | null {
+    let seen = 0
+    for (const block of this.blocks) {
+      if (block.containsId(anchor.charId)) {
+        if (block.deleted) return seen
+        return anchor.side === 'before'
+          ? seen + block.offsetOf(anchor.charId)
+          : seen + block.offsetOf(anchor.charId) + 1
+      }
+      seen += block.visibleLength
+    }
+    return null
+  }
+
   apply(op: Op): ApplyResult {
     // Zegar podbijamy nawet dla operacji zbuforowanej: reguła Lamporta dotyczy odbioru,
     // nie zastosowania.
@@ -160,6 +267,12 @@ export class RgaDocument {
     if (op.kind === 'insert') {
       return this.locateId(op.id) !== null
     }
+    // Operacje znacznikowe są kluczowane własnym identyfikatorem, więc rozpoznanie
+    // duplikatu jest dokładne — w odróżnieniu od usunięcia, gdzie wnioskujemy
+    // z zawartości struktury.
+    if (isMarkOp(op)) {
+      return this.marks.has(op.id)
+    }
     return this.isEntirelyDeleted(op)
   }
 
@@ -182,6 +295,14 @@ export class RgaDocument {
     if (op.kind === 'insert') {
       if (op.originLeft !== null && this.locateId(op.originLeft) === null) return false
       this.integrate(op)
+      return true
+    }
+    if (isMarkOp(op)) {
+      // Znacznik czeka na OBIE kotwice. Zastosowany wcześniej dałby formatowanie
+      // w przypadkowym miejscu — cichą korupcję wyglądu dokumentu.
+      if (this.locateId(op.start.charId) === null) return false
+      if (this.locateId(op.end.charId) === null) return false
+      this.marks.apply(op)
       return true
     }
     // Wszystko albo nic — patrz komentarz przy tryApplyDelete w wersji Javy.

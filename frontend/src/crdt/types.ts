@@ -75,11 +75,67 @@ export interface DeleteOp {
   readonly targets: readonly Range[]
 }
 
-export type Op = InsertOp | DeleteOp
+/**
+ * Miejsce zaczepione o ZNAK, nie o pozycję (CP13).
+ *
+ * Strona jest istotna, nie kosmetyczna: kotwica „za znakiem X" i „przed znakiem Y" wskazują
+ * to samo miejsce w tekście XY — dopóki nikt nie wstawi czegoś między nie. Ta różnica
+ * decyduje o tym, czy formatowanie rośnie przy pisaniu na jego końcu. Pełne uzasadnienie
+ * w `Anchor.java`; ta implementacja jest jego bliźniakiem.
+ */
+export interface Anchor {
+  readonly charId: Id
+  readonly side: 'before' | 'after'
+}
 
-/** Ile wartości zegara zajmuje operacja: wstawienie n znaków zajmuje n, usunięcie 1. */
+export function anchorBefore(charId: Id): Anchor {
+  return { charId, side: 'before' }
+}
+
+export function anchorAfter(charId: Id): Anchor {
+  return { charId, side: 'after' }
+}
+
+export interface AddMarkOp {
+  readonly kind: 'addMark'
+  readonly id: Id
+  readonly type: string
+  readonly value: string | null
+  readonly start: Anchor
+  readonly end: Anchor
+}
+
+export interface RemoveMarkOp {
+  readonly kind: 'removeMark'
+  readonly id: Id
+  readonly type: string
+  readonly start: Anchor
+  readonly end: Anchor
+}
+
+export type Op = InsertOp | DeleteOp | AddMarkOp | RemoveMarkOp
+
+export function isMarkOp(op: Op): op is AddMarkOp | RemoveMarkOp {
+  return op.kind === 'addMark' || op.kind === 'removeMark'
+}
+
+/** Ile wartości zegara zajmuje operacja: wstawienie n znaków zajmuje n, reszta 1. */
 export function opSpan(op: Op): number {
   return op.kind === 'insert' ? op.text.length : 1
+}
+
+/**
+ * Typy znaczników, których zakres ROŚNIE przy pisaniu tuż za nim.
+ *
+ * Musi zgadzać się z `MarkTypes.java` — rozjazd znaczyłby, że ta sama operacja zachowuje się
+ * różnie w przeglądarce i na serwerze, czyli tekst wygląda inaczej u autora niż u pozostałych.
+ * Korpus konformancyjny tego nie złapie, bo dotyczy operacji już utworzonych, a to jest
+ * decyzja podejmowana przy TWORZENIU operacji.
+ */
+const EXPANDING_MARKS = new Set(['bold', 'italic', 'underline', 'strike'])
+
+export function markExpandsAtEnd(type: string): boolean {
+  return EXPANDING_MARKS.has(type)
 }
 
 export function opMaxLamport(op: Op): number {

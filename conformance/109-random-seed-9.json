@@ -157,5 +157,6 @@
     "ol" : 7,
     "s" : "e"
   } ],
-  "expectedText" : "baaedffcedbecfacb"
+  "expectedText" : "baaedffcedbecfacb",
+  "expectedFormatting" : [ ]
 }

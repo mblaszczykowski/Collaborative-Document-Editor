@@ -1,0 +1,32 @@
+{
+  "name" : "203-concurrent-add-and-remove-mark",
+  "description" : "Współbieżne nadanie i zdjęcie tego samego formatowania. Rozstrzyga porządek totalny (lamport, replicaId) — ten sam, którego używa reguła wstawiania RGA.",
+  "operations" : [ {
+    "r" : 2,
+    "l" : 8,
+    "t" : "x",
+    "k" : "bold",
+    "a" : [ 1, 3, 0 ],
+    "b" : [ 1, 7, 1 ]
+  }, {
+    "r" : 1,
+    "l" : 8,
+    "t" : "m",
+    "k" : "bold",
+    "a" : [ 1, 1, 0 ],
+    "b" : [ 1, 6, 0 ]
+  }, {
+    "r" : 1,
+    "l" : 0,
+    "t" : "i",
+    "s" : "abcdefgh"
+  } ],
+  "expectedText" : "abcdefgh",
+  "expectedFormatting" : [ {
+    "from" : 1,
+    "to" : 3,
+    "marks" : {
+      "bold" : null
+    }
+  } ]
+}
