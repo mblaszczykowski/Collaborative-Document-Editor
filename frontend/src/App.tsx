@@ -12,6 +12,7 @@ import {
 } from './transport/connection'
 import type { NetworkConditions } from './transport/simulator'
 import { DiagnosticsBar } from './ui/DiagnosticsBar'
+import type { Span } from './crdt/marks'
 import { DocumentList } from './ui/DocumentList'
 import { initials, peopleLabel, shiftAfter, wordCount } from './ui/format'
 import { HistoryPanel } from './ui/HistoryPanel'
@@ -196,9 +197,40 @@ function DocumentWorkspace(props: {
   const connection = useRef<DocumentConnection | null>(null)
   const applyRemote = useRef<() => void>(() => {})
 
+  const [formatting, setFormatting] = useState<Span[]>([])
+
+  /**
+   * Przełącza formatowanie na zaznaczeniu.
+   *
+   * „Przełącza", nie „nadaje": jeśli CAŁY zaznaczony zakres ma już ten znacznik, gest
+   * ma go zdjąć. Bez tego Ctrl+B na pogrubionym tekście nadawałby pogrubienie po raz drugi,
+   * czyli nie robił nic widocznego — a użytkownik nie ma jak się domyślić, że musi użyć
+   * innego gestu, żeby cofnąć własną zmianę.
+   */
+  const toggleMark = useCallback((type: string, from: number, to: number) => {
+    const model = document.current
+    const link = connection.current
+    if (model === null || link === null || from >= to) return
+
+    const alreadyMarked = coveredBy(model.formatting(), type, from, to)
+    const op = alreadyMarked
+      ? model.removeMark(from, to, type)
+      : model.addMark(from, to, type, type === 'link' ? window.prompt('Adres linku') : null)
+
+    link.send(op)
+    // Przeliczamy od razu, zamiast czekać na echo z serwera: operacja jest już zastosowana
+    // lokalnie, więc czekanie oznaczałoby widoczne opóźnienie między naciśnięciem Ctrl+B
+    // a zmianą wyglądu — dokładnie ten koszt, którego edycja optymistyczna ma unikać.
+    setFormatting(model.formatting())
+  }, [])
+
   const refreshStats = useCallback(() => {
     const model = document.current
-    if (model !== null) setCharacters(model.visibleLength)
+    if (model === null) return
+    setCharacters(model.visibleLength)
+    // Formatowanie przeliczamy przy każdej zmianie treści, bo odcinki są wyrażone
+    // w pozycjach widocznego tekstu — a te przesuwają się przy każdym wstawieniu.
+    setFormatting(model.formatting())
   }, [])
 
   /**
@@ -391,6 +423,8 @@ function DocumentWorkspace(props: {
 
         <main className="canvas-col">
           <div className="editor-toolbar">
+            <FormatButtons onToggle={toggleMark} />
+            <span className="tb-divider" />
             <button className="tb-icon" onClick={runUndo} title="Cofnij (⌘Z)" aria-label="Cofnij">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M3 10h10a4 4 0 0 1 0 8H8" />
@@ -424,7 +458,9 @@ function DocumentWorkspace(props: {
                   document={document.current}
                   undo={undo.current}
                   remoteCursors={remoteCursors}
+                  formatting={formatting}
                   onLocalOps={onLocalOps}
+                  onToggleMark={toggleMark}
                   onCursorMove={onCursorMove}
                   onUndo={runUndo}
                   onRedo={runRedo}
@@ -459,3 +495,74 @@ function DocumentWorkspace(props: {
  * („resynchronizacja", „N operacji w buforze"). Użytkownik ma wiedzieć, czy jego praca
  * jest bezpieczna — nie jak działa transport.
  */
+
+/**
+ * Przyciski formatowania.
+ *
+ * Działają na AKTUALNYM ZAZNACZENIU odczytanym z DOM-u, a nie ze stanu Reacta. Powód jest
+ * praktyczny: kliknięcie przycisku odbiera fokus edytorowi, więc gdyby zaznaczenie było
+ * trzymane w stanie i aktualizowane zdarzeniem, w chwili kliknięcia byłoby już puste.
+ * `onMouseDown` z `preventDefault` zatrzymuje utratę fokusu, zanim do niej dojdzie.
+ */
+function FormatButtons({ onToggle }: { onToggle: (type: string, from: number, to: number) => void }) {
+  function apply(type: string) {
+    const selection = window.getSelection()
+    if (selection === null || selection.isCollapsed) return
+    const editor = window.document.querySelector('.cm-content')
+    if (editor === null) return
+
+    // Offsety liczone względem treści edytora, nie węzła DOM — CodeMirror dzieli tekst
+    // na wiele elementów, więc offset w węźle nie mówi nic o pozycji w dokumencie.
+    const range = selection.getRangeAt(0)
+    const before = range.cloneRange()
+    before.selectNodeContents(editor)
+    before.setEnd(range.startContainer, range.startOffset)
+    const from = before.toString().length
+    const to = from + range.toString().length
+    if (from < to) onToggle(type, from, to)
+  }
+
+  const buttons: { type: string; label: string; title: string; render: React.ReactNode }[] = [
+    { type: 'bold', label: 'Pogrubienie', title: 'Pogrubienie (⌘B)', render: <strong>B</strong> },
+    { type: 'italic', label: 'Kursywa', title: 'Kursywa (⌘I)', render: <em>I</em> },
+    { type: 'underline', label: 'Podkreślenie', title: 'Podkreślenie (⌘U)', render: <u>U</u> },
+    { type: 'code', label: 'Kod', title: 'Kod', render: <code>{'<>'}</code> },
+    { type: 'link', label: 'Link', title: 'Link', render: <span>🔗</span> },
+  ]
+
+  return (
+    <>
+      {buttons.map((button) => (
+        <button
+          key={button.type}
+          className="tb-icon tb-format"
+          title={button.title}
+          aria-label={button.label}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => apply(button.type)}
+        >
+          {button.render}
+        </button>
+      ))}
+    </>
+  )
+}
+
+/**
+ * Czy CAŁY zakres [from, to) ma już znacznik danego typu.
+ *
+ * Warunek jest celowo mocny: przy zaznaczeniu obejmującym pogrubiony i niepogrubiony
+ * fragment gest ma DODAĆ pogrubienie do całości, a nie zdjąć je z części. Tak zachowują się
+ * edytory, do których ludzie są przyzwyczajeni, i jest to zachowanie łatwiejsze do cofnięcia
+ * niż odwrotne.
+ */
+function coveredBy(spans: Span[], type: string, from: number, to: number): boolean {
+  let covered = from
+  for (const span of spans) {
+    if (!span.marks.has(type)) continue
+    if (span.from > covered) break
+    covered = Math.max(covered, span.to)
+    if (covered >= to) return true
+  }
+  return covered >= to
+}

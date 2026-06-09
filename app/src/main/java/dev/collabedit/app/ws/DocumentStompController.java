@@ -97,6 +97,8 @@ public class DocumentStompController {
         return switch (op) {
             case Op.Insert ignored -> "insert";
             case Op.Delete ignored -> "delete";
+            case Op.AddMark ignored -> "mark.add";
+            case Op.RemoveMark ignored -> "mark.remove";
         };
     }
 

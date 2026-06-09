@@ -181,6 +181,8 @@ public class OperationStore {
         return switch (op) {
             case Op.Insert ignored -> "i";
             case Op.Delete ignored -> "d";
+            case Op.AddMark ignored -> "m";
+            case Op.RemoveMark ignored -> "x";
         };
     }
 

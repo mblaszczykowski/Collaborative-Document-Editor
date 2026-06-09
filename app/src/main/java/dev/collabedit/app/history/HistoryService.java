@@ -217,10 +217,17 @@ public class HistoryService {
             lastAt = row.at();
             throughServerSeq = row.serverSeq();
             operationCount++;
-            if ("i".equals(row.opType())) {
-                inserted += textLengthOf(row.payload());
-            } else {
-                deleted += deletedLengthOf(row.payload());
+            // Jawny switch po kodzie typu, nie „wszystko poza 'i' jest usunięciem".
+            // Po dołożeniu operacji znacznikowych w CP13 tamten warunek liczyłby zmianę
+            // formatowania jako usunięcie i szukał w jej ładunku zakresów, których tam nie ma.
+            switch (row.opType()) {
+                case "i" -> inserted += textLengthOf(row.payload());
+                case "d" -> deleted += deletedLengthOf(row.payload());
+                // Znaczniki nie zmieniają liczby znaków. Wchodzą do operationCount, bo są
+                // zmianą dokumentu i mają być widoczne na osi czasu — ale opis „+0 −0"
+                // byłby mylący, więc liczniki zostają nietknięte.
+                case "m", "x" -> { }
+                default -> { }
             }
         }
 

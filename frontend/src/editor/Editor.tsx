@@ -6,7 +6,9 @@ import type { RgaDocument } from '../crdt/document'
 import type { UndoManager } from '../crdt/undo'
 import type { Id, Op } from '../crdt/types'
 import { changesToOps, minimalChange } from './bridge'
+import { formattingField, setFormatting } from './formatting'
 import { remoteCursorsField, setRemoteCursors, type RemoteCursor } from './remoteCursors'
+import type { Span } from '../crdt/marks'
 
 /**
  * Edytor: CodeMirror jako **warstwa widoku**, model dokumentu własny (ADR-0006).
@@ -33,7 +35,11 @@ export interface EditorProps {
   document: RgaDocument
   undo: UndoManager
   remoteCursors: RemoteCursor[]
+  /** Odcinki formatowania wyliczone przez warstwę CRDT (CP13). */
+  formatting: Span[]
   onLocalOps: (ops: Op[]) => void
+  /** Nadanie albo zdjęcie formatowania na aktualnym zaznaczeniu. */
+  onToggleMark: (type: string, from: number, to: number) => void
   onCursorMove: (head: Id | null, anchor: Id | null) => void
   /** Cofnięcie i ponowienie — obsługiwane wyżej, bo generują operacje do rozesłania. */
   onUndo: () => void
@@ -81,6 +87,20 @@ export function Editor(props: EditorProps) {
       }
     }
 
+    /**
+     * Przełącza formatowanie na zaznaczeniu.
+     *
+     * Zwraca `true` również wtedy, gdy nie ma czego formatować — bo skrót ma być OBSŁUŻONY
+     * niezależnie od tego, czy coś zmienił. Zwrócenie `false` przekazałoby Ctrl+B dalej,
+     * do przeglądarki, która ma na to własną obsługę.
+     */
+    const toggleMark = (type: string): boolean => {
+      const selection = view.current?.state.selection.main
+      if (selection === undefined || selection.empty) return true
+      latest.current.onToggleMark(type, selection.from, selection.to)
+      return true
+    }
+
     const state = EditorState.create({
       // Dokument startuje pusty i wypełnia się z operacji przysłanych przez serwer.
       doc: '',
@@ -89,12 +109,19 @@ export function Editor(props: EditorProps) {
         // MUSZĄ działać — edytor, w którym Ctrl+Z nic nie robi, jest zepsuty.
         // Kierujemy je do UndoManagera, który cofa WYŁĄCZNIE własne operacje użytkownika.
         keymap.of([
+          // Skróty formatowania. Bez nich pasek narzędzi jest jedyną drogą, a edytor tekstu,
+          // w którym Ctrl+B nic nie robi, sprawia wrażenie zepsutego niezależnie od tego,
+          // ile przycisków ma na wierzchu.
+          { key: 'Mod-b', run: () => toggleMark('bold'), preventDefault: true },
+          { key: 'Mod-i', run: () => toggleMark('italic'), preventDefault: true },
+          { key: 'Mod-u', run: () => toggleMark('underline'), preventDefault: true },
           { key: 'Mod-z', run: () => { latest.current.onUndo(); return true }, preventDefault: true },
           { key: 'Mod-Shift-z', run: () => { latest.current.onRedo(); return true }, preventDefault: true },
           { key: 'Mod-y', run: () => { latest.current.onRedo(); return true }, preventDefault: true },
         ]),
         keymap.of(defaultKeymap.filter((binding) => binding.key !== 'Mod-z' && binding.key !== 'Mod-y')),
         drawSelection(),
+        formattingField,
         remoteCursorsField,
         EditorView.lineWrapping,
         EditorState.readOnly.of(props.readOnly ?? false),
@@ -155,6 +182,10 @@ export function Editor(props: EditorProps) {
   useEffect(() => {
     view.current?.dispatch({ effects: setRemoteCursors.of(props.remoteCursors) })
   }, [props.remoteCursors])
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: setFormatting.of(props.formatting) })
+  }, [props.formatting])
 
   return <div className="editor-host" ref={host} />
 }
