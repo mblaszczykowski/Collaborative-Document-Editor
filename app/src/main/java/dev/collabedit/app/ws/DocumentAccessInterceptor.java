@@ -1,7 +1,10 @@
 package dev.collabedit.app.ws;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import dev.collabedit.app.auth.PermissionService;
 import dev.collabedit.app.auth.Role;
+import dev.collabedit.crdt.OpCodec;
+import java.io.IOException;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -86,7 +89,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         if (role == null) {
             return deny(command, destination, userId, "brak jakiegokolwiek dostępu");
         }
-        if (command == StompCommand.SEND && !allowedToSend(role, destination)) {
+        if (command == StompCommand.SEND && !allowedToSend(role, destination, message)) {
             return deny(command, destination, userId, "rola " + role.wire() + " nie pozwala na tę operację");
         }
         if (command == StompCommand.SEND && !withinRateLimit(accessor.getSessionId(), destination)) {
@@ -115,11 +118,18 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      * <p>Odczyt (SUBSCRIBE) wystarczy mieć jakąkolwiek rolę — najniższa z nich, {@code viewer},
      * z definicji czyta. Wysyłanie rozstrzyga się per destynacja.
      */
-    private static boolean allowedToSend(Role role, String destination) {
+    private static boolean allowedToSend(Role role, String destination, Message<?> message) {
         if (destination.endsWith("/op")) {
-            // Operacja CRDT zmieniająca treść. Od CP14 ten warunek rozszerzy się o typ
-            // operacji: komentujący może wysłać znacznik komentarza, ale nie wstawienie tekstu.
-            return role.canWriteText();
+            // Redagujący może wszystko — i sprawdzamy to PIERWSZE, żeby nie płacić
+            // za rozbieranie treści operacji w ścieżce, którą chodzi większość ruchu.
+            if (role.canWriteText()) {
+                return true;
+            }
+            // Komentujący może wysłać WYŁĄCZNIE znacznik komentarza. To jest miejsce,
+            // w którym autoryzacja musi zejść do TYPU OPERACJI: komentarze idą tym samym
+            // kanałem co edycja, więc na poziomie destynacji nie da się ich rozróżnić
+            // (ADR-0009). Bez tego rola „komentujący" znaczyłaby „redagujący".
+            return role.canComment() && isCommentMark(message);
         }
         if (destination.endsWith("/presence")
             || destination.endsWith("/sync")
@@ -134,6 +144,33 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         // rozszerzaniu protokołu ma być „nie wolno", żeby nowy kanał trzeba było
         // świadomie dopuścić, zamiast odkrywać, że był dopuszczony od początku.
         return false;
+    }
+
+    /**
+     * Czy ładunek ramki to nadanie znacznika typu {@code comment}.
+     *
+     * <p>Rozbieranie treści operacji w interceptorze jest kosztem, więc dzieje się WYŁĄCZNIE
+     * dla roli komentującego — redagujący nie przechodzi tędy. Sprawdzamy dokładnie dwa pola,
+     * bez pełnej deserializacji: typ operacji i rodzaj znacznika.
+     *
+     * <p>Zdejmowanie znacznika komentarza celowo NIE jest tu dozwolone: usunięcie cudzej
+     * kotwicy to usunięcie cudzej rozmowy z dokumentu, a to jest uprawnienie redagującego.
+     * Komentujący rozwiązuje wątek, co jest odwracalne i zostawia ślad.
+     */
+    private static boolean isCommentMark(Message<?> message) {
+        Object payload = message.getPayload();
+        if (!(payload instanceof byte[] bytes)) {
+            return false;
+        }
+        try {
+            JsonNode root = OpCodec.mapper().readTree(bytes);
+            JsonNode op = root.path("op");
+            return "m".equals(op.path("t").asText()) && "comment".equals(op.path("k").asText());
+        } catch (IOException e) {
+            // Nieczytelny ładunek to nie jest znacznik komentarza. Odmowa, a nie wyjątek:
+            // interceptor nie może przewrócić obsługi kanału z powodu jednej złej ramki.
+            return false;
+        }
     }
 
     private Message<?> deny(StompCommand command, String destination, String userId, String reason) {

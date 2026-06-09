@@ -436,6 +436,11 @@ public class DocumentService {
     private record Captured(dev.collabedit.crdt.DocumentSnapshot snapshot, String preview) {
     }
 
+    /** Liczba operacji znacznikowych w replice — do diagnostyki i testów (CP13). */
+    public int markCountOf(UUID documentId) {
+        return registry.get(documentId).withLock(RgaDocument::markCount);
+    }
+
     public String textOf(UUID documentId) {
         return registry.get(documentId).withLock(RgaDocument::text);
     }

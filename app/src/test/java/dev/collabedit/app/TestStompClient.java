@@ -181,6 +181,21 @@ public class TestStompClient implements AutoCloseable {
     }
 
     /** Jak {@link #insert}, ale zwraca operację — harness obciążeniowy stempluje ją czasem. */
+    /**
+     * Tworzy znacznik lokalnie i wysyła go (CP13/CP14).
+     *
+     * <p>Rozdzielone od {@link #insert}, bo test autoryzacji musi móc wysłać DOKŁADNIE
+     * operację znacznikową i sprawdzić, że przechodzi tam, gdzie wstawienie tekstu nie.
+     */
+    public Op markReturningOp(int from, int to, String type, String value) {
+        Op op;
+        synchronized (documentLock) {
+            op = document.addMark(from, to, type, value);
+        }
+        send(op);
+        return op;
+    }
+
     public Op insertReturningOp(int position, String text) {
         Op op;
         synchronized (documentLock) {
