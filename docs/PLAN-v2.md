@@ -1,15 +1,15 @@
 # Plan v2 — z artefaktu w produkt
 
-> **Status: CP10 i CP11 zamknięte, CP12 w trakcie.** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
+> **Status: CP10–CP13 zamknięte, CP14 w trakcie.** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
 > który opisuje checkpointy CP1–CP9 (wszystkie zamknięte). Ten dokument opisuje CP10–CP15.
 >
 > | Checkpoint | Stan | Uwagi |
 > |---|---|---|
 > | CP10 — Fundament | **zamknięty** | Otwarte pytanie z CP8 rozstrzygnięte — patrz niżej |
 > | CP11 — Multi-dokument | **zamknięty** | Odsiew klastra, limit pamięci, schemat V2, katalog, lista z wyszukiwaniem i koszem |
-> | CP12 — Uprawnienia | **w trakcie** | |
-> | CP13 — Rich text | niezaczęty | |
-> | CP14 — Komentarze | niezaczęty | |
+> | CP12 — Uprawnienia | **zamknięty** | Zamknięty IDOR otwarty przez CP11 — obie drogi, WS i REST |
+> | CP13 — Rich text | **zamknięty** | Peritext w Javie i TS, wektory konformancyjne, GC naprawiony |
+> | CP14 — Komentarze | **w trakcie** | |
 > | CP15 — Pomiar + dokumentacja | niezaczęty | |
 >
 > **Najważniejszy wynik CP10, którego plan nie przewidywał.** Punkt 2.1 zakładał, że

@@ -23,3 +23,4 @@ decyzja okazała się gorsza, niż zakładałem.
 | [0007](0007-zakres-ui.md) | Język wizualny mockupu przyjęty, jego zakres funkcjonalny odrzucony | **Zastąpiony przez [0008](0008-rozszerzenie-zakresu.md)** |
 | [0008](0008-rozszerzenie-zakresu.md) | Rozszerzenie zakresu z artefaktu do produktu | Zaakceptowany |
 | [0009](0009-model-uprawnien.md) | Role uporządkowane, egzekwowane w obu warstwach z jednej reguły | Zaakceptowany |
+| [0010](0010-rich-text.md) | Formatowanie jako osobna warstwa CRDT (Peritext), nie atrybut znaku | Zaakceptowany |
