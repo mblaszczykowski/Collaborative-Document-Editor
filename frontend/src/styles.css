@@ -1,7 +1,10 @@
 /*
   Język wizualny przejęty z mockupu (docs/design/mockup-inkline.html).
-  Zakres funkcjonalny — nie: patrz ADR-0007. Toolbar formatowania i panel komentarzy
-  zostały zastąpione kontrolkami, które w tym projekcie faktycznie coś robią.
+
+  ADR-0007 odrzucił jego zakres funkcjonalny — pasek formatowania i panel komentarzy były
+  wtedy atrapami i zostały zastąpione kontrolkami, które faktycznie coś robiły.
+  ADR-0008 zrewidował tamtą decyzję, a CP13 i CP14 zbudowały jedno i drugie na serio.
+  Mockup okazał się więc trafny, tylko o dwa checkpointy za wcześnie.
 */
 
 @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
@@ -86,7 +89,8 @@ button { font-family: inherit; cursor: pointer; }
 
 .loading { padding: 24px; color: var(--text-faint); }
 
-/* ===== TOOLBAR — wyłącznie cofnij/ponów. Oba działają; nic tu nie jest atrapą. ===== */
+/* ===== TOOLBAR — formatowanie (CP13), komentarze (CP14), cofnij/ponów.
+   Nic tu nie jest atrapą: każdy przycisk wykonuje operację CRDT albo zmienia panel. ===== */
 .editor-toolbar {
   height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 2px;
   padding: 0 10px; background: var(--chrome); border-bottom: 1px solid var(--chrome-line);
@@ -375,3 +379,77 @@ button { font-family: inherit; cursor: pointer; }
   font-family: var(--sans); font-size: 12px; line-height: 1.55; color: #4a2c1f;
 }
 .recovery-banner a { color: var(--bad); }
+
+/* ===== KOMENTARZE (CP14) ===== */
+
+.rp-toggle {
+  float: right; border: none; background: transparent; cursor: pointer;
+  font-size: 10.5px; font-weight: 400; color: var(--text-faint); padding: 0;
+}
+.rp-toggle:hover { color: var(--text-dim); }
+
+.comment-new { padding: 8px; border-bottom: 1px solid var(--chrome-line); margin-bottom: 8px; }
+
+/* Cytat jest tym, co zostaje po odłączeniu wątku — więc musi być czytelny sam w sobie,
+   a nie tylko jako etykieta nad rozmową. */
+.comment-quote {
+  font-size: 11.5px; color: var(--text-dim); font-style: italic;
+  border-left: 2px solid var(--chrome-line); padding-left: 7px; margin-bottom: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.comment-draft {
+  width: 100%; box-sizing: border-box; min-height: 52px; resize: vertical;
+  font: inherit; font-size: 12.5px; padding: 6px 7px; border-radius: 4px;
+  border: 1px solid var(--chrome-line); background: var(--bg); color: var(--text);
+}
+.comment-draft:focus { outline: none; border-color: var(--text-faint); }
+
+.comment-submit {
+  margin-top: 6px; padding: 4px 10px; border-radius: 4px; font-size: 12px;
+  border: 1px solid var(--chrome-line); background: var(--chrome); color: var(--text);
+}
+.comment-submit:disabled { opacity: 0.5; }
+
+.comment-thread {
+  padding: 8px; border-radius: 5px; margin-bottom: 8px; background: var(--chrome);
+  border: 1px solid transparent;
+}
+/* Rozwiązany wątek jest przygaszony, a nie ukryty — rozmowa zostaje. */
+.comment-thread.resolved { opacity: 0.55; }
+/* Odłączony wątek jest WYRÓŻNIONY, nie schowany: użytkownik ma wiedzieć, że tekst,
+   którego dotyczył, przestał istnieć — inaczej rozmowa wygląda na aktualną. */
+.comment-thread.detached { border-color: var(--text-faint); border-style: dashed; }
+
+.comment-detached-mark {
+  margin-left: 6px; font-style: normal; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-faint);
+}
+
+.comment-message { display: flex; gap: 7px; margin-bottom: 7px; }
+.comment-avatar {
+  flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 600; color: #fff;
+}
+.comment-body { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.45; }
+.comment-meta { font-size: 11px; color: var(--text-faint); margin-bottom: 1px; }
+
+.comment-actions { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.comment-action {
+  border: none; background: transparent; padding: 2px 0; cursor: pointer;
+  font-size: 11px; color: var(--text-faint);
+}
+.comment-action:hover { color: var(--text); text-decoration: underline; }
+
+.comment-reply {
+  flex: 1; min-width: 0; padding: 4px 6px; font-size: 12px; border-radius: 4px;
+  border: 1px solid var(--chrome-line); background: var(--bg); color: var(--text);
+}
+.comment-reply:focus { outline: none; border-color: var(--text-faint); }
+
+.tb-divider { width: 1px; height: 16px; background: var(--chrome-line); margin: 0 4px; }
+
+/* Zakotwiczony fragment w tekście — podświetlenie, nie ramka: ramka przesuwałaby tekst
+   przy pojawieniu się komentarza, a to wygląda jak błąd renderowania. */
+.cm-mark-comment { background: rgba(184, 134, 46, 0.18); border-bottom: 1px solid rgba(184, 134, 46, 0.5); }

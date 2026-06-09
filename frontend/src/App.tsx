@@ -15,6 +15,7 @@ import { DiagnosticsBar } from './ui/DiagnosticsBar'
 import type { Span } from './crdt/marks'
 import { DocumentList } from './ui/DocumentList'
 import { initials, peopleLabel, shiftAfter, wordCount } from './ui/format'
+import { CommentsPanel } from './ui/CommentsPanel'
 import { HistoryPanel } from './ui/HistoryPanel'
 import { SaveIndicator } from './ui/SaveIndicator'
 import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
@@ -198,6 +199,32 @@ function DocumentWorkspace(props: {
   const applyRemote = useRef<() => void>(() => {})
 
   const [formatting, setFormatting] = useState<Span[]>([])
+  const [panel, setPanel] = useState<'history' | 'comments'>('history')
+
+  /**
+   * Aktualnie zaznaczony tekst i jego zakres.
+   *
+   * Trzymane w stanie, bo panel komentarzy potrzebuje go PO kliknięciu w swoje pole tekstowe —
+   * a wtedy zaznaczenie w edytorze już nie istnieje. Zapamiętujemy je w chwili, gdy jeszcze jest.
+   */
+  const [selection, setSelection] = useState('')
+  const selectionRange = useRef<{ from: number; to: number } | null>(null)
+
+  /**
+   * Stawia kotwicę komentarza — znacznik CRDT typu `comment` z identyfikatorem wątku.
+   *
+   * Powstaje PO wątku, bo potrzebuje jego identyfikatora, i idzie inną drogą: wątek REST-em,
+   * kotwica WebSocketem. Jest to celowe — kotwica musi scalać się jak każda inna operacja
+   * CRDT, a treść rozmowy nie ma czego scalać (ADR-0010, CP14).
+   */
+  const anchorComment = useCallback((threadId: string) => {
+    const model = document.current
+    const link = connection.current
+    const range = selectionRange.current
+    if (model === null || link === null || range === null) return
+    link.send(model.addMark(range.from, range.to, 'comment', threadId))
+    setFormatting(model.formatting())
+  }, [])
 
   /**
    * Przełącza formatowanie na zaznaczeniu.
@@ -315,6 +342,18 @@ function DocumentWorkspace(props: {
     connection.current?.sendPresence(head, anchor, false)
   }, [])
 
+  /**
+   * Zapamiętuje zaznaczenie, dopóki jeszcze istnieje.
+   *
+   * Kliknięcie w pole komentarza odbiera fokus edytorowi i wtedy jest już za późno,
+   * żeby je odczytać. Offsety, nie identyfikatory: identyfikator nie wyraża pozycji zero,
+   * więc zaznaczenie od początku dokumentu wyglądałoby jak jego brak.
+   */
+  const onSelectionChange = useCallback((from: number, to: number, text: string) => {
+    selectionRange.current = from < to ? { from, to } : null
+    setSelection(text)
+  }, [])
+
   const runUndo = useCallback(() => {
     const ops = undo.current?.undo() ?? []
     if (ops.length > 0) {
@@ -425,6 +464,15 @@ function DocumentWorkspace(props: {
           <div className="editor-toolbar">
             <FormatButtons onToggle={toggleMark} />
             <span className="tb-divider" />
+            <button
+              className={`tb-icon${panel === 'comments' ? ' active' : ''}`}
+              title="Komentarze"
+              aria-label="Komentarze"
+              onClick={() => setPanel((current) => (current === 'comments' ? 'history' : 'comments'))}
+            >
+              💬
+            </button>
+            <span className="tb-divider" />
             <button className="tb-icon" onClick={runUndo} title="Cofnij (⌘Z)" aria-label="Cofnij">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M3 10h10a4 4 0 0 1 0 8H8" />
@@ -462,6 +510,7 @@ function DocumentWorkspace(props: {
                   onLocalOps={onLocalOps}
                   onToggleMark={toggleMark}
                   onCursorMove={onCursorMove}
+                  onSelectionChange={onSelectionChange}
                   onUndo={runUndo}
                   onRedo={runRedo}
                   registerRemoteApply={(apply) => {
@@ -482,7 +531,16 @@ function DocumentWorkspace(props: {
           </footer>
         </main>
 
-        <HistoryPanel documentId={documentId} revision={characters} />
+        {panel === 'history' ? (
+          <HistoryPanel documentId={documentId} revision={characters} />
+        ) : (
+          <CommentsPanel
+            documentId={documentId}
+            selection={selection}
+            revision={characters}
+            onAnchor={anchorComment}
+          />
+        )}
       </div>
     </div>
   )

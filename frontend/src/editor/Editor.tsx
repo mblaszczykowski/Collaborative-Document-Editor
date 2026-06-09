@@ -40,6 +40,15 @@ export interface EditorProps {
   onLocalOps: (ops: Op[]) => void
   /** Nadanie albo zdjęcie formatowania na aktualnym zaznaczeniu. */
   onToggleMark: (type: string, from: number, to: number) => void
+  /**
+   * Zmiana zaznaczenia, w OFFSETACH widocznego tekstu.
+   *
+   * Osobno od `onCursorMove`, które niesie identyfikatory CRDT. Powód jest konkretny:
+   * identyfikator nie potrafi wyrazić pozycji ZERO — nie ma znaku, na którym mógłby
+   * siedzieć — więc zaznaczenie od początku dokumentu wyglądało jak brak zaznaczenia.
+   * Panel komentarzy potrzebuje zakresu, nie kotwic, więc dostaje offsety.
+   */
+  onSelectionChange: (from: number, to: number, text: string) => void
   onCursorMove: (head: Id | null, anchor: Id | null) => void
   /** Cofnięcie i ponowienie — obsługiwane wyżej, bo generują operacje do rozesłania. */
   onUndo: () => void
@@ -151,6 +160,13 @@ export function Editor(props: EditorProps) {
 
           if (update.selectionSet || update.docChanged) {
             reportCursor(update.state, current, scheduleCursor)
+
+            const selection = update.state.selection.main
+            current.onSelectionChange(
+              selection.from,
+              selection.to,
+              selection.empty ? '' : update.state.sliceDoc(selection.from, selection.to),
+            )
           }
         }),
       ],

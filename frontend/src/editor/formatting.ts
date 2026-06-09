@@ -39,6 +39,10 @@ function classOf(type: string): string {
       return 'cm-mark-code'
     case 'link':
       return 'cm-mark-link'
+    case 'comment':
+      // Kotwica komentarza jest znacznikiem jak każdy inny — cała różnica jest w tym,
+      // że jej wartością jest identyfikator wątku, a nie treść formatowania.
+      return 'cm-mark-comment'
     default:
       return 'cm-mark-unknown'
   }

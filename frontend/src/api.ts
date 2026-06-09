@@ -98,6 +98,29 @@ export interface Version {
   charactersDeleted: number
 }
 
+export interface CommentMessage {
+  id: string
+  authorId: string
+  authorName: string
+  authorColor: string
+  body: string
+  createdAt: string
+  editedAt: string | null
+}
+
+export interface CommentThread {
+  id: string
+  documentId: string
+  createdBy: string
+  createdAt: string
+  resolvedAt: string | null
+  /** Tekst, którego wątek dotyczył w chwili założenia — jedyne, co zostaje po odłączeniu. */
+  quotedText: string
+  /** Czy zakotwiczony tekst nadal istnieje. Wyliczane z warstwy CRDT, nie z bazy. */
+  anchored: boolean
+  messages: CommentMessage[]
+}
+
 export const api = {
   history: (documentId: string) =>
     request<Version[]>(`/documents/${documentId}/history`),
@@ -158,4 +181,33 @@ export const api = {
     request<DocumentSummary>('/documents', { method: 'POST', body: JSON.stringify({ title }) }),
 
   openDocument: (id: string) => request<DocumentState>(`/documents/${id}`),
+
+  // --- komentarze (CP14) ---
+  //
+  // REST, a nie WebSocket: komentarz powstaje raz, w całości, i nikt nie oczekuje,
+  // że pojawi się u innych w tej samej klatce co naciśnięcie klawisza. KOTWICA idzie
+  // WebSocketem, bo jest zwykłym znacznikiem CRDT — patrz CommentController.
+
+  listComments: (documentId: string, includeResolved = false) =>
+    request<CommentThread[]>(
+      `/documents/${documentId}/comments?resolved=${includeResolved}`,
+    ),
+
+  openThread: (documentId: string, quotedText: string, body: string) =>
+    request<CommentThread>(`/documents/${documentId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ quotedText, body }),
+    }),
+
+  replyToThread: (threadId: string, body: string) =>
+    requestNoContent(`/comments/${threadId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+
+  resolveThread: (threadId: string) =>
+    requestNoContent(`/comments/${threadId}/resolve`, { method: 'POST' }),
+
+  reopenThread: (threadId: string) =>
+    requestNoContent(`/comments/${threadId}/reopen`, { method: 'POST' }),
 }
