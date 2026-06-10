@@ -36,6 +36,15 @@ export interface DocumentState {
   title: string
   text: string
   headServerSeq: number
+  /**
+   * Rola pytającego w tym dokumencie: `owner` | `editor` | `commenter` | `viewer`.
+   *
+   * Nie służy do autoryzacji — ta jest po stronie serwera i pozostaje tam w całości.
+   * Służy do tego, żeby nie POZWOLIĆ na gest, który i tak zostanie odrzucony: czytelnik,
+   * który o swojej roli nie wie, pisze u siebie, widzi swój tekst, a serwer go odrzuca.
+   * Jego replika już nigdy nie zgadza się z resztą i nic mu tego nie mówi.
+   */
+  role: 'owner' | 'editor' | 'commenter' | 'viewer'
 }
 
 /**

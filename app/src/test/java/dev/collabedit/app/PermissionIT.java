@@ -236,6 +236,31 @@ class PermissionIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("stan początkowy niesie rolę pytającego, a nie rolę właściciela")
+    void openedDocumentCarriesCallersRole() throws Exception {
+        User anna = newUser("Anna");
+        User czytelnik = newUser("Czytelnik");
+        User komentator = newUser("Komentator");
+        UUID document = privateDocument(anna, "Z rolami");
+        permissions.grant(document, czytelnik.id(), Role.VIEWER);
+        permissions.grant(document, komentator.id(), Role.COMMENTER);
+
+        // Rola jedzie razem ze stanem początkowym z tego samego powodu, dla którego odmowa
+        // z powodu tempa jest głośna: egzekwowanie po stronie serwera BEZ powiedzenia o tym
+        // klientowi zamienia odmowę w cichy rozjazd. Czytelnik, który nie wie, że jest
+        // czytelnikiem, pisze u siebie, widzi swój tekst, a serwer go odrzuca — i lokalna
+        // replika już nigdy nie zgadza się z resztą, bez jednego komunikatu.
+        assertThat(get("/api/documents/" + document, anna.token()).body())
+            .as("właściciel nie dostał swojej roli")
+            .contains("\"role\":\"owner\"");
+        assertThat(get("/api/documents/" + document, czytelnik.token()).body())
+            .as("czytelnik dostał rolę pozwalającą pisać")
+            .contains("\"role\":\"viewer\"");
+        assertThat(get("/api/documents/" + document, komentator.token()).body())
+            .contains("\"role\":\"commenter\"");
+    }
+
+    @Test
     @DisplayName("obcy użytkownik nie widzi cudzego dokumentu prywatnego w koszu")
     void trashDoesNotLeakForeignDocuments() {
         User anna = newUser("Anna");

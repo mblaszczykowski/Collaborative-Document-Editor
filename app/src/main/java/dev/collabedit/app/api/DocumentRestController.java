@@ -55,7 +55,21 @@ public class DocumentRestController {
         this.permissions = permissions;
     }
 
-    public record DocumentState(UUID id, String title, String text, long headServerSeq) {
+    /**
+     * Stan początkowy dokumentu wraz z <b>rolą pytającego</b>.
+     *
+     * <p>Rola jest tu z tego samego powodu, dla którego odmowa z powodu tempa jest głośna
+     * (zob. {@code DocumentAccessInterceptor}): egzekwowanie po stronie serwera bez
+     * powiedzenia o tym klientowi zamienia odmowę w <b>cichy rozjazd</b>. Czytelnik, który
+     * nie wie, że jest czytelnikiem, pisze u siebie, widzi swój tekst, a serwer go odrzuca —
+     * i lokalna replika już nigdy nie zgadza się z resztą, bez jednego komunikatu.
+     *
+     * <p>Nie jest to przeniesienie autoryzacji na klienta. Serwer sprawdza tak samo jak
+     * poprzednio; klient dostaje tę informację wyłącznie po to, żeby nie pozwolić
+     * użytkownikowi wykonać gestu, który i tak zostanie odrzucony.
+     */
+    public record DocumentState(UUID id, String title, String text, long headServerSeq,
+                                String role) {
     }
 
     public record LoginRequest(String displayName) {
@@ -312,14 +326,17 @@ public class DocumentRestController {
         // NAJWAŻNIEJSZE sprawdzenie w tym kontrolerze: ten endpoint zwraca PEŁNĄ TREŚĆ
         // dokumentu. Bez niego cała autoryzacja WebSocketa jest ozdobą, bo te same dane
         // wychodzą jednym żądaniem GET.
-        if (!permissions.canRead(callerId(request), id)) {
+        String caller = callerId(request);
+        Role role = permissions.roleOf(caller, id).orElse(null);
+        if (role == null || !role.canRead()) {
             return ResponseEntity.status(DENIED).build();
         }
         // Przez katalog, nie zapytaniem wprost: katalog odsiewa dokumenty usunięte,
         // więc otwarcie schowanego dokumentu daje 404, a nie pustą treść bez wyjaśnienia.
         return catalog.find(id)
             .map(summary -> ResponseEntity.ok(new DocumentState(
-                id, summary.title(), documents.textOf(id), documents.headServerSeq(id))))
+                id, summary.title(), documents.textOf(id), documents.headServerSeq(id),
+                role.wire())))
             .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }

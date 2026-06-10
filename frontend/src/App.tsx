@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, setAuthToken, type DocumentSummary, type Session } from './api'
+import { api, setAuthToken, type DocumentState, type DocumentSummary, type Session } from './api'
 import { RgaDocument } from './crdt/document'
 import { UndoManager } from './crdt/undo'
 import type { Id, Op } from './crdt/types'
@@ -179,6 +179,15 @@ function DocumentWorkspace(props: {
   const { session, documentId } = props
 
   const [title, setTitle] = useState('')
+  /**
+   * Rola w tym dokumencie, przysłana razem ze stanem początkowym (CP12).
+   *
+   * Domyślnie **najsłabsza z możliwych**, a nie najsilniejsza: gdyby serwer nie odpowiedział
+   * albo odpowiedział starym formatem, użytkownik ma widzieć dokument tylko do odczytu.
+   * Odwrotny domyślny wybór pozwalałby pisać w oknie między otwarciem a odpowiedzią —
+   * czyli dokładnie w tym momencie, w którym nie wiadomo jeszcze, czy wolno.
+   */
+  const [role, setRole] = useState<DocumentState['role']>('viewer')
   const [ready, setReady] = useState(false)
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
   const [pendingCount, setPendingCount] = useState(0)
@@ -293,6 +302,7 @@ function DocumentWorkspace(props: {
       document.current = model
       undo.current = new UndoManager(model)
       setTitle(state.title)
+      setRole(state.role)
       setReady(true)
       refreshStats()
 
@@ -409,6 +419,12 @@ function DocumentWorkspace(props: {
 
   const others = presence.filter((entry) => entry.userId !== session.userId)
 
+  // Te same progi co po stronie serwera (Role.canWriteText / Role.canComment). Duplikat
+  // reguły jest tu ŚWIADOMY i nieszkodliwy: serwer sprawdza niezależnie i to on rozstrzyga.
+  // Klient używa jej wyłącznie do tego, żeby nie proponować gestu, który zostanie odrzucony.
+  const canWrite = role === 'owner' || role === 'editor'
+  const canComment = canWrite || role === 'commenter'
+
   return (
     <div className="app">
       <header className="menubar">
@@ -436,6 +452,11 @@ function DocumentWorkspace(props: {
               </span>
             ))}
           </div>
+          {!canWrite && (
+            <span className="role-badge" title="Twoja rola w tym dokumencie">
+              {canComment ? 'Możesz komentować' : 'Tylko do odczytu'}
+            </span>
+          )}
           <button className="btn-outline" onClick={share}>
             {shared ? 'Skopiowano' : 'Udostępnij'}
           </button>
@@ -462,7 +483,7 @@ function DocumentWorkspace(props: {
 
         <main className="canvas-col">
           <div className="editor-toolbar">
-            <FormatButtons onToggle={toggleMark} />
+            <FormatButtons onToggle={toggleMark} disabled={!canWrite} />
             <span className="tb-divider" />
             <button
               className={`tb-icon${panel === 'comments' ? ' active' : ''}`}
@@ -473,13 +494,15 @@ function DocumentWorkspace(props: {
               💬
             </button>
             <span className="tb-divider" />
-            <button className="tb-icon" onClick={runUndo} title="Cofnij (⌘Z)" aria-label="Cofnij">
+            <button className="tb-icon" onClick={runUndo} title="Cofnij (⌘Z)" aria-label="Cofnij"
+              disabled={!canWrite}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M3 10h10a4 4 0 0 1 0 8H8" />
                 <path d="M7 6l-4 4 4 4" />
               </svg>
             </button>
-            <button className="tb-icon" onClick={runRedo} title="Ponów (⇧⌘Z)" aria-label="Ponów">
+            <button className="tb-icon" onClick={runRedo} title="Ponów (⇧⌘Z)" aria-label="Ponów"
+              disabled={!canWrite}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21 10H11a4 4 0 0 0 0 8h5" />
                 <path d="M17 6l4 4-4 4" />
@@ -513,6 +536,7 @@ function DocumentWorkspace(props: {
                   onSelectionChange={onSelectionChange}
                   onUndo={runUndo}
                   onRedo={runRedo}
+                  readOnly={!canWrite}
                   registerRemoteApply={(apply) => {
                     applyRemote.current = apply
                   }}
@@ -539,6 +563,7 @@ function DocumentWorkspace(props: {
             selection={selection}
             revision={characters}
             onAnchor={anchorComment}
+            readOnly={!canComment}
           />
         )}
       </div>
@@ -562,7 +587,10 @@ function DocumentWorkspace(props: {
  * trzymane w stanie i aktualizowane zdarzeniem, w chwili kliknięcia byłoby już puste.
  * `onMouseDown` z `preventDefault` zatrzymuje utratę fokusu, zanim do niej dojdzie.
  */
-function FormatButtons({ onToggle }: { onToggle: (type: string, from: number, to: number) => void }) {
+function FormatButtons(
+  { onToggle, disabled }:
+    { onToggle: (type: string, from: number, to: number) => void; disabled: boolean },
+) {
   function apply(type: string) {
     const selection = window.getSelection()
     if (selection === null || selection.isCollapsed) return
@@ -598,6 +626,7 @@ function FormatButtons({ onToggle }: { onToggle: (type: string, from: number, to
           aria-label={button.label}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => apply(button.type)}
+          disabled={disabled}
         >
           {button.render}
         </button>

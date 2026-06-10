@@ -21,6 +21,13 @@ export function CommentsPanel(props: {
   /** Rośnie przy każdej zmianie dokumentu — wymusza odświeżenie stanu zakotwiczenia. */
   revision: number
   onAnchor: (threadId: string) => void
+  /**
+   * Rola nie pozwala komentować (`viewer`).
+   *
+   * Panel zostaje widoczny — czytelnik ma prawo CZYTAĆ rozmowę, tylko nie dopisywać do niej.
+   * Ukrycie panelu odbierałoby mu kontekst, dla którego zwykle się go otwiera.
+   */
+  readOnly?: boolean
 }) {
   const [threads, setThreads] = useState<CommentThread[]>([])
   const [showResolved, setShowResolved] = useState(false)
@@ -74,7 +81,9 @@ export function CommentsPanel(props: {
 
       <div className="rp-body">
         <div className="comment-new">
-          {props.selection === '' ? (
+          {props.readOnly ? (
+            <div className="rp-empty">Twoja rola pozwala czytać komentarze, ale nie dodawać.</div>
+          ) : props.selection === '' ? (
             <div className="rp-empty">Zaznacz fragment tekstu, żeby go skomentować.</div>
           ) : (
             <>
@@ -126,7 +135,7 @@ export function CommentsPanel(props: {
             ))}
 
             <div className="comment-actions">
-              {replyTo === thread.id ? (
+              {props.readOnly ? null : replyTo === thread.id ? (
                 <>
                   <input
                     className="comment-reply"
@@ -145,9 +154,11 @@ export function CommentsPanel(props: {
                   Odpowiedz
                 </button>
               )}
-              <button className="comment-action" onClick={() => void toggleResolved(thread)}>
-                {thread.resolvedAt === null ? 'Rozwiąż' : 'Otwórz ponownie'}
-              </button>
+              {!props.readOnly && (
+                <button className="comment-action" onClick={() => void toggleResolved(thread)}>
+                  {thread.resolvedAt === null ? 'Rozwiąż' : 'Otwórz ponownie'}
+                </button>
+              )}
             </div>
           </div>
         ))}

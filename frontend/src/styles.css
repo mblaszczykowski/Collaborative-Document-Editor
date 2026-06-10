@@ -453,3 +453,18 @@ button { font-family: inherit; cursor: pointer; }
 /* Zakotwiczony fragment w tekście — podświetlenie, nie ramka: ramka przesuwałaby tekst
    przy pojawieniu się komentarza, a to wygląda jak błąd renderowania. */
 .cm-mark-comment { background: rgba(184, 134, 46, 0.18); border-bottom: 1px solid rgba(184, 134, 46, 0.5); }
+
+/* --- rola w dokumencie (CP12) --- */
+
+/* Odznaka pojawia się TYLKO wtedy, gdy rola coś ogranicza. Etykieta „Właściciel"
+   przy każdym własnym dokumencie byłaby szumem — informacja przydaje się dopiero
+   w chwili, gdy tłumaczy, dlaczego czegoś nie da się zrobić. */
+.role-badge {
+  padding: 3px 9px; border-radius: 10px; font-size: 11.5px; white-space: nowrap;
+  border: 1px solid var(--chrome-line); background: var(--hover); color: #6a6a6a;
+}
+
+/* Wyłączone gesty są WIDOCZNE, nie ukryte: pasek narzędzi, z którego znikają przyciski,
+   wygląda na zepsuty, a nie na ograniczony uprawnieniami. */
+.tb-icon:disabled { opacity: 0.35; cursor: not-allowed; }
+.tb-icon:disabled:hover { background: transparent; }
