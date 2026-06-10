@@ -60,6 +60,28 @@ znaleziona przez celowe wprowadzenie mutacji do kodu produkcyjnego i sprawdzenie
 ją złapią. Nie złapały. Zestaw testów, który przechodzi na uszkodzonym kodzie, nie jest
 zestawem testów.
 
+**To samo powtórzyło się jeszcze dwa razy**, i za każdym razem inaczej.
+
+*Drugi raz* — agregaty treapa. Usunięcie ich aktualizacji po oznaczeniu węzła tombstone'em
+przechodziło przez testy zbieżności bez zarzutu, bo wszystkie repliki myliły się **tak samo**.
+Tekst był zgodny, tylko pozycje z drzewa fałszywe — czyli błąd, który wygląda jak zdrowy
+dokument z kursorami stojącymi nie tam, gdzie powinny. Odpowiedzią jest para property
+porównująca implementację indeksowaną z naiwną **na odpowiedziach na zapytania**, a nie
+na wynikowym tekście.
+
+*Trzeci raz* — ochrona kotwic formatowania przed GC (CP13). Test `garbageCollectionSparesMarkAnchors`
+napisałem, uruchomiłem, przeszedł. Potem wyłączyłem mechanizm, który miał sprawdzać —
+i **nadal przechodził**. Powód: zakotwiczyłem znacznik na znaku w środku tekstu, a taki znak
+jest originem następnego bloku, więc chroniła go reguła, która istniała od CP2. Test
+sprawdzał starą regułę i przypisywał jej zasługę nowej. Naprawa polegała na zakotwiczeniu
+na **ostatnim** znaku dokumentu, znacznikiem nierozszerzającym się — tam nikt inny go nie
+chroni. Dopiero wtedy mutacja go wywaliła.
+
+Wspólny mianownik jest niewygodny: **test napisany po to, żeby sprawdzić mechanizm X, może
+przechodzić dzięki mechanizmowi Y** — i nie ma jak tego zauważyć inaczej niż przez zepsucie
+X-a i sprawdzenie, czy test to zgłosi. Robię to teraz dla każdego mechanizmu, który jest
+jedyną linią obrony przed cichą utratą danych.
+
 ---
 
 ## 2. Dlaczego dedup NIE opiera się na version vectorze

@@ -16,6 +16,12 @@ Algorytm scalania (CRDT typu RGA) jest **napisany od zera**, w Javie po stronie 
 i w TypeScripcie po stronie klienta. Nie jest to opakowanie na Yjs ani Automerge — powód
 i porównanie z gotowymi rozwiązaniami są w [ADR-0001](docs/adr/0001-crdt-vs-ot.md).
 
+Ten sam rdzeń unosi **formatowanie tekstu i komentarze**. Nie są to funkcje doklejone obok
+algorytmu, tylko jego zastosowania: znacznik formatowania to zakres między kotwicami
+zaczepionymi w znakach, a kotwica komentarza to ten sam mechanizm z identyfikatorem rozmowy
+zamiast rodzaju formatowania. Warstwa sekwencji znaków nie zmieniła się przy tym **ani
+o jedno pole** ([ADR-0010](docs/adr/0010-rich-text.md)).
+
 ---
 
 ## Co tu jest ciekawego
@@ -39,11 +45,19 @@ Jeśli masz trzy minuty:
    rozgłoszenia, a **zatrzymywał wyłącznie odpowiedzi na resynchronizację** — czyli jedyny
    mechanizm zdolny naprawić zgubioną operację. Treap jest przy okazji 210× szybszy
    od skanowania liniowego przy 100 tys. znaków — i 1,4× **wolniejszy** przy odczycie całości.
+4. **[Rich text w CRDT to inny problem niż formatowanie w edytorze](docs/adr/0010-rich-text.md).**
+   Wystarczy jedno zdanie, żeby zobaczyć dlaczego: Ania pogrubia zakres, Bartek — nie widząc
+   tego — wpisuje tekst w jego środek. Przy formatowaniu zapisanym jako atrybut znaku powstaje
+   dziura, której nikt nie zrobił. Rozwiązanie (kotwice zamiast offsetów) jest tą samą zasadą,
+   którą projekt zastosował już przy kursorach — i to jest najlepszy argument, że tamta
+   decyzja była trafna.
 
-Cztery błędy w tym projekcie znalazły testy, a nie przegląd kodu: dublowanie dokumentu przy
-otwarciu, snapshot niezapisywalny powyżej 64 KB, odpowiedź na resynchronizację przekraczająca
-limit ramki i nazwa użytkownika ze znakiem `|` unieważniająca własny token. Wszystkie są
-opisane w commitach i w komentarzach w miejscu naprawy.
+Siedem błędów w tym projekcie znalazły testy albo pomiar, a nie przegląd kodu: dublowanie
+dokumentu przy otwarciu, snapshot niezapisywalny powyżej 64 KB, odpowiedź na resynchronizację
+przekraczająca limit ramki, nazwa użytkownika ze znakiem `|` unieważniająca własny token,
+GC kasujący kotwice formatowania, zaznaczenie od pozycji zero niewidoczne dla panelu
+komentarzy i — najgroźniejszy — **operacje odrzucane przez limit tempa i gubione po cichu**.
+Wszystkie są opisane w commitach i w komentarzach w miejscu naprawy.
 
 ---
 
@@ -52,25 +66,28 @@ opisane w commitach i w komentarzach w miejscu naprawy.
 ```
 ┌─ frontend (React + TypeScript, Vite) ───────────────────────┐
 │  CodeMirror 6 — WYŁĄCZNIE warstwa widoku (ADR-0006)          │
-│  crdt-ts/     — własna implementacja RGA                     │
+│  crdt/        — własna implementacja RGA + warstwa znaczników │
 │  transport/   — STOMP + bufor offline + symulator sieci      │
+│  ui/          — lista dokumentów, historia, komentarze       │
 └──────────────────────────┬──────────────────────────────────┘
                            │  WebSocket / STOMP
                            │  (traceparent w nagłówku ramki)
 ┌──────────────────────────▼──────────────────────────────────┐
 │ app — Spring Boot 3, Java 21                                 │
-│   ws/        STOMP, presence                                 │
-│   domain/    replika dokumentu w pamięci                     │
-│   persist/   log operacji + snapshoty                        │
-│   history/   time travel                                     │
-│   cluster/   Redis pub/sub + anti-entropy                    │
+│   ws/        STOMP, presence, autoryzacja ramek, limit tempa  │
+│   auth/      role, uprawnienia, token                         │
+│   domain/    replika dokumentu w pamięci                      │
+│   persist/   log operacji + snapshoty + katalog dokumentów    │
+│   history/   time travel                                      │
+│   comments/  wątki (treść poza CRDT — ADR-0011)               │
+│   cluster/   Redis pub/sub + anti-entropy                     │
 └────────┬─────────────────────────┬──────────────────────────┘
          │                         │
     PostgreSQL                  Redis
   (źródło prawdy)        (zawodna ścieżka szybka)
 
 crdt-core/ — osobny moduł Mavena, ZERO zależności od Springa.
-             Algorytm + property testy + JMH.
+             Algorytm + warstwa formatowania + property testy + JMH.
 ```
 
 Podział na `crdt-core` bez Springa jest celowy: algorytm da się testować i benchmarkować
@@ -92,12 +109,16 @@ nigdy nie jest pusta, oraz — tam, gdzie czegoś jeszcze nie wiem — jawne
 | [0004](docs/adr/0004-skalowanie-poziome.md) | Instancja backendu jako replika CRDT + anti-entropy |
 | [0005](docs/adr/0005-tombstone-gc.md) | GC tombstone'ów przez stabilność przyczynową |
 | [0006](docs/adr/0006-warstwa-edytora.md) | CodeMirror 6 jako widok; model dokumentu własny |
-| [0007](docs/adr/0007-zakres-ui.md) | Język wizualny mockupu przyjęty; diagnostyka usunięta z interfejsu użytkownika (decyzja zrewidowana) |
+| [0007](docs/adr/0007-zakres-ui.md) | Język wizualny mockupu przyjęty; jego zakres funkcjonalny odrzucony — **zastąpiony przez 0008** |
+| [0008](docs/adr/0008-rozszerzenie-zakresu.md) | Rozszerzenie zakresu z artefaktu do produktu, z warunkiem utrzymania głębi rdzenia |
+| [0009](docs/adr/0009-model-uprawnien.md) | Role uporządkowane, egzekwowane w obu warstwach z jednej reguły |
+| [0010](docs/adr/0010-rich-text.md) | Formatowanie jako osobna warstwa CRDT (Peritext), nie atrybut znaku |
+| [0011](docs/adr/0011-komentarze.md) | Kotwica komentarza w CRDT, treść rozmowy poza nim |
 
 Diagramy (architektura, droga pojedynczej edycji, stany połączenia):
 [`docs/architektura.md`](docs/architektura.md).
 Szczegóły implementacyjne algorytmu: [`docs/crdt-design.md`](docs/crdt-design.md).
-Plan pracy i checkpointy: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
+Plan pracy i checkpointy: [v1](docs/IMPLEMENTATION_PLAN.md) (CP1–CP9), [v2](docs/PLAN-v2.md) (CP10–CP15).
 
 ---
 
@@ -170,6 +191,7 @@ więc wersje są spójne, ale zależność idzie w jedną stronę i dotyczy wył
 ./mvnw -pl crdt-core exec:exec@run-benchmarks                # benchmarki JMH (~7 min)
 ./mvnw -pl app test -Dtest=LoadHarnessIT -Dbenchmark=true    # harness obciążeniowy (~10 min)
 ./mvnw -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true   # ilu klientów zbiega się POWTARZALNIE
+cd frontend && npm test                                      # testy jednostkowe klienta (vitest)
 cd frontend && npm run e2e                                   # dwie przeglądarki (wymaga działającego stacku)
 ```
 
@@ -189,12 +211,23 @@ Testy są uporządkowane wg tego, jaki failure mode wyłapują, a nie wg pokryci
 | `bothImplementationsAnswerQueriesIdentically` | Zła pozycja z drzewa po rotacji: tekst poprawny, ale kursor użytkownika ląduje gdzie indziej |
 | `gcPreservesText` | GC kasuje węzeł będący czyimś originem — struktura pada dopiero przy następnej edycji w to miejsce |
 | `backwardTypingInterleaves_knownLimitation` | Nie wyłapuje błędu — **utrwala znane ograniczenie RGA** ([ADR-0001](docs/adr/0001-crdt-vs-ot.md)) |
+| `formattingConverges` | Znaczniki scalają się inaczej niż tekst — dokument zgodny, ale wygląda różnie u dwóch osób |
+| `textInsertedIntoMarkedRangeInheritsMark` | Pisanie w środku pogrubienia tworzy dziurę, której nikt nie zrobił — powód, dla którego kotwice zastąpiły offsety ([ADR-0010](docs/adr/0010-rich-text.md)) |
+| `markWaitsForItsAnchors` | Znacznik dotarł przed znakiem, w którym jest zaczepiony — cicho ginie zamiast poczekać |
+| `garbageCollectionSparesMarkAnchors` | GC kasuje kotwicę: formatowanie znika **nie przy edycji, tylko przy najbliższym snapshocie**, więc winowajca jest już dawno poza podejrzeniem |
+| `textTypedOverDeletedRangeDoesNotInheritItsMark` | Odwrotność powyższego — chroniona kotwica zaczyna formatować tekst, który powstał po skasowaniu zakresu |
+| `websocketCannotSubscribeToForeignPrivateDocument` | Znajomość identyfikatora wystarcza do czytania cudzego dokumentu — dziura, którą **otworzył** CP11 i którą CP12 zamknął w obu warstwach |
+| `viewerCannotWriteText` / `commenterCannotChangeText` | Uprawnienia egzekwowane tylko w interfejsie; ramka wysłana z konsoli przechodzi |
+| `threadSurvivesDeletionOfAnchoredText` | Skasowanie tekstu kasuje rozmowę o nim — utrata kontekstu decyzji, po którą ludzie wracają po miesiącach |
 
 **Czy te testy mają zęby — sprawdzone, nie założone.** Odwrócenie warunku skanu RGA
-w kodzie produkcyjnym wywala 9 z 13 testów. Usunięcie aktualizacji agregatów w treapie
-wywala dokładnie te dwa, które to opisują. Testy, których nie próbowano złamać,
-są deklaracją, a nie zabezpieczeniem — [notatka o tym, jak jedna taka mutacja
-ujawniła realną dziurę w zestawie](docs/crdt-design.md#czego-to-nauczyło-o-testach).
+w kodzie produkcyjnym wywala 9 z 13 testów zbieżności. Usunięcie aktualizacji agregatów
+w treapie wywala dokładnie te dwa, które to opisują. Wyłączenie ochrony kotwic w GC wywala
+`garbageCollectionSparesMarkAnchors` — ale za **pierwszym** razem go nie wywalało, bo test
+zakotwiczył się na znaku, który i tak był chroniony jako origin następnego bloku. Test
+przeszedł przy wyłączonym mechanizmie, który miał sprawdzać. To był **trzeci raz**, kiedy
+mutacja ujawniła test niesprawdzający niczego — [notatka o tym, czego to
+nauczyło](docs/crdt-design.md#czego-to-nauczyło-o-testach).
 
 ---
 
@@ -243,36 +276,42 @@ kompresuje się do jednego bloku i omija ścieżkę, która faktycznie skaluje s
 
 | Dokument | Klienci | p50 | p95 | p99 | Zbieżność |
 |---:|---:|---:|---:|---:|---|
-| pusty | 2 | 32 ms | 33 ms | 34 ms | 53 ms |
-| pusty | 10 | 86 ms | 93 ms | 94 ms | 117 ms |
-| pusty | 25 | 92 ms | 126 ms | 130 ms | 188 ms |
-| pusty | 50 | 226 ms | 389 ms | 420 ms | 397 ms |
-| 10 000 znaków | 2 | 3,7 ms | 4,6 ms | 4,7 ms | 51 ms |
-| 10 000 znaków | 10 | 15 ms | 19 ms | 20 ms | 56 ms |
-| 10 000 znaków | 25 | 73 ms | 90 ms | 92 ms | 131 ms |
-| 10 000 znaków | 50 | 128 ms | 182 ms | 192 ms | 237 ms |
-| 100 000 znaków | 2 | 11 ms | 11 ms | 11 ms | 50 ms |
-| 100 000 znaków | 10 | 15 ms | 16 ms | 17 ms | 61 ms |
-| 100 000 znaków | 25 | 57 ms | 65 ms | 67 ms | 116 ms |
-| 100 000 znaków | 50 | 127 ms | 193 ms | 203 ms | 239 ms |
+| pusty | 2 | 27 ms | 29 ms | 30 ms | 55 ms |
+| pusty | 10 | 74 ms | 83 ms | 86 ms | 516 ms |
+| pusty | 25 | 114 ms | 154 ms | 165 ms | 513 ms |
+| pusty | 50 | 202 ms | 360 ms | 374 ms | 499 ms |
+| 10 000 znaków | 2 | 9,3 ms | 10 ms | 10 ms | 60 ms |
+| 10 000 znaków | 10 | 28 ms | 31 ms | 32 ms | 60 ms |
+| 10 000 znaków | 25 | 46 ms | 76 ms | 84 ms | 107 ms |
+| 10 000 znaków | 50 | 135 ms | 218 ms | 230 ms | 267 ms |
+| 100 000 znaków | 2 | 4,5 ms | 586 ms | 586 ms | 603 ms |
+| 100 000 znaków | 10 | 13 ms | 518 ms | 830 ms | 831 ms |
+| 100 000 znaków | 25 | 67 ms | 92 ms | 695 ms | 712 ms |
+| 100 000 znaków | 50 | 124 ms | 212 ms | 1299 ms | 1647 ms |
 
-**Rozmiar dokumentu praktycznie nie wpływa na latencję** — 100 tys. znaków wypada nie gorzej
-niż dokument pusty. To potwierdza, że po wymianie indeksu na treap wąskim gardłem przestała
-być struktura danych.
+**Wszystkie dwanaście scenariuszy zbiega się**, w tym 50 klientów w dokumencie
+100 tys. znaków. Rozmiar dokumentu praktycznie nie wpływa na medianę latencji — po wymianie
+indeksu na treap wąskim gardłem przestała być struktura danych.
 
-### Co dało sklejanie rozgłoszeń
+**Ogony (p99) są tu wyraźnie grubsze niż w poprzednim pomiarze i jest to CENA
+OGRANICZANIA TEMPA**, wprowadzonego w CP12. Harness zasiewa dokument 100 tys. znaków
+dwustoma operacjami wysłanymi bez przerwy, co wyczerpuje zryw limitu; odrzucone operacje
+są ponawiane po sekundzie, i ta sekunda jest tym, co widać w p99. Zachowanie jest poprawne
+— nic nie ginie — ale liczba jest gorsza i zostaje w tabeli taka, jaka jest.
 
-Do CP10 każda operacja szła w osobnej ramce **do każdego odbiorcy**, więc liczba ramek rosła
-z kwadratem liczby klientów. Od CP10 operacje są zbierane w okno 10 ms.
+### Profil ruchu — czego poprzednie pomiary NIE obejmowały
 
-| Dokument | Klienci | p50 przed | p50 po | Zbieżność przed | po |
-|---:|---:|---:|---:|---:|---:|
-| 10 000 znaków | 25 | 191 ms | **73 ms** | 290 ms | **131 ms** |
-| 100 000 znaków | 50 | 553 ms | **127 ms** | 871 ms | **239 ms** |
+Ta tabela jest pierwszą, w której harness generuje **komplet ruchu produkcyjnego**:
 
-Zysk rośnie z liczbą klientów — czyli dokładnie tam, gdzie był problem. Przy dwóch klientach
-sklejać nie ma czego i widać to w liczbach (32 ms wobec 22 ms, czyli nieco gorzej: doszło
-okno oczekiwania, a nie ma z czego go zamortyzować).
+| Rodzaj | Do CP15 | Teraz |
+|---|---|---|
+| operacje tekstowe | tak | tak |
+| **obecność (kursory)** | **nie** | co drugie naciśnięcie klawisza |
+| **formatowanie** | **nie** | co dziesiąta edycja |
+
+Kursor jest najczęstszym zdarzeniem w całym systemie, a harness go nie wysyłał. Poprzednie
+liczby opisywały więc system lżejszy niż ten, którego używa przeglądarka — w sposób
+niemożliwy do zauważenia, dopóki się tego nie sprawdzi.
 
 ### Punkt degradacji — rozstrzygnięty, i to nie na korzyść mojego stanowiska
 
@@ -324,7 +363,11 @@ oznaczone jako zweryfikowane mają test, który to sprawdza.
 | **Klient offline dłużej niż okno GC (7 dni)** | Operacje **odrzucone jawnie** (`RESYNC_REQUIRED`), lokalna wersja zapisana jako osobny dokument „Odzyskany szkic". Świadomie nie udajemy scalenia — informacja o pozycji tych znaków została utracona. | `staleOperationIsRejectedExplicitly` |
 | **Operacja wyprzedza swoją przyczynę** | Trafia do bufora i jest ponawiana po każdym udanym scaleniu. NIE jest mylona z sytuacją powyżej — warunek odmowy wymaga jednocześnie braku originu i pozycji poniżej granicy GC. | `operationAheadOfItsCauseIsNotRejected` |
 | **Bardzo duży dokument** | Rozmiar praktycznie nie wpływa na latencję (100 tys. znaków ≈ dokument pusty) po wymianie indeksu na treap. Tombstone'y rosną z liczbą edycji, a GC odzyskuje mniej, niż zakładałem. | sekcja [Wydajność](#wydajność), [ADR-0005](docs/adr/0005-tombstone-gc.md) |
-| **50 klientów w jednym dokumencie** | Zbiega się powtarzalnie (3/3 przebiegi, 397 ms przy pustym dokumencie, 239 ms przy 100 tys. znaków). Wcześniejsza obserwacja „powyżej ~10 klientów zbieżność przestaje być powtarzalna" okazała się **wadą stanowiska pomiarowego, nie systemu** — patrz [Punkt degradacji](#punkt-degradacji--rozstrzygnięty-i-to-nie-na-korzyść-mojego-stanowiska). | `BroadcastFanoutIT`, harness CP10 |
+| **50 klientów w jednym dokumencie** | Zbiega się powtarzalnie — wszystkie 12 scenariuszy harnessu, łącznie z 50 klientami w dokumencie 100 tys. znaków. Wcześniejsza obserwacja „powyżej ~10 klientów zbieżność przestaje być powtarzalna" okazała się **wadą stanowiska pomiarowego, nie systemu** — patrz [Punkt degradacji](#punkt-degradacji--rozstrzygnięty-i-to-nie-na-korzyść-mojego-stanowiska). | `BroadcastFanoutIT`, harness CP15 |
+| **Przekroczenie limitu tempa** | Serwer odrzuca ramkę i **odsyła `RATE_LIMITED`**, a klient ponawia po sekundzie z bufora niepotwierdzonych. Odrzucenie z powodu uprawnień jest ciche (informacja „ten dokument istnieje" byłaby wyciekiem), z powodu tempa — nie: cicha odmowa tempa jest utratą danych. | harness CP15: 351 odrzuceń, zero utraconych operacji |
+| **Skasowanie sformatowanego tekstu** | Formatowanie zostaje na tym, co przetrwało. Kotwice znaczników są tombstone'ami chronionymi przed GC — bez tego wygląd dokumentu znikałby przy sprzątaniu pamięci, i to nie w chwili kasowania, tylko przy najbliższym snapshocie. | `garbageCollectionSparesMarkAnchors` |
+| **Skasowanie skomentowanego tekstu** | Rozmowa **zostaje**, oznaczona jako odłączona, z zacytowanym fragmentem z chwili założenia. Kasowanie rozmowy w reakcji na edycję tekstu jest zachowaniem, którego nikt się nie spodziewa. | `threadSurvivesDeletionOfAnchoredText`, e2e |
+| **Odebranie dostępu w trakcie sesji** | Działa w granicy 5 s (czas życia wpisu w cache'u uprawnień). Odebranie przez właściciela unieważnia cache natychmiast na TEJ instancji; pozostałe czekają na wygaśnięcie. | `revokingAccessTakesEffect` |
 
 ---
 
@@ -333,6 +376,11 @@ oznaczone jako zweryfikowane mają test, który to sprawdza.
 Lista świadomych uproszczeń i znanych granic. Powstawała **w trakcie** pracy, a nie
 z pamięci na końcu — dlatego zawiera też rzeczy, które wyszły dopiero przy implementacji
 i okazały się gorsze, niż zakładałem.
+
+**Kilka pozycji z tej listy zostało w międzyczasie zrobionych.** Zostawiam je poniżej,
+przekreślone, wraz z tym, co się przy okazji potwierdziło albo nie — sekcja o granicach
+własnego rozwiązania traci sens, jeśli pokazuje tylko granice, które wciąż stoją. Pełny
+rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
 
 **Algorytm**
 - **Fugue zamiast RGA.** RGA ma udokumentowaną anomalię przeplotu: pisanie wstecz przez
@@ -355,10 +403,19 @@ i okazały się gorsze, niż zakładałem.
   pewien czas widoczne w interfejsie; to była pomyłka co do adresata
   ([ADR-0007](docs/adr/0007-zakres-ui.md), sekcja o rewizji). Użytkownik ma widzieć produkt,
   nie stanowisko pomiarowe.
-- **Brak formatowania tekstu.** Rich text w CRDT to inny algorytm (Peritext), nie dodatek —
-  markery muszą przetrwać współbieżne wstawienia w środek zakresu. Świadomie poza zakresem
-  ([ADR-0007](docs/adr/0007-zakres-ui.md)).
-- **Brak komentarzy i uprawnień.** Jw.
+- ~~**Brak formatowania tekstu.**~~ **Zrobione (CP13).** Diagnoza z tej listy była trafna —
+  rich text w CRDT to rzeczywiście osobny algorytm, nie atrybut znaku. Peritext wszedł jako
+  **druga warstwa obok sekwencji znaków**, która nie zmieniła się przy tym ani o jedno pole
+  ([ADR-0010](docs/adr/0010-rich-text.md)). Pozostała granica: rozstrzyganie sprzecznych
+  wartości tego samego typu znacznika jest O(m²) po liczbie znaczników w dokumencie —
+  wystarczające przy setkach, nie przy dziesiątkach tysięcy.
+- ~~**Brak komentarzy i uprawnień.**~~ **Zrobione (CP12, CP14).** Kotwica komentarza okazała
+  się tym samym mechanizmem co formatowanie i **nie dołożyła ani jednej linijki do warstwy
+  CRDT** ([ADR-0011](docs/adr/0011-komentarze.md)). Uprawnienia egzekwowane w obu warstwach
+  z jednej reguły ([ADR-0009](docs/adr/0009-model-uprawnien.md)). Pozostałe granice: treść
+  komentarzy nie działa offline (bufor obejmuje operacje CRDT, nie REST), panel odświeża się
+  przez odpytywanie zamiast przez zdarzenie, brak powiadomień i wzmianek, a odebranie
+  uprawnień działa w granicy 5 s cache'u.
 - **Cofanie działa tylko w obrębie sesji.** `UndoManager` cofa własne operacje i scala
   ciągłe pisanie w jeden krok, ale stos żyje w pamięci karty i znika po przeładowaniu.
 
@@ -371,8 +428,14 @@ i okazały się gorsze, niż zakładałem.
   się na liście obecnych. Wymaga osobnego kanału i wygasania wpisów.
 - **Klient odtwarza cały log przy otwarciu dokumentu.** Serwer wewnętrznie używa snapshotów;
   klient powinien dostawać zserializowany snapshot CRDT, a nie komplet operacji.
-- **Brak rate limitingu i shardingu dokumentów.** Jeden dokument z bardzo wieloma
-  użytkownikami zawsze obciąża tyle instancji, ile trzyma go w pamięci.
+- ~~**Brak rate limitingu**~~ **— jest (CP12), i nauczył mnie czegoś, czego nie zakładałem.**
+  Pierwsza wersja odrzucała ramkę po cichu, bo tak działa odmowa z powodu uprawnień.
+  Przy 100 tys. znaków i 50 klientach dało to 115 odrzuceń i dokument, który **przestał
+  się zbiegać** — limit tempa nie jest odmową dostępu, tylko prośbą o zwolnienie, więc cicha
+  odmowa jest po prostu utratą danych. Teraz serwer odsyła `RATE_LIMITED`, a klient ponawia
+  z bufora niepotwierdzonych. Znalazł to pomiar, nie przegląd kodu.
+- **Brak shardingu dokumentów.** Jeden dokument z bardzo wieloma użytkownikami zawsze
+  obciąża tyle instancji, ile trzyma go w pamięci.
 - **Zapisy do jednego dokumentu są serializowane** blokadą wiersza, bo ciągłość `server_seq`
   jest wymogiem wykrywania luk. To pierwsze miejsce, które ograniczy przepustowość.
 - **Brak SockJS fallback** — klient za proxy blokującym `Upgrade` nie połączy się wcale.
@@ -384,6 +447,16 @@ i okazały się gorsze, niż zakładałem.
   wklejeniu dużego fragmentu tekstu, bo to jest **jedna** operacja o dziesiątkach kilobajtów.
   Ścieżka rozgłoszeń została w CP10 przeniesiona na budżet bajtowy; ścieżka resynchronizacji
   nie. Znany dług, nie przeoczenie.
+- **Rozstrzyganie znaczników jest kwadratowe po ich liczbie.** `MarkSet` przy każdym
+  wyliczeniu formatowania przechodzi wszystkie znaczniki i dla każdego odcinka szuka
+  zwycięzcy liniowo. Przy dokumencie z tysiącami komentarzy zacznie to być widoczne;
+  właściwym rozwiązaniem jest drzewo przedziałowe indeksowane pozycją. Nie zmierzone,
+  bo nie miałem realistycznego dokumentu tej wielkości — i wolę to napisać, niż zgadywać próg.
+- **Autoryzacja zagląda w treść ramki.** Rola `commenter` wymaga odróżnienia znacznika
+  komentarza od formatowania, a to znaczy parsowanie ładunku w interceptorze. Robimy to
+  **tylko** dla tej jednej roli, ale jest to warstwa autoryzacji zależna od formatu danych —
+  zmiana formatu operacji może cicho zmienić uprawnienia. W produkcji: typ operacji
+  w nagłówku STOMP, nie w ciele.
 - **Liczby wydajnościowe nadal pochodzą z jednego procesu.** Klienci, serwer, Postgres
   i Redis dzielą dziesięć rdzeni, więc harness sam jest poważnym konsumentem procesora,
   a latencja sieci wynosi zero. Liczby opisują koszt systemu, nie doświadczenie użytkownika
@@ -441,18 +514,23 @@ tools/         skrypty pomocnicze (nagranie demo, czyszczenie danych)
 
 ## Stan projektu
 
-Wszystkie dziewięć checkpointów z [planu v1](docs/IMPLEMENTATION_PLAN.md) jest zamkniętych.
-Dalszy kierunek — rich text, komentarze, wiele dokumentów i uprawnienia — opisuje
-[plan v2](docs/PLAN-v2.md); jego pierwszy checkpoint (CP10, fundament) jest w trakcie.
+Zamknięte są wszystkie checkpointy obu planów: dziewięć z [planu v1](docs/IMPLEMENTATION_PLAN.md)
+(rdzeń CRDT, transport, historia, klaster, obserwowalność) i sześć z
+[planu v2](docs/PLAN-v2.md) (wydajność rozgłoszeń, wiele dokumentów, uprawnienia,
+formatowanie, komentarze, ponowny pomiar).
+
 README było pisane równolegle z kodem, sekcja po sekcji — nie odtwarzane z pamięci na końcu.
+Ta sama zasada dotyczy sekcji [o granicach](#co-zrobiłbym-inaczej-w-produkcji): pozycje,
+które plan v2 zamknął, są w niej **przekreślone, a nie usunięte** — razem z tym, co się przy
+okazji potwierdziło, i z tym, co okazało się nieprawdą.
 
 | Warstwa | Testy |
 |---|---:|
-| `crdt-core` — property, niezmienniki, konformancja, snapshoty | 20 |
-| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra | 63 |
-| `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 33 |
-| end-to-end — dwie prawdziwe przeglądarki | 6 |
-| **razem** | **122** |
+| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki | 39 |
+| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 81 |
+| `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 49 |
+| end-to-end — dwie prawdziwe przeglądarki | 16 |
+| **razem** | **185** |
 
 Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
 trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami

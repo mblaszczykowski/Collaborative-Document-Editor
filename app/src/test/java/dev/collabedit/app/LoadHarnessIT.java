@@ -146,6 +146,25 @@ class LoadHarnessIT extends IntegrationTestBase {
                             // na początek zmusza strukturę do pracy.
                             Op op = client.insertReturningOp(0, "x");
                             sentAt.put(key(op), System.nanoTime());
+
+                            // Ruch obecności — co drugie naciśnięcie klawisza, czyli tempo
+                            // ograniczone tak samo, jak robi to prawdziwy klient (100 ms).
+                            //
+                            // Do CP15 harness go NIE generował, przez co liczby opisywały
+                            // system lżejszy niż ten, którego używa przeglądarka. Kursor
+                            // jest najczęstszym zdarzeniem w całym systemie i pomijanie go
+                            // czyniło pomiar optymistycznym w sposób niemożliwy do zauważenia.
+                            if (i % 2 == 0) {
+                                client.sendPresence();
+                            }
+
+                            // Operacja formatowania co dziesiątą edycję (CP13). Proporcja
+                            // dobrana z obserwacji: ludzie formatują znacznie rzadziej,
+                            // niż piszą, ale nie na tyle rzadko, żeby dało się to pominąć.
+                            if (i % 10 == 9 && client.text().length() >= 2) {
+                                Op mark = client.markReturningOp(0, 2, "bold", null);
+                                sentAt.put(key(mark), System.nanoTime());
+                            }
                         }
                     } finally {
                         done.countDown();
