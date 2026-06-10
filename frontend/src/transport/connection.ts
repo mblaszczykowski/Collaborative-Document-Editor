@@ -164,6 +164,14 @@ export class DocumentConnection {
       client.subscribe('/user/queue/sync', (message) => this.onSyncResponse(message)),
       client.subscribe('/user/queue/errors', (message) => {
         const error = JSON.parse(message.body) as { code: string; message: string }
+        if (error.code === 'RATE_LIMITED') {
+          // Serwer odrzucił operację z powodu tempa. Nie jest to błąd wymagający uwagi
+          // użytkownika — operacja czeka w buforze niepotwierdzonych i wystarczy ją ponowić
+          // po chwili. BEZ tego ponowienia sygnał byłby bezużyteczny, a operacja przepadłaby
+          // po cichu: dokładnie to wykrył harness w CP15.
+          this.scheduleRetryAfterThrottling()
+          return
+        }
         this.handlers.onError(error.code, error.message)
       }),
     ]
@@ -210,6 +218,29 @@ export class DocumentConnection {
    * Górna granica 30 s: powyżej użytkownik zdąży uznać, że aplikacja jest zepsuta,
    * a zysk dla serwera jest już znikomy.
    */
+  private throttleRetryTimer: number | null = null
+
+  /**
+   * Ponawia operacje niepotwierdzone po odrzuceniu z powodu tempa.
+   *
+   * Jeden timer na całą serię, nie jeden na operację: przy przekroczeniu limitu odrzuconych
+   * ramek jest zwykle wiele naraz, a każda z osobna planująca własne ponowienie dałaby
+   * dokładnie ten zryw, który limit właśnie odrzucił.
+   *
+   * Odstęp 1 s wynika z wartości po stronie serwera: wiadro operacji napełnia się w tempie
+   * 60/s, więc sekunda zwraca do dyspozycji 60 żetonów — dość, żeby ponowienie miało szansę
+   * przejść, i nie na tyle długo, żeby użytkownik zauważył przerwę.
+   */
+  private scheduleRetryAfterThrottling(): void {
+    if (this.throttleRetryTimer !== null) return
+    this.throttleRetryTimer = window.setTimeout(() => {
+      this.throttleRetryTimer = null
+      for (const op of this.unacknowledged.values()) {
+        this.publishOp(op)
+      }
+    }, 1000)
+  }
+
   private nextReconnectDelay(): number {
     const base = Math.min(1000 * 2 ** this.reconnectAttempt, 30_000)
     this.reconnectAttempt++

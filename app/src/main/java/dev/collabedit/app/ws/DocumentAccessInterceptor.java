@@ -13,6 +13,8 @@ import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.simp.stomp.StompCommand;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.ChannelInterceptor;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.stereotype.Component;
 
@@ -47,8 +49,17 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
     private final PermissionService permissions;
     private final RateLimiter rateLimiter = new RateLimiter();
 
-    public DocumentAccessInterceptor(PermissionService permissions) {
+    /**
+     * Wstrzykiwany leniwie z tego samego powodu co {@code PresenceService}
+     * w {@link StompConnectInterceptor}: ten interceptor jest częścią infrastruktury
+     * WebSocketa, z której pochodzi {@code SimpMessagingTemplate}.
+     */
+    private final ObjectProvider<SimpMessagingTemplate> messaging;
+
+    public DocumentAccessInterceptor(PermissionService permissions,
+                                     ObjectProvider<SimpMessagingTemplate> messaging) {
         this.permissions = permissions;
+        this.messaging = messaging;
     }
 
     /** Wyłącznie do diagnostyki i testów — ile sesji ma aktywne wiadra żetonów. */
@@ -93,6 +104,17 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             return deny(command, destination, userId, "rola " + role.wire() + " nie pozwala na tę operację");
         }
         if (command == StompCommand.SEND && !withinRateLimit(accessor.getSessionId(), destination)) {
+            // Odmowa z powodu tempa musi być SŁYSZALNA, w odróżnieniu od odmowy z powodu
+            // uprawnień. Powód jest asymetryczny i wart zapisania:
+            //
+            //   brak uprawnień  → klient ma się nie dowiedzieć, że dokument istnieje,
+            //   przekroczone tempo → klient MUSI się dowiedzieć, bo jego operacja czeka
+            //                        w buforze i bez sygnału nikt jej nigdy nie ponowi.
+            //
+            // Cicha odmowa z powodu tempa jest UTRATĄ DANYCH — wykryte harnessem w CP15:
+            // zasianie dużego dokumentu wyczerpywało zryw, 115 operacji przepadło,
+            // a dokument po prostu wychodził krótszy, bez śladu w interfejsie.
+            notifyRateLimited(accessor, destination);
             return deny(command, destination, userId, "przekroczone tempo wysyłania");
         }
         return message;
@@ -170,6 +192,24 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             // Nieczytelny ładunek to nie jest znacznik komentarza. Odmowa, a nie wyjątek:
             // interceptor nie może przewrócić obsługi kanału z powodu jednej złej ramki.
             return false;
+        }
+    }
+
+    /**
+     * Mówi klientowi, że jego operacja została odrzucona z powodu tempa.
+     *
+     * <p>Klient trzyma operacje niepotwierdzone w buforze do czasu potwierdzenia ZAPISU
+     * (ADR-0003), więc ma co ponowić — brakuje mu wyłącznie sygnału, że warto.
+     */
+    private void notifyRateLimited(StompHeaderAccessor accessor, String destination) {
+        try {
+            messaging.getObject().convertAndSendToUser(
+                accessor.getSessionId(), "/queue/errors",
+                new Messages.ErrorMessage("RATE_LIMITED",
+                    "za dużo operacji na sekundę — zwolnij i ponów"),
+                SessionAttributes.forUser(accessor));
+        } catch (RuntimeException e) {
+            log.warn("Nie udało się powiadomić o przekroczeniu tempa: {}", e.toString());
         }
     }
 

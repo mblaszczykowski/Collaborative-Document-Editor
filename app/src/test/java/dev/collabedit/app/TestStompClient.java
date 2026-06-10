@@ -50,6 +50,10 @@ public class TestStompClient implements AutoCloseable {
     private final List<Op> received = new CopyOnWriteArrayList<>();
     private final AtomicLong lastAckSeq = new AtomicLong(0);
 
+    /** Ustawiane, gdy serwer odrzucił operację z powodu tempa — patrz {@link #send}. */
+    private final java.util.concurrent.atomic.AtomicBoolean throttled =
+        new java.util.concurrent.atomic.AtomicBoolean();
+
     /**
      * Wywoływane przy odebraniu operacji, z czasem odbioru.
      *
@@ -116,6 +120,7 @@ public class TestStompClient implements AutoCloseable {
                 // Wykrywanie luk: potwierdzenie niesie tożsamość operacji, więc brak tej
                 // operacji u nas oznacza, że rozgłoszenie do nas nie dotarło.
                 Id acknowledged = new Id(node.get("r").asInt(), node.get("l").asLong());
+                unacknowledged.remove(acknowledged.replicaId() + "@" + acknowledged.lamport());
                 synchronized (documentLock) {
                     if (!document.contains(acknowledged)) {
                         gapDetected.set(true);
@@ -145,6 +150,16 @@ public class TestStompClient implements AutoCloseable {
             }
         });
 
+        // Odrzucenia z powodu tempa. Prawdziwy klient ponawia po sekundzie (connection.ts),
+        // więc stanowisko musi robić to samo — inaczej mierzy system BEZ mechanizmu
+        // naprawczego, czyli nie ten, który działa w przeglądarce.
+        subscribe("/user/queue/errors", java.util.Map.class, payload -> {
+            Object code = ((Map<?, ?>) payload).get("code");
+            if ("RATE_LIMITED".equals(code)) {
+                throttled.set(true);
+            }
+        });
+
         session.send("/app/doc/" + documentId + "/join", Map.of());
 
         // Raport postępu — ten sam, który wysyła prawdziwy klient. Serwer wykrywa po nim,
@@ -155,6 +170,8 @@ public class TestStompClient implements AutoCloseable {
             thread.setDaemon(true);
             return thread;
         });
+        progressReporter.scheduleWithFixedDelay(this::retryThrottledOperations, 300, 300,
+            java.util.concurrent.TimeUnit.MILLISECONDS);
         progressReporter.scheduleWithFixedDelay(this::reportProgress, 500, 500,
             java.util.concurrent.TimeUnit.MILLISECONDS);
     }
@@ -187,6 +204,24 @@ public class TestStompClient implements AutoCloseable {
      * <p>Rozdzielone od {@link #insert}, bo test autoryzacji musi móc wysłać DOKŁADNIE
      * operację znacznikową i sprawdzić, że przechodzi tam, gdzie wstawienie tekstu nie.
      */
+    /**
+     * Wysyła raport obecności — ten sam, który wysyła prawdziwy klient przy ruchu kursora.
+     *
+     * <p>Istnieje dla harnessu: do CP15 stanowisko NIE generowało ruchu obecności, przez
+     * co mierzyło system lżejszy niż ten, którego używa przeglądarka.
+     */
+    public void sendPresence() {
+        try {
+            session.send("/app/doc/" + documentId + "/presence", Map.of(
+                "cursorReplicaId", document.replicaId(),
+                "cursorLamport", Math.max(0, document.clock() - 1),
+                "typing", true));
+        } catch (RuntimeException e) {
+            // Obecność jest najlepszym wysiłkiem — jej niepowodzenie nie może przewrócić
+            // pomiaru, którego przedmiotem jest propagacja operacji.
+        }
+    }
+
     public Op markReturningOp(int from, int to, String type, String value) {
         Op op;
         synchronized (documentLock) {
@@ -218,6 +253,35 @@ public class TestStompClient implements AutoCloseable {
         // string jako string JSON-owy ("{\"op\":...}"), a serwer dostałby tekst zamiast
         // struktury — i po cichu niczego nie zrobił. Kosztowało to jeden przebieg testów.
         session.send("/app/doc/" + documentId + "/op", Map.of("op", OpCodec.toJson(op)));
+        unacknowledged.put(op.id().replicaId() + "@" + op.id().lamport(), op);
+    }
+
+    /** Bufor operacji niepotwierdzonych — odpowiednik `unacknowledged` w connection.ts. */
+    private final Map<String, Op> unacknowledged = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Ponawia operacje niepotwierdzone po odrzuceniu z powodu tempa.
+     *
+     * <p><b>Na własnym harmonogramie, nie przy okazji kolejnej wysyłki</b> — i to jest
+     * istotne. Pierwsza wersja sprawdzała flagę wewnątrz {@code send}, więc gdy odrzucone
+     * zostały OSTATNIE operacje klienta, nikt ich już nie ponawiał: pętla się kończyła
+     * i sygnał przepadał. Przeglądarka tego problemu nie ma, bo używa timera (connection.ts),
+     * więc stanowisko musi robić to samo — inaczej mierzy słabszy mechanizm naprawczy
+     * niż ten, który faktycznie działa u użytkownika.
+     */
+    private void retryThrottledOperations() {
+        if (!throttled.compareAndSet(true, false)) {
+            return;
+        }
+        for (Op pending : List.copyOf(unacknowledged.values())) {
+            try {
+                session.send("/app/doc/" + documentId + "/op", Map.of("op", OpCodec.toJson(pending)));
+            } catch (RuntimeException e) {
+                // Ponowienie jest najlepszym wysiłkiem; kolejna odmowa ustawi flagę znowu.
+                throttled.set(true);
+                return;
+            }
+        }
     }
 
     private java.util.concurrent.ScheduledExecutorService progressReporter;
