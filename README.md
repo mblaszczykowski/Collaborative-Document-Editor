@@ -352,6 +352,19 @@ bloku i unieważnia format snapshotu.
 Koszt w snapshocie jest natomiast pomijalny: **8 B na znacznik** (dwie kotwice, typ, wartość).
 Znacznik nie kopiuje objętego tekstu — czyli nie robi dokładnie tego, przed czym broni Peritext.
 
+Trzecia zmierzona rzecz — **koszt wyliczenia wyglądu**, dokument 50 tys. znaków:
+
+| Znaczników | Czas jednego wyliczenia |
+|---:|---:|
+| 100 | 0,6 ms |
+| 400 | 0,8 ms |
+| 1600 | **5,3 ms** |
+
+Wołane jest to **przy każdym naciśnięciu klawisza**, więc ostatni wiersz to już widoczne
+opóźnienie. Granica użyteczności obecnej implementacji to **setki znaczników na dokument** —
+liczba, której przed tym pomiarem nie miałem, i powód, dla którego `MarkSet` czeka
+na drzewo przedziałowe.
+
 ### Punkt degradacji — rozstrzygnięty, i to nie na korzyść mojego stanowiska
 
 Poprzednia wersja tego README kończyła się tutaj zdaniem „nie wiem, czy przyczyna leży
@@ -491,11 +504,13 @@ rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
   wklejeniu dużego fragmentu tekstu, bo to jest **jedna** operacja o dziesiątkach kilobajtów.
   Ścieżka rozgłoszeń została w CP10 przeniesiona na budżet bajtowy; ścieżka resynchronizacji
   nie. Znany dług, nie przeoczenie.
-- **Rozstrzyganie znaczników jest kwadratowe po ich liczbie.** `MarkSet` przy każdym
-  wyliczeniu formatowania przechodzi wszystkie znaczniki i dla każdego odcinka szuka
-  zwycięzcy liniowo. Przy dokumencie z tysiącami komentarzy zacznie to być widoczne;
-  właściwym rozwiązaniem jest drzewo przedziałowe indeksowane pozycją. Nie zmierzone,
-  bo nie miałem realistycznego dokumentu tej wielkości — i wolę to napisać, niż zgadywać próg.
+- **Rozstrzyganie znaczników rośnie ponadliniowo po ich liczbie — zmierzone.** `MarkSet`
+  przy każdym wyliczeniu przechodzi wszystkie znaczniki i dla każdego odcinka szuka zwycięzcy
+  liniowo: **0,6 ms przy 100 znacznikach, 5,3 ms przy 1600** (dokument 50 tys. znaków).
+  Znaczenie jest większe, niż wygląda, bo `formatting()` woła się **przy każdym naciśnięciu
+  klawisza** — 5 ms na klawisz to już widoczne opóźnienie. Granicą użyteczności obecnej
+  implementacji jest rząd **setek znaczników na dokument**. Właściwe rozwiązanie: drzewo
+  przedziałowe indeksowane pozycją, przeliczane przyrostowo.
 - **Rola jest sprawdzana przy otwarciu, nie przy każdej zmianie.** Klient dostaje ją raz,
   razem ze stanem początkowym; podniesienie uprawnień w trakcie sesji nie odblokuje edytora
   bez przeładowania. Odebranie działa natychmiast tam, gdzie ma znaczenie — serwer i tak
@@ -585,11 +600,11 @@ okazji potwierdziło, i z tym, co okazało się nieprawdą.
 
 | Warstwa | Testy |
 |---|---:|
-| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, pomiar kosztu | 41 |
+| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, pomiar kosztu | 42 |
 | `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 81 |
 | `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 49 |
 | end-to-end — dwie prawdziwe przeglądarki | 16 |
-| **razem** | **187** |
+| **razem** | **188** |
 
 Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
 trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami
