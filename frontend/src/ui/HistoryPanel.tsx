@@ -9,7 +9,10 @@ import { useEffect, useState } from 'react'
 import { api, type Version } from '../api'
 import { formatTime } from './format'
 
-export function HistoryPanel({ documentId, revision }: { documentId: string; revision: number }) {
+export function HistoryPanel(
+  { documentId, revision, readOnly }:
+    { documentId: string; revision: number; readOnly?: boolean },
+) {
   const [versions, setVersions] = useState<Version[]>([])
   const [selected, setSelected] = useState<Version | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
@@ -70,9 +73,15 @@ export function HistoryPanel({ documentId, revision }: { documentId: string; rev
             {selected?.throughServerSeq === version.throughServerSeq && (
               <>
                 <div className="history-preview">{preview ?? 'Wczytuję…'}</div>
-                <button className="history-restore" onClick={restore} disabled={restoring}>
-                  {restoring ? 'Przywracam…' : 'Przywróć tę wersję'}
-                </button>
+                {/* Podgląd zostaje, przywracanie znika. Czytelnik ma prawo ZOBACZYĆ, jak
+                    dokument wyglądał kiedyś — nie ma prawa go tym cofnąć. Serwer odrzuca
+                    to niezależnie (PermissionIT.historyEndpointsCheckAccess); tu chodzi
+                    o to, żeby nie proponować gestu, który zostanie odrzucony. */}
+                {!readOnly && (
+                  <button className="history-restore" onClick={restore} disabled={restoring}>
+                    {restoring ? 'Przywracam…' : 'Przywróć tę wersję'}
+                  </button>
+                )}
               </>
             )}
           </div>

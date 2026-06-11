@@ -60,11 +60,13 @@ Jeśli masz trzy minuty:
    którą projekt zastosował już przy kursorach — i to jest najlepszy argument, że tamta
    decyzja była trafna.
 
-Siedem błędów w tym projekcie znalazły testy albo pomiar, a nie przegląd kodu: dublowanie
+Osiem błędów w tym projekcie znalazły testy, pomiar albo audyt planu, a nie przegląd kodu: dublowanie
 dokumentu przy otwarciu, snapshot niezapisywalny powyżej 64 KB, odpowiedź na resynchronizację
 przekraczająca limit ramki, nazwa użytkownika ze znakiem `|` unieważniająca własny token,
 GC kasujący kotwice formatowania, zaznaczenie od pozycji zero niewidoczne dla panelu
-komentarzy i — najgroźniejszy — **operacje odrzucane przez limit tempa i gubione po cichu**.
+komentarzy, **operacje odrzucane przez limit tempa i gubione po cichu** oraz — znaleziona
+dopiero przy końcowym audycie planu — **historia jako trzecia, niezabezpieczona droga
+do treści i do zapisu cudzego dokumentu**.
 Wszystkie są opisane w commitach i w komentarzach w miejscu naprawy.
 
 ---
@@ -225,6 +227,9 @@ Testy są uporządkowane wg tego, jaki failure mode wyłapują, a nie wg pokryci
 | `garbageCollectionSparesMarkAnchors` | GC kasuje kotwicę: formatowanie znika **nie przy edycji, tylko przy najbliższym snapshocie**, więc winowajca jest już dawno poza podejrzeniem |
 | `textTypedOverDeletedRangeDoesNotInheritItsMark` | Odwrotność powyższego — chroniona kotwica zaczyna formatować tekst, który powstał po skasowaniu zakresu |
 | `websocketCannotSubscribeToForeignPrivateDocument` | Znajomość identyfikatora wystarcza do czytania cudzego dokumentu — dziura, którą **otworzył** CP11 i którą CP12 zamknął w obu warstwach |
+| `historyEndpointsCheckAccess` | **Trzecia droga do tych samych danych.** CP12 zabezpieczył WebSocket i `GET /documents/{id}`, a historia oddawała pełną treść dowolnego dokumentu i pozwalała go **nadpisać** — czyli jedyne miejsce, w którym czytelnik mógł zmienić cudzy tekst |
+| `documentRoleOverridesWorkspaceRole` | Dziedziczenie z workspace'u nadpisuje jawne ograniczenie — nie da się odebrać dostępu do jednego dokumentu bez wyrzucania kogoś z zespołu |
+| `threadSurvivesDocumentRestore` | Cofnięcie wersji kasuje rozmowy dodane później |
 | `viewerCannotWriteText` / `commenterCannotChangeText` | Uprawnienia egzekwowane tylko w interfejsie; ramka wysłana z konsoli przechodzi |
 | `threadSurvivesDeletionOfAnchoredText` | Skasowanie tekstu kasuje rozmowę o nim — utrata kontekstu decyzji, po którą ludzie wracają po miesiącach |
 
@@ -523,6 +528,13 @@ rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
   bez przeładowania. Odebranie działa natychmiast tam, gdzie ma znaczenie — serwer i tak
   odrzuci operację — więc jest to niewygoda, a nie dziura. Właściwym rozwiązaniem jest
   zdarzenie o zmianie roli na kanale użytkownika.
+- **Autoryzacja jest per kontroler, więc z definicji niekompletna.** Każdy kontroler sprawdza
+  uprawnienia sam i nic nie wymusza, żeby to robił — nowy startuje bez nich i milczy o tym.
+  Tak właśnie przez cały jeden checkpoint stała otworem `HistoryController`: CP12 zamknął
+  WebSocket i `GET /documents/{id}`, a trzecia droga do tych samych danych została.
+  Właściwe rozwiązanie to jedna reguła na wszystkie ścieżki `/api/documents/{id}/**`,
+  wymuszona filtrem albo `@PreAuthorize` — czyli miejsce, w którym **pominięcie sprawdzenia
+  wymaga świadomej decyzji**, a nie przeoczenia.
 - **Autoryzacja zagląda w treść ramki.** Rola `commenter` wymaga odróżnienia znacznika
   komentarza od formatowania, a to znaczy parsowanie ładunku w interceptorze. Robimy to
   **tylko** dla tej jednej roli, ale jest to warstwa autoryzacji zależna od formatu danych —
@@ -608,10 +620,10 @@ okazji potwierdziło, i z tym, co okazało się nieprawdą.
 | Warstwa | Testy |
 |---|---:|
 | `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, pomiar kosztu | 42 |
-| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 80 |
+| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 83 |
 | `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 49 |
 | end-to-end — dwie prawdziwe przeglądarki | 16 |
-| **razem** | **187** |
+| **razem** | **190** |
 
 Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
 trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami

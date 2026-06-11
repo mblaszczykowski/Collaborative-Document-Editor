@@ -556,7 +556,7 @@ function DocumentWorkspace(props: {
         </main>
 
         {panel === 'history' ? (
-          <HistoryPanel documentId={documentId} revision={characters} />
+          <HistoryPanel documentId={documentId} revision={characters} readOnly={!canWrite} />
         ) : (
           <CommentsPanel
             documentId={documentId}

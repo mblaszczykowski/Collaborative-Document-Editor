@@ -6,7 +6,9 @@ import dev.collabedit.app.auth.PermissionService;
 import dev.collabedit.app.auth.Role;
 import dev.collabedit.app.auth.TokenService;
 import dev.collabedit.app.comments.CommentService;
+import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
+import dev.collabedit.app.history.HistoryService;
 import dev.collabedit.app.persist.DocumentCatalog;
 import java.time.Duration;
 import java.util.UUID;
@@ -60,6 +62,10 @@ class CommentIT extends IntegrationTestBase {
     DocumentService documents;
     @Autowired
     JdbcTemplate jdbc;
+    @Autowired
+    HistoryService history;
+    @Autowired
+    DocumentRegistry registry;
 
     private record User(String id, String token) {
     }
@@ -197,6 +203,51 @@ class CommentIT extends IntegrationTestBase {
 
         assertThat(comments.reopen(threadId)).isTrue();
         assertThat(comments.threadsOf(document, false)).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("przywrócenie wcześniejszej wersji nie kasuje komentarzy dodanych później")
+    void threadSurvivesDocumentRestore() throws Exception {
+        User ania = newUser("Ania");
+        UUID document = privateDocument(ania);
+
+        try (TestStompClient owner = new TestStompClient(port, ania.token(), document, 806)) {
+            owner.insert(0, "pierwsza wersja");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "pierwszy zapis");
+            long checkpoint = owner.lastAckSeq();
+
+            owner.insert(15, " i dopisek");
+            owner.awaitCondition(() -> owner.lastAckSeq() > checkpoint, PATIENCE, "drugi zapis");
+
+            // Komentarz powstaje PO punkcie, do którego zaraz cofniemy dokument.
+            UUID threadId = comments.openThread(document, ania.id(), "dopisek", "Uwaga do dopisku");
+            assertThat(threadId).isNotNull();
+
+            // Przywrócenie jest NOWĄ zmianą, a nie cofnięciem logu (ADR-0003) — więc nie ma
+            // powodu, żeby cokolwiek kasowało wątki. Test pilnuje, żeby tak zostało: gdyby
+            // przywracanie kiedykolwiek zaczęło czyścić stan „spoza przywracanej wersji",
+            // rozmowy zniknęłyby razem z tekstem, o którym mówiły.
+            String restored = history.textAt(document, checkpoint);
+            var replica = registry.get(document);
+            var generated = replica.withLock(model -> history.restoreOperations(model, restored));
+            for (var op : generated) {
+                documents.submitAlreadyMerged(document, op, null);
+            }
+            Thread.sleep(300);
+        }
+
+        var threads = comments.threadsOf(document, true);
+        assertThat(threads)
+            .as("przywrócenie wersji skasowało rozmowę dodaną później")
+            .hasSize(1);
+        assertThat(threads.getFirst().messages().getFirst().body())
+            .isEqualTo("Uwaga do dopisku");
+
+        // Kotwica wskazuje tekst, którego już nie ma, więc wątek ma być ODŁĄCZONY —
+        // a nie usunięty i nie udający, że nadal coś obejmuje.
+        assertThat(threads.getFirst().quotedText())
+            .as("odłączony wątek stracił zacytowany fragment")
+            .isEqualTo("dopisek");
     }
 
     @Test

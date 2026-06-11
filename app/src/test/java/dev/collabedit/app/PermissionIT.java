@@ -86,6 +86,18 @@ class PermissionIT extends IntegrationTestBase {
         return id;
     }
 
+    private HttpResponse<String> post(String path, String token, String body) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + path))
+            .header("Content-Type", "application/json")
+            .timeout(Duration.ofSeconds(10))
+            .POST(HttpRequest.BodyPublishers.ofString(body));
+        if (token != null) {
+            builder.header("Authorization", "Bearer " + token);
+        }
+        return HttpClient.newHttpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
     private HttpResponse<String> get(String path, String token) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
             .uri(URI.create("http://localhost:" + port + path))
@@ -258,6 +270,80 @@ class PermissionIT extends IntegrationTestBase {
             .contains("\"role\":\"viewer\"");
         assertThat(get("/api/documents/" + document, komentator.token()).body())
             .contains("\"role\":\"commenter\"");
+    }
+
+    @Test
+    @DisplayName("historia nie jest trzecią drogą do cudzego dokumentu — ani do odczytu, ani do zapisu")
+    void historyEndpointsCheckAccess() throws Exception {
+        User anna = newUser("Anna");
+        User obcy = newUser("Obcy");
+        User czytelnik = newUser("Czytelnik");
+        UUID document = privateDocument(anna, "Prywatny z historią");
+        permissions.grant(document, czytelnik.id(), Role.VIEWER);
+
+        try (TestStompClient writer = new TestStompClient(port, anna.token(), document, 731)) {
+            writer.insert(0, "tajna treść");
+            writer.awaitCondition(() -> writer.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+        }
+
+        // CP12 zamknął DWIE drogi do treści — WebSocket i GET /documents/{id} — i przeoczył
+        // trzecią, mimo że plan v2 wskazywał ją wprost. Historia oddawała pełną treść
+        // dowolnego dokumentu, więc poprawka z CP12 była do obejścia jednym żądaniem.
+        assertThat(get("/api/documents/" + document + "/history", obcy.token()).statusCode())
+            .as("oś czasu cudzego dokumentu prywatnego jest widoczna")
+            .isEqualTo(404);
+        assertThat(get("/api/documents/" + document + "/history/at?seq=1", obcy.token()).body())
+            .as("historia oddaje treść cudzego dokumentu prywatnego")
+            .doesNotContain("tajna");
+
+        // NAJWAŻNIEJSZE: przywracanie zmienia treść, więc wymaga prawa ZAPISU, a nie odczytu.
+        // Bez tego czytelnik miał jedyną w projekcie drogę do zmiany cudzego tekstu — i to
+        // nie o znak, tylko cofając cały dokument.
+        assertThat(post("/api/documents/" + document + "/history/restore",
+                czytelnik.token(), "{\"throughServerSeq\":1}").statusCode())
+            .as("czytelnik przywrócił wersję — rola tylko do odczytu potrafi zmienić treść")
+            .isEqualTo(404);
+        assertThat(post("/api/documents/" + document + "/history/restore",
+                obcy.token(), "{\"throughServerSeq\":1}").statusCode())
+            .isEqualTo(404);
+
+        // …a właścicielowi wolno, inaczej zabezpieczenie zepsułoby funkcję.
+        assertThat(post("/api/documents/" + document + "/history/restore",
+                anna.token(), "{\"throughServerSeq\":1}").statusCode())
+            .as("zabezpieczenie odebrało dostęp również właścicielowi")
+            .isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("rola nadana per dokument nadpisuje rolę odziedziczoną z workspace'u")
+    void documentRoleOverridesWorkspaceRole() {
+        User anna = newUser("Anna");
+        User zespol = newUser("Członek zespołu");
+
+        UUID workspace = UUID.randomUUID();
+        jdbc.update("INSERT INTO workspaces (id, name, owner_id) VALUES (?, ?, ?)",
+            workspace, "Zespół", anna.id());
+        jdbc.update("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)",
+            workspace, zespol.id(), "editor");
+
+        UUID document = privateDocument(anna, "Dokument zespołu");
+        jdbc.update("UPDATE documents SET workspace_id = ? WHERE id = ?", workspace, document);
+        permissions.invalidate(document);
+
+        assertThat(permissions.roleOf(zespol.id(), document))
+            .as("dziedziczenie z workspace'u nie działa — dokument zespołu jest niewidoczny")
+            .contains(Role.EDITOR);
+
+        // Sedno: nadpisanie musi działać W DÓŁ, nie tylko w górę. Gdyby wygrywała rola
+        // silniejsza, nie dałoby się nikomu ograniczyć dostępu do JEDNEGO dokumentu
+        // bez wyrzucania go z całego workspace'u — czyli dziedziczenie odbierałoby
+        // kontrolę zamiast ją dawać.
+        permissions.grant(document, zespol.id(), Role.VIEWER);
+
+        assertThat(permissions.roleOf(zespol.id(), document))
+            .as("rola per dokument nie nadpisała odziedziczonej — ograniczenie dostępu nie działa")
+            .contains(Role.VIEWER);
+        assertThat(permissions.canWriteText(zespol.id(), document)).isFalse();
     }
 
     @Test

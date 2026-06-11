@@ -150,3 +150,34 @@ w README.
 Co ta odpowiedź potwierdza: **rola `commenter` nie była nadmiarowa.** Bez niej nikt nie
 odkryłby, że autoryzacja musi schodzić do typu operacji — a odkrycie tego przy pierwszym
 zewnętrznym audycie jest znacznie gorsze niż przy własnym checkpoincie.
+
+---
+
+## Zweryfikowane w audycie planu — jedna droga została otwarta
+
+Sekcja „Decyzja" tego ADR-a mówi, że uprawnienia są egzekwowane **w obu warstwach z jednej
+reguły**. Przez cały CP12–CP15 nie było to prawdą: `HistoryController` nie sprawdzał niczego.
+
+Otwarte były trzy endpointy:
+
+| Endpoint | Co oddawał |
+|---|---|
+| `GET /history` | oś czasu dowolnego dokumentu |
+| `GET /history/at` | **pełną treść** dowolnego dokumentu w dowolnej chwili |
+| `POST /history/restore` | **nadpisanie** dowolnego dokumentu cofnięciem do starej wersji |
+
+Ostatni jest najgorszy i nie tylko dlatego, że jest zapisem: to była **jedyna droga
+w projekcie, którą rola bez prawa zapisu mogła zmienić tekst** — i to nie o znak, tylko
+cofając cały dokument. Autoryzacja per typ operacji, którą ten ADR projektował z myślą
+o `commenter`, nie obejmowała tej ścieżki wcale, bo nie idzie ona przez STOMP.
+
+Co jest tu warte zapisania, bo nie jest to pomyłka w kodzie, tylko **w kształcie
+rozwiązania**: plan v2 §4.3 wymieniał tę drogę wprost („autoryzacja wyłącznie w transporcie
+jest autoryzacją jednej ścieżki") i przewidywał test `historyRestoreChecksWriteAccess`.
+Zapisanie zagrożenia w planie nie wystarczyło. Wystarczyłoby jedynie **rozwiązanie, w którym
+pominięcie sprawdzenia wymaga świadomej decyzji** — jedna reguła wymuszona filtrem na
+`/api/documents/{id}/**` zamiast sprawdzenia powtarzanego w każdym kontrolerze.
+
+Naprawione (sprawdzenie w kontrolerze, `PermissionIT.historyEndpointsCheckAccess`),
+ale naprawione tym słabszym sposobem: nowy kontroler nadal wystartuje bez autoryzacji
+i nic o tym nie powie. Właściwa poprawka jest w README, w sekcji o granicach.
