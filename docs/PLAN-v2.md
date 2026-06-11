@@ -1,7 +1,7 @@
 # Plan v2 — z artefaktu w produkt
 
-> **Status: CP10–CP13 zamknięte, CP14 w trakcie.** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
-> który opisuje checkpointy CP1–CP9 (wszystkie zamknięte). Ten dokument opisuje CP10–CP15.
+> **Status: plan zamknięty w całości (CP10–CP15).** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
+> który opisuje checkpointy CP1–CP9 (również zamknięte).
 >
 > | Checkpoint | Stan | Uwagi |
 > |---|---|---|
@@ -9,8 +9,24 @@
 > | CP11 — Multi-dokument | **zamknięty** | Odsiew klastra, limit pamięci, schemat V2, katalog, lista z wyszukiwaniem i koszem |
 > | CP12 — Uprawnienia | **zamknięty** | Zamknięty IDOR otwarty przez CP11 — obie drogi, WS i REST |
 > | CP13 — Rich text | **zamknięty** | Peritext w Javie i TS, wektory konformancyjne, GC naprawiony |
-> | CP14 — Komentarze | **w trakcie** | |
-> | CP15 — Pomiar + dokumentacja | niezaczęty | |
+> | CP14 — Komentarze | **zamknięty** | Kotwica to znacznik z CP13 — **zero linijek w warstwie CRDT** |
+> | CP15 — Pomiar + dokumentacja | **zamknięty** | Dwa błędy z pomiaru, obawa o GC potwierdzona liczbą, drugie demo |
+>
+> **Trzy rzeczy, których ten plan nie przewidział, a które okazały się najważniejsze.**
+>
+> 1. **Limit tempa gubił operacje po cichu** (CP12 wprowadził, CP15 wykrył). Odmowa z powodu
+>    tempa działała tak samo jak odmowa z powodu uprawnień — bez odpowiedzi. Te dwa przypadki
+>    są asymetryczne: przy braku uprawnień klient ma się NIE dowiedzieć, że dokument istnieje;
+>    przy przekroczonym tempie MUSI się dowiedzieć, bo jego operacja czeka w buforze i bez
+>    sygnału nikt jej nie ponowi. 115 operacji przepadło, dokument przestał się zbiegać
+>    i nic tego nie zgłosiło.
+> 2. **Ta sama pomyłka miała trzecią odsłonę** — rola użytkownika też nie docierała do klienta.
+>    Czytelnik pisał u siebie, widział swój tekst, a serwer odrzucał każdą operację. Naprawione
+>    razem z pierwszym.
+> 3. **Obawa o GC z punktu 5.5 potwierdziła się mocniej, niż zakładała.** Plan przewidywał
+>    „dwa tombstone'y na znacznik"; pomiar pokazał „cały blok run-length na znacznik" —
+>    przy dokumencie napisanym ciągiem GC nie odzyskuje po dodaniu formatowania **nic**.
+>    Liczby w README i w ADR-0005.
 >
 > **Najważniejszy wynik CP10, którego plan nie przewidywał.** Punkt 2.1 zakładał, że
 > brak powtarzalnej zbieżności powyżej ~10 klientów jest problemem systemu i że sklejanie
@@ -541,6 +557,22 @@ odtwarzaną z pamięci zamiast mierzoną.
   nowego scenariusza.
 - **Powrót do ADR-ów** (0008–0012) — konwencja domu: dopisać, co faktycznie wyszło,
   łącznie z tym, co okazało się gorsze niż zakładano.
+
+### Co z tego wyszło
+
+| Zadanie | Wynik |
+|---|---|
+| Harness z presence i formatowaniem | Zrobione. **Ujawnił błąd, nie tylko liczby** — limit tempa gubił operacje po cichu (12 scenariuszy, 351 odrzuceń, po naprawie zero strat) |
+| Udział znaczników w snapshocie | **8 B na znacznik.** Pomijalne — znacznik nie kopiuje objętego tekstu |
+| Narzut GC po dodaniu kotwic | **Obawa potwierdzona, i to mocniej.** Nie „dwa tombstone'y na znacznik", tylko cały blok run-length. Przy tekście napisanym ciągiem: 0 % odzysku. [ADR-0005, sekcja CP15](adr/0005-tombstone-gc.md) |
+| README: zrobione w v2 vs nadal poza zakresem | Zrobione przez **przekreślenie**, nie przepisanie — widać, która pierwotna diagnoza była trafna, a która nie |
+| Nowe failure modes | Pięć nowych wierszy, w tym rola bez prawa zapisu — znaleziona przy pisaniu tej sekcji |
+| Nowe demo | Drugi GIF, osobny scenariusz Playwrighta. Jeden byłby za długi albo za pobieżny |
+| Powrót do ADR-ów | 0002, 0003, 0004, 0005 dopisane; 0007 oznaczony jako zastąpiony przez 0008 |
+
+Poza planem: **rola użytkownika jedzie teraz do klienta**. Wyszło przy opisywaniu naprawy
+limitu tempa — ta sama pomyłka (ciche egzekwowanie po stronie serwera) występowała drugi raz,
+w innym miejscu, i tak samo prowadziła do cichego rozjazdu repliki.
 
 ---
 

@@ -224,3 +224,41 @@ dokumentu, który nie jest originem niczego.
 Jest to trzeci raz w tym projekcie, gdy mutacja ujawnia test niesprawdzający tego, co
 deklaruje — i drugi, w którym przyczyną było to, że sprawdzana własność była przypadkowo
 zapewniona przez inny, wcześniejszy mechanizm.
+
+---
+
+## Zmierzone w CP15 — jest gorzej, niż mówi sekcja wyżej
+
+Pomiar, na który czekała poprzednia sekcja, jest zrobiony
+([`MarkCostMeasurement`](../../crdt-core/src/test/java/dev/collabedit/crdt/MarkCostMeasurement.java)).
+Wynik obala sformułowanie „**każdy zakres formatowania przypina dwa tombstone'y**" —
+prawdziwe zdanie brzmi: **każdy zakres formatowania przypina cały blok run-length**.
+
+1000 znaków, cały tekst skasowany, 100 znaczników, w pełni stabilny wektor wersji:
+
+| Jak powstał tekst | Bez znaczników | Ze znacznikami |
+|---|---:|---:|
+| jednym ciągiem (1 blok) | 1000 | **0** |
+| znak po znaku (1000 bloków) | 1000 | 800 |
+
+Powód jest w kodzie i był tam od początku: `RgaDocument.gc` iteruje po **blokach**,
+a `isAnyCharReferenced` odrzuca blok, w którym choć jeden znak jest kotwicą. Warunek trzeci
+nie jest więc warunkiem na znak — jest warunkiem na blok, którego znak jest częścią.
+Przy tekście napisanym ciągiem jedna kotwica ratuje cały dokument.
+
+Nie jest to błąd w ochronie kotwic: ochrona musi być zachowawcza, a dzielenie bloku przy
+zbieraniu wymagałoby naprawy łańcucha originów — prawa część bloku zaczepia się o ostatni
+znak lewej, więc porzucenie prefiksu unieważnia origin tego, co zostaje. Tanie obejście
+(przycinanie wyłącznie ogona za ostatnią kotwicą) nie daje nic w przypadku, który boli:
+kotwice rozsiane po całej długości.
+
+**Konsekwencja dla decyzji:** kierunek się nie zmienia, ale przestaje być opcjonalny.
+Porzucanie treści przy zachowaniu węzła w strukturze rozwiązuje ten problem **w całości**,
+bo wtedy blok nie musi być zbierany, żeby oddać pamięć — wystarczy, że straci tekst.
+Do zrobienia przy najbliższym podniesieniu wersji formatu snapshotu; tym razem z liczbą
+w ręku, a nie z przeczuciem.
+
+**Czego pomiar nie mówi:** ile to znaczy w prawdziwym dokumencie. Bloki w prawdziwej sesji
+nie są ani jednym ciągiem tysiąca znaków, ani tysiącem bloków po znaku — powstają z przeplotu
+edycji kilku osób i mają rozmiar, którego nie zmierzyłem. Obie liczby w tabeli są skrajnościami
+i podaję je jako skrajności, a nie jako prognozę.

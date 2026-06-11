@@ -321,6 +321,37 @@ Kursor jest najczęstszym zdarzeniem w całym systemie, a harness go nie wysyła
 liczby opisywały więc system lżejszy niż ten, którego używa przeglądarka — w sposób
 niemożliwy do zauważenia, dopóki się tego nie sprawdzi.
 
+### Koszt warstwy znaczników — i obawa, która się potwierdziła
+
+Plan v2 zakładał, że kotwice formatowania mogą zablokować garbage collector: każdy znacznik
+zaczepia dwa tombstone'y i chroni je przed usunięciem. CP15 miał to potwierdzić albo obalić
+**liczbą**. Potwierdził — i to mocniej, niż zakładałem.
+
+Pomiar: [`MarkCostMeasurement`](crdt-core/src/test/java/dev/collabedit/crdt/MarkCostMeasurement.java),
+1000 znaków, cały tekst skasowany, 100 znaczników (= 200 kotwic), GC z w pełni stabilnym
+wektorem wersji.
+
+| Jak powstał tekst | Bez znaczników | Ze znacznikami | Odzyskane |
+|---|---:|---:|---:|
+| jednym ciągiem (**1 blok** run-length) | 1000 | **0** | **0 %** |
+| znak po znaku (1000 bloków) | 1000 | 800 | 80 % |
+
+To jest ta sama implementacja, te same znaczniki i ten sam tekst. Różni się **wyłącznie
+sposób, w jaki tekst powstał** — i to zmienia wynik z 80 % na zero.
+
+Powód: **GC działa na blokach, nie na znakach.** Blok, w którym choć jeden znak jest kotwicą,
+zostaje w całości. Tekst napisany ciągiem to jeden blok, więc jedna kotwica ratuje wszystko.
+Plan przewidywał koszt „dwa tombstone'y na znacznik"; rzeczywisty koszt to „cały blok
+na znacznik", a rozmiar bloku zależy od historii pisania, nie od formatowania.
+
+Właściwym rozwiązaniem jest to samo, które [ADR-0005](docs/adr/0005-tombstone-gc.md) wskazuje
+dla poprzedniego ograniczenia GC: porzucanie **treści** skasowanych węzłów przy zachowaniu ich
+w strukturze. Kotwica potrzebuje identyfikatora, nie znaku. Niezrobione — zmienia reprezentację
+bloku i unieważnia format snapshotu.
+
+Koszt w snapshocie jest natomiast pomijalny: **8 B na znacznik** (dwie kotwice, typ, wartość).
+Znacznik nie kopiuje objętego tekstu — czyli nie robi dokładnie tego, przed czym broni Peritext.
+
 ### Punkt degradacji — rozstrzygnięty, i to nie na korzyść mojego stanowiska
 
 Poprzednia wersja tego README kończyła się tutaj zdaniem „nie wiem, czy przyczyna leży
@@ -375,6 +406,7 @@ oznaczone jako zweryfikowane mają test, który to sprawdza.
 | **Przekroczenie limitu tempa** | Serwer odrzuca ramkę i **odsyła `RATE_LIMITED`**, a klient ponawia po sekundzie z bufora niepotwierdzonych. Odrzucenie z powodu uprawnień jest ciche (informacja „ten dokument istnieje" byłaby wyciekiem), z powodu tempa — nie: cicha odmowa tempa jest utratą danych. | harness CP15: 351 odrzuceń, zero utraconych operacji |
 | **Skasowanie sformatowanego tekstu** | Formatowanie zostaje na tym, co przetrwało. Kotwice znaczników są tombstone'ami chronionymi przed GC — bez tego wygląd dokumentu znikałby przy sprzątaniu pamięci, i to nie w chwili kasowania, tylko przy najbliższym snapshocie. | `garbageCollectionSparesMarkAnchors` |
 | **Skasowanie skomentowanego tekstu** | Rozmowa **zostaje**, oznaczona jako odłączona, z zacytowanym fragmentem z chwili założenia. Kasowanie rozmowy w reakcji na edycję tekstu jest zachowaniem, którego nikt się nie spodziewa. | `threadSurvivesDeletionOfAnchoredText`, e2e |
+| **Rola bez prawa zapisu** | Edytor jest tylko do odczytu, pasek formatowania wyszarzony, panel komentarzy bez pola treści — bo rola przyjeżdża razem ze stanem początkowym. Serwer sprawdza tak samo jak przedtem; klient przestaje jedynie proponować gest, który zostałby odrzucony. Bez tego czytelnik pisał u siebie, widział swój tekst, a jego replika po cichu rozjeżdżała się z resztą. | `openedDocumentCarriesCallersRole` |
 | **Odebranie dostępu w trakcie sesji** | Działa w granicy 5 s (czas życia wpisu w cache'u uprawnień). Odebranie przez właściciela unieważnia cache natychmiast na TEJ instancji; pozostałe czekają na wygaśnięcie. | `revokingAccessTakesEffect` |
 
 ---
@@ -394,6 +426,10 @@ rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
 - **Fugue zamiast RGA.** RGA ma udokumentowaną anomalię przeplotu: pisanie wstecz przez
   dwie osoby daje przeplecione litery ([test, który to utrwala](crdt-core/src/test/java/dev/collabedit/crdt/RgaInterleavingTest.java)).
   Fugue tego nie ma. Odrzucone z powodu budżetu, nie technicznego.
+- **Kotwica formatowania blokuje CAŁY blok run-length**, nie własny tombstone — zmierzone
+  w CP15, [liczby wyżej](#koszt-warstwy-znaczników--i-obawa-która-się-potwierdziła). Przy
+  dokumencie napisanym ciągiem GC nie odzyskuje po dodaniu formatowania **nic**. Ta sama
+  odpowiedź co niżej: porzucać treść węzła, zachowując go w strukturze.
 - **GC odzyskuje mniej, niż zakłada [ADR-0005](docs/adr/0005-tombstone-gc.md).** Tombstone
   w środku tekstu jest originem następnego bloku, więc nie wolno go usunąć niezależnie od
   stabilności przyczynowej — kolekcjonowalny jest praktycznie tylko ogon dokumentu. Właściwą
@@ -460,6 +496,11 @@ rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
   zwycięzcy liniowo. Przy dokumencie z tysiącami komentarzy zacznie to być widoczne;
   właściwym rozwiązaniem jest drzewo przedziałowe indeksowane pozycją. Nie zmierzone,
   bo nie miałem realistycznego dokumentu tej wielkości — i wolę to napisać, niż zgadywać próg.
+- **Rola jest sprawdzana przy otwarciu, nie przy każdej zmianie.** Klient dostaje ją raz,
+  razem ze stanem początkowym; podniesienie uprawnień w trakcie sesji nie odblokuje edytora
+  bez przeładowania. Odebranie działa natychmiast tam, gdzie ma znaczenie — serwer i tak
+  odrzuci operację — więc jest to niewygoda, a nie dziura. Właściwym rozwiązaniem jest
+  zdarzenie o zmianie roli na kanale użytkownika.
 - **Autoryzacja zagląda w treść ramki.** Rola `commenter` wymaga odróżnienia znacznika
   komentarza od formatowania, a to znaczy parsowanie ładunku w interceptorze. Robimy to
   **tylko** dla tej jednej roli, ale jest to warstwa autoryzacji zależna od formatu danych —
@@ -544,11 +585,11 @@ okazji potwierdziło, i z tym, co okazało się nieprawdą.
 
 | Warstwa | Testy |
 |---|---:|
-| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki | 39 |
+| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, pomiar kosztu | 41 |
 | `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 81 |
 | `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 49 |
 | end-to-end — dwie prawdziwe przeglądarki | 16 |
-| **razem** | **185** |
+| **razem** | **187** |
 
 Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
 trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami
