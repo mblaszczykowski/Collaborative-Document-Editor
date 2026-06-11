@@ -8,6 +8,14 @@ i bez utraty ani jednego znaku. Nagranie powstaje ze
 [skryptu](frontend/e2e/demo.spec.ts), nie z ręcznego klikania, więc pokazuje dokładnie to,
 co sprawdza CI.*
 
+![Demo: pogrubienie nadane przez jedną osobę, dopisanie tekstu w środku pogrubionego zakresu przez drugą, komentarz do fragmentu, skasowanie zakotwiczonego tekstu i przywrócenie dokumentu z kosza](docs/demo-v2.gif)
+
+*To samo, warstwę wyżej. Anna pogrubia fragment, Marek — nie widząc tego — dopisuje słowo
+w jego **środku**; formatowanie obejmuje nowy tekst, zamiast zostawić w sobie dziurę.
+Potem komentarz do zaznaczenia (podświetlenie pojawia się u drugiej osoby natychmiast,
+bo kotwica jest zwykłą operacją CRDT), skasowanie zakotwiczonego tekstu — rozmowa zostaje,
+oznaczona jako odłączona — i przywrócenie dokumentu z kosza.*
+
 Edytor tekstu czasu rzeczywistego: wielu użytkowników edytuje ten sam dokument jednocześnie,
 bez konfliktów i bez utraty zmian — również przy słabym łączu, przy jednoczesnej edycji tego
 samego fragmentu i po rozłączeniu klienta.
@@ -490,10 +498,20 @@ mechanizm naprawczy nigdy się nie uruchomił.
 ## Nagranie demo
 
 ```bash
-./tools/reset-demo-data.sh          # czyści dokumenty po testach
-cd frontend && npm run demo         # nagrywa scenariusz (Playwright)
-cd .. && ./tools/make-gif.sh        # wideo → docs/demo.gif
+./tools/reset-demo-data.sh                          # czyści dokumenty po testach
+cd frontend && npm run demo                         # nagrywa oba scenariusze (Playwright)
+cd .. && ./tools/make-gif.sh core    docs/demo.gif      # rdzeń: współbieżność, offline, historia
+       ./tools/make-gif.sh product docs/demo-v2.gif     # produkt: formatowanie, komentarze, kosz
 ```
+
+Scenariusze są **testami**, nie nagraniem ręcznego klikania — jeśli demo przestanie działać,
+przebieg padnie, zamiast wyprodukować mylące nagranie. Dwa osobne pliki, bo jeden byłby albo
+za długi, żeby ktokolwiek obejrzał go do końca, albo za pobieżny, żeby cokolwiek pokazać.
+
+W scenariuszu produktowym nagrywana jest **tylko jedna z dwóch przeglądarek**. Nie z oszczędności:
+skrypt składający GIF-a wybiera nagranie po rozmiarze pliku, a to kryterium zależy od tego, ile
+się w danym oknie działo — czyli od przypadku. Jeden plik w katalogu usuwa zgadywanie, a widok
+drugiej osoby nic nie traci, bo wszystko, co robi Marek, widać u Anny.
 
 ---
 

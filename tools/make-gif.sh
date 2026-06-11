@@ -8,17 +8,24 @@
 #
 #   cd frontend && npm run demo && cd .. && ./tools/make-gif.sh
 #
+# Scen jest dwie i każda ma własny GIF — jeden byłby albo za długi, żeby ktokolwiek
+# obejrzał go do końca, albo za pobieżny, żeby cokolwiek pokazać:
+#
+#   ./tools/make-gif.sh core    docs/demo.gif      # edycja współbieżna, offline, historia
+#   ./tools/make-gif.sh product docs/demo-v2.gif   # formatowanie, komentarze, kosz
+#
 set -euo pipefail
 
-RECORDINGS="frontend/demo-recordings"
-OUTPUT="docs/demo.gif"
+SCENE="${1:-core}"
+OUTPUT="${2:-docs/demo.gif}"
+RECORDINGS="frontend/demo-recordings/$SCENE"
 
 command -v ffmpeg >/dev/null || { echo "brak ffmpeg — brew install ffmpeg"; exit 1; }
 command -v gifski >/dev/null || { echo "brak gifski — brew install gifski"; exit 1; }
 
 # Playwright nagrywa jedno wideo na kontekst przeglądarki. Bierzemy NAJWIĘKSZE —
 # to nagranie Anny, która wykonuje pełny scenariusz łącznie z panelem historii.
-VIDEO=$(find "$RECORDINGS" -name '*.webm' -type f -exec ls -S {} + | head -1)
+VIDEO=$(find "$RECORDINGS" -name '*.webm' -type f -exec ls -S {} + 2>/dev/null | head -1)
 [ -n "$VIDEO" ] || { echo "brak nagrań w $RECORDINGS — uruchom najpierw: cd frontend && npm run demo"; exit 1; }
 echo "nagranie: $VIDEO"
 
