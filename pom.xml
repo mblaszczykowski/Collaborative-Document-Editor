@@ -156,11 +156,17 @@
                           Wykryte przy migracji z Gradle'a: liczba testów spadła z 15 do 5,
                           bez jednego błędu. Najgroźniejszy rodzaj regresji w konfiguracji
                           buildu to ten, który niczego nie psuje, tylko przestaje sprawdzać.
+
+                          DRUGI RAZ, CP15: klasa `MarkCostMeasurement` przechodziła
+                          uruchamiana wprost (`-Dtest=...`) i NIE uruchamiała się w buildzie,
+                          bo `*Measurement` nie było na tej liście. Ta sama pułapka, ten sam
+                          objaw — zielony build, który czegoś nie sprawdza. Stąd czwarty wzorzec.
                         -->
                         <includes>
                             <include>**/*Test.java</include>
                             <include>**/*Tests.java</include>
                             <include>**/*Properties.java</include>
+                            <include>**/*Measurement.java</include>
                             <include>**/*IT.java</include>
                         </includes>
                         <systemPropertyVariables>

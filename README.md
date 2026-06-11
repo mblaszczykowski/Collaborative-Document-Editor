@@ -601,10 +601,10 @@ okazji potwierdziło, i z tym, co okazało się nieprawdą.
 | Warstwa | Testy |
 |---|---:|
 | `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, pomiar kosztu | 42 |
-| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 81 |
+| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 80 |
 | `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 49 |
 | end-to-end — dwie prawdziwe przeglądarki | 16 |
-| **razem** | **188** |
+| **razem** | **187** |
 
 Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
 trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami
