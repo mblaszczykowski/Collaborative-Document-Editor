@@ -237,6 +237,13 @@ przeszedł przy wyłączonym mechanizmie, który miał sprawdzać. To był **trz
 mutacja ujawniła test niesprawdzający niczego — [notatka o tym, czego to
 nauczyło](docs/crdt-design.md#czego-to-nauczyło-o-testach).
 
+Osobna kategoria tego samego problemu: **test, który się nie uruchamia**. `pom.xml` ma własną
+listę wzorców nazw klas testowych, bo domyślne wzorce Surefire nie obejmują `*Properties` —
+i kiedy w CP15 doszła klasa `*Measurement`, historia powtórzyła się co do objawu: klasa
+przechodziła uruchamiana wprost, nie uruchamiała się w buildzie, build był zielony.
+Ostrzeżenie o tej pułapce stało w `pom.xml` od CP2 i nie wystarczyło. Wyłapało to dopiero
+policzenie testów w raportach i porównanie z listą plików w repozytorium.
+
 ---
 
 ## Wydajność
