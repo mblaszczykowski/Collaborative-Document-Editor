@@ -70,6 +70,44 @@ class MarkCostMeasurement {
             .isLessThan(120);
     }
 
+    @Test
+    @DisplayName("wyliczanie wyglądu rośnie szybciej niż liniowo po liczbie znaczników")
+    void resolvingFormattingScalesQuadratically() {
+        System.out.printf("%nKOSZT WYLICZENIA WYGLĄDU (%d znaków)%n"
+            + "  znaczników   odcinków   czas wyliczenia%n", TEXT_LENGTH);
+
+        long previous = 0;
+        for (int markCount : new int[] {100, 400, 1_600}) {
+            RgaDocument document = document();
+            document.insert(0, "x".repeat(TEXT_LENGTH));
+            for (int i = 0; i < markCount; i++) {
+                int from = i * (TEXT_LENGTH / markCount);
+                document.addMark(from, from + 30, MarkTypes.BOLD, null);
+            }
+
+            // Rozgrzewka: pierwsze wywołanie płaci za kompilację JIT i za zapełnienie
+            // struktur, więc mierzenie go opisywałoby JVM, a nie algorytm.
+            for (int i = 0; i < 5; i++) {
+                document.formatting();
+            }
+            long start = System.nanoTime();
+            int spans = document.formatting().size();
+            long elapsed = System.nanoTime() - start;
+
+            System.out.printf("  %10d   %8d   %,10d ns%s%n", markCount, spans, elapsed,
+                previous == 0 ? "" : String.format("   (×%.1f przy ×4 znaczników)",
+                    (double) elapsed / previous));
+            previous = elapsed;
+
+            // Jedyna asercja: rozstrzyganie ma się KOŃCZYĆ. Nie asercja na czas — na maszynie
+            // dzielonej z Postgresem, Redisem i przeglądarką czas nie znaczy nic i test
+            // byłby losowo czerwony. Ta granica wyłapie regresję o rząd wielkości, nie szum.
+            assertThat(elapsed)
+                .as("wyliczenie wyglądu przy %d znacznikach przekroczyło sekundę", markCount)
+                .isLessThan(1_000_000_000L);
+        }
+    }
+
     private static final int CHARS = 1_000;
     private static final int MARKS = 100;
 

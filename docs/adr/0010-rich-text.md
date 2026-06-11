@@ -137,8 +137,42 @@ którą dałoby się wskazać.
   używana przy TWORZENIU operacji, więc wektory jej nie widzą. Pilnuje jej osobny test
   jednostkowy po obu stronach, co jest zabezpieczeniem słabszym.
 
-### Do zweryfikowania w CP15
-- Ile realnie kosztuje wyliczanie wyglądu przy dokumencie z setkami znaczników.
-- Ile pamięci zajmują tombstone'y przypięte kotwicami — czyli czy przeprojektowanie
-  reprezentacji bloku (ADR-0005) jest warte swojego kosztu.
-- Jak formatowanie zmienia profil ruchu i liczby propagacji z README.
+### Zweryfikowane w CP15
+
+Pomiar: [`MarkCostMeasurement`](../../crdt-core/src/test/java/dev/collabedit/crdt/MarkCostMeasurement.java).
+
+**Ile kosztuje wyliczanie wyglądu.** Dokument 50 tys. znaków, jedno wywołanie `formatting()`:
+
+| Znaczników | Czas |
+|---:|---:|
+| 100 | 0,6 ms |
+| 400 | 0,8 ms |
+| 1600 | **5,3 ms** |
+
+Wzrost jest **wyraźnie ponadliniowy** (×6,4 przy czterokrotnym wzroście liczby znaczników
+między dwoma ostatnimi pomiarami) i zgadza się z tym, co widać w kodzie: `MarkSet` przy
+każdym wyliczeniu przechodzi wszystkie znaczniki i dla każdego odcinka szuka zwycięzcy
+liniowo. Pierwszy stosunek (×1,5) nie znaczy nic — przy setkach mikrosekund dominuje szum.
+
+Znaczenie praktyczne jest większe, niż wygląda, bo `formatting()` jest wołane **przy każdej
+zmianie treści**, czyli przy każdym naciśnięciu klawisza. 5 ms na klawisz przy 1600
+znacznikach to już widoczne opóźnienie; przy setkach — nie. Granicą użyteczności obecnej
+implementacji jest więc **rząd setek znaczników na dokument**, i to jest liczba, której
+przed pomiarem nie miałem.
+
+Właściwe rozwiązanie: drzewo przedziałowe indeksowane pozycją, przeliczane przyrostowo.
+Niezrobione — obecna wielkość dokumentów tego nie wymaga, a wpisanie liczby jest uczciwsze
+niż optymalizacja w ciemno.
+
+**Ile pamięci trzymają kotwice.** Odpowiedź w [ADR-0005, sekcja CP15](0005-tombstone-gc.md):
+gorzej, niż zakładano. Znacznik nie przypina dwóch tombstone'ów, tylko **cały blok
+run-length**, w którym siedzi jego kotwica. Przy dokumencie napisanym jednym ciągiem GC
+po dodaniu formatowania nie odzyskuje **nic**. Przeprojektowanie reprezentacji bloku
+przestaje więc być opcjonalne — pytanie „czy warto" ma odpowiedź „tak".
+
+W samym snapshocie znacznik kosztuje **8 B** i to jest wiadomość dobra: nie kopiuje objętego
+tekstu, czyli nie robi tego, przed czym Peritext ma bronić.
+
+**Jak formatowanie zmienia profil ruchu.** Tabela w README (sekcja „Profil ruchu"). Znaczniki
+to co dziesiąta edycja w harnessie i nie one okazały się kosztowne — kosztowna była
+**obecność**, której poprzednie pomiary nie wysyłały wcale.

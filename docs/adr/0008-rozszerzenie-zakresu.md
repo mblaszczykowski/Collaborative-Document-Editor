@@ -112,7 +112,14 @@ przed rich textem (bo autoryzacja musi objąć typy operacji), rich text przed k
 
 - **Ryzyko rozcieńczenia jest realne i nie znika przez zapisanie warunku.** Recenzent
   z trzema minutami może wyjść z „kolejny edytor" zamiast „ktoś rozumie CRDT".
-  **Do zweryfikowania w CP15:** czy README nadal czyta się jako jedna całość.
+  **Sprawdzone w CP15:** README nadal otwiera się rdzeniem, ale **przybyło mu ~40 %**
+  i pierwszy ekran to teraz dwa GIF-y zamiast jednego. Ryzyko nie zmaterializowało się
+  w treści — otwarcie mówi o CRDT napisanym od zera, a formatowanie i komentarze są w nim
+  przedstawione jako *zastosowania* rdzenia, nie jako lista funkcji — ale zmaterializowało
+  się w **długości**. Recenzent z trzema minutami przeczyta dziś mniejszą część dokumentu
+  niż przed CP10. Zabezpieczeniem jest sekcja „Co tu jest ciekawego" na samej górze,
+  z linkami do czterech konkretnych rzeczy; jeśli i ona przestanie wystarczać, właściwym
+  ruchem jest wydzielenie części pomiarowej do osobnego pliku, a nie skracanie uzasadnień.
 - **Podwójny koszt implementacji rośnie proporcjonalnie do zakresu.** Znaczniki formatowania
   muszą powstać w Javie i w TypeScripcie, a korpus konformancyjny — urosnąć o ich wektory.
 - **GC tombstone'ów stanie się jeszcze mniej skuteczny.** [ADR-0005](0005-tombstone-gc.md)

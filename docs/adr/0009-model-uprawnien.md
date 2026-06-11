@@ -129,6 +129,24 @@ po prostu nie działa.
   sesji nie zrywa połączenia — zmieniło się to, że *uprawnienia* są sprawdzane przy każdej
   ramce, ale *tożsamość* nadal pochodzi z jednorazowego sprawdzenia. Wymienione w README.
 
-### Do zweryfikowania w CP14
-Czy mapowanie „rola → typy operacji" faktycznie uniesie komentarze jednym wpisem, czy okaże
-się, że wymaga zaglądania w treść operacji głębiej, niż zakłada obecny projekt.
+### Zweryfikowane w CP14 — i odpowiedź brzmi „nie"
+
+Pytanie brzmiało, czy mapowanie „rola → typy operacji" uniesie komentarze jednym wpisem.
+**Nie uniosło.** Kotwica komentarza jest znacznikiem CRDT dokładnie tego samego kształtu
+co pogrubienie ([ADR-0011](0011-komentarze.md)) — ta sama operacja, ten sam adres, ten sam
+kanał. Różni je **wartość pola `type`**, a to znaczy, że rozróżnienie „komentator może,
+edytor może, czytelnik nie" wymaga zajrzenia do **treści ramki**, nie do jej nagłówka.
+
+Interceptor robi to dziś tylko dla roli `commenter` i tylko wtedy, gdy ona wystąpi — ale
+jest to warstwa autoryzacji zależna od formatu danych, czyli dokładnie ta konstrukcja,
+której ten ADR chciał uniknąć. Zmiana formatu operacji może cicho zmienić uprawnienia.
+
+Prawidłowe rozwiązanie zna się teraz dokładnie: **typ operacji w nagłówku STOMP**, ustawiany
+przez klienta i weryfikowany wobec treści dopiero po autoryzacji. Nagłówek jest tanim
+kanałem metadanych i istnieje właśnie po to. Niezrobione — wymaga zmiany formatu
+przewodowego po obu stronach, a koszt nie równoważy jednego przypadku. Zapisane jako dług
+w README.
+
+Co ta odpowiedź potwierdza: **rola `commenter` nie była nadmiarowa.** Bez niej nikt nie
+odkryłby, że autoryzacja musi schodzić do typu operacji — a odkrycie tego przy pierwszym
+zewnętrznym audycie jest znacznie gorsze niż przy własnym checkpoincie.
