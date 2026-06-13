@@ -519,7 +519,7 @@ public final class RgaDocument {
             }
         }
 
-        int removed = 0;
+        int reclaimed = 0;
         for (int i = blocks.size() - 1; i >= 0; i--) {
             Block block = blocks.get(i);
             if (!block.deleted()) {
@@ -528,13 +528,30 @@ public final class RgaDocument {
             if (block.lastId().lamport() > stable.get(block.start().replicaId())) {
                 continue;
             }
-            if (isAnyCharReferenced(block, referenced)) {
+            if (!isAnyCharReferenced(block, referenced)) {
+                blocks.remove(i);
+                reclaimed += block.length();
                 continue;
             }
-            blocks.remove(i);
-            removed += block.length();
+            // CP18: the block has to stay, but its CHARACTERS do not.
+            //
+            // All three reasons above for keeping a tombstone — being another block's origin,
+            // being a mark anchor, and causal stability — need the IDENTITY of a character,
+            // never its content. Before this, "must keep the identity" meant "must keep
+            // everything", and CP15 measured what that cost: a 1000-character document written
+            // in one run, fully deleted, with 100 marks, reclaimed exactly 0%. One anchor kept
+            // one run-length block, and one run-length block was the whole document.
+            //
+            // Splitting the block around its anchors instead would not work: the right-hand
+            // part is anchored to the last character of the left, so dropping a prefix
+            // invalidates the origin of whatever remains. Dropping content sidesteps that
+            // entirely, because nothing about the structure changes.
+            if (block.hasContent()) {
+                block.dropContent();
+                reclaimed += block.length();
+            }
         }
-        return removed;
+        return reclaimed;
     }
 
     private static boolean isAnyCharReferenced(Block block, Set<Id> referenced) {
@@ -554,7 +571,7 @@ public final class RgaDocument {
     public DocumentSnapshot snapshot() {
         List<Block> copies = new ArrayList<>(blocks.size());
         for (Block block : blocks) {
-            copies.add(new Block(block.start(), block.text(), block.originLeft(), block.deleted()));
+            copies.add(copyOf(block));
         }
         return new DocumentSnapshot(
             DocumentSnapshot.CURRENT_FORMAT_VERSION, clock, maxSeen, copies, marks.all());
@@ -571,7 +588,7 @@ public final class RgaDocument {
         RgaDocument document = new RgaDocument(replicaId, storage);
         for (Block block : snapshot.blocks()) {
             storage.insert(storage.size(),
-                new Block(block.start(), block.text(), block.originLeft(), block.deleted()));
+                copyOf(block));
         }
         document.clock = snapshot.clock();
         document.maxSeen.putAll(snapshot.maxSeen());
@@ -586,6 +603,18 @@ public final class RgaDocument {
     // ------------------------------------------------------------------
     // Odczyt stanu
     // ------------------------------------------------------------------
+
+    /**
+     * A defensive copy that preserves whether the content is still there.
+     *
+     * <p>Reconstructing with {@code new Block(..., block.text(), ...)} would throw on a
+     * content-dropped block, and a snapshot is exactly where they accumulate.
+     */
+    private static Block copyOf(Block block) {
+        return block.hasContent()
+            ? new Block(block.start(), block.text(), block.originLeft(), block.deleted())
+            : Block.withoutContent(block.start(), block.length(), block.originLeft());
+    }
 
     public String text() {
         StringBuilder builder = new StringBuilder(blocks.visibleLength());

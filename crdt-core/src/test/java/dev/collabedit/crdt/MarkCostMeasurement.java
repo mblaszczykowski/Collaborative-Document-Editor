@@ -143,8 +143,8 @@ class MarkCostMeasurement {
     }
 
     @Test
-    @DisplayName("kotwica blokuje CAŁY blok run-length, nie własny tombstone — obawa z planu potwierdzona")
-    void anchorsBlockWholeRunLengthBlocks() {
+    @DisplayName("po CP18 kotwica nie blokuje już pamięci — blok oddaje treść, zachowując tożsamość")
+    void anchorsNoLongerBlockReclamation() {
         int oneRunWithout = collectAfterDeletingEverything(writtenInOneRun(), 0);
         int oneRunWith = collectAfterDeletingEverything(writtenInOneRun(), MARKS);
         int perCharWithout = collectAfterDeletingEverything(writtenCharByChar(), 0);
@@ -159,24 +159,26 @@ class MarkCostMeasurement {
             oneRunWithout, oneRunWith, 100.0 * oneRunWith / oneRunWithout,
             CHARS, perCharWithout, perCharWith, 100.0 * perCharWith / perCharWithout);
 
-        // OBAWA Z PUNKTU 5.5 PLANU JEST POTWIERDZONA, i to mocniej, niż zakładała.
+        // CP15 ZMIERZYŁ, ŻE TU BYŁO ZERO. Ta asercja jest tamtą asercją odwróconą, i to jest
+        // cała treść CP18.
         //
-        // Plan przewidywał, że każdy znacznik przypnie DWA tombstone'y. W rzeczywistości
-        // przypina CAŁY BLOK, w którym siedzi jego kotwica — bo GC działa na blokach,
-        // a `isAnyCharReferenced` odrzuca blok, w którym choć jeden znak jest kotwicą.
-        // Tekst napisany jednym ciągiem to jeden blok, więc jedna kotwica ratuje wszystko.
+        // Wcześniej kotwica blokowała CAŁY blok run-length: GC działa na blokach, a blok,
+        // w którym choć jeden znak jest kotwicą, zostawał w całości. Tekst napisany ciągiem
+        // to jeden blok, więc jedna kotwica ratowała cały dokument — 0% odzysku.
+        //
+        // Teraz blok, którego nie wolno usunąć, ODDAJE TREŚĆ, zachowując tożsamość, długość
+        // i pozycję. Wszystkie trzy powody trzymania tombstone'u (origin, kotwica, stabilność
+        // przyczynowa) potrzebują identyfikatora znaku, nie jego treści — więc nic się nie psuje,
+        // a pamięć wraca.
         assertThat(oneRunWith)
-            .as("zachowanie się poprawiło — GC potrafi już dzielić bloki, zaktualizuj README")
-            .isZero();
+            .as("blok run-length z kotwicą znów blokuje pamięć — regresja CP18")
+            .isEqualTo(oneRunWithout);
 
-        // Przy drobnych blokach koszt jest dokładnie taki, jaki plan zakładał: tyle znaków,
-        // ile kotwic. To jest ta sama implementacja i te same znaczniki — różni się WYŁĄCZNIE
-        // sposób, w jaki tekst powstał. Liczba bez tego zastrzeżenia nic nie znaczy.
-        assertThat(perCharWithout - perCharWith)
-            .as("koszt kotwicy przy drobnych blokach przestał być liniowy")
-            .isLessThanOrEqualTo(2 * MARKS);
+        // Drugie skrajne ustawienie musi zostać bez zmian: tam GC i tak potrafił usuwać bloki
+        // w całości, więc CP18 nie miał czego poprawiać. Gdyby ta liczba SPADŁA, znaczyłoby to,
+        // że porzucanie treści weszło w miejsce usuwania bloku, zamiast obok niego.
         assertThat(perCharWith)
-            .as("GC przestał cokolwiek odzyskiwać")
-            .isGreaterThan(0);
+            .as("odzysk przy drobnych blokach spadł — porzucanie treści wyparło usuwanie bloków")
+            .isGreaterThanOrEqualTo(perCharWithout - 2 * MARKS);
     }
 }

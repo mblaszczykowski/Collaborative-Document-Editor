@@ -37,7 +37,7 @@ public record DocumentSnapshot(
      * kodowania — snapshoty zapisane starym formatem zostaną wtedy pominięte, a stan
      * odtworzony z logu.
      */
-    public static final int CURRENT_FORMAT_VERSION = 2;
+    public static final int CURRENT_FORMAT_VERSION = 3;
 
     public DocumentSnapshot {
         maxSeen = Map.copyOf(maxSeen);
@@ -57,7 +57,8 @@ public record DocumentSnapshot(
      *
      * <p>Ta decyzja została podjęta w CP5, a spłaca się w CP13.
      */
-    public static final String FORMAT_VERSION_NOTE = "wersja 2: dodana warstwa znaczników (CP13)";
+    public static final String FORMAT_VERSION_NOTE =
+        "wersja 3: blok może nie mieć treści — zapisujemy flagę i długość (CP18); wersja 2: dodana warstwa znaczników (CP13)";
 
     public boolean isReadable() {
         return formatVersion == CURRENT_FORMAT_VERSION;

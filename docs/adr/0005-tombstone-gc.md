@@ -262,3 +262,84 @@ w ręku, a nie z przeczuciem.
 nie są ani jednym ciągiem tysiąca znaków, ani tysiącem bloków po znaku — powstają z przeplotu
 edycji kilku osób i mają rozmiar, którego nie zmierzyłem. Obie liczby w tabeli są skrajnościami
 i podaję je jako skrajności, a nie jako prognozę.
+
+---
+
+## CP18 — zmieniona reprezentacja, i liczba z 0% na 100%
+
+Sekcja wyżej kończy się zdaniem „kierunek się nie zmienia, ale przestaje być opcjonalny".
+CP18 to zrobił. Ta sekcja zapisuje, co faktycznie wyszło — łącznie z tym, co okazało się tańsze,
+niż zakładano, i z tym, co plan zgadł źle.
+
+### Zmiana
+
+Blok usunięty może teraz **porzucić treść, zostając w strukturze**. Zachowuje tożsamość,
+długość, origin i pozycję; traci wyłącznie znaki, których i tak nikt nie widzi.
+
+Uzasadnienie było już wypisane wyżej i wystarczyło wziąć je dosłownie: wszystkie trzy powody
+trzymania tombstone'u — bycie originem następnego bloku, bycie kotwicą znacznika, stabilność
+przyczynowa — potrzebują **tożsamości** znaku, nigdy jego treści. Błąd nigdy nie leżał
+w warunkach. Leżał w tym, że „muszę zachować tożsamość" i „muszę zachować wszystko" traktowano
+jako to samo wymaganie.
+
+### Zmierzone, to samo stanowisko co w CP15
+
+`MarkCostMeasurement`, bez zmian poza asercjami: 1000 znaków, wszystko skasowane, 100 znaczników
+(= 200 kotwic), w pełni stabilny wektor wersji.
+
+| Jak powstał tekst | Przed CP18 | Po CP18 |
+|---|---:|---:|
+| jednym ciągiem (**1** blok run-length) | **0 %** | **100 %** |
+| znak po znaku (1000 bloków) | 80 % | **100 %** |
+
+Pierwszy wiersz jest tym, dla którego to robiono. Drugi jest sprawdzeniem, że nic nie zostało
+przy okazji utracone: tam GC potrafił już usuwać całe bloki, więc porzucanie treści musiało
+wejść **obok** tego mechanizmu, a nie zamiast niego. Pilnuje tego osobna asercja, bo spadek
+w tym wierszu znaczyłby, że tańsza operacja wyparła pełniejszą.
+
+Koszt w snapshocie, ten sam pomiar: **107 B → 108 B** dla dokumentu 50 000 znaków, a narzut
+na znacznik bez zmian — 8 B. Jeden bit na blok, zaokrąglony do bajtu.
+
+### Co było tańsze, niż zakładał plan
+
+**Migracja jest darmowa, i to drugi raz, kiedy ADR-0003 się spłaca.** Snapshot w wersji, której
+ten kod nie zna, jest *ignorowany*, a nie migrowany — stan odtwarza się z logu operacji, wolniej
+i poprawnie. Podniesienie formatu z 2 na 3 nie wymagało więc ani jednej linijki kodu migracyjnego.
+
+**Dług podwójnej implementacji tym razem się nie zmaterializował.** README wymienia „dwie
+implementacje jednego algorytmu" jako koszt płacony przy każdej zmianie algorytmu i CP13 zapłacił
+go w całości. CP18 nie zapłacił: klient w TypeScripcie nie ma ani GC, ani odczytu snapshotów —
+odtwarza log operacji — więc cała zmiana mieści się w warstwie, której klient nie posiada.
+Warto to zapisać, bo jest to kontrprzykład do własnego uogólnienia projektu: dług jest
+proporcjonalny do tego, **ile algorytmu klient faktycznie implementuje**, a nie do rozmiaru
+samego algorytmu.
+
+### Co plan zgadł źle
+
+Plan nazwał to „jedyną zmianą w rdzeniu" i wycenił na 3–5 dni przy założeniu, że prawdziwym
+kosztem będą bliźniak w TypeScripcie i agregaty treapa. Treap nie wymagał **niczego**: czytał
+już `block.length()`, a nie tekst, więc zamiana tej metody z wyliczanej na pole była dla niego
+niewidoczna. Rzeczywisty koszt siedział w jednym miejscu, którego plan nie wymienił — w każdym
+tworzeniu `Block` z innego `Block`, czyli na ścieżkach snapshotu i odtwarzania, gdzie
+odtworzenie przez publiczny konstruktor rzuca wyjątkiem na bloku bez treści.
+
+### Przepuszczona okazja — rozliczona
+
+Ten ADR zapisał wcześniej, że CP13 przepuścił najtańszy moment na tę zmianę (podniesienie formatu
+do wersji 2) z braku pomiaru. Po wykonaniu zmiany koszt da się podać zamiast szacować: **był
+mały.** Praca dotyczyła `Block`, `RgaDocument.gc` i `SnapshotCodec`, a istnienie warstwy
+znaczników niczego z tego nie utrudniło. Zrobienie tego w CP13 oszczędziłoby jedno podniesienie
+wersji formatu i nic poza tym.
+
+Co stawia decyzję z CP13 w lepszym świetle, niż stała tu wcześniej, i warto to powiedzieć wprost:
+bez pomiaru z CP15 zmiana zostałaby zrobiona na domysł co do tego, gdzie idzie pamięć — a domysł
+zapisany w planie („dwa tombstone'y na znacznik") mylił się o cały poziom struktury.
+
+### Nadal prawdziwe po CP18
+
+- Okno GC (7 dni) to nadal wartość zgadnięta, nie wyliczona z telemetrii.
+- Tombstone w środku tekstu nadal jest originem następnego bloku i nadal nie wolno go usunąć.
+  CP18 tego nie zmienia — sprawia, że kosztuje ustaloną garść bajtów zamiast tekstu, który
+  wcześniej trzymał.
+- Nic nie odzyskuje samych obiektów bloków. Dokument edytowany dostatecznie długo nadal zbiera
+  wpisy na liście bloków i to jest teraz dominujący pozostały koszt.

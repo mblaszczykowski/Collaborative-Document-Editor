@@ -24,7 +24,7 @@ import java.util.zip.GZIPOutputStream;
  * <p>Warstwa GZIP na wierzchu: tekst dokumentu kompresuje się bardzo dobrze, a koszt
  * procesora jest pomijalny wobec ruchu na dysku i w sieci.
  *
- * <h2>Format (wersja 1)</h2>
+ * <h2>Format (wersja 3)</h2>
  * <pre>
  *   int    formatVersion
  *   long   clock
@@ -34,8 +34,21 @@ import java.util.zip.GZIPOutputStream;
  *     int  replicaId, long startLamport
  *     bool ma origin, [int replicaId, long lamport]
  *     bool deleted
- *     UTF  tekst
+ *     bool ma treść
+ *       jeśli tak:  int długość bajtów UTF-8, bajty
+ *       jeśli nie:  int długość w znakach          &lt;- CP18
  * </pre>
+ *
+ * <p>Wersja 3 dokłada jeden bit na blok. Blok, którego treść porzucił GC (CP18), niesie
+ * wyłącznie swoją długość — a długość jest tym, czego potrzebuje każdy indeks w dokumencie.
+ * Blok z treścią zapisuje się dokładnie jak w wersji 2, więc rozmiar typowego snapshotu
+ * rośnie o jeden bajt na blok i nic poza tym.
+ *
+ * <p><b>Migracja jest darmowa i nie jest to przypadek.</b> Snapshot w niezgodnej wersji jest
+ * IGNOROWANY, a nie migrowany ({@link #decode} zwraca {@code null}), bo snapshot to usuwalny
+ * cache — stan odtworzy się z logu operacji, wolniej i poprawnie. Decyzja z ADR-0003 spłaca
+ * się tu po raz drugi: podniesienie wersji formatu nie wymaga ani jednej linijki kodu
+ * migracyjnego.
  *
  * <p>Bloki zapisane są <b>w kolejności dokumentu</b>, więc odtworzenie nie wymaga ponownego
  * uruchamiania algorytmu integracji — wystarczy je wczytać po kolei. To jest cała oszczędność
@@ -93,7 +106,12 @@ public final class SnapshotCodec {
                     out.writeLong(block.originLeft().lamport());
                 }
                 out.writeBoolean(block.deleted());
-                writeLongString(out, block.text());
+                out.writeBoolean(block.hasContent());
+                if (block.hasContent()) {
+                    writeLongString(out, block.text());
+                } else {
+                    out.writeInt(block.length());
+                }
             }
 
             // Znaczniki (CP13) zapisywane JAKO OPERACJE, w formacie przewodowym OpCodec,
@@ -138,7 +156,10 @@ public final class SnapshotCodec {
                 Id start = new Id(in.readInt(), in.readLong());
                 Id originLeft = in.readBoolean() ? new Id(in.readInt(), in.readLong()) : null;
                 boolean deleted = in.readBoolean();
-                blocks.add(new Block(start, readLongString(in), originLeft, deleted));
+                boolean hasContent = in.readBoolean();
+                blocks.add(hasContent
+                    ? new Block(start, readLongString(in), originLeft, deleted)
+                    : Block.withoutContent(start, in.readInt(), originLeft));
             }
             int markCount = in.readInt();
             List<Op> marks = new ArrayList<>(markCount);
