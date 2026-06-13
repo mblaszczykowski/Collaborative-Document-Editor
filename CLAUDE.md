@@ -7,7 +7,17 @@ Aplikacja ma solidnie działać — to warunek konieczny, nie opcjonalny. Ale "d
 2. Udokumentowana w miejscu, gdzie ktoś ją znajdzie
 3. Testowalna i zmierzona liczbami, nie przymiotnikami
 
-Jeśli w trakcie pracy pojawi się wybór między "szybciej działające" a "pokazuje głębsze zrozumienie problemu" — domyślnie wybieraj to drugie, ale zapytaj mnie, jeśli wydłuża to pracę o więcej niż ~30%.
+Jeśli w trakcie pracy pojawi się wybór między "szybciej działające" a "pokazuje głębsze zrozumienie problemu" — wybieraj to drugie i **nie pytaj o zgodę**, nawet gdy wydłuża to pracę znacząco. Koszt zapisz w raporcie końcowym (patrz *Tryb pracy* na dole pliku).
+
+## Język
+
+**Językiem projektu jest angielski.** Decyzja i jej uzasadnienie: [PLAN-v3 §0.2](docs/PLAN-v3.md).
+
+- **Cała nowa treść powstaje po angielsku** — kod, komentarze, javadoc, testy, ADR-y, komunikaty commitów, README.
+- Istniejąca treść po polsku jest migrowana w kolejności: README → `docs/adr/` → komentarze w kodzie → `docs/architektura.md` i `docs/crdt-design.md` → plany.
+- **Plany (`IMPLEMENTATION_PLAN.md`, `PLAN-v2.md`, `PLAN-v3.md`) zostają po polsku.** To seria historyczna — zapis tego, co myślano w danym momencie. Tłumaczenie takiego zapisu niesie ryzyko, że przy okazji „poprawi się" wnioski, które wtedy brzmiały inaczej.
+- Ten plik (`CLAUDE.md`) też zostaje po polsku — to instrukcja dla mnie i dla Claude'a, nie artefakt dla czytelnika repozytorium.
+- Tłumacząc, **nie skracaj i nie wygładzaj**. Wartością tych komentarzy jest to, że mówią *dlaczego* i przyznają się do pomyłek. Angielski ma zachować tę samą szczerość i tę samą konkretność, łącznie ze zdaniami typu „to nie zadziałało i oto dlaczego".
 
 ## Kontekst techniczny
 
@@ -73,14 +83,42 @@ Na końcu prac nagraj GIF/wideo (poproś mnie o instrukcję jak to zrobić, jeś
 
 ## Kolejność pracy (checkpointy)
 
-1. ADR-y + szkielet architektury (bez kodu)
-2. Core CRDT algorithm + property-based testy (to jest serce projektu — nie przechodź dalej, dopóki to nie jest solidne)
-3. WebSocket layer + integracja z CRDT
-4. Frontend: podstawowy edytor + kursory innych userów
-5. Historia zmian / wersjonowanie
-6. Offline/reconnect handling
-7. Observability (tracing + metryki + dashboard)
-8. Testy chaosu + benchmarki z liczbami
-9. Dokumentacja finalna (README, diagramy, GIF demo)
+Checkpointy nie są już wypisane tutaj — mieszkają w planach, bo tam da się przy nich
+zapisać, co faktycznie wyszło:
 
-Na każdym checkpointcie zatrzymaj się i zapytaj, czy kontynuować, zanim przejdziesz do kolejnego — nie buduj wszystkiego naraz bez feedbacku.
+| Plan | Checkpointy | Stan |
+|---|---|---|
+| [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | CP1–CP9 — rdzeń CRDT, transport, historia, klaster, obserwowalność | zamknięty |
+| [`docs/PLAN-v2.md`](docs/PLAN-v2.md) | CP10–CP15 — wydajność, multi-dokument, uprawnienia, rich text, komentarze | zamknięty |
+| [`docs/PLAN-v3.md`](docs/PLAN-v3.md) | CP16–CP20 — autoryzacja strukturalnie, symulacja deterministyczna, blok bez treści, bramka regresji | **otwarty** |
+
+### Tryb pracy: bez zatrzymywania się na checkpointach
+
+Poprzednia wersja tego pliku kazała zatrzymać się po każdym checkpoincie i zapytać,
+czy kontynuować. **Ta zasada jest wycofana** — pracuj przez kolejne checkpointy bez pytania
+o zgodę na przejście dalej.
+
+Powód zmiany jest konkretny, a nie kosmetyczny: przy planie v1 i v2 pytanie o zgodę miało
+sens, bo każdy checkpoint zmieniał kształt produktu i zła kolejność kosztowałaby dni pracy.
+Plan v3 nie dokłada funkcji — domyka rzeczy, których uzasadnienie jest **już zmierzone
+i zapisane w repozytorium**. Pytanie „czy kontynuować" przy pozycji, którą ADR-0005 nazywa
+wprost nieopcjonalną, jest kosztem bez treści.
+
+Co zastępuje zgodę na przejście — bo zniesienie kontroli nie znaczy zniesienia rozliczenia:
+
+- **Testy i build są bramką.** Checkpoint jest zamknięty, gdy przechodzi to, co go sprawdza,
+  a nie gdy skończył się kod. Zielony build bez testu z zębami nie zamyka niczego (§3).
+- **Raport zbiorczy na końcu**, nie zgoda po drodze: co zrobione, co zrobione inaczej niż
+  zakładał plan i **dlaczego**, co niezrobione. To jest ta sama treść, która wcześniej padała
+  przy pytaniu — tylko zebrana, zamiast rozproszona.
+- **Zatrzymaj się mimo wszystko**, gdy rzecz jest nieodwracalna albo wychodzi poza plan:
+  zmiana schematu bazy niosąca utratę danych, publikacja czegokolwiek na zewnątrz,
+  `git push`, rezygnacja z pozycji wpisanej do planu. Autonomia dotyczy **wykonania planu**,
+  nie zmiany jego zakresu.
+- **Nie udawaj ukończenia.** Jeśli checkpoint utknął, napisz to wprost i przejdź do
+  następnego — plan v3 §1 mówi, które da się uciąć bez szkody. Zgłoszenie „zrobione"
+  dla czegoś, co nie przechodzi testów, jest gorsze niż niezrobienie.
+
+To samo dotyczy wyboru „szybciej" kontra „głębiej" z sekcji **Cel projektu**: wybieraj głębiej
+i **nie pytaj o zgodę na przekroczenie ~30%** — zapisz koszt w raporcie końcowym.
+Pytaj tylko wtedy, gdy głębsza droga zmienia zakres planu, a nie czas jego wykonania.
