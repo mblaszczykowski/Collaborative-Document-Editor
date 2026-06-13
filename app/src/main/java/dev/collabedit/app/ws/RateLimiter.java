@@ -107,7 +107,15 @@ public class RateLimiter {
         presence.remove(sessionId);
     }
 
-    public int trackedSessions() {
+    /**
+     * Liczba żywych wiader — <b>nie</b> liczba sesji.
+     *
+     * <p>Jedna sesja ma do dwóch wiader (operacje i obecność), więc te liczby nie są sobie
+     * równe. Nazwa mówi o wiadrach, bo o wiadra tu chodzi: jest to miara pamięci zajętej
+     * przez ten mechanizm, a nie licznik użytkowników. Poprzednia nazwa
+     * ({@code trackedSessions}) zwracała dla jednej sesji dwójkę i była po prostu nieprawdziwa.
+     */
+    public int trackedBuckets() {
         return operations.size() + presence.size();
     }
 }

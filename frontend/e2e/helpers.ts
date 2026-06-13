@@ -23,14 +23,45 @@ export async function freshDocument(request: APIRequestContext, title: string): 
   return (await response.json()).id as string
 }
 
-export async function joinAs(browser: Browser, name: string, documentId: string): Promise<Page> {
+/**
+ * Otwiera dokument w świeżej przeglądarce.
+ *
+ * `waitForEditor: false` dla scenariuszy, w których edytor NIE MA się pojawić — dokument
+ * usunięty albo bez dostępu. Domyślne czekanie na `.editor-host` byłoby tam gwarantowanym
+ * przekroczeniem czasu, i to takim, które wygląda jak awaria stanowiska zamiast jak
+ * sprawdzane zachowanie.
+ */
+export async function joinAs(
+  browser: Browser,
+  name: string,
+  documentId: string,
+  options: { waitForEditor?: boolean } = {},
+): Promise<Page> {
   const context = await browser.newContext()
   const page = await context.newPage()
   await page.goto(`${APP}/?doc=${documentId}`)
   await page.getByPlaceholder('Twoje imię').fill(name)
   await page.getByRole('button', { name: 'Rozpocznij' }).click()
-  await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
+  if (options.waitForEditor !== false) {
+    await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
+  }
   return page
+}
+
+/**
+ * Usuwa dokument spoza przeglądarki.
+ *
+ * Wymaga zalogowania: od CP12 usuwanie potrzebuje prawa zapisu, a żądanie bez tokenu
+ * nie ma żadnej roli i dostaje 404 — czyli po cichu nic by nie skasowało.
+ */
+export async function deleteDocument(request: APIRequestContext, documentId: string): Promise<void> {
+  const login = await request.post(`${API}/login`, { data: { displayName: 'Sprzątacz' } })
+  const { token } = (await login.json()) as { token: string }
+  const response = await request.delete(`${API}/documents/${documentId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  expect(response.status(), 'nie udało się usunąć dokumentu — test sprawdzałby coś innego')
+    .toBe(204)
 }
 
 export async function typeInto(page: Page, text: string): Promise<void> {

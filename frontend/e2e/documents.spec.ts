@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { freshDocument, joinAs, typeInto } from './helpers'
+import { deleteDocument, freshDocument, joinAs, typeInto } from './helpers'
 
 /**
  * Lista dokumentów (CP11) na prawdziwej przeglądarce.
@@ -108,4 +108,26 @@ test('wyszukiwanie znajduje dokument po treści, nie tylko po tytule', async ({
   }).toPass({ timeout: 30_000 })
 
   await page.context().close()
+})
+
+test('dokument, którego nie da się otworzyć, mówi o tym wprost', async ({ browser, request }) => {
+  const title = unique('Zniknie')
+  const documentId = await freshDocument(request, title)
+  const page = await joinAs(browser, 'Anna', documentId)
+  await expect(page.locator('.cm-content')).toBeVisible({ timeout: 15_000 })
+
+  // Kasujemy dokument POZA przeglądarką i wchodzimy na jego adres z czystej karty.
+  // Serwer odpowiada 404 — tak samo, jak odpowiada na dokument cudzy i prywatny.
+  await deleteDocument(request, documentId)
+
+  const wracający = await joinAs(browser, 'Anna', documentId, { waitForEditor: false })
+
+  // Zanim powstał ten komunikat, odmowa kończyła się PUSTĄ STRONĄ: cała reszta interfejsu
+  // się rysowała, edytor nie pojawiał się nigdy, a jedynym śladem było odrzucone Promise
+  // w konsoli. Objaw nieodróżnialny od awarii — i regresja wprowadzona razem z autoryzacją.
+  await expect(wracający.locator('.unavailable-banner')).toBeVisible({ timeout: 15_000 })
+  await expect(wracający.locator('.cm-content')).toHaveCount(0)
+
+  await page.context().close()
+  await wracający.context().close()
 })

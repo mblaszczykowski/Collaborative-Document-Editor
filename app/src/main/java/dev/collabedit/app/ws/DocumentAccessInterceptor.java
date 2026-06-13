@@ -63,7 +63,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         this.messaging = messaging;
     }
 
-    /** Wyłącznie do diagnostyki i testów — ile sesji ma aktywne wiadra żetonów. */
+    /** Wyłącznie do diagnostyki i testów — dostęp do liczników wiader żetonów. */
     public RateLimiter rateLimiter() {
         return rateLimiter;
     }

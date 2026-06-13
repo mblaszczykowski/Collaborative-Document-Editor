@@ -104,11 +104,11 @@ class RateLimiterTest {
     void forgettingReleasesMemory() {
         limiter.allowOperation("s1", 1000);
         limiter.allowPresence("s1", 1000);
-        assertThat(limiter.trackedSessions()).isEqualTo(2);
+        assertThat(limiter.trackedBuckets()).isEqualTo(2);
 
         limiter.forget("s1");
 
-        assertThat(limiter.trackedSessions())
+        assertThat(limiter.trackedBuckets())
             .as("mapy wiader rosną z liczbą sesji od startu procesu")
             .isZero();
     }

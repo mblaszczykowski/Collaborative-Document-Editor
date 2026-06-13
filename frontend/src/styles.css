@@ -468,3 +468,11 @@ button { font-family: inherit; cursor: pointer; }
    wygląda na zepsuty, a nie na ograniczony uprawnieniami. */
 .tb-icon:disabled { opacity: 0.35; cursor: not-allowed; }
 .tb-icon:disabled:hover { background: transparent; }
+
+/* Dokument niedostępny (CP12) — ten sam język co baner odzyskiwania: mówimy, co się stało
+   i co z tym zrobić, a nie jaki kod HTTP wrócił. Bez tego komunikatu odmowa dostępu
+   kończyła się pustą stroną, czyli objawem nieodróżnialnym od awarii. */
+.unavailable-banner {
+  margin: 24px 0; padding: 14px 16px; border-radius: 6px; font-size: 13.5px; line-height: 1.55;
+  border: 1px solid var(--chrome-line); background: var(--hover); color: var(--text);
+}

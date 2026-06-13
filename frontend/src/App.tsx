@@ -189,6 +189,17 @@ function DocumentWorkspace(props: {
    */
   const [role, setRole] = useState<DocumentState['role']>('viewer')
   const [ready, setReady] = useState(false)
+  /**
+   * Dokumentu nie da się otworzyć — bo nie istnieje, jest w koszu albo nie mamy do niego
+   * dostępu. Serwer odpowiada 404 na wszystkie trzy przypadki celowo (potwierdzenie, że
+   * dokument istnieje, jest samo w sobie wyciekiem), więc i komunikat jest jeden.
+   *
+   * Bez tego stanu odmowa dostępu kończyła się PUSTĄ STRONĄ: `ready` zostawało `false`,
+   * edytor nie renderował się nigdy, a jedynym śladem było odrzucone `Promise` w konsoli.
+   * Regresja wprowadzona razem z autoryzacją w CP12 — wcześniej to żądanie nie miało prawa
+   * zwrócić 404 dla poprawnego identyfikatora.
+   */
+  const [unavailable, setUnavailable] = useState(false)
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
   const [pendingCount, setPendingCount] = useState(0)
   const [presence, setPresence] = useState<PresenceEntry[]>([])
@@ -294,6 +305,7 @@ function DocumentWorkspace(props: {
 
     void api.openDocument(documentId).then((state) => {
       if (cancelled) return
+      setUnavailable(false)
 
       // Dokument startuje PUSTY i jest budowany z operacji przysłanych przez serwer.
       // Zasianie go tekstem z REST-a tworzyłoby nowe operacje lokalne, których serwer nie
@@ -331,6 +343,10 @@ function DocumentWorkspace(props: {
       link.simulator.onChange(setNetwork)
       void link.restoreOfflineBuffer().then(() => link.connect())
       connection.current = link
+    }).catch(() => {
+      // Nie łączymy się WebSocketem: interceptor odrzuciłby subskrypcję z tego samego
+      // powodu, tylko po cichu — a klient próbowałby się łączyć w pętli.
+      if (!cancelled) setUnavailable(true)
     })
 
     return () => {
@@ -522,6 +538,13 @@ function DocumentWorkspace(props: {
                   offline i miejsce, do którego pisałeś, przestało istnieć. Twoja wersja
                   została zapisana jako <a href={`?doc=${recovery.id}`}>{recovery.title}</a>.
                   Nic nie przepadło.
+                </div>
+              )}
+              {unavailable && (
+                <div className="unavailable-banner">
+                  <strong>Nie możemy otworzyć tego dokumentu.</strong> Mógł zostać usunięty
+                  albo nie masz do niego dostępu — poproś osobę, która przysłała Ci link,
+                  żeby udostępniła go ponownie.
                 </div>
               )}
               {ready && document.current && undo.current && (
