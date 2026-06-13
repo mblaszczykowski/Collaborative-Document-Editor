@@ -1,5 +1,6 @@
 package dev.collabedit.app.comments;
 
+import dev.collabedit.app.auth.ThreadDocumentResolver;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -30,7 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
  * w którym świadomie jej nie ulegamy.
  */
 @Service
-public class CommentService {
+public class CommentService implements ThreadDocumentResolver {
 
     private final JdbcTemplate jdbc;
 
@@ -92,6 +93,14 @@ public class CommentService {
             + "WHERE id = ? AND resolved_at IS NOT NULL", threadId) == 1;
     }
 
+    /**
+     * Which document a thread belongs to.
+     *
+     * <p>Also the implementation of {@link ThreadDocumentResolver}, which is how
+     * {@code DocumentAccessGuard} authorizes {@code /api/comments/{threadId}/…} without the
+     * auth layer having to know that comments exist.
+     */
+    @Override
     public UUID documentOf(UUID threadId) {
         List<UUID> found = jdbc.query("SELECT doc_id FROM comment_threads WHERE id = ?",
             (rs, rowNum) -> UUID.fromString(rs.getString("doc_id")), threadId);

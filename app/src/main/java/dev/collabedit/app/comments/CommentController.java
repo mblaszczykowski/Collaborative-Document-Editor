@@ -1,7 +1,7 @@
 package dev.collabedit.app.comments;
 
-import dev.collabedit.app.auth.PermissionService;
-import dev.collabedit.app.auth.Role;
+import dev.collabedit.app.auth.Capability;
+import dev.collabedit.app.auth.RequiresDocumentAccess;
 import dev.collabedit.crdt.MarkTypes;
 import dev.collabedit.app.auth.TokenAuthFilter;
 import dev.collabedit.app.domain.DocumentRegistry;
@@ -42,13 +42,10 @@ public class CommentController {
     private static final HttpStatus DENIED = HttpStatus.NOT_FOUND;
 
     private final CommentService comments;
-    private final PermissionService permissions;
     private final DocumentRegistry registry;
 
-    public CommentController(CommentService comments, PermissionService permissions,
-                             DocumentRegistry registry) {
+    public CommentController(CommentService comments, DocumentRegistry registry) {
         this.comments = comments;
-        this.permissions = permissions;
         this.registry = registry;
     }
 
@@ -70,14 +67,11 @@ public class CommentController {
      * obejmować, jest „odłączony" — pokazujemy go z zacytowanym fragmentem zamiast kasować.
      */
     @GetMapping("/documents/{documentId}/comments")
+    @RequiresDocumentAccess(value = Capability.READ, param = "documentId")
     public ResponseEntity<List<CommentService.Thread>> threads(
         @PathVariable UUID documentId,
-        @RequestParam(value = "resolved", defaultValue = "false") boolean includeResolved,
-        HttpServletRequest request) {
+        @RequestParam(value = "resolved", defaultValue = "false") boolean includeResolved) {
 
-        if (!permissions.canRead(callerId(request), documentId)) {
-            return ResponseEntity.status(DENIED).build();
-        }
         Set<String> anchored = anchoredThreadIds(documentId);
         List<CommentService.Thread> found = comments.threadsOf(documentId, includeResolved).stream()
             .map(thread -> new CommentService.Thread(
@@ -105,15 +99,14 @@ public class CommentController {
             .collect(java.util.stream.Collectors.toSet()));
     }
 
+    // Commenting needs COMMENTER, not EDITOR — that distinction is the whole point of the role
+    // model, and it is now stated where the endpoint is rather than in an if further down.
     @PostMapping("/documents/{documentId}/comments")
+    @RequiresDocumentAccess(value = Capability.COMMENT, param = "documentId")
     public ResponseEntity<CommentService.Thread> open(@PathVariable UUID documentId,
                                                       @RequestBody OpenThreadRequest body,
                                                       HttpServletRequest request) {
         String caller = callerId(request);
-        // Komentowanie wymaga roli COMMENTER, nie EDITOR — o to chodziło w całym modelu ról.
-        if (permissions.roleOf(caller, documentId).filter(Role::canComment).isEmpty()) {
-            return ResponseEntity.status(DENIED).build();
-        }
         if (body.body() == null || body.body().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
@@ -129,18 +122,16 @@ public class CommentController {
             .orElseGet(() -> ResponseEntity.internalServerError().build());
     }
 
+    // The three endpoints below are keyed by thread, not by document — the case a pure path
+    // rule over /api/documents/{id}/** cannot express, and the reason the declaration is an
+    // annotation. The guard resolves thread -> document before deciding.
     @PostMapping("/comments/{threadId}/messages")
+    @RequiresDocumentAccess(value = Capability.COMMENT, param = "threadId",
+        from = RequiresDocumentAccess.Source.COMMENT_THREAD)
     public ResponseEntity<Void> reply(@PathVariable UUID threadId,
                                       @RequestBody MessageRequest body,
                                       HttpServletRequest request) {
-        UUID documentId = comments.documentOf(threadId);
-        if (documentId == null) {
-            return ResponseEntity.status(DENIED).build();
-        }
         String caller = callerId(request);
-        if (permissions.roleOf(caller, documentId).filter(Role::canComment).isEmpty()) {
-            return ResponseEntity.status(DENIED).build();
-        }
         if (body.body() == null || body.body().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
@@ -149,29 +140,19 @@ public class CommentController {
     }
 
     @PostMapping("/comments/{threadId}/resolve")
+    @RequiresDocumentAccess(value = Capability.COMMENT, param = "threadId",
+        from = RequiresDocumentAccess.Source.COMMENT_THREAD)
     public ResponseEntity<Void> resolve(@PathVariable UUID threadId, HttpServletRequest request) {
-        UUID documentId = comments.documentOf(threadId);
-        if (documentId == null) {
-            return ResponseEntity.status(DENIED).build();
-        }
         String caller = callerId(request);
-        if (permissions.roleOf(caller, documentId).filter(Role::canComment).isEmpty()) {
-            return ResponseEntity.status(DENIED).build();
-        }
         return comments.resolve(threadId, caller)
             ? ResponseEntity.noContent().build()
             : ResponseEntity.status(HttpStatus.CONFLICT).build();
     }
 
     @PostMapping("/comments/{threadId}/reopen")
-    public ResponseEntity<Void> reopen(@PathVariable UUID threadId, HttpServletRequest request) {
-        UUID documentId = comments.documentOf(threadId);
-        if (documentId == null) {
-            return ResponseEntity.status(DENIED).build();
-        }
-        if (permissions.roleOf(callerId(request), documentId).filter(Role::canComment).isEmpty()) {
-            return ResponseEntity.status(DENIED).build();
-        }
+    @RequiresDocumentAccess(value = Capability.COMMENT, param = "threadId",
+        from = RequiresDocumentAccess.Source.COMMENT_THREAD)
+    public ResponseEntity<Void> reopen(@PathVariable UUID threadId) {
         return comments.reopen(threadId)
             ? ResponseEntity.noContent().build()
             : ResponseEntity.status(HttpStatus.CONFLICT).build();

@@ -230,7 +230,10 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      *
      * @return {@code null}, gdy destynacja nie dotyczy dokumentu
      */
-    static UUID documentIdOf(String destination) {
+    // Public because EndpointAuthorizationArchitectureTest asks this parser directly whether
+    // it can resolve a document from every registered @MessageMapping destination. Asserting
+    // against a copy of the pattern would prove the copy correct, not the parser.
+    public static UUID documentIdOf(String destination) {
         if (destination == null) {
             return null;
         }

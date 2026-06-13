@@ -432,6 +432,49 @@ class PermissionIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("a recovered draft cannot be created without an identity — the CP16 finding")
+    void recoveredDraftCannotBeCreatedAnonymously() throws Exception {
+        // The test above covers the path where a valid token is present. This one covers the
+        // path that was actually broken, and it is not the exotic one.
+        //
+        // Owner and visibility used to be set only inside `if (caller != null)`. With no token
+        // — or, far more importantly, an EXPIRED one — both calls were skipped: no owner, and
+        // `visibility` falling back to the schema default of 'link', which PermissionService
+        // rule 4 reads as EDITOR for every logged-in user. The exact inverse of what the test
+        // above asserts, reachable by leaving out one header.
+        //
+        // Why this is the typical path rather than the edge: a token lives 12 hours, and this
+        // endpoint exists ONLY for clients that were offline longer than the 7-day GC window.
+        // The population it was written for is the population whose token has certainly expired.
+        HttpResponse<String> anonymous = post("/api/documents/recovered", null,
+            "{\"title\":\"Szkic bez tożsamości\",\"text\":\"praca offline\"}");
+
+        assertThat(anonymous.statusCode())
+            .as("an anonymous caller created a document; it has no owner, so nobody can ever "
+                + "secure it, and it is link-visible to every logged-in user")
+            .isEqualTo(401);
+
+        User ktokolwiek = newUser("Ktokolwiek");
+        assertThat(get("/api/documents", ktokolwiek.token()).body())
+            .as("the ownerless draft is readable by an unrelated user")
+            .doesNotContain("Szkic bez tożsamości");
+    }
+
+    @Test
+    @DisplayName("creating a document requires an identity, or it cannot be secured later")
+    void documentCreationRequiresAnIdentity() throws Exception {
+        // Same class of bug as above, found in the same pass: `POST /api/documents` also set
+        // the owner only when one happened to be present. A document created without an owner
+        // can never have its visibility changed or access granted — it is unsecurable for the
+        // rest of its life, and nothing anywhere reports that.
+        HttpResponse<String> anonymous = post("/api/documents", null, "{\"title\":\"Bezpański\"}");
+
+        assertThat(anonymous.statusCode())
+            .as("an ownerless document was created and cannot be secured by anyone, ever")
+            .isEqualTo(401);
+    }
+
+    @Test
     @DisplayName("obcy użytkownik nie widzi cudzego dokumentu prywatnego w koszu")
     void trashDoesNotLeakForeignDocuments() {
         User anna = newUser("Anna");
