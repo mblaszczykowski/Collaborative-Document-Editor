@@ -1,0 +1,69 @@
+version: 2
+
+# Why this exists at all, in a project that deliberately avoids dependencies:
+#
+# The narrative of this repository includes three access-control holes, all found by a human
+# reading code (ADR-0012). A known-vulnerable dependency is the same kind of problem one layer
+# down — nobody forgets it on purpose, and nothing reports it. The whole point of plan v3 is
+# replacing "somebody will notice" with something that notices on its own.
+#
+# Grouped updates, not one pull request per dependency. Ungrouped Dependabot on a three-module
+# build produces enough noise that the pull requests stop being read, and an update mechanism
+# nobody reads is worse than none: it looks like coverage while providing none.
+
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Spring Boot's modules move together and are only ever tested together — splitting them
+      # across pull requests would produce combinations that never ship.
+      spring:
+        patterns:
+          - "org.springframework*"
+          - "org.springframework.boot*"
+      observability:
+        patterns:
+          - "io.opentelemetry*"
+          - "io.micrometer*"
+      test-tooling:
+        patterns:
+          - "net.jqwik*"
+          - "org.assertj*"
+          - "org.testcontainers*"
+          - "org.junit*"
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      codemirror:
+        patterns:
+          - "@codemirror/*"
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react*"
+      observability:
+        patterns:
+          - "@opentelemetry/*"
+      build-tooling:
+        patterns:
+          - "vite"
+          - "vitest"
+          - "typescript"
+          - "oxlint"
+          - "@vitejs/*"
+          - "@playwright/*"
+
+  # The workflows themselves pin action versions, and a stale pinned action is the supply-chain
+  # surface people forget they have.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

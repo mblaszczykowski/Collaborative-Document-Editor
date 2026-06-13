@@ -53,6 +53,43 @@ jobs:
           name: jmh-result
           path: crdt-core/target/jmh-result.json
 
+  simulation:
+    name: Deterministic simulation — 20 000 seeds per scenario
+    runs-on: ubuntu-latest
+    # The pull-request run explores 200 seeds in under a second, which confirms known-good
+    # behaviour. This one searches: 20 000 seeds per scenario, about a hundred times the
+    # schedules, still without Docker because the simulation touches no infrastructure.
+    #
+    # Same division of labour as the property tests above — confirm on every change, search
+    # overnight. The difference from the chaos job below is that anything found here comes with
+    # a seed, so it converts into a permanent regression test instead of a note saying it once
+    # went red.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - run: ./mvnw -B install -DskipTests
+
+      - name: Simulation sweep
+        run: >-
+          ./mvnw -B -pl app test
+          -Dtest=ClusterSimulationTest
+          -Dsurefire.failIfNoSpecifiedTests=false
+          -Dsimulation.seeds=20000
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          # The report contains the failing seed and the full event history. That pair is the
+          # entire deliverable: paste the seed into REGRESSION_SEEDS and the interleaving
+          # replays exactly, on any machine.
+          name: simulation-counterexamples
+          path: app/target/surefire-reports/
+
   chaos:
     name: Chaos klastra — 10 przebiegów pod rząd
     runs-on: ubuntu-latest

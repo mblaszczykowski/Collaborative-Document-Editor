@@ -72,7 +72,11 @@ class ClusterChaosIT extends IntegrationTestBase {
                 // przyspieszona na potrzeby testu: mechanizm jest ten sam, tylko nie czekamy
                 // pół minuty na jego uruchomienie.
                 "--collabedit.cluster.anti-entropy-interval-ms=1000",
-                "--otel.sdk.disabled=true");
+                "--otel.sdk.disabled=true",
+                // Not optional since CP16: TokenService has no default secret and a context
+                // that cannot build it fails as "Unable to start web server", which points
+                // nowhere near the cause.
+                "--collabedit.auth.secret=" + TEST_SECRET);
         secondInstancePort = secondInstance.getEnvironment()
             .getProperty("local.server.port", Integer.class, 0);
     }

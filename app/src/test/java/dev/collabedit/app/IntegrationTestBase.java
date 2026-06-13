@@ -32,6 +32,21 @@ import org.testcontainers.utility.DockerImageName;
 @Tag("integration")
 public abstract class IntegrationTestBase {
 
+    /**
+     * Signing secret for every test context in this module.
+     *
+     * <p>{@code TokenService} has had no default since CP16 and refuses to start without one, so
+     * each Spring context must supply it exactly as a real deployment does. A constant rather
+     * than a random value: a token minted in one test and verified in another has to survive.
+     *
+     * <p>It lives here, shared, because the first version of that change left it out of the two
+     * contexts built outside this class — {@code DocumentRegistryMemoryIT}, which declares its
+     * own properties, and the second instance {@code ClusterChaosIT} starts by hand — and both
+     * failed with "Unable to start web server", which names the symptom and not the cause. One
+     * constant means there is no fourth place to forget.
+     */
+    static final String TEST_SECRET = "integration-test-secret-long-enough-ok";
+
     static final PostgreSQLContainer<?> POSTGRES =
         new PostgreSQLContainer<>(DockerImageName.parse("postgres:17-alpine"))
             .withDatabaseName("collabedit")
@@ -70,9 +85,6 @@ public abstract class IntegrationTestBase {
         // jest przedmiotem tych testów, a jej hałas utrudnia czytanie tych, które są.
         registry.add("otel.sdk.disabled", () -> "true");
 
-        // No default exists any more (CP16), so tests must supply one like every other
-        // deployment does. A fixed value rather than a random one: a token minted in one test
-        // and verified in another has to survive, and randomness here would buy nothing.
-        registry.add("collabedit.auth.secret", () -> "integration-test-secret-long-enough-ok");
+        registry.add("collabedit.auth.secret", () -> TEST_SECRET);
     }
 }

@@ -60,6 +60,7 @@ class DocumentRegistryMemoryIT {
         registry.add("spring.data.redis.host", IntegrationTestBase.REDIS::getHost);
         registry.add("spring.data.redis.port", () -> IntegrationTestBase.REDIS.getMappedPort(6379));
         registry.add("otel.sdk.disabled", () -> "true");
+        registry.add("collabedit.auth.secret", () -> IntegrationTestBase.TEST_SECRET);
 
         registry.add("collabedit.cluster.max-loaded-documents", () -> LIMIT);
         // Okno wsadowania praktycznie wyłączone — patrz komentarz powyżej.

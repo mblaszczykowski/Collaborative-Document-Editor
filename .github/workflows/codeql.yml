@@ -1,0 +1,66 @@
+name: CodeQL
+
+# Why a scanner in a project that argues against dependencies:
+#
+# Three access-control holes shipped in this repository and every one was found by a person
+# reading code (ADR-0012). That is the failure plan v3 is about — not carelessness, but relying
+# on somebody noticing. A scanner notices a different class of thing than a reviewer does, and
+# it notices it every time.
+#
+# Expectations are deliberately modest. CodeQL will not find an endpoint nobody authorized;
+# that is what EndpointAuthorizationArchitectureTest is for. It finds injection, path handling,
+# unsafe deserialization and the like — problems this codebase mostly avoids by shape rather
+# than by care, which is exactly why nobody would notice one appearing.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, because the query database improves independently of this code: a commit that was
+    # clean in January can be flagged in March without a line of it changing.
+    - cron: '0 4 * * 1'
+
+jobs:
+  analyze:
+    name: analyze — ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: java-kotlin
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        if: matrix.language == 'java-kotlin'
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # Manual build rather than autobuild: this project deliberately does not inherit from
+      # spring-boot-starter-parent (see README), and autobuild has been known to guess wrong
+      # about multi-module reactors that do not look conventional. -DskipTests because CodeQL
+      # needs the bytecode, not the test results — those are the `app` job's business.
+      - name: Build for analysis
+        if: matrix.language == 'java-kotlin'
+        run: ./mvnw -B install -DskipTests
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

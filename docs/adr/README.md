@@ -26,3 +26,4 @@ decyzja okazała się gorsza, niż zakładałem.
 | [0010](0010-rich-text.md) | Formatowanie jako osobna warstwa CRDT (Peritext), nie atrybut znaku | Zaakceptowany |
 | [0011](0011-komentarze.md) | Kotwica komentarza w CRDT, treść rozmowy poza nim | Zaakceptowany |
 | [0012](0012-autoryzacja-strukturalna.md) | Autoryzacja deklarowana przy endpoincie i wymuszana konstrukcją — endpoint bez deklaracji nie jest obsługiwany | Zaakceptowany |
+| [0013](0013-symulacja-deterministyczna.md) | Symulacja deterministyczna jako trzeci filar testów — ziarno zamiast uszeregowania wątków | Zaakceptowany |
