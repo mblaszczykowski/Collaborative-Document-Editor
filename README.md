@@ -315,7 +315,11 @@ kompresuje się do jednego bloku i omija ścieżkę, która faktycznie skaluje s
 | 100 000 znaków | 50 | 124 ms | 212 ms | 1299 ms | 1647 ms |
 
 **Wszystkie dwanaście scenariuszy zbiega się**, w tym 50 klientów w dokumencie
-100 tys. znaków. Rozmiar dokumentu praktycznie nie wpływa na medianę latencji — po wymianie
+100 tys. znaków. Tabela została **powtórzona po zmianach z przeglądu kodu** i odtworzyła się
+w granicach szumu — z jednym wyjątkiem wartym zapisania: p50 dla 10 tys. znaków i 10 klientów
+wyszło raz 28 ms, raz 43 ms. To jest **rozrzut między przebiegami na tej samej maszynie**,
+nie różnica między wersjami kodu, i najlepsza miara tego, jak serio traktować drugą cyfrę
+znaczącą w tej tabeli. Rozmiar dokumentu praktycznie nie wpływa na medianę latencji — po wymianie
 indeksu na treap wąskim gardłem przestała być struktura danych.
 
 **Ogony (p99) są tu wyraźnie grubsze niż w poprzednim pomiarze i jest to CENA
