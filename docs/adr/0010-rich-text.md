@@ -134,8 +134,15 @@ którą dałoby się wskazać.
 - **Dług dwóch implementacji urósł.** Warstwa znaczników istnieje w Javie i w TypeScripcie,
   bo klient musi wyliczać wygląd offline. Korpus konformancyjny chroni przed rozjazdem
   operacji **już utworzonych**, ale nie przed rozjazdem tabeli typów rozszerzalnych — ta jest
-  używana przy TWORZENIU operacji, więc wektory jej nie widzą. Pilnuje jej osobny test
-  jednostkowy po obu stronach, co jest zabezpieczeniem słabszym.
+  używana przy TWORZENIU operacji, więc wektory jej nie widzą.
+
+  <p><b>To zdanie brzmiało pierwotnie „pilnuje jej osobny test jednostkowy po obu stronach"
+  i było nieprawdziwe</b> — takiego testu nie było po żadnej ze stron. Wyszło przy przeglądzie
+  kodu. Teraz istnieje: obie strony czytają ten sam plik
+  [`conformance/schema/mark-types.json`](../../conformance/schema/mark-types.json), więc zmiana
+  jednej z nich wywala testy tej strony. Wniosek ogólniejszy: **ADR opisujący zabezpieczenie
+  jest wart tyle, co samo zabezpieczenie, a nie więcej** — i akurat ten opis przez dwa
+  checkpointy zastępował rzecz, której nie było.
 
 ### Zweryfikowane w CP15
 

@@ -2,6 +2,7 @@ package dev.collabedit.app.comments;
 
 import dev.collabedit.app.auth.PermissionService;
 import dev.collabedit.app.auth.Role;
+import dev.collabedit.crdt.MarkTypes;
 import dev.collabedit.app.auth.TokenAuthFilter;
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.crdt.MarkSet;
@@ -99,7 +100,7 @@ public class CommentController {
     private Set<String> anchoredThreadIds(UUID documentId) {
         return registry.get(documentId).withLock(replica -> replica.formatting().stream()
             .map(MarkSet.Span::marks)
-            .map(marks -> marks.get("comment"))
+            .map(marks -> marks.get(MarkTypes.COMMENT))
             .filter(java.util.Objects::nonNull)
             .collect(java.util.stream.Collectors.toSet()));
     }

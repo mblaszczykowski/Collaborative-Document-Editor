@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "Tablica typów znaczników — WSPÓLNE ŹRÓDŁO PRAWDY dla implementacji w Javie",
+    "(MarkTypes.java) i w TypeScripcie (crdt/types.ts).",
+    "",
+    "Dlaczego osobny plik, a nie zwykły wektor konformancyjny: wektory zawierają operacje",
+    "JUŻ UTWORZONE, więc pinują strony kotwic wybrane w chwili generowania. Ta tablica jest",
+    "używana przy TWORZENIU operacji — zmiana jej po jednej stronie nie zmienia ani jednego",
+    "wektora, a zmienia zachowanie edytora. Rozjazd objawiłby się dopiero u użytkownika,",
+    "jako „u mnie pogrubienie rośnie przy pisaniu, u ciebie nie”.",
+    "",
+    "Katalog schema/ jest poza korpusem wektorów celowo: obie strony wczytują conformance/*.json",
+    "jako wektory, a to nie jest wektor."
+  ],
+  "expandsAtEnd": ["bold", "italic", "underline", "strike"],
+  "doesNotExpandAtEnd": ["code", "link", "comment"]
+}

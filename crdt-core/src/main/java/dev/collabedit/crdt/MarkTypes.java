@@ -34,6 +34,17 @@ public final class MarkTypes {
     public static final String LINK = "link";
 
     /**
+     * Kotwica komentarza (CP14).
+     *
+     * <p>Jest tu, a nie w warstwie komentarzy, bo z punktu widzenia CRDT to jest zwykły
+     * znacznik — cała różnica polega na tym, że jego wartością jest identyfikator wątku.
+     * Stała istnieje po to, żeby ten łańcuch znaków nie był wpisywany z ręki w autoryzacji
+     * ramek i w warstwie komentarzy, gdzie literówka nie wywołałaby błędu, tylko cichą
+     * zmianę uprawnień.
+     */
+    public static final String COMMENT = "comment";
+
+    /**
      * Typy, których zakres <b>rośnie</b> przy pisaniu tuż za nim.
      *
      * <p>Nieznany typ NIE rośnie. Jest to wybór ostrożny: znacznik, który rozszerza się
@@ -44,10 +55,5 @@ public final class MarkTypes {
 
     public static boolean expandsAtEnd(String type) {
         return EXPANDING.contains(type);
-    }
-
-    /** Czy znacznik niesie wartość (adres linku) — do walidacji po stronie warstwy wyżej. */
-    public static boolean carriesValue(String type) {
-        return LINK.equals(type);
     }
 }

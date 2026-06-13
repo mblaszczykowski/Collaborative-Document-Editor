@@ -3,6 +3,7 @@ package dev.collabedit.app.ws;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.collabedit.app.auth.PermissionService;
 import dev.collabedit.app.auth.Role;
+import dev.collabedit.crdt.MarkTypes;
 import dev.collabedit.crdt.OpCodec;
 import java.io.IOException;
 import java.util.UUID;
@@ -187,7 +188,8 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         try {
             JsonNode root = OpCodec.mapper().readTree(bytes);
             JsonNode op = root.path("op");
-            return "m".equals(op.path("t").asText()) && "comment".equals(op.path("k").asText());
+            return "m".equals(op.path("t").asText())
+                && MarkTypes.COMMENT.equals(op.path("k").asText());
         } catch (IOException e) {
             // Nieczytelny ładunek to nie jest znacznik komentarza. Odmowa, a nie wyjątek:
             // interceptor nie może przewrócić obsługi kanału z powodu jednej złej ramki.
