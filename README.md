@@ -230,6 +230,10 @@ Testy są uporządkowane wg tego, jaki failure mode wyłapują, a nie wg pokryci
 | `historyEndpointsCheckAccess` | **Trzecia droga do tych samych danych.** CP12 zabezpieczył WebSocket i `GET /documents/{id}`, a historia oddawała pełną treść dowolnego dokumentu i pozwalała go **nadpisać** — czyli jedyne miejsce, w którym czytelnik mógł zmienić cudzy tekst |
 | `documentRoleOverridesWorkspaceRole` | Dziedziczenie z workspace'u nadpisuje jawne ograniczenie — nie da się odebrać dostępu do jednego dokumentu bez wyrzucania kogoś z zespołu |
 | `threadSurvivesDocumentRestore` | Cofnięcie wersji kasuje rozmowy dodane później |
+| `viewerCannotFormatText` | Uprawnienia sprawdzane dla tekstu, ale nie dla formatowania — a idzie ono tym samym kanałem i jest tak samo zmianą dokumentu |
+| `identityComesFromTokenNotFromRequest` | Tożsamość brana z parametru żądania zamiast z tokenu; identyfikator innej osoby widać w każdej ramce obecności |
+| `recoveredDraftIsPrivateToItsOwner` | Ratunkowa kopia niezsynchronizowanej pracy jednej osoby powstaje widoczna dla wszystkich |
+| `dokument, którego nie da się otworzyć` (e2e) | Odmowa dostępu kończy się pustą stroną — objaw nieodróżnialny od awarii |
 | `viewerCannotWriteText` / `commenterCannotChangeText` | Uprawnienia egzekwowane tylko w interfejsie; ramka wysłana z konsoli przechodzi |
 | `threadSurvivesDeletionOfAnchoredText` | Skasowanie tekstu kasuje rozmowę o nim — utrata kontekstu decyzji, po którą ludzie wracają po miesiącach |
 
@@ -485,8 +489,12 @@ rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
   komentarzy nie działa offline (bufor obejmuje operacje CRDT, nie REST), panel odświeża się
   przez odpytywanie zamiast przez zdarzenie, brak powiadomień i wzmianek, a odebranie
   uprawnień działa w granicy 5 s cache'u.
-- **Cofanie działa tylko w obrębie sesji.** `UndoManager` cofa własne operacje i scala
-  ciągłe pisanie w jeden krok, ale stos żyje w pamięci karty i znika po przeładowaniu.
+- **Cofanie działa tylko w obrębie sesji i nie obejmuje formatowania.** `UndoManager` cofa
+  własne wstawienia i usunięcia, scala ciągłe pisanie w jeden krok — ale stos żyje w pamięci
+  karty i znika po przeładowaniu, a operacje znacznikowe nie trafiają do niego wcale.
+  Ctrl+Z po Ctrl+B cofa więc **poprzednią zmianę tekstu**, a nie pogrubienie. Zachowanie
+  przewidywalne, ale zaskakujące; cofanie świadome znaczników wymaga rozszerzenia stosu
+  o operacje odwrotne do `AddMark`/`RemoveMark`, czyli tego samego, co CRDT-owe undo.
 
 **Infrastruktura i eksploatacja**
 - **Uwierzytelnianie bez hasła**, token podpisany HMAC, bez unieważniania i rotacji klucza.
@@ -619,11 +627,11 @@ okazji potwierdziło, i z tym, co okazało się nieprawdą.
 
 | Warstwa | Testy |
 |---|---:|
-| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, pomiar kosztu | 42 |
-| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 83 |
-| `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 49 |
-| end-to-end — dwie prawdziwe przeglądarki | 16 |
-| **razem** | **190** |
+| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, pomiar kosztu | 43 |
+| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 86 |
+| `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 51 |
+| end-to-end — dwie prawdziwe przeglądarki | 17 |
+| **razem** | **197** |
 
 Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
 trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami
