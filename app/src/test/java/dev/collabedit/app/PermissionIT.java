@@ -347,6 +347,58 @@ class PermissionIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("tożsamość bierze się z tokenu, a nie z parametru żądania")
+    void identityComesFromTokenNotFromRequest() throws Exception {
+        User anna = newUser("Anna");
+        User ciekawski = newUser("Ciekawski");
+
+        UUID workspace = UUID.randomUUID();
+        jdbc.update("INSERT INTO workspaces (id, name, owner_id) VALUES (?, ?, ?)",
+            workspace, "Prywatny zespół Anny", anna.id());
+
+        // Identyfikator innego użytkownika NIE jest sekretem — widać go w każdej ramce
+        // obecności wspólnego dokumentu. Autoryzacja oparta na tym, że ktoś go nie zna,
+        // nie jest autoryzacją; ten sam błąd co IDOR zamknięty w CP12, tylko na innej encji.
+        assertThat(get("/api/workspaces?owner=" + anna.id(), ciekawski.token()).body())
+            .as("parametr żądania decyduje, czyje workspace'y zobaczy pytający")
+            .doesNotContain("Prywatny zespół Anny");
+
+        assertThat(get("/api/workspaces?owner=" + anna.id(), anna.token()).body())
+            .as("właściciel przestał widzieć własne workspace'y")
+            .contains("Prywatny zespół Anny");
+
+        // Tworzenie też: bez tego dało się wstawić komuś wpis na jego własną listę.
+        post("/api/workspaces", ciekawski.token(), "{\"name\":\"Podrzucony\"}");
+        assertThat(get("/api/workspaces", anna.token()).body())
+            .as("obcy utworzył workspace należący do kogoś innego")
+            .doesNotContain("Podrzucony");
+    }
+
+    @Test
+    @DisplayName("odzyskany szkic należy do osoby, która go odzyskała, i jest prywatny")
+    void recoveredDraftIsPrivateToItsOwner() throws Exception {
+        User anna = newUser("Anna");
+        User ktokolwiek = newUser("Ktokolwiek");
+
+        String created = post("/api/documents/recovered", anna.token(),
+            "{\"title\":\"Odzyskany szkic Anny\",\"text\":\"praca offline\"}").body();
+        UUID id = UUID.fromString(created.replaceAll(".*\"id\"\\s*:\\s*\"([^\"]+)\".*", "$1"));
+
+        // Szkic powstaje z niezsynchronizowanej pracy JEDNEJ osoby, której nikt nigdy nie
+        // widział. Domyślna widoczność „link" oddałaby ją wszystkim zalogowanym dokładnie
+        // w chwili, w której użytkownik martwi się o jej utratę.
+        assertThat(get("/api/documents/" + id, ktokolwiek.token()).statusCode())
+            .as("odzyskany szkic jest czytelny dla każdego zalogowanego")
+            .isEqualTo(404);
+        assertThat(get("/api/documents/" + id, anna.token()).body())
+            .as("odzyskujący nie ma dostępu do własnego szkicu")
+            .contains("praca offline");
+        assertThat(permissions.roleOf(anna.id(), id))
+            .as("odzyskujący nie jest właścicielem, więc nie może zmienić widoczności")
+            .contains(Role.OWNER);
+    }
+
+    @Test
     @DisplayName("obcy użytkownik nie widzi cudzego dokumentu prywatnego w koszu")
     void trashDoesNotLeakForeignDocuments() {
         User anna = newUser("Anna");

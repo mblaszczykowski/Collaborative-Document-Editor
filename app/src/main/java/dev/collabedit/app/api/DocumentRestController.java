@@ -264,24 +264,45 @@ public class DocumentRestController {
     // Workspace'y
     // ------------------------------------------------------------------
 
-    public record CreateWorkspaceRequest(String name, String ownerId) {
+    public record CreateWorkspaceRequest(String name) {
     }
 
+    /**
+     * Workspace'y <b>pytającego</b> — nie te, o które poprosi w parametrze.
+     *
+     * <p>Pierwotnie właściciel przyjeżdżał jako {@code ?owner=...} z żądania, co znaczyło,
+     * że dowolny użytkownik mógł wylistować cudze workspace'y, znając czyjś identyfikator —
+     * a identyfikator innej osoby widać w ramkach obecności każdego wspólnego dokumentu.
+     * Ta sama klasa błędu co IDOR zamknięty w CP12, tylko na innej encji: <b>tożsamość
+     * pochodząca z żądania zamiast z tokenu</b>.
+     */
     @GetMapping("/workspaces")
-    public List<DocumentCatalog.Workspace> workspaces(@RequestParam("owner") String ownerId) {
-        return catalog.workspacesOf(ownerId);
+    public ResponseEntity<List<DocumentCatalog.Workspace>> workspaces(HttpServletRequest request) {
+        String caller = callerId(request);
+        if (caller == null) {
+            return ResponseEntity.status(DENIED).build();
+        }
+        return ResponseEntity.ok(catalog.workspacesOf(caller));
     }
 
     @PostMapping("/workspaces")
-    public DocumentCatalog.Workspace createWorkspace(@RequestBody CreateWorkspaceRequest request) {
+    public ResponseEntity<DocumentCatalog.Workspace> createWorkspace(
+            @RequestBody CreateWorkspaceRequest body, HttpServletRequest request) {
+        // Właściciel również z tokenu: bez tego dało się utworzyć workspace należący
+        // do kogoś innego, czyli wstrzyknąć komuś wpis na jego własną listę.
+        String caller = callerId(request);
+        if (caller == null) {
+            return ResponseEntity.status(DENIED).build();
+        }
         UUID id = UUID.randomUUID();
-        String name = request.name() == null || request.name().isBlank()
-            ? "Bez nazwy" : request.name().trim();
-        catalog.createWorkspace(id, name, request.ownerId());
-        return catalog.workspacesOf(request.ownerId()).stream()
+        String name = body.name() == null || body.name().isBlank()
+            ? "Bez nazwy" : body.name().trim();
+        catalog.createWorkspace(id, name, caller);
+        return catalog.workspacesOf(caller).stream()
             .filter(w -> w.id().equals(id))
             .findFirst()
-            .orElseThrow();
+            .map(ResponseEntity::ok)
+            .orElseGet(() -> ResponseEntity.internalServerError().build());
     }
 
     public record RecoveredRequest(String title, String text) {
@@ -297,13 +318,28 @@ public class DocumentRestController {
      *
      * <p>Treść jest wstawiana jako zwykłe operacje repliki serwera — nowy dokument nie jest
      * więc niczym szczególnym i od pierwszej chwili ma pełną historię, jak każdy inny.
+     *
+     * <p><b>Właściciel i widoczność są tu ustawiane inaczej niż przy zwykłym tworzeniu</b>,
+     * i jest to celowe. Zwykły dokument powstaje domyślnie jako {@code link} — bo powstaje
+     * po to, żeby go komuś pokazać. Odzyskany szkic powstaje z <b>niezsynchronizowanej pracy
+     * jednej osoby</b>, której nikt inny nigdy nie widział; oddanie go wszystkim zalogowanym
+     * byłoby ujawnieniem treści dokładnie w tym momencie, w którym użytkownik martwi się
+     * o jej utratę. Do CP12 nie miało to znaczenia (nie było widoczności), po CP12 miało —
+     * i było przeoczeniem.
      */
     @PostMapping("/documents/recovered")
-    public DocumentCatalog.DocumentSummary createRecovered(@RequestBody RecoveredRequest request) {
+    public DocumentCatalog.DocumentSummary createRecovered(@RequestBody RecoveredRequest request,
+                                                           HttpServletRequest httpRequest) {
         UUID id = UUID.randomUUID();
         String title = request.title() == null || request.title().isBlank()
             ? "Odzyskany szkic" : request.title();
         catalog.create(id, title, null);
+
+        String caller = callerId(httpRequest);
+        if (caller != null) {
+            permissions.setOwner(id, caller);
+            permissions.setVisibility(id, "private");
+        }
 
         String text = request.text() == null ? "" : request.text();
         if (!text.isEmpty()) {
