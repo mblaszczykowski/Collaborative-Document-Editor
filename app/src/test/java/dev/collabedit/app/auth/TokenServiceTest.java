@@ -1,6 +1,7 @@
 package dev.collabedit.app.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
@@ -31,7 +32,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 class TokenServiceTest {
 
-    private final TokenService tokens = new TokenService("sekret-testowy");
+    private final TokenService tokens = new TokenService("test-secret-long-enough-to-be-accepted");
 
     @ParameterizedTest
     @ValueSource(strings = {
@@ -64,7 +65,7 @@ class TokenServiceTest {
     @Test
     @DisplayName("token podpisany innym kluczem jest odrzucony")
     void tokenFromAnotherSecretIsRejected() {
-        String foreign = new TokenService("inny-sekret")
+        String foreign = new TokenService("a-different-secret-long-enough-to-pass")
             .issue(new TokenService.Principal("user-1", "Anna", "#4C5FD5"));
 
         assertThat(tokens.verify(foreign)).isEmpty();
@@ -81,5 +82,37 @@ class TokenServiceTest {
     @DisplayName("brak tokenu daje odmowę")
     void nullTokenIsRejected() {
         assertThat(tokens.verify(null)).isEmpty();
+    }
+
+    // ------------------------------------------------------------------
+    // CP16 — the secret itself
+    // ------------------------------------------------------------------
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "   "})
+    @DisplayName("a server with no configured secret refuses to start")
+    void missingSecretRefusesToStart(String secret) {
+        // The failure mode this replaces was silent and total. The secret used to fall back to
+        // a value checked into this repository, so a deployment that forgot the variable ran
+        // on a key every reader of the repo knows — and since the token carries the user id,
+        // knowing the key is enough to mint a token for ANY user. The server started, served,
+        // and looked healthy the whole time.
+        assertThatThrownBy(() -> new TokenService(secret))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("collabedit.auth.secret")
+            // The message has to say what to do, not just what is wrong: this fires at startup,
+            // usually for somebody deploying rather than the person who wrote the check.
+            .hasMessageContaining("openssl rand");
+    }
+
+    @Test
+    @DisplayName("a secret too short to be worth signing with is refused")
+    void tooShortSecretRefusesToStart() {
+        // HMAC-SHA256 accepts a key of any length, so without this check
+        // `collabedit.auth.secret=x` starts a server whose tokens are trivially forgeable —
+        // which passes the "is it set?" test while providing no security at all.
+        assertThatThrownBy(() -> new TokenService("short"))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("at least 32");
     }
 }

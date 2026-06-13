@@ -24,8 +24,10 @@ import org.springframework.stereotype.Service;
  * WebSocketa wpina się uwierzytelnienie (ramka {@code CONNECT}, nie każda wiadomość).
  *
  * <p><b>Czego tu brakuje na produkcję</b> — wprost, żeby nikt nie wziął tego za wzorzec:
- * rotacji klucza, unieważniania tokenów, powiązania tokenu z sesją, ochrony przed odtworzeniem,
- * i sekretu spoza konfiguracji.
+ * rotacji klucza, unieważniania tokenów, powiązania tokenu z sesją i ochrony przed odtworzeniem.
+ *
+ * <p>Sekret <b>przestał</b> być na tej liście w CP16: nie ma już wartości domyślnej, więc
+ * artefakt nie niesie w sobie znanego klucza — szczegóły przy konstruktorze.
  */
 @Service
 public class TokenService {
@@ -36,7 +38,56 @@ public class TokenService {
 
     private final SecretKeySpec key;
 
-    public TokenService(@Value("${collabedit.auth.secret:rozwojowy-sekret-nie-do-produkcji}") String secret) {
+    /**
+     * Minimum length of a usable signing secret.
+     *
+     * <p>HMAC-SHA256 accepts a key of any length, so nothing except this check stops
+     * {@code collabedit.auth.secret=x} from starting a server whose tokens are trivially
+     * forgeable. 32 bytes matches the output width of the hash: shorter adds no security the
+     * construction does not already provide, and much shorter is guessable.
+     */
+    private static final int MIN_SECRET_LENGTH = 32;
+
+    /**
+     * The secret has <b>no default</b>, and that is the point.
+     *
+     * <p>It used to fall back to a value checked into this repository. Any deployment that
+     * forgot to set the variable therefore ran on a secret every reader of the repo knows —
+     * and since the token carries the user id, knowing the secret is enough to mint a token
+     * for <b>any</b> user, which is total authentication bypass. The failure was silent: a
+     * server with a forgeable secret starts, serves, and looks healthy.
+     *
+     * <p>Refusing to start is the right shape of answer because the alternatives are worse.
+     * Generating a random secret per instance would break horizontal scaling outright — two
+     * instances could not validate each other's tokens, and {@link
+     * dev.collabedit.app.cluster.ClusterBus} assumes any instance can serve any session
+     * (ADR-0004). Warning and continuing is what the old code effectively did.
+     *
+     * <p>The cost is real and is not hidden: {@code ./mvnw -pl app spring-boot:run} now fails
+     * without an environment variable. Docker Compose and CI set it; the README documents the
+     * export. One line of friction in exchange for there being no known secret baked into the
+     * artifact at all.
+     */
+    public TokenService(@Value("${collabedit.auth.secret:}") String secret) {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("""
+                collabedit.auth.secret is not set.
+
+                There is deliberately no default: a fallback secret checked into the repository \
+                means anyone who can read it can mint a token for any user.
+
+                For local development:
+                    export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)
+
+                Docker Compose sets it for you. In a real deployment it must come from the \
+                environment or a secret store, never from a file in the image.""");
+        }
+        if (secret.length() < MIN_SECRET_LENGTH) {
+            throw new IllegalStateException(
+                "collabedit.auth.secret is only " + secret.length() + " characters; at least "
+                    + MIN_SECRET_LENGTH + " are required. Generate one with: "
+                    + "openssl rand -base64 32");
+        }
         this.key = new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
     }
 

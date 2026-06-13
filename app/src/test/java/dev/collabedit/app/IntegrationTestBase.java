@@ -69,5 +69,10 @@ public abstract class IntegrationTestBase {
         // i zaśmieca wyjście ostrzeżeniami o nieudanym eksporcie. Obserwowalność nie
         // jest przedmiotem tych testów, a jej hałas utrudnia czytanie tych, które są.
         registry.add("otel.sdk.disabled", () -> "true");
+
+        // No default exists any more (CP16), so tests must supply one like every other
+        // deployment does. A fixed value rather than a random one: a token minted in one test
+        // and verified in another has to survive, and randomness here would buy nothing.
+        registry.add("collabedit.auth.secret", () -> "integration-test-secret-long-enough-ok");
     }
 }

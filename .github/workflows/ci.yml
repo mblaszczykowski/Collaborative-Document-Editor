@@ -147,9 +147,14 @@ jobs:
 
       # Backend i frontend startują jako jawne kroki, a nie ukryte w konfiguracji
       # Playwrighta — widać, czego ten test wymaga do działania.
+      # TokenService has no default secret since CP16 and refuses to start without one, so
+      # that a deployment which forgets this variable fails loudly instead of signing tokens
+      # with a key every reader of the repository knows. CI is such a deployment.
       - run: |
           ./mvnw -pl app spring-boot:run > /tmp/backend.log 2>&1 &
           npx wait-on -t 120000 http://localhost:8080/actuator/health
+        env:
+          COLLABEDIT_AUTH_SECRET: ci-only-secret-long-enough-to-be-accepted
       - run: |
           npm run dev > /tmp/vite.log 2>&1 &
           npx wait-on -t 60000 http://localhost:5173

@@ -112,9 +112,13 @@ services:
       # hałasem, który wygląda jak awaria, a jest brakiem opcjonalnej usługi.
       OTEL_SDK_DISABLED: "true"
       # Sekret jawnie w repo z tego samego powodu co hasło Postgresa: środowisko jest
-      # wyłącznie lokalne. Nazwa mówi wprost, czym to nie jest — domyślna wartość
-      # w TokenService brzmi tak samo i tak samo nie nadaje się na produkcję.
-      COLLABEDIT_AUTH_SECRET: lokalny-sekret-nie-do-produkcji
+      # wyłącznie lokalne, a nazwa mówi wprost, czym to nie jest.
+      #
+      # Od CP16 TokenService NIE MA wartości domyślnej i odmawia startu bez sekretu —
+      # wcześniej ten wiersz można było pominąć i dostać serwer podpisujący tokeny
+      # kluczem znanym każdemu, kto przeczytał repozytorium. Instancja publiczna musi
+      # dostać tę wartość ze środowiska, nigdy z pliku w obrazie.
+      COLLABEDIT_AUTH_SECRET: local-development-secret-not-for-production
     ports:
       - "8080:8080"
     depends_on:
