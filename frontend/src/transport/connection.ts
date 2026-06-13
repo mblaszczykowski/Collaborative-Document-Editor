@@ -413,6 +413,14 @@ export class DocumentConnection {
       window.clearInterval(this.progressTimer)
       this.progressTimer = null
     }
+    // Ponowienie po ograniczeniu tempa też jest zaplanowane w oknie przeglądarki i też
+    // musi zniknąć razem z połączeniem. Dziś zatrzymałby je warunek w publishOp, ale
+    // opieranie się na tym znaczy, że pierwsza zmiana kolejkująca operacje przy braku
+    // połączenia zaczęłaby wpychać je do połączenia, którego już nie ma.
+    if (this.throttleRetryTimer !== null) {
+      window.clearTimeout(this.throttleRetryTimer)
+      this.throttleRetryTimer = null
+    }
     for (const subscription of this.subscriptions) subscription.unsubscribe()
     this.subscriptions = []
     void this.client?.deactivate()

@@ -183,6 +183,13 @@ public class DocumentService {
     public void broadcastAll() {
         for (DocumentReplica replica : registry.loaded()) {
             try {
+                // Bezblokadowe sprawdzenie przed zajęciem blokady — z tego samego powodu
+                // co w flushAll, tylko silniejszego: ta pętla chodzi co 10 ms, więc przy
+                // wielu otwartych dokumentach to ona, a nie ruch użytkowników, byłaby
+                // największym konsumentem blokad w systemie.
+                if (!replica.hasPendingBroadcast()) {
+                    continue;
+                }
                 broadcast(replica.documentId(), replica.drainBroadcast());
             } catch (RuntimeException e) {
                 log.error("Nie udało się rozgłosić operacji dokumentu {}", replica.documentId(), e);

@@ -280,6 +280,18 @@ public class DocumentReplica {
         return !unwritten.isEmpty() || !pendingBroadcast.isEmpty();
     }
 
+    /**
+     * Czy jest cokolwiek do rozgłoszenia — sprawdzenie bez blokady, jw.
+     *
+     * <p>Osobno od {@link #hasPendingWork()}, bo pętla rozgłaszania chodzi <b>pięć razy
+     * częściej</b> niż zapisująca (10 ms wobec 50 ms) i interesuje ją wyłącznie jeden
+     * z dwóch buforów. Użycie szerszego warunku zajmowałoby blokadę dokumentu, który ma
+     * coś do zapisania, ale nic do rozesłania — czyli w większości przebiegów.
+     */
+    public boolean hasPendingBroadcast() {
+        return !pendingBroadcast.isEmpty();
+    }
+
     public int unwrittenCount() {
         lock.lock();
         try {
