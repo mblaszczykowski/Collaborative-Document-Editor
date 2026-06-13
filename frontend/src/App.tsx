@@ -200,6 +200,12 @@ function DocumentWorkspace(props: {
    * zwrócić 404 dla poprawnego identyfikatora.
    */
   const [unavailable, setUnavailable] = useState(false)
+
+  // Te same progi co po stronie serwera (Role.canWriteText / Role.canComment). Duplikat
+  // reguły jest tu ŚWIADOMY i nieszkodliwy: serwer sprawdza niezależnie i to on rozstrzyga.
+  // Klient używa jej wyłącznie do tego, żeby nie proponować gestu, który zostanie odrzucony.
+  const canWrite = role === 'owner' || role === 'editor'
+  const canComment = canWrite || role === 'commenter'
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
   const [pendingCount, setPendingCount] = useState(0)
   const [presence, setPresence] = useState<PresenceEntry[]>([])
@@ -242,9 +248,12 @@ function DocumentWorkspace(props: {
     const link = connection.current
     const range = selectionRange.current
     if (model === null || link === null || range === null) return
+    // Jw. — panel nie pokazuje czytelnikowi pola komentarza, ale wejście do tej funkcji
+    // ma być zamknięte niezależnie od tego, co akurat rysuje interfejs.
+    if (!canComment) return
     link.send(model.addMark(range.from, range.to, 'comment', threadId))
     setFormatting(model.formatting())
-  }, [])
+  }, [canComment])
 
   /**
    * Przełącza formatowanie na zaznaczeniu.
@@ -258,6 +267,12 @@ function DocumentWorkspace(props: {
     const model = document.current
     const link = connection.current
     if (model === null || link === null || from >= to) return
+    // Wyszarzenie przycisków nie wystarcza: SKRÓT KLAWISZOWY omija pasek narzędzi,
+    // a `EditorState.readOnly` blokuje wyłącznie zmiany dokumentu — polecenia z keymapy
+    // wykonują się dalej. Bez tego warunku Ctrl+B u czytelnika tworzył znacznik lokalnie,
+    // serwer odrzucał go po cichu i replika rozjeżdżała się na zawsze. Ta sama klasa błędu
+    // co przy limicie tempa, tylko wejściem, o którym łatwo zapomnieć.
+    if (!canWrite) return
 
     const alreadyMarked = coveredBy(model.formatting(), type, from, to)
     const op = alreadyMarked
@@ -269,7 +284,7 @@ function DocumentWorkspace(props: {
     // lokalnie, więc czekanie oznaczałoby widoczne opóźnienie między naciśnięciem Ctrl+B
     // a zmianą wyglądu — dokładnie ten koszt, którego edycja optymistyczna ma unikać.
     setFormatting(model.formatting())
-  }, [])
+  }, [canWrite])
 
   const refreshStats = useCallback(() => {
     const model = document.current
@@ -434,12 +449,6 @@ function DocumentWorkspace(props: {
   }
 
   const others = presence.filter((entry) => entry.userId !== session.userId)
-
-  // Te same progi co po stronie serwera (Role.canWriteText / Role.canComment). Duplikat
-  // reguły jest tu ŚWIADOMY i nieszkodliwy: serwer sprawdza niezależnie i to on rozstrzyga.
-  // Klient używa jej wyłącznie do tego, żeby nie proponować gestu, który zostanie odrzucony.
-  const canWrite = role === 'owner' || role === 'editor'
-  const canComment = canWrite || role === 'commenter'
 
   return (
     <div className="app">

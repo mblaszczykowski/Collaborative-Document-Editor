@@ -326,6 +326,13 @@ public class TestStompClient implements AutoCloseable {
         return received.size();
     }
 
+    /** Ile operacji znacznikowych zna ta replika — do sprawdzania, czy formatowanie doszło. */
+    public int markCount() {
+        synchronized (documentLock) {
+            return document.markCount();
+        }
+    }
+
     public long lastAckSeq() {
         return lastAckSeq.get();
     }

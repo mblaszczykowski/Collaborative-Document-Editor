@@ -189,6 +189,39 @@ class PermissionIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("rola tylko do odczytu nie może też SFORMATOWAĆ tekstu")
+    void viewerCannotFormatText() throws Exception {
+        User anna = newUser("Anna");
+        User obserwator = newUser("Obserwator");
+        UUID document = privateDocument(anna, "Do czytania, nie do pogrubiania");
+        permissions.grant(document, obserwator.id(), Role.VIEWER);
+
+        try (TestStompClient owner = new TestStompClient(port, anna.token(), document, 706)) {
+            owner.insert(0, "oryginał");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+        }
+
+        try (TestStompClient viewer = new TestStompClient(port, obserwator.token(), document, 707)) {
+            viewer.requestSync(0);
+            viewer.awaitCondition(() -> viewer.text().equals("oryginał"), PATIENCE, "stan pobrany");
+
+            // Formatowanie idzie TYM SAMYM kanałem co tekst i jest tak samo zmianą dokumentu.
+            // Osobny test, bo w interfejsie prowadzi do niego osobne wejście — skrót
+            // klawiszowy, którego `EditorState.readOnly` nie blokuje.
+            viewer.markReturningOp(0, 5, "bold", null);
+            Thread.sleep(500);
+        }
+
+        try (TestStompClient check = new TestStompClient(port, anna.token(), document, 708)) {
+            check.requestSync(0);
+            check.awaitCondition(() -> check.text().equals("oryginał"), PATIENCE, "stan pobrany");
+            assertThat(check.markCount())
+                .as("czytelnik nadał formatowanie — rola tylko do odczytu zmieniła dokument")
+                .isZero();
+        }
+    }
+
+    @Test
     @DisplayName("odebranie dostępu zaczyna działać")
     void revokingAccessTakesEffect() throws Exception {
         User anna = newUser("Anna");
