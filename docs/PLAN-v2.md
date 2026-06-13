@@ -12,6 +12,10 @@
 > | CP14 — Komentarze | **zamknięty** | Kotwica to znacznik z CP13 — **zero linijek w warstwie CRDT** |
 > | CP15 — Pomiar + dokumentacja | **zamknięty** | Dwa błędy z pomiaru, obawa o GC potwierdzona liczbą, drugie demo |
 >
+> **Audyt końcowy planu (po CP15).** Przejście punkt po punkcie przez CP10–CP15 znalazło
+> jedną rzecz **niezrobioną i groźną** oraz kilka zrobionych inaczej, niż zakładał plan —
+> rozliczenie w sekcji [11](#11-audyt-końcowy--co-nie-zostało-zrobione).
+>
 > **Trzy rzeczy, których ten plan nie przewidział, a które okazały się najważniejsze.**
 >
 > 1. **Limit tempa gubił operacje po cichu** (CP12 wprowadził, CP15 wykrył). Odmowa z powodu
@@ -626,3 +630,44 @@ Zakres rozszerzony nie znaczy nieograniczony. Poza zakresem zostają, do sekcji
   połączenia.
 - **Powiadomienia, wzmianki, eksport do docx/pdf, wersje mobilne.** Zakres produktowy
   bez zawartości inżynierskiej odpowiadającej tezie projektu.
+
+
+---
+
+## 11. Audyt końcowy — co NIE zostało zrobione
+
+Plan przeszedł na koniec punkt po punkcie, przeciw kodowi, a nie przeciw pamięci. Sekcja
+istnieje, bo „plan zamknięty" bez takiego przejścia jest deklaracją, a nie faktem — i bo
+pierwsza pozycja poniżej to dowód, że deklaracja by nie wystarczyła.
+
+### Niezrobione, znalezione audytem i naprawione
+
+| Punkt planu | Co było |
+|---|---|
+| §4.3 „druga linia obrony", test `historyRestoreChecksWriteAccess` | **`HistoryController` nie sprawdzał uprawnień w ogóle.** Trzy endpointy otwarte, w tym pełny odczyt treści cudzego dokumentu i jego nadpisanie. Jedyna droga w projekcie, którą rola bez prawa zapisu mogła zmienić tekst. Naprawione, test sprawdzony mutacją |
+| §4.6 `workspaceRoleIsOverriddenByDocumentRole` | Dziedziczenie działało, testu nie było. Dopisany |
+| §6.4 `threadSurvivesDocumentRestore` | Zachowanie poprawne, testu nie było. Dopisany |
+
+Pierwsza pozycja jest ważniejsza niż jej naprawa. Plan **wymieniał tę ścieżkę wprost**
+i to nie wystarczyło — czyli zabezpieczenie oparte na tym, że ktoś pamięta o punkcie
+z dokumentu, nie jest zabezpieczeniem. Wniosek trafił do ADR-0009 i do README.
+
+### Zrobione inaczej, niż zakładał plan — świadomie
+
+| Punkt planu | Jak jest |
+|---|---|
+| §2.2 „rozgłaszanie zmienionego uczestnika, nie całej listy" | Delta dla ruchu kursora, **pełna lista przy dołączeniu i odejściu**. Odejścia nie da się wyrazić deltą („tego wpisu już nie ma"), a trzeci rodzaj komunikatu kosztowałby więcej niż wysłanie listy przy zdarzeniu, które zdarza się raz na sesję |
+| §3.2(b) „rejestr utrzymuje zbiór brudnych dokumentów" | Bezblokadowe `hasPendingWork()` przed zajęciem blokady. Rozwiązuje ten sam problem (10 tys. zajęć blokady/s) bez dodatkowego stanu do utrzymania w synchronizacji |
+| §4.4 „kanał `collabedit:acl:{userId}`, aktywne zrywanie subskrypcji" | Cache uprawnień z TTL 5 s + natychmiastowe unieważnienie na instancji, która odbiera dostęp. Odebranie działa **w granicy 5 s**, nie natychmiast na wszystkich instancjach. Tańsze i wystarczające przy tej skali; granica wpisana do README |
+| §4.6 `rateLimitClosesFloodingSession` | Serwer **nie zamyka sesji**, tylko odsyła `RATE_LIMITED`, a klient ponawia. Zamknięcie sesji przy przekroczeniu tempa jest utratą pracy klienta, który po prostu szybko pisze — patrz błąd opisany wyżej |
+| §5.5 „decyzja o reprezentacji bloku na starcie CP13" | Decyzja **odłożona**, świadomie i z powodem: brakowało pomiaru. Pomiar jest w CP15 i wypadł źle, więc zmiana przestała być opcjonalna — ale najtańszy moment (podniesienie wersji formatu) został przepuszczony. To jest realny koszt tej decyzji i nie ma sensu go ukrywać |
+
+### Niezrobione świadomie, wypisane w README
+
+- **Tabela `invitations`** (§4.2) — model uprawnień działa bez zapraszania; bez ekranu
+  do zarządzania dostępem tabela byłaby martwym schematem.
+- **Ekran zarządzania dostępem.** `grant` / `revoke` / `setVisibility` istnieją i są
+  przetestowane, ale wywołuje je wyłącznie kod. Model działa, brakuje mu ostatniego kroku
+  do bycia funkcją produktu.
+- **Hostowana instancja i link nad GIF-em** (§2.3, „docelowo"). Docker Compose uruchamia
+  całość jedną komendą; hostingu nie ma.
