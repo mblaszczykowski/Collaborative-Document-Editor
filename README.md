@@ -128,7 +128,8 @@ nigdy nie jest pusta, oraz — tam, gdzie czegoś jeszcze nie wiem — jawne
 Diagramy (architektura, droga pojedynczej edycji, stany połączenia):
 [`docs/architektura.md`](docs/architektura.md).
 Szczegóły implementacyjne algorytmu: [`docs/crdt-design.md`](docs/crdt-design.md).
-Plan pracy i checkpointy: [v1](docs/IMPLEMENTATION_PLAN.md) (CP1–CP9), [v2](docs/PLAN-v2.md) (CP10–CP15).
+Plan pracy i checkpointy: [v1](docs/IMPLEMENTATION_PLAN.md) (CP1–CP9), [v2](docs/PLAN-v2.md) (CP10–CP15),
+[v3](docs/PLAN-v3.md) (CP16–CP20, **otwarty** — nie dokłada funkcji, zamienia czujność na konstrukcję).
 
 ---
 
