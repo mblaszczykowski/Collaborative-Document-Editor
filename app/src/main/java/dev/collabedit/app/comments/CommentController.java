@@ -39,8 +39,6 @@ import org.springframework.web.bind.annotation.RestController;
 @CrossOrigin(originPatterns = {"http://localhost:*", "http://127.0.0.1:*"})
 public class CommentController {
 
-    private static final HttpStatus DENIED = HttpStatus.NOT_FOUND;
-
     private final CommentService comments;
     private final DocumentRegistry registry;
 

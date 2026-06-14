@@ -131,7 +131,7 @@
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 25 },
       "targets": [
         {
-          "expr": "sum(rate(crdt_gc_removed_characters_total[5m]))",
+          "expr": "sum(rate(crdt_gc_reclaimed_characters_total[5m]))",
           "legendFormat": "znaki/s"
         }
       ]

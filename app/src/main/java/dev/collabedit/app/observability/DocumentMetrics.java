@@ -60,7 +60,7 @@ public class DocumentMetrics {
     private final Timer persistDuration;
     private final Counter concurrentMerges;
     private final Counter gapRepairs;
-    private final Counter gcRemovedCharacters;
+    private final Counter gcReclaimedCharacters;
     private final Counter rejectedStaleOperations;
     private final Counter reconnects;
 
@@ -96,8 +96,17 @@ public class DocumentMetrics {
             .description("Naprawy luk w numeracji — czyli wiadomości zgubione przez Redis (ADR-0004)")
             .register(registry);
 
-        this.gcRemovedCharacters = Counter.builder("crdt.gc.removed.characters.total")
-            .description("Znaki usunięte fizycznie przez GC tombstone'ów (ADR-0005)")
+        // Nazwa zmieniona w CP18 z ".removed." na ".reclaimed.", bo licznik przestał znaczyć
+        // to, co znaczył. GC nie tylko USUWA bloki — od CP18 blok, którego usunąć nie wolno
+        // (origin, kotwica znacznika), PORZUCA TREŚĆ i zostaje w strukturze. Pamięć wraca
+        // w obu przypadkach, ale „usunięte" opisuje już tylko jeden z nich.
+        //
+        // Zmiana nazwy metryki zrywa ciągłość szeregu historycznego i wymaga poprawki
+        // w dashboardzie (ops/grafana/dashboards/collabedit.json). Świadomie: licznik, którego
+        // nazwa mówi co innego niż wartość, jest gorszy niż przerwa w wykresie.
+        this.gcReclaimedCharacters = Counter.builder("crdt.gc.reclaimed.characters.total")
+            .description("Znaki, których pamięć odzyskał GC — przez usunięcie bloku albo "
+                + "porzucenie jego treści (ADR-0005, CP18)")
             .register(registry);
 
         this.rejectedStaleOperations = Counter.builder("op.rejected.stale.total")
@@ -171,8 +180,8 @@ public class DocumentMetrics {
         }
     }
 
-    public void recordGc(int charactersRemoved) {
-        gcRemovedCharacters.increment(charactersRemoved);
+    public void recordGc(int charactersReclaimed) {
+        gcReclaimedCharacters.increment(charactersReclaimed);
     }
 
     public void recordStaleRejection() {

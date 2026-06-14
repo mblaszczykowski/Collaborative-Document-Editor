@@ -112,6 +112,11 @@ public class TestStompClient implements AutoCloseable {
         });
 
         subscribe("/topic/doc/" + documentId + "/acks", List.class, payload -> {
+            // Cokolwiek przeszło — tempo znów jest w normie, więc wydłużanie odstępu zaczyna
+            // się od nowa. Bez tego jedna seria odmów spowalnia klienta do końca przebiegu.
+            if (!((List<?>) payload).isEmpty()) {
+                throttleRounds.set(0);
+            }
             for (Object entry : (List<?>) payload) {
                 var node = OpCodec.mapper().valueToTree(entry);
                 long seq = node.get("serverSeq").asLong();
@@ -161,10 +166,11 @@ public class TestStompClient implements AutoCloseable {
             }
             throttled.set(true);
             Object advertised = error.get("retryAfterMillis");
-            long waitMillis = advertised instanceof Number number
+            long base = advertised instanceof Number number
                 ? number.longValue() + THROTTLE_GRACE_MS
                 : THROTTLE_FALLBACK_MS;
-            scheduleThrottledRetry(waitMillis);
+            int round = Math.min(throttleRounds.getAndIncrement(), 16);
+            scheduleThrottledRetry(Math.min(base << round, THROTTLE_MAX_MS));
         });
 
         session.send("/app/doc/" + documentId + "/join", Map.of());
@@ -289,6 +295,20 @@ public class TestStompClient implements AutoCloseable {
 
     /** Gdy serwer nie podał czasu — zachowanie sprzed CP20. */
     private static final long THROTTLE_FALLBACK_MS = 1000;
+
+    /** Górna granica odstępu przy odmowach pod rząd — tyle, ile wynosiła stała sprzed CP20. */
+    private static final long THROTTLE_MAX_MS = 1000;
+
+    /**
+     * Odmowy pod rząd, do wykładniczego wydłużania odstępu.
+     *
+     * <p>Ten sam mechanizm co w {@code connection.ts} i z tego samego zmierzonego powodu:
+     * sam czas podany przez serwer dotyczy JEDNEGO żetonu, a klient ma w buforze kilkadziesiąt
+     * operacji — więc ponawianie po tym czasie zamienia się w odpytywanie w pętli. Harness
+     * pokazał p99 rosnące z 872 ms do 1352 ms po samym dodaniu czasu z serwera, bez wydłużania.
+     */
+    private final java.util.concurrent.atomic.AtomicInteger throttleRounds =
+        new java.util.concurrent.atomic.AtomicInteger();
 
     private final java.util.concurrent.atomic.AtomicBoolean retryScheduled =
         new java.util.concurrent.atomic.AtomicBoolean();

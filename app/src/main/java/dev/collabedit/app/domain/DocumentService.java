@@ -326,10 +326,15 @@ public class DocumentService {
         // Osobne wejście pod blokadę dałoby podgląd z innej chwili niż snapshot — niegroźne,
         // ale wtedy „lista pokazuje co innego niż dokument" przestaje mieć jedno wyjaśnienie.
         var captured = replica.withLock(document -> {
-            int removed = stable.isEmpty() ? 0 : document.gc(stable);
-            if (removed > 0) {
-                metrics.recordGc(removed);
-                log.debug("GC dokumentu {}: usunięto {} znaków tombstone'ów", replica.documentId(), removed);
+            // "reclaimed", nie "removed": od CP18 blok, którego usunąć nie wolno, oddaje
+            // samą treść i zostaje w strukturze. Obie drogi odzyskują pamięć, ale tylko jedna
+            // usuwa cokolwiek — a log mówiący "usunięto" przy niezmienionej liczbie bloków
+            // wysyła diagnozującego w złą stronę.
+            int reclaimed = stable.isEmpty() ? 0 : document.gc(stable);
+            if (reclaimed > 0) {
+                metrics.recordGc(reclaimed);
+                log.debug("GC dokumentu {}: odzyskano {} znaków tombstone'ów",
+                    replica.documentId(), reclaimed);
             }
             String preview = document.visibleLength() <= DocumentCatalog.PREVIEW_LENGTH
                 ? document.text()
