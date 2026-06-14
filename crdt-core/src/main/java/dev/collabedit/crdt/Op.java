@@ -3,47 +3,52 @@ package dev.collabedit.crdt;
 import java.util.List;
 
 /**
- * Operacja CRDT — jednostka zmiany przesyłana między replikami i zapisywana w logu operacji
- * (ADR-0003, gdzie {@code (doc_id, replica_id, lamport)} jest kluczem głównym, więc każda
- * operacja musi mieć własny identyfikator).
+ * A CRDT operation — the unit of change sent between replicas and written to the operation log
+ * (ADR-0003, where {@code (doc_id, replica_id, lamport)} is the primary key, so every operation
+ * must have its own identifier).
  *
- * <p>Operacje są <b>przemienne</b> i <b>idempotentne</b>: dowolna kolejność zastosowania
- * daje ten sam wynik, a powtórne zastosowanie niczego nie zmienia. To jest własność, którą
- * dowodzi property test {@code convergence} — i jedyny powód, dla którego architektura
- * z ADR-0004 (każda instancja backendu jako równorzędna replika, zawodny broadcast)
- * jest bezpieczna.
+ * <p>Operations are <b>commutative</b> and <b>idempotent</b>: any order of application gives the
+ * same result, and applying one twice changes nothing. That is the property the {@code convergence}
+ * property test proves — and the only reason the architecture from ADR-0004 (every backend instance
+ * a peer replica, unreliable broadcast) is safe.
  */
 public sealed interface Op permits Op.Insert, Op.Delete, Op.AddMark, Op.RemoveMark {
 
-    /** Identyfikator operacji. Dla wstawienia jest to zarazem identyfikator pierwszego znaku. */
+    /**
+     * The operation's identifier. For an insertion it is also the identifier of the first
+     * character.
+     */
     Id id();
 
     /**
-     * Ile wartości zegara Lamporta zajmuje ta operacja. Wstawienie {@code n} znaków zajmuje
-     * {@code n} (znak {@code i} ma identyfikator {@code id.plus(i)}), usunięcie zajmuje 1.
+     * How many Lamport clock values this operation occupies. Inserting {@code n} characters
+     * occupies {@code n} (character {@code i} has the identifier {@code id.plus(i)}); a deletion
+     * occupies 1.
      */
     int span();
 
-    /** Najwyższy lamport zajęty przez tę operację — potrzebny do podbicia zegara przy odbiorze. */
+    /**
+     * The highest lamport this operation occupies — needed to bump the clock on receipt.
+     */
     default long maxLamport() {
         return id().lamport() + span() - 1;
     }
 
     /**
-     * Wstawienie ciągu znaków bezpośrednio po znaku {@code originLeft}.
+     * Inserting a run of characters directly after the character {@code originLeft}.
      *
-     * <p>Zapis run-length: {@code text} o długości {@code n} to jeden obiekt i jedna operacja,
-     * a nie {@code n} operacji. Znak o indeksie {@code i} ma identyfikator {@code id.plus(i)},
-     * a jego lewym originem jest znak {@code i-1}. Dzięki temu zwykłe pisanie — najczęstszy
-     * wzorzec użycia — nie generuje obiektu na znak.
+     * <p>Run-length encoding: {@code text} of length {@code n} is one object and one operation
+     * rather than {@code n} operations. The character at index {@code i} has the identifier
+     * {@code id.plus(i)}, and its left origin is the character {@code i-1}. That way ordinary
+     * typing — the most common usage pattern — does not produce an object per character.
      *
-     * @param originLeft znak, po którym wstawiamy; {@code null} oznacza początek dokumentu
+     * @param originLeft the character we insert after; {@code null} means the start of the document
      */
     record Insert(Id id, Id originLeft, String text) implements Op {
 
         public Insert {
             if (text == null || text.isEmpty()) {
-                throw new IllegalArgumentException("wstawienie pustego tekstu nie ma sensu");
+                throw new IllegalArgumentException("inserting empty text makes no sense");
             }
         }
 
@@ -54,20 +59,20 @@ public sealed interface Op permits Op.Insert, Op.Delete, Op.AddMark, Op.RemoveMa
     }
 
     /**
-     * Usunięcie zakresów znaków (oznaczenie tombstone'ami).
+     * Deleting ranges of characters (marking them as tombstones).
      *
-     * <p>Zakresy, a nie pojedyncze identyfikatory, bo usunięcie zaznaczonego fragmentu tekstu
-     * typowo obejmuje ciągły przedział identyfikatorów z jednej repliki — ale może też przeciąć
-     * kilka bloków od różnych replik, stąd lista.
+     * <p>Ranges rather than individual identifiers, because deleting a selected fragment of text
+     * typically covers a contiguous interval of identifiers from one replica — but it may also cut
+     * across several blocks from different replicas, hence the list.
      *
-     * <p>Usunięcie jest idempotentne, więc świadomie <b>nie</b> wykrywamy jego duplikatów:
-     * ponowne ustawienie tombstone'u jest operacją pustą.
+     * <p>Deletion is idempotent, so we deliberately do <b>not</b> detect its duplicates: setting a
+     * tombstone again is a no-op.
      */
     record Delete(Id id, List<Range> targets) implements Op {
 
         public Delete {
             if (targets == null || targets.isEmpty()) {
-                throw new IllegalArgumentException("usunięcie bez celów nie ma sensu");
+                throw new IllegalArgumentException("a deletion with no targets makes no sense");
             }
             targets = List.copyOf(targets);
         }
@@ -79,36 +84,36 @@ public sealed interface Op permits Op.Insert, Op.Delete, Op.AddMark, Op.RemoveMa
     }
 
     /**
-     * Nadanie formatowania zakresowi tekstu (CP13).
+     * Applying formatting to a range of text (CP13).
      *
-     * <h2>Dlaczego to jest OSOBNA operacja, a nie atrybut znaku</h2>
-     * Formatowanie jako atrybut znaku wygląda na prostsze i jest błędne. Rozważmy: Ania
-     * pogrubia zakres, a Bartek — nie widząc jeszcze jej zmiany — wpisuje tekst w środek
-     * tego zakresu. Przy atrybutach per znak wstawiony tekst nie ma skąd wziąć pogrubienia:
-     * w chwili powstania operacja Ani jeszcze do Bartka nie dotarła, a gdy dotrze, dotyczy
-     * znaków, których w niej nie ma. Wynik: dziura w pogrubieniu, której nikt nie zrobił.
+     * <h2>Why this is a SEPARATE operation rather than a character attribute</h2>
+     * Formatting as a character attribute looks simpler and is wrong. Consider: Ania bolds a range,
+     * and Bartek — not yet seeing her change — types text into the middle of that range. With
+     * per-character attributes the inserted text has nowhere to get the bold from: at the moment it
+     * was created Ania's operation had not reached Bartek, and when it does it concerns characters
+     * that are not in it. The result: a hole in the bolding that nobody made.
      *
-     * <p>Znacznik zapisany jako <b>zakres między kotwicami</b> nie ma tego problemu, bo
-     * kotwice przesuwają się razem z tekstem i tekst wstawiony w środek zakresu jest
-     * w środku zakresu — niezależnie od kolejności dostarczenia.
+     * <p>A mark stored as a <b>range between anchors</b> does not have that problem, because the
+     * anchors move with the text and text inserted into the middle of a range is in the middle of
+     * the range — regardless of delivery order.
      *
-     * <h2>Rozstrzyganie konfliktów</h2>
-     * Dla danego znaku i danego typu znacznika wygrywa operacja o najwyższym
-     * {@code (lamport, replicaId)} spośród tych, które ten znak obejmują. Jest to ten sam
-     * porządek totalny, którego używa reguła wstawiania RGA — bez nowego mechanizmu
-     * arbitrażu i bez nowego założenia o zegarze.
+     * <h2>Conflict resolution</h2>
+     * For a given character and a given mark type, the winner is the operation with the highest
+     * {@code (lamport, replicaId)} among those covering that character. This is the same total
+     * order RGA's insertion rule uses — with no new arbitration mechanism and no new assumption
+     * about clocks.
      *
-     * @param type  rodzaj formatowania, np. {@code bold}, {@code italic}, {@code link}
-     * @param value wartość dla typów, które jej potrzebują (adres linku); {@code null} dla reszty
+     * @param type  the kind of formatting, e.g. {@code bold}, {@code italic}, {@code link}
+     * @param value the value for types that need one (a link's address); {@code null} for the rest
      */
     record AddMark(Id id, String type, String value, Anchor start, Anchor end) implements Op {
 
         public AddMark {
             if (type == null || type.isBlank()) {
-                throw new IllegalArgumentException("znacznik musi mieć typ");
+                throw new IllegalArgumentException("a mark must have a type");
             }
             if (start == null || end == null) {
-                throw new IllegalArgumentException("znacznik musi mieć obie kotwice");
+                throw new IllegalArgumentException("a mark must have both anchors");
             }
         }
 
@@ -119,24 +124,24 @@ public sealed interface Op permits Op.Insert, Op.Delete, Op.AddMark, Op.RemoveMa
     }
 
     /**
-     * Zdjęcie formatowania z zakresu (CP13).
+     * Removing formatting from a range (CP13).
      *
-     * <h2>Dlaczego zakres, a nie referencja do konkretnego AddMark</h2>
-     * Bo zdejmowanie formatowania nie jest cofaniem cudzej operacji. Dwoje ludzi może
-     * pogrubić zachodzące na siebie zakresy, a trzeci odgrubić ich część wspólną —
-     * i nie ma wtedy jednej operacji, którą dałoby się wskazać jako „tę do cofnięcia".
+     * <h2>Why a range rather than a reference to a specific AddMark</h2>
+     * Because removing formatting is not undoing somebody else's operation. Two people may bold
+     * overlapping ranges and a third unbold their intersection — and then there is no single
+     * operation to point at as "the one to undo".
      *
-     * <p>Zdjęcie jest więc równorzędną operacją zakresową, rozstrzyganą tym samym
-     * porządkiem co nadanie: wygrywa ta o wyższym {@code (lamport, replicaId)}.
+     * <p>Removal is therefore a peer range operation, resolved by the same order as application:
+     * the one with the higher {@code (lamport, replicaId)} wins.
      */
     record RemoveMark(Id id, String type, Anchor start, Anchor end) implements Op {
 
         public RemoveMark {
             if (type == null || type.isBlank()) {
-                throw new IllegalArgumentException("znacznik musi mieć typ");
+                throw new IllegalArgumentException("a mark must have a type");
             }
             if (start == null || end == null) {
-                throw new IllegalArgumentException("znacznik musi mieć obie kotwice");
+                throw new IllegalArgumentException("a mark must have both anchors");
             }
         }
 
@@ -146,12 +151,12 @@ public sealed interface Op permits Op.Insert, Op.Delete, Op.AddMark, Op.RemoveMa
         }
     }
 
-    /** Ciągły zakres identyfikatorów jednej repliki: {@code [start, start+length)}. */
+    /** A contiguous range of one replica's identifiers: {@code [start, start+length)}. */
     record Range(Id start, int length) {
 
         public Range {
             if (length <= 0) {
-                throw new IllegalArgumentException("długość zakresu musi być dodatnia: " + length);
+                throw new IllegalArgumentException("range length must be positive: " + length);
             }
         }
 

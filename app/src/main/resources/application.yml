@@ -91,6 +91,16 @@ collabedit:
     # i przy każdym otwarciu odtwarzałby coraz dłuższy ogon logu.
     snapshot-every-n-ops: 500
     snapshot-after-idle-ms: 30000
+    # How often the maintenance pool asks "is any document due for a snapshot".
+    #
+    # Snapshotting moved off the flush loop because that loop shares a thread with the 10 ms
+    # broadcast, and a snapshot walks the entire block structure of the document. This job runs
+    # on the maintenance pool instead (SchedulingConfig).
+    #
+    # 1 s, and deliberately far shorter than either threshold it checks (500 ops / 30 s): the
+    # sweep only DECIDES whether to snapshot, which is two integer comparisons per loaded
+    # replica. A longer interval would make the op-count threshold fire late and save nothing.
+    snapshot-sweep-interval-ms: 1000
 
   cluster:
     # Sweep anti-entropy (ADR-0004). Górna granica czasu życia niewykrytego rozjazdu

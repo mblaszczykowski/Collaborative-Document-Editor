@@ -34,6 +34,19 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
      * pośredniki po ich własnym idle timeout, czyli dokładnie to, przed czym heartbeat ma
      * chronić (ADR-0002). Jeden z tych przypadków, gdzie brak konfiguracji nie powoduje
      * błędu, tylko cichą utratę funkcji.
+     *
+     * <p><b>This bean also used to run every {@code @Scheduled} method in the application, and
+     * nothing said so.</b> Declaring any {@code TaskScheduler} makes Spring Boot's
+     * {@code TaskSchedulingAutoConfiguration} back off — it is annotated
+     * {@code @ConditionalOnMissingBean({TaskScheduler.class, ScheduledExecutorService.class})}
+     * — after which {@code ScheduledAnnotationBeanPostProcessor} binds to whatever single
+     * {@code TaskScheduler} it can find. That was this one, with a pool of exactly one thread,
+     * so the 10 ms broadcast, the 50 ms flush, document snapshots and the anti-entropy sweep
+     * all queued behind each other and behind heartbeat emission.
+     *
+     * <p>{@link dev.collabedit.app.config.SchedulingConfig} now declares the pools that the
+     * periodic jobs name explicitly, so this scheduler serves heartbeats and nothing else.
+     * {@code SchedulingWiringTest} fails the build if that stops being true.
      */
     @Bean
     public TaskScheduler stompHeartbeatScheduler() {

@@ -4,24 +4,26 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Migawka pełnego stanu repliki — to, co trafia do kolumny {@code snapshots.state} (ADR-0003).
+ * A snapshot of a replica's full state — what goes into the {@code snapshots.state} column
+ * (ADR-0003).
  *
- * <p>Snapshot jest <b>cache'em, nie źródłem prawdy</b>. Wolno go skasować w dowolnym momencie;
- * system odtworzy stan z logu operacji, wolniej, ale poprawnie. Z tego wynika najważniejsza
- * decyzja dotycząca formatu: przy niezgodności {@link #formatVersion} snapshot jest
- * <b>ignorowany</b>, a nie migrowany. Migracja cache'a to koszt bez korzyści.
+ * <p>A snapshot is a <b>cache, not a source of truth</b>. It may be deleted at any moment; the
+ * system will rebuild the state from the operation log, more slowly but correctly. From that
+ * follows the most important decision about the format: on a {@link #formatVersion} mismatch the
+ * snapshot is <b>ignored</b> rather than migrated. Migrating a cache is a cost with no benefit.
  *
- * <p>Zawiera cztery rzeczy, bo cztery są potrzebne do wiernego odtworzenia repliki:
+ * <p>It contains four things, because four are needed to rebuild a replica faithfully:
  * <ul>
- *   <li>{@code blocks} — struktura dokumentu wraz z tombstone'ami (te są istotne: mogą być
- *       originem operacji, która dopiero nadejdzie),</li>
- *   <li>{@code clock} — zegar Lamporta, bez którego kolejne operacje lokalne miałyby
- *       znaczniki kolidujące z historią,</li>
- *   <li>{@code maxSeen} — version vector, potrzebny do stabilności przyczynowej (ADR-0005)
- *       i do odpowiedzi „co już mam" przy ponownym połączeniu,</li>
- *   <li>{@code marks} — warstwa formatowania (CP13). Bez niej restart instancji gubi cały
- *       wygląd dokumentu: tekst odtwarza się z bloków, a formatowanie znika bez śladu.
- *       Nie da się go wyliczyć z bloków, bo znaczniki są osobnym zbiorem operacji.</li>
+ *   <li>{@code blocks} — the document structure including tombstones (which matter: they may be
+ *       the origin of an operation still to arrive),</li>
+ *   <li>{@code clock} — the Lamport clock, without which subsequent local operations would carry
+ *       timestamps colliding with history,</li>
+ *   <li>{@code maxSeen} — the version vector, needed for causal stability (ADR-0005) and for the
+ *       "what do I already have" answer on reconnect,</li>
+ *   <li>{@code marks} — the formatting layer (CP13). Without it an instance restart loses the whole
+ *       appearance of the document: the text rebuilds from the blocks and the formatting disappears
+ *       without trace. It cannot be derived from the blocks, because marks are a separate set of
+ *       operations.</li>
  * </ul>
  */
 public record DocumentSnapshot(
@@ -33,9 +35,9 @@ public record DocumentSnapshot(
 ) {
 
     /**
-     * Bieżąca wersja formatu. Podnosić przy KAŻDEJ zmianie struktury {@link Block} albo
-     * kodowania — snapshoty zapisane starym formatem zostaną wtedy pominięte, a stan
-     * odtworzony z logu.
+     * The current format version. Raise it on EVERY change to the {@link Block} structure or to the
+     * encoding — snapshots written in the old format will then be skipped and the state rebuilt
+     * from the log.
      */
     public static final int CURRENT_FORMAT_VERSION = 3;
 
@@ -46,19 +48,19 @@ public record DocumentSnapshot(
     }
 
     /**
-     * Podniesienie wersji formatu w CP13 jest DARMOWE i to nie jest przypadek.
+     * Raising the format version is FREE, and that is not an accident.
      *
-     * <p>ADR-0003 rozstrzygnął, że snapshot o niezgodnej wersji jest ignorowany, a nie
-     * migrowany — więc dołożenie warstwy znaczników nie wymaga ani kodu migracji, ani
-     * okna serwisowego, ani rozstrzygania, co zrobić ze snapshotami w starym formacie.
-     * Zostaną pominięte, stan odtworzy się z logu operacji, a następny snapshot powstanie
-     * już w nowym formacie. Jedynym kosztem jest jednorazowo dłuższe pierwsze otwarcie
-     * każdego dokumentu.
+     * <p>ADR-0003 settled that a snapshot with an incompatible version is ignored rather than
+     * migrated — so adding the mark layer required no migration code, no maintenance window, and no
+     * decision about what to do with snapshots in the old format. They are skipped, the state
+     * rebuilds from the operation log, and the next snapshot is written in the new format. The only
+     * cost is a one-off slower first open of each document.
      *
-     * <p>Ta decyzja została podjęta w CP5, a spłaca się w CP13.
+     * <p>That decision was taken in CP5, and it paid off in CP13 — and again in CP18.
      */
     public static final String FORMAT_VERSION_NOTE =
-        "wersja 3: blok może nie mieć treści — zapisujemy flagę i długość (CP18); wersja 2: dodana warstwa znaczników (CP13)";
+        "version 3: a block may have no content — we store a flag and the length (CP18); "
+            + "version 2: the mark layer added (CP13)";
 
     public boolean isReadable() {
         return formatVersion == CURRENT_FORMAT_VERSION;

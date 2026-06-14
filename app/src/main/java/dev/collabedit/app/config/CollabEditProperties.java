@@ -50,10 +50,11 @@ public record CollabEditProperties(
         long opBatchWindowMs,
         int opBatchMaxSize,
         int snapshotEveryNOps,
-        long snapshotAfterIdleMs
+        long snapshotAfterIdleMs,
+        long snapshotSweepIntervalMs
     ) {
         static Persistence defaults() {
-            return new Persistence(50, 100, 500, 30_000);
+            return new Persistence(50, 100, 500, 30_000, 1_000);
         }
     }
 

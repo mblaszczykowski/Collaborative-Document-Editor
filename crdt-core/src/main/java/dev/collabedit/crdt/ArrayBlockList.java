@@ -5,16 +5,16 @@ import java.util.Iterator;
 import java.util.List;
 
 /**
- * Naiwna implementacja {@link BlockList} — zwykła {@link ArrayList} i skanowanie liniowe.
+ * The naive {@link BlockList} implementation — a plain {@link ArrayList} and a linear scan.
  *
- * <p>Powstała <b>pierwsza</b> i celowo. Jest oczywiście poprawna, więc służy jako wzorzec,
- * względem którego weryfikujemy implementację zoptymalizowaną ({@link TreapBlockList}).
- * Kolejność „najpierw naiwne, potem pomiar, dopiero potem optymalizacja" jest widoczna
- * w historii commitów, bo jest uczciwsza niż od razu wrzucona sprytna struktura.
+ * <p>It was written <b>first</b>, deliberately. It is obviously correct, so it serves as the
+ * reference against which the optimised implementation ({@link TreapBlockList}) is verified. The
+ * order "naive first, then measure, only then optimise" is visible in the commit history, because
+ * it is more honest than dropping in a clever structure straight away.
  *
- * <p>Wszystkie operacje wyszukiwania są O(n), a wstawienie bloku dodatkowo przesuwa tablicę.
- * Przy dokumencie o 100 tys. znaków oznacza to zauważalne opóźnienie na każde naciśnięcie
- * klawisza — co pokazuje benchmark JMH w {@code RgaBenchmark}.
+ * <p>Every lookup is O(n), and inserting a block additionally shifts the array. On a
+ * 100 000-character document that means a noticeable delay on every keystroke — as the JMH
+ * benchmark in {@code RgaBenchmark} shows.
  */
 public final class ArrayBlockList implements BlockList {
 

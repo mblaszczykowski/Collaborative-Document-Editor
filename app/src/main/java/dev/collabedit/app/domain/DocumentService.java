@@ -2,6 +2,7 @@ package dev.collabedit.app.domain;
 
 import dev.collabedit.app.cluster.ClusterBus;
 import dev.collabedit.app.config.CollabEditProperties;
+import dev.collabedit.app.config.SchedulingConfig;
 import dev.collabedit.app.persist.DocumentCatalog;
 import dev.collabedit.app.persist.OperationStore;
 import dev.collabedit.app.persist.PendingOperation;
@@ -178,8 +179,15 @@ public class DocumentService {
      * <p>Kosztem jest opóźnienie do {@code broadcast-window-ms}. Przy 10 ms jest ono
      * o rząd wielkości poniżej progu zauważalności w pisaniu i o rząd wielkości poniżej
      * zmierzonych latencji propagacji (22–553 ms), więc kompromis nie jest bliski.
+     *
+     * <p>Runs on the single-threaded flow pool, together with {@link #flushAll()} and nothing
+     * else — see {@link SchedulingConfig}. That the two never overlap is a requirement, not a
+     * convenience: it is the second half of the guarantee that an acknowledgement cannot
+     * overtake the broadcast of its own operation.
      */
-    @Scheduled(fixedDelayString = "${collabedit.websocket.broadcast-window-ms:10}")
+    @Scheduled(
+        fixedDelayString = "${collabedit.websocket.broadcast-window-ms:10}",
+        scheduler = SchedulingConfig.FLOW)
     public void broadcastAll() {
         for (DocumentReplica replica : registry.loaded()) {
             try {
@@ -221,10 +229,16 @@ public class DocumentService {
      *
      * <p>Odstęp jest krótszy niż okno wsadowania z konfiguracji, żeby operacja czekała
      * na zapis najwyżej tyle, ile deklaruje {@code op-batch-window-ms}, a nie dwa razy tyle.
+     *
+     * <p>Snapshotting used to happen here and no longer does — see {@link #snapshotSweep()}.
+     * This loop is on the flow pool, where the 10 ms broadcast also lives, and copying the
+     * whole block structure of a 100k-character document is not work that belongs on the
+     * thread responsible for what the user sees.
      */
-    @Scheduled(fixedDelayString = "${collabedit.persistence.op-batch-window-ms:50}")
+    @Scheduled(
+        fixedDelayString = "${collabedit.persistence.op-batch-window-ms:50}",
+        scheduler = SchedulingConfig.FLOW)
     public void flushAll() {
-        long now = System.currentTimeMillis();
         for (DocumentReplica replica : registry.loaded()) {
             try {
                 // Bezblokadowe sprawdzenie, czy jest co robić. Przy wielu otwartych
@@ -233,7 +247,6 @@ public class DocumentService {
                 if (replica.hasPendingWork()) {
                     flush(replica);
                 }
-                snapshotIfQuiet(replica, now);
             } catch (RuntimeException e) {
                 log.error("Nie udało się zapisać wsadu dla dokumentu {}", replica.documentId(), e);
             }
@@ -241,35 +254,63 @@ public class DocumentService {
     }
 
     /**
-     * Snapshot dokumentu, który ucichł (ADR-0003 pkt 4).
+     * Snapshots every replica that is due for one (ADR-0003 pkt 4).
      *
-     * <p>Próg liczby operacji łapie dokumenty <b>intensywnie edytowane</b>. Nie łapie tego,
-     * który dostał sto zmian i zamilkł — a to jest właśnie przypadek, w którym snapshot ma
-     * największą wartość: dokument bez klientów zostanie za chwilę zwolniony z pamięci
-     * ({@code idle-document-eviction-ms}) i przy następnym otwarciu odtwarzany z logu.
-     * Bez tego ogon do odtworzenia rośnie z każdą sesją edycji.
+     * <h2>Two thresholds, because they catch two different documents</h2>
+     * The <b>operation count</b> catches the heavily edited document. The <b>quiet period</b>
+     * catches the one that took a hundred changes and fell silent — which is the case where a
+     * snapshot is worth most, because that document is about to be evicted from memory
+     * ({@code idle-document-eviction-ms}) and replayed from the log next time it opens.
      *
-     * <p>Sprawdzane w pętli {@code flushAll}, a nie osobnym {@code @Scheduled}: ta pętla i tak
-     * przechodzi po załadowanych dokumentach, więc porównanie dwóch liczb jest tu darmowe,
-     * a próg działa z dokładnością do okna wsadowania zamiast do własnego interwału.
+     * <h2>Why this is its own job on the maintenance pool</h2>
+     * It used to be two calls inside the flush path: {@code maybeSnapshot} after a successful
+     * write and {@code snapshotIfQuiet} once per flush loop. Both therefore ran on the thread
+     * that also broadcasts every 10 ms, and a snapshot walks the entire block structure under
+     * the document lock. Moving it here costs one comparison per replica per sweep and removes
+     * the largest single piece of work from the latency-visible path.
+     *
+     * <p>The sweep interval is deliberately much shorter than either threshold: it only decides
+     * <i>whether</i> to snapshot, so its cost is two integer comparisons per loaded document,
+     * and a longer interval would make the op-count threshold fire late for no saving.
      */
-    private void snapshotIfQuiet(DocumentReplica replica, long nowMillis) {
-        if (replica.operationsSinceSnapshot() == 0) {
-            return;
+    @Scheduled(
+        fixedDelayString = "${collabedit.persistence.snapshot-sweep-interval-ms:1000}",
+        scheduler = SchedulingConfig.MAINTENANCE)
+    public void snapshotSweep() {
+        long now = System.currentTimeMillis();
+        for (DocumentReplica replica : registry.loaded()) {
+            try {
+                if (!isSnapshotDue(replica, now)) {
+                    continue;
+                }
+                takeSnapshot(replica);
+            } catch (RuntimeException e) {
+                log.error("Nie udało się zapisać snapshotu dokumentu {}", replica.documentId(), e);
+            }
         }
-        if (nowMillis - replica.lastActivityMillis() < properties.persistence().snapshotAfterIdleMs()) {
-            return;
+    }
+
+    private boolean isSnapshotDue(DocumentReplica replica, long nowMillis) {
+        if (replica.operationsSinceSnapshot() == 0) {
+            return false;
         }
         // Niezapisane operacje mają pierwszeństwo: snapshot ponad stanem, którego nie ma
         // jeszcze w logu, zapisywałby się z numerem server_seq sprzed tych operacji
         // i przy odtwarzaniu zostałyby one zastosowane drugi raz. Byłoby to nieszkodliwe
         // (idempotencja), ale snapshot przestałby odpowiadać swojemu numerowi.
         if (replica.unwrittenCount() > 0) {
-            return;
+            return false;
         }
-        log.debug("Dokument {} ucichł — snapshot {} operacji po ostatnim",
-            replica.documentId(), replica.operationsSinceSnapshot());
-        takeSnapshot(replica);
+        if (replica.snapshotDue(properties.persistence().snapshotEveryNOps())) {
+            return true;
+        }
+        boolean quiet =
+            nowMillis - replica.lastActivityMillis() >= properties.persistence().snapshotAfterIdleMs();
+        if (quiet) {
+            log.debug("Dokument {} ucichł — snapshot {} operacji po ostatnim",
+                replica.documentId(), replica.operationsSinceSnapshot());
+        }
+        return quiet;
     }
 
     private void flush(DocumentReplica replica) {
@@ -303,16 +344,9 @@ public class DocumentService {
 
         onBroadcast.accept(replica.documentId(), appended);
         cluster.publish(replica.documentId(), appended);
-
-        maybeSnapshot(replica);
-    }
-
-    /** Snapshot po przekroczeniu progu liczby operacji — ścieżka dokumentu aktywnego. */
-    private void maybeSnapshot(DocumentReplica replica) {
-        if (!replica.snapshotDue(properties.persistence().snapshotEveryNOps())) {
-            return;
-        }
-        takeSnapshot(replica);
+        // No snapshot here any more: {@link #snapshotSweep()} owns that, on the maintenance
+        // pool. Taking it inline meant the flow thread walked the whole block structure of the
+        // document while the 10 ms broadcast waited behind it.
     }
 
     private void takeSnapshot(DocumentReplica replica) {
@@ -419,7 +453,9 @@ public class DocumentService {
      * aż do następnej edycji dokumentu — czyli potencjalnie na zawsze, jeśli dokument
      * ucichł. Górna granica czasu życia niewykrytego rozjazdu to odstęp tego przeglądu.
      */
-    @Scheduled(fixedDelayString = "${collabedit.cluster.anti-entropy-interval-ms:30000}")
+    @Scheduled(
+        fixedDelayString = "${collabedit.cluster.anti-entropy-interval-ms:30000}",
+        scheduler = SchedulingConfig.MAINTENANCE)
     public void antiEntropySweep() {
         for (DocumentReplica replica : registry.loaded()) {
             try {
@@ -435,7 +471,9 @@ public class DocumentService {
         }
     }
 
-    @Scheduled(fixedDelayString = "${collabedit.cluster.idle-document-eviction-ms:300000}")
+    @Scheduled(
+        fixedDelayString = "${collabedit.cluster.idle-document-eviction-ms:300000}",
+        scheduler = SchedulingConfig.MAINTENANCE)
     public void evictIdleDocuments() {
         registry.evictIdle(System.currentTimeMillis());
     }

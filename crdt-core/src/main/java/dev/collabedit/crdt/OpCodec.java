@@ -8,41 +8,42 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Serializacja operacji do JSON — format przewodowy dla STOMP (ADR-0002) i format zapisu
- * w kolumnie {@code payload} logu operacji (ADR-0003).
+ * Serialising operations to JSON — the wire format for STOMP (ADR-0002) and the storage format for
+ * the {@code payload} column of the operation log (ADR-0003).
  *
- * <p>Kodek jest pisany ręcznie, a nie generowany adnotacjami Jacksona, z trzech powodów:
+ * <p>The codec is written by hand rather than generated from Jackson annotations, for three
+ * reasons:
  * <ol>
- *   <li><b>Rozmiar.</b> ADR-0002 zakłada zmierzenie w CP8, jaki udział w ruchu ma narzut
- *       protokołu. Nazwy pól są więc jednoliterowe — przy operacji niosącej jeden znak
- *       {@code "originLeft"} kosztuje więcej niż sama treść.</li>
- *   <li><b>Stabilność.</b> Ten format musi odczytać również implementacja w TypeScripcie.
- *       Format wynikający z domyślnego mapowania rekordów zmieniałby się przy każdej zmianie
- *       nazwy pola w Javie — czyli po cichu rozspójniałby obie strony.</li>
- *   <li><b>Jawność.</b> Format przewodowy jest decyzją, a nie efektem ubocznym refaktoryzacji.</li>
+ *   <li><b>Size.</b> ADR-0002 plans to measure in CP8 how much of the traffic is protocol
+ *       overhead. The field names are therefore single letters — on an operation carrying one
+ *       character, {@code "originLeft"} costs more than the content itself.</li>
+ *   <li><b>Stability.</b> This format has to be read by the TypeScript implementation as well. A
+ *       format derived from default record mapping would change with every field rename in Java —
+ *       that is, it would silently desynchronise the two sides.</li>
+ *   <li><b>Explicitness.</b> The wire format is a decision, not a side effect of refactoring.</li>
  * </ol>
  *
  * <h2>Format</h2>
  * <pre>
- * wstawienie: {"t":"i","r":1,"l":7,"or":2,"ol":3,"s":"abc"}
- *             r/l  = identyfikator operacji (replika / lamport)
- *             or/ol = origin (pomijane, gdy wstawienie jest na początku dokumentu)
- *             s     = tekst
- * usunięcie:  {"t":"d","r":1,"l":9,"g":[[2,3,5]]}
- *             g = zakresy [replika, początkowy lamport, długość]
- * znacznik+:  {"t":"m","r":1,"l":11,"k":"bold","v":null,"a":[2,3,0],"b":[2,7,1]}
- * znacznik−:  {"t":"x","r":1,"l":13,"k":"bold","a":[2,3,0],"b":[2,7,1]}
- *             k    = rodzaj znacznika
- *             v    = wartość (adres linku); pomijane, gdy nieużywana
- *             a/b  = kotwice [replika, lamport, strona], gdzie strona 0=przed, 1=za
+ * insert:   {"t":"i","r":1,"l":7,"or":2,"ol":3,"s":"abc"}
+ *           r/l   = operation identifier (replica / lamport)
+ *           or/ol = origin (omitted when the insertion is at the start of the document)
+ *           s     = text
+ * delete:   {"t":"d","r":1,"l":9,"g":[[2,3,5]]}
+ *           g = ranges [replica, starting lamport, length]
+ * mark+:    {"t":"m","r":1,"l":11,"k":"bold","v":null,"a":[2,3,0],"b":[2,7,1]}
+ * mark−:    {"t":"x","r":1,"l":13,"k":"bold","a":[2,3,0],"b":[2,7,1]}
+ *           k    = mark type
+ *           v    = value (a link's address); omitted when unused
+ *           a/b  = anchors [replica, lamport, side], where side 0=before, 1=after
  * </pre>
  *
- * <h2>Rozszerzenie formatu w CP13</h2>
- * Dyskryminatory {@code m} i {@code x} dołożone bez zmiany dotychczasowych. Format jest
- * <b>rozszerzany, nie wersjonowany</b>: operacja wstawienia zapisana przed CP13 i po nim
- * wygląda identycznie, więc log operacji sprzed rich textu czyta się bez żadnej migracji.
- * Kolumna {@code operations.op_type} to {@code CHAR(1)}, a treść {@code JSONB} — schemat
- * z V1 unosi to bez zmiany, co jest zasługą decyzji z ADR-0003, a nie szczęścia.
+ * <h2>Extending the format in CP13</h2>
+ * The discriminators {@code m} and {@code x} were added without changing the existing ones. The
+ * format is <b>extended, not versioned</b>: an insert operation written before CP13 and after it
+ * looks identical, so an operation log from before rich text reads with no migration at all. The
+ * {@code operations.op_type} column is a {@code CHAR(1)} and the body is {@code JSONB} — the V1
+ * schema carries this unchanged, which is down to the ADR-0003 decision rather than to luck.
  */
 public final class OpCodec {
 
@@ -93,7 +94,7 @@ public final class OpCodec {
         return node;
     }
 
-    /** Kotwica jako {@code [replika, lamport, strona]} — strona 0 = przed, 1 = za. */
+    /** An anchor as {@code [replica, lamport, side]} — side 0 = before, 1 = after. */
     private static void writeAnchor(ObjectNode node, String field, Anchor anchor) {
         ArrayNode array = node.putArray(field);
         array.add(anchor.charId().replicaId());
@@ -138,7 +139,7 @@ public final class OpCodec {
                 node.get("k").asText(),
                 readAnchor(node, "a"),
                 readAnchor(node, "b"));
-            default -> throw new IllegalArgumentException("nieznany typ operacji: " + type);
+            default -> throw new IllegalArgumentException("unknown operation type: " + type);
         };
     }
 
@@ -150,7 +151,7 @@ public final class OpCodec {
         try {
             return fromJson(MAPPER.readTree(json));
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-            throw new IllegalArgumentException("nie da się zdekodować operacji: " + json, e);
+            throw new IllegalArgumentException("cannot decode operation: " + json, e);
         }
     }
 

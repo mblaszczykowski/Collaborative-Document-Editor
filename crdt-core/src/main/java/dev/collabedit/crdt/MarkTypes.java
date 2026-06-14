@@ -3,23 +3,23 @@ package dev.collabedit.crdt;
 import java.util.Set;
 
 /**
- * Zachowanie znaczników przy pisaniu na granicy zakresu (CP13).
+ * How marks behave when typing at the boundary of a range (CP13).
  *
- * <h2>Dlaczego to jest własność TYPU, a nie operacji</h2>
- * „Czy pogrubienie rośnie, gdy dopisuję na jego końcu" nie jest decyzją, którą użytkownik
- * podejmuje przy każdym pogrubieniu — jest oczekiwaniem związanym z rodzajem formatowania.
- * Pogrubienie rośnie, link nie. Gdyby to była własność operacji, dwa pogrubienia w tym samym
- * dokumencie mogłyby zachowywać się różnie, a użytkownik nie miałby jak przewidzieć którego.
+ * <h2>Why this is a property of the TYPE, not of the operation</h2>
+ * "Does bold grow when I type at its end" is not a decision the user makes on every bolding — it is
+ * an expectation tied to the kind of formatting. Bold grows, a link does not. If it were a property
+ * of the operation, two bolds in the same document could behave differently and the user would have
+ * no way of predicting which.
  *
- * <p>Konsekwencja techniczna: znacznik nie musi nieść dodatkowego pola, bo zachowanie
- * wynika z jego typu. Format przewodowy zostaje o jedno pole mniejszy przy operacji,
- * której i tak jest dużo.
+ * <p>The technical consequence: a mark does not have to carry an extra field, because the behaviour
+ * follows from its type. The wire format stays one field smaller on an operation there is a lot of
+ * anyway.
  *
- * <h2>Skąd te konkretne wartości</h2>
- * Z tego, jak zachowują się edytory, do których ludzie są przyzwyczajeni. Pisanie na końcu
- * pogrubionego słowa kontynuuje pogrubienie; pisanie na końcu linku nie rozszerza adresu,
- * bo tekst dopisany za linkiem prawie nigdy nie jest jego częścią. Kod źródłowy
- * ({@code code}) nie rośnie z tego samego powodu co link — jest zamkniętą jednostką.
+ * <h2>Where these particular values come from</h2>
+ * From how the editors people are used to behave. Typing at the end of a bold word continues the
+ * bold; typing at the end of a link does not extend the address, because text appended after a link
+ * is almost never part of it. Inline code ({@code code}) does not grow for the same reason as a
+ * link — it is a closed unit.
  */
 public final class MarkTypes {
 
@@ -34,22 +34,21 @@ public final class MarkTypes {
     public static final String LINK = "link";
 
     /**
-     * Kotwica komentarza (CP14).
+     * A comment anchor (CP14).
      *
-     * <p>Jest tu, a nie w warstwie komentarzy, bo z punktu widzenia CRDT to jest zwykły
-     * znacznik — cała różnica polega na tym, że jego wartością jest identyfikator wątku.
-     * Stała istnieje po to, żeby ten łańcuch znaków nie był wpisywany z ręki w autoryzacji
-     * ramek i w warstwie komentarzy, gdzie literówka nie wywołałaby błędu, tylko cichą
-     * zmianę uprawnień.
+     * <p>It lives here rather than in the comments layer, because from the CRDT's point of view it
+     * is an ordinary mark — the whole difference is that its value is a thread identifier. The
+     * constant exists so this string is not typed by hand in frame authorization and in the
+     * comments layer, where a typo would cause no error, only a silent change in permissions.
      */
     public static final String COMMENT = "comment";
 
     /**
-     * Typy, których zakres <b>rośnie</b> przy pisaniu tuż za nim.
+     * Types whose range <b>grows</b> when text is typed immediately after it.
      *
-     * <p>Nieznany typ NIE rośnie. Jest to wybór ostrożny: znacznik, który rozszerza się
-     * niespodziewanie, zmienia wygląd tekstu, którego użytkownik nie formatował — a znacznik,
-     * który się nie rozszerza, wymaga najwyżej powtórzenia gestu.
+     * <p>An unknown type does NOT grow. That is the cautious choice: a mark that expands
+     * unexpectedly changes the appearance of text the user did not format, whereas a mark that
+     * fails to expand costs at most a repeated gesture.
      */
     private static final Set<String> EXPANDING = Set.of(BOLD, ITALIC, UNDERLINE, STRIKETHROUGH);
 

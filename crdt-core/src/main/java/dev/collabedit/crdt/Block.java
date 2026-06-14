@@ -1,20 +1,20 @@
 package dev.collabedit.crdt;
 
 /**
- * Ciągły przebieg znaków od jednej repliki — jednostka przechowywania w dokumencie.
+ * A contiguous run of characters from one replica — the unit of storage in a document.
  *
- * <p>Dokument nie jest listą znaków, tylko listą bloków. Wpisanie 20 znaków pod rząd to
- * jeden {@code Block}, a nie 20 obiektów. Uzasadnienie i niezmienniki w
- * {@code docs/crdt-design.md}, sekcja 3.
+ * <p>A document is not a list of characters but a list of blocks. Typing 20 characters in a row is
+ * one {@code Block}, not 20 objects. The justification and the invariants are in
+ * {@code docs/crdt-design.md}, section 3.
  *
- * <p><b>Niezmiennik:</b> blok jest w całości żywy albo w całości usunięty. Usunięcie fragmentu
- * najpierw dzieli blok. Alternatywa (tablica flag per znak) komplikowałaby każdą operację
- * indeksowania, oszczędzając niewiele.
+ * <p><b>Invariant:</b> a block is entirely alive or entirely deleted. Deleting part of one splits
+ * the block first. The alternative (an array of per-character flags) would complicate every
+ * indexing operation while saving little.
  *
- * <p>Znak o indeksie {@code i} ma identyfikator {@code start.plus(i)}, a jego lewym originem
- * jest znak {@code i-1} (dla {@code i == 0} jest to {@link #originLeft}).
+ * <p>The character at index {@code i} has the identifier {@code start.plus(i)}, and its left origin
+ * is the character {@code i-1} (for {@code i == 0} it is {@link #originLeft}).
  *
- * <h2>Blok bez treści (CP18)</h2>
+ * <h2>A block without content (CP18)</h2>
  * A deleted block may <b>drop its text while staying in the structure</b>. It keeps its
  * identity ({@link #start}), its {@link #length}, its {@link #originLeft} and its position;
  * it loses only the characters, which nobody can see anyway.
@@ -59,7 +59,7 @@ public final class Block {
 
     public Block(Id start, String text, Id originLeft, boolean deleted) {
         if (text.isEmpty()) {
-            throw new IllegalArgumentException("blok nie może być pusty");
+            throw new IllegalArgumentException("a block cannot be empty");
         }
         this.start = start;
         this.text = text;
@@ -76,7 +76,7 @@ public final class Block {
      */
     static Block withoutContent(Id start, int length, Id originLeft) {
         if (length <= 0) {
-            throw new IllegalArgumentException("blok nie może być pusty");
+            throw new IllegalArgumentException("a block cannot be empty");
         }
         return new Block(start, length, originLeft);
     }
@@ -123,7 +123,7 @@ public final class Block {
         text = null;
     }
 
-    /** Lewy origin <b>pierwszego</b> znaku bloku; {@code null} oznacza początek dokumentu. */
+    /** The left origin of the block's <b>first</b> character; {@code null} means the start of the document. */
     public Id originLeft() {
         return originLeft;
     }
@@ -140,7 +140,7 @@ public final class Block {
         return length;
     }
 
-    /** Liczba znaków widocznych w tekście — 0 dla tombstone'u. */
+    /** The number of characters visible in the text — 0 for a tombstone. */
     public int visibleLength() {
         return deleted ? 0 : length;
     }
@@ -149,7 +149,7 @@ public final class Block {
         return start.plus(offset);
     }
 
-    /** Identyfikator ostatniego znaku bloku. */
+    /** The identifier of the block's last character. */
     public Id lastId() {
         return start.plus(length - 1);
     }
@@ -160,17 +160,17 @@ public final class Block {
             && id.lamport() < start.lamport() + length;
     }
 
-    /** Przesunięcie znaku w bloku; wynik ma sens tylko gdy {@link #containsId} zwraca prawdę. */
+    /** The character's offset within the block; meaningful only when {@link #containsId} is true. */
     public int offsetOf(Id id) {
         return (int) (id.lamport() - start.lamport());
     }
 
     /**
-     * Dzieli blok na dwa: {@code [0, offset)} oraz {@code [offset, length)}.
+     * Splits the block in two: {@code [0, offset)} and {@code [offset, length)}.
      *
-     * <p>Origin prawej części to ostatni znak lewej — dzięki temu podział nie zmienia
-     * struktury logicznej dokumentu, tylko jej reprezentację. To jest kluczowy niezmiennik:
-     * podział musi być operacją czysto techniczną, niewidoczną dla algorytmu scalania.
+     * <p>The right part's origin is the last character of the left one — which is what makes a
+     * split change the document's representation rather than its logical structure. That is the key
+     * invariant: a split must be a purely technical operation, invisible to the merge algorithm.
      *
      * <p>Works on a content-dropped block too, splitting the length alone. That case is reached
      * when an operation arrives whose origin sits inside a tombstone GC has already emptied —
@@ -179,7 +179,7 @@ public final class Block {
     public Block[] splitAt(int offset) {
         if (offset <= 0 || offset >= length) {
             throw new IllegalArgumentException(
-                "podział poza wnętrzem bloku: offset=" + offset + ", długość=" + length);
+                "split outside the block's interior: offset=" + offset + ", length=" + length);
         }
         if (text == null) {
             return new Block[] {
@@ -193,12 +193,12 @@ public final class Block {
     }
 
     /**
-     * Czy {@code other} da się dopisać na końcu tego bloku bez zmiany znaczenia — czyli czy
-     * pochodzi z tej samej repliki, ma kolejny lamport, ten sam stan tombstone'u i jest
-     * zaczepiony dokładnie o ostatni znak tego bloku.
+     * Whether {@code other} can be appended to the end of this block without changing its meaning —
+     * that is, whether it comes from the same replica, has the next lamport, the same tombstone
+     * state, and is anchored to exactly this block's last character.
      *
-     * <p>To jest szybka ścieżka dla zwykłego pisania: bez niej każdy naciśnięty klawisz
-     * tworzyłby osobny blok, a run-length nie dawałby nic.
+     * <p>This is the fast path for ordinary typing: without it every keystroke would create a
+     * separate block and run-length encoding would achieve nothing.
      *
      * <p>A content-dropped block can never be appended to, and needs no extra check for it:
      * dropping requires {@code deleted}, and appending requires the opposite on both sides.

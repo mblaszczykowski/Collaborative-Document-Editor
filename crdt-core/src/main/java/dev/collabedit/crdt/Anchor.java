@@ -1,53 +1,53 @@
 package dev.collabedit.crdt;
 
 /**
- * Miejsce w dokumencie zaczepione o <b>znak</b>, a nie o pozycję.
+ * A place in the document pinned to a <b>character</b> rather than to a position.
  *
- * <h2>Dlaczego nie offset</h2>
- * Ten sam powód, dla którego kursory są identyfikatorami znaków (ADR-0006): offset przestaje
- * wskazywać to samo miejsce, gdy ktoś wstawi tekst wcześniej. Kotwica przesuwa się razem
- * z tekstem, bo jest przyczepiona do znaku.
+ * <h2>Why not an offset</h2>
+ * The same reason cursors are character identifiers (ADR-0006): an offset stops pointing at the
+ * same place as soon as somebody inserts text earlier on. An anchor moves with the text, because it
+ * is attached to a character.
  *
- * <h2>Dlaczego strona jest istotna, a nie kosmetyczna</h2>
- * To jest sedno rich textu w CRDT i najłatwiejsza rzecz do przeoczenia. Kotwica „za znakiem X"
- * i kotwica „przed znakiem Y" wskazują to samo miejsce w tekście {@code …XY…} — <b>dopóki
- * nikt nie wstawi czegoś między X a Y</b>. Wtedy się rozchodzą, i właśnie ta różnica
- * decyduje o zachowaniu formatowania:
+ * <h2>Why the side matters, and is not cosmetic</h2>
+ * This is the heart of rich text in a CRDT and the easiest thing to overlook. An anchor "after
+ * character X" and an anchor "before character Y" point at the same place in the text {@code …XY…}
+ * — <b>until somebody inserts something between X and Y</b>. Then they diverge, and it is precisely
+ * that difference that decides how formatting behaves:
  *
  * <pre>
- *   tekst:            a [b] c          (pogrubione „b")
+ *   text:             a [b] c          ("b" is bold)
  *
- *   koniec = AFTER(b):   zakres kończy się tuż za „b"
- *                        wpisanie „x" po „b" → a [b] x c     — pogrubienie NIE rośnie
+ *   end = AFTER(b):      the range ends just after "b"
+ *                        typing "x" after "b" → a [b] x c     — the bold does NOT grow
  *
- *   koniec = BEFORE(c):  zakres kończy się tuż przed „c"
- *                        wpisanie „x" po „b" → a [b x] c     — pogrubienie ROŚNIE
+ *   end = BEFORE(c):     the range ends just before "c"
+ *                        typing "x" after "b" → a [b x] c     — the bold DOES grow
  * </pre>
  *
- * <p>Pisanie na końcu pogrubionego fragmentu ma zostać pogrubione, a pisanie na końcu
- * linku — już do niego nie należeć. Obie te rzeczy wyraża ten sam mechanizm, różnicą jest
- * wyłącznie wybór strony kotwicy końcowej. Bez {@code Side} trzeba by to rozstrzygać
- * osobnym polem „czy rozszerzać", które opisuje to samo, tylko gorzej — bo w oderwaniu
- * od tego, gdzie kotwica faktycznie jest.
+ * <p>Typing at the end of a bold fragment should become bold, while typing at the end of a link
+ * should not become part of it. Both are expressed by the same mechanism; the only difference is
+ * which side the end anchor sits on. Without {@code Side} this would have to be settled by a
+ * separate "should it expand" field, which describes the same thing only worse — because it is
+ * detached from where the anchor actually is.
  *
- * @param charId znak, do którego kotwica jest przyczepiona
- * @param side   po której jego stronie
+ * @param charId the character the anchor is attached to
+ * @param side   which side of it
  */
 public record Anchor(Id charId, Side side) {
 
     public enum Side {
-        /** Tuż przed znakiem. Tekst wstawiony bezpośrednio przed nim znajdzie się PO kotwicy. */
+        /** Just before the character. Text inserted directly before it ends up AFTER the anchor. */
         BEFORE,
-        /** Tuż za znakiem. Tekst wstawiony bezpośrednio za nim znajdzie się PO kotwicy. */
+        /** Just after the character. Text inserted directly after it ends up AFTER the anchor. */
         AFTER
     }
 
     public Anchor {
         if (charId == null) {
-            throw new IllegalArgumentException("kotwica musi wskazywać znak");
+            throw new IllegalArgumentException("an anchor must point at a character");
         }
         if (side == null) {
-            throw new IllegalArgumentException("kotwica musi mieć stronę");
+            throw new IllegalArgumentException("an anchor must have a side");
         }
     }
 

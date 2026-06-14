@@ -7,25 +7,25 @@ import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * Najwyższa wartość zegara Lamporta widziana od każdej repliki.
+ * The highest Lamport clock value seen from each replica.
  *
- * <p><b>Do czego to NIE służy:</b> do wykrywania duplikatów operacji. Zegar Lamporta jest
- * nieciągły w obrębie repliki (skacze przy odbiorze operacji zdalnych), więc „widziałem od A
- * wszystko do 48" nie odróżnia dziury po zgubionej operacji od dziury po skoku zegara.
- * Duplikaty wstawień wykrywamy przez sprawdzenie, czy znak o danym identyfikatorze już jest
- * w strukturze; duplikaty usunięć są nieszkodliwe, bo ustawienie tombstone'u jest idempotentne.
- * Rozwinięcie w {@code docs/crdt-design.md}, sekcja 2.
+ * <p><b>What this is NOT for:</b> detecting duplicate operations. A Lamport clock is not contiguous
+ * within a replica (it jumps when remote operations arrive), so "I have seen everything from A up
+ * to 48" cannot tell a hole left by a lost operation from a hole left by a clock jump. Duplicate
+ * insertions are detected by checking whether a character with that identifier is already in the
+ * structure; duplicate deletions are harmless, because setting a tombstone is idempotent. Expanded
+ * on in {@code docs/crdt-design.md}, section 2.
  *
- * <p><b>Do czego służy:</b>
+ * <p><b>What it is for:</b>
  * <ul>
- *   <li>stabilność przyczynowa na potrzeby GC tombstone'ów (ADR-0005) — {@link #meet},</li>
- *   <li>wymiana „co mam" przy ponownym połączeniu (CP6),</li>
- *   <li>diagnostyka: która replika blokuje GC.</li>
+ *   <li>causal stability for tombstone GC (ADR-0005) — {@link #meet},</li>
+ *   <li>the "what do I have" exchange on reconnect (CP6),</li>
+ *   <li>diagnostics: which replica is blocking GC.</li>
  * </ul>
  *
- * <p>Struktura niemutowalna. Przy kilkudziesięciu replikach na dokument kopiowanie mapy przy
- * każdej operacji byłoby marnotrawstwem, więc mutowalny wariant roboczy żyje wewnątrz
- * {@link RgaDocument}, a ta klasa reprezentuje migawkę.
+ * <p>An immutable structure. With a few dozen replicas per document, copying the map on every
+ * operation would be wasteful, so a mutable working variant lives inside {@link RgaDocument} and
+ * this class represents a snapshot.
  */
 public final class VersionVector {
 
@@ -45,7 +45,9 @@ public final class VersionVector {
         return maxSeen.isEmpty() ? EMPTY : new VersionVector(Map.copyOf(maxSeen));
     }
 
-    /** Najwyższy widziany lamport od danej repliki; {@code -1} gdy nic od niej nie widzieliśmy. */
+    /**
+     * The highest lamport seen from a given replica; {@code -1} when we have seen nothing from it.
+     */
     public long get(int replicaId) {
         return maxSeen.getOrDefault(replicaId, -1L);
     }
@@ -68,16 +70,15 @@ public final class VersionVector {
     }
 
     /**
-     * Element wspólny (po współrzędnych minimum) — punkt, do którego <b>wszystkie</b> podane
-     * repliki na pewno widziały historię.
+     * The meet (component-wise minimum) — the point up to which <b>every</b> given replica has
+     * certainly seen the history.
      *
-     * <p>To jest {@code stableVersion} z ADR-0005: operacje poniżej tej granicy są przyczynowo
-     * stabilne, więc ich tombstone'y można fizycznie usunąć.
+     * <p>This is the {@code stableVersion} from ADR-0005: operations below that boundary are
+     * causally stable, so their tombstones may be physically removed.
      *
-     * <p>Uwaga na przypadek brzegowy: jeśli którakolwiek replika nie widziała <i>nic</i> od
-     * repliki R, to minimum dla R wynosi {@code -1} i nic z R nie jest stabilne. Jest to
-     * zamierzone — nowo podłączona replika nie może odblokować GC tylko dlatego, że jej
-     * version vector jest pusty.
+     * <p>Note the edge case: if any replica has seen <i>nothing</i> from replica R, then the minimum
+     * for R is {@code -1} and nothing from R is stable. That is intentional — a newly connected
+     * replica must not unblock GC merely because its version vector is empty.
      */
     public static VersionVector meet(Iterable<VersionVector> vectors) {
         Map<Integer, Long> result = null;
@@ -93,9 +94,9 @@ public final class VersionVector {
     }
 
     /**
-     * Replika, która najbardziej opóźnia {@code stableVersion} względem podanego stanu
-     * docelowego — czyli odpowiedź na pytanie „dlaczego GC stoi" (metryka z ADR-0005).
-     * {@code null}, gdy nic nie zostaje w tyle.
+     * The replica holding {@code stableVersion} back the most relative to a given target state —
+     * that is, the answer to "why is GC stuck" (the metric from ADR-0005). {@code null} when
+     * nothing is lagging.
      */
     public static Integer laggingReplica(VersionVector stable, VersionVector target) {
         Integer worst = null;
@@ -110,7 +111,7 @@ public final class VersionVector {
         return worst;
     }
 
-    /** Kopia jako zwykła mapa — do serializacji i asercji w testach. */
+    /** A copy as a plain map — for serialisation and for assertions in tests. */
     public Map<Integer, Long> asMap() {
         return new TreeMap<>(maxSeen);
     }

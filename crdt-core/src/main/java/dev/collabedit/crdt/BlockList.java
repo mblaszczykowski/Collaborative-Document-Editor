@@ -1,29 +1,28 @@
 package dev.collabedit.crdt;
 
 /**
- * Uporządkowana lista bloków dokumentu, z dwoma rodzajami wyszukiwania:
- * po <b>widocznym offsecie</b> (czego potrzebuje edytor) i po <b>identyfikatorze</b>
- * (czego potrzebuje algorytm scalania).
+ * The ordered list of a document's blocks, with two kinds of lookup: by <b>visible offset</b> (what
+ * the editor needs) and by <b>identifier</b> (what the merge algorithm needs).
  *
- * <p>Istnienie tego interfejsu jest celowe: {@link RgaDocument} zawiera algorytm i nie wie,
- * jak lista jest przechowywana. Dzięki temu ta sama, raz przetestowana logika działa na dwóch
- * implementacjach o różnej złożoności:
+ * <p>This interface exists deliberately: {@link RgaDocument} holds the algorithm and does not know
+ * how the list is stored. That lets the same, once-tested logic run on two implementations of
+ * different complexity:
  *
  * <table>
- *   <caption>Złożoność operacji</caption>
+ *   <caption>Operation complexity</caption>
  *   <tr><th></th><th>{@link ArrayBlockList}</th><th>{@link TreapBlockList}</th></tr>
  *   <tr><td>{@code insert}</td><td>O(n)</td><td>O(log n)</td></tr>
  *   <tr><td>{@code locateVisible}</td><td>O(n)</td><td>O(log n)</td></tr>
  *   <tr><td>{@code locateId}</td><td>O(n)</td><td>O(log n)</td></tr>
  * </table>
  *
- * <p>Property test {@code naiveEqualsIndexed} podaje obu implementacjom tę samą losową
- * sekwencję operacji i porównuje wyniki — to jest dowód, że optymalizacja nie zmieniła
- * zachowania, a nie założenie, że nie zmieniła.
+ * <p>The property test {@code naiveEqualsIndexed} feeds both implementations the same random
+ * sequence of operations and compares the results — that is proof the optimisation did not change
+ * the behaviour, rather than an assumption that it did not.
  */
 public interface BlockList extends Iterable<Block> {
 
-    /** Pozycja znaku: indeks bloku i przesunięcie wewnątrz niego. */
+    /** A character's position: the block index and the offset inside it. */
     record Locator(int blockIndex, int offset) { }
 
     int size();
@@ -37,35 +36,39 @@ public interface BlockList extends Iterable<Block> {
     void remove(int index);
 
     /**
-     * Oznacza blok jako usunięty. Osobna metoda zamiast {@code get(i).markDeleted()}, bo
-     * implementacja indeksowana musi przy tym zaktualizować agregaty w drzewie — mutacja
-     * bloku „z boku" cicho rozspójniłaby strukturę.
+     * Marks a block as deleted. A separate method rather than {@code get(i).markDeleted()}, because
+     * the indexed implementation has to update the tree's aggregates at the same time — mutating a
+     * block "off to the side" would silently corrupt the structure.
      */
     void markDeleted(int index);
 
-    /** Liczba znaków widocznych w tekście (bez tombstone'ów). */
+    /** The number of characters visible in the text (excluding tombstones). */
     int visibleLength();
 
-    /** Liczba wszystkich znaków, łącznie z tombstone'ami — miara narzutu (metryka z ADR-0005). */
+    /**
+     * The number of all characters, tombstones included — a measure of the overhead (the metric
+     * from ADR-0005).
+     */
     int totalLength();
 
     /**
-     * Blok zawierający znak o podanym widocznym indeksie.
+     * The block containing the character at the given visible index.
      *
-     * @return pozycja, albo {@code null} gdy indeks jest poza zakresem
+     * @return the position, or {@code null} when the index is out of range
      */
     Locator locateVisible(int visibleIndex);
 
     /**
-     * Blok zawierający znak o podanym identyfikatorze — również gdy znak jest tombstone'em.
+     * The block containing the character with the given identifier — including when that character
+     * is a tombstone.
      *
-     * @return pozycja, albo {@code null} gdy znaku nie ma w strukturze
+     * @return the position, or {@code null} when the character is not in the structure
      */
     Locator locateId(Id id);
 
-    /** Liczba widocznych znaków przed blokiem o podanym indeksie. */
+    /** The number of visible characters before the block at the given index. */
     int visibleOffsetOf(int blockIndex);
 
-    /** Pusta lista tego samego typu — używane przy klonowaniu dokumentu w testach. */
+    /** An empty list of the same type — used when cloning a document in tests. */
     BlockList newEmpty();
 }

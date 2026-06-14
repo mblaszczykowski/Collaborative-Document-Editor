@@ -1,41 +1,41 @@
 package dev.collabedit.crdt;
 
 /**
- * Identyfikator pojedynczego znaku w dokumencie.
+ * The identifier of a single character in the document.
  *
- * <p>{@code lamport} jest wartością <b>zegara Lamporta</b>, nie licznikiem sekwencyjnym repliki.
- * To rozróżnienie jest wymogiem poprawności, a nie stylistyką — szczegóły z kontrprzykładem
- * w {@code docs/crdt-design.md}, sekcja 1. W skrócie: reguła wstawiania w RGA („idź w prawo,
- * dopóki napotykasz elementy o wyższym znaczniku") jest poprawna wyłącznie wtedy, gdy element
- * powstały przyczynowo później ma gwarantowanie wyższy znacznik. Licznik sekwencyjny per replika
- * tej własności nie ma.
+ * <p>{@code lamport} is a <b>Lamport clock</b> value, not a per-replica sequence counter. That
+ * distinction is a correctness requirement rather than a matter of style — details, with a
+ * counterexample, in {@code docs/crdt-design.md}, section 1. In short: RGA's insertion rule ("walk
+ * right while the elements you meet have a higher timestamp") is correct only when an element
+ * created causally later is guaranteed to have a higher timestamp. A per-replica sequence counter
+ * does not have that property.
  *
- * <p>Praktyczna konsekwencja: {@code lamport} <b>nie jest ciągły</b> w obrębie repliki — skacze
- * przy odbiorze operacji zdalnych. Dlatego version vector nie służy u nas do wykrywania
- * duplikatów (patrz {@link VersionVector}).
+ * <p>The practical consequence: {@code lamport} is <b>not contiguous</b> within a replica — it jumps
+ * when remote operations arrive. That is why the version vector is not used here for duplicate
+ * detection (see {@link VersionVector}).
  *
- * <p>Porządek naturalny: najpierw {@code lamport}, potem {@code replicaId} jako rozstrzygnięcie
- * remisu. Remis jest częsty — dwie repliki działające współbieżnie na tym samym stanie wygenerują
- * ten sam {@code lamport}. {@code replicaId} czyni porządek totalnym bez potrzeby arbitra,
- * co jest całą istotą wyboru z ADR-0001.
+ * <p>Natural order: {@code lamport} first, then {@code replicaId} as the tie-break. Ties are common
+ * — two replicas working concurrently on the same state will generate the same {@code lamport}.
+ * {@code replicaId} makes the order total without needing an arbiter, which is the entire point of
+ * the choice in ADR-0001.
  */
 public record Id(int replicaId, long lamport) implements Comparable<Id> {
 
     public Id {
         if (lamport < 0) {
-            throw new IllegalArgumentException("lamport nie może być ujemny: " + lamport);
+            throw new IllegalArgumentException("lamport cannot be negative: " + lamport);
         }
     }
 
-    /** Identyfikator znaku przesuniętego o {@code offset} w tym samym bloku run-length. */
+    /** The identifier of the character {@code offset} further along the same run-length block. */
     public Id plus(int offset) {
         return new Id(replicaId, lamport + offset);
     }
 
     /**
-     * Czy ten identyfikator i {@code other} pochodzą z tej samej repliki i są kolejnymi
-     * wartościami zegara. Używane przy scalaniu bloków (run-length) — patrz
-     * {@code docs/crdt-design.md}, sekcja 3.
+     * Whether this identifier and {@code other} come from the same replica and are consecutive
+     * clock values. Used when merging blocks (run-length) — see {@code docs/crdt-design.md},
+     * section 3.
      */
     public boolean isDirectSuccessorOf(Id other) {
         return other != null && other.replicaId == replicaId && other.lamport + 1 == lamport;
