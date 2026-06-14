@@ -47,23 +47,23 @@
     "from" : 2,
     "to" : 3,
     "marks" : {
-      "link" : "https://example.test/x",
-      "bold" : null
+      "bold" : null,
+      "link" : "https://example.test/x"
     }
   }, {
     "from" : 3,
     "to" : 4,
     "marks" : {
-      "link" : "https://example.test/x",
+      "bold" : null,
       "italic" : null,
-      "bold" : null
+      "link" : "https://example.test/x"
     }
   }, {
     "from" : 4,
     "to" : 5,
     "marks" : {
-      "link" : "https://example.test/x",
-      "bold" : null
+      "bold" : null,
+      "link" : "https://example.test/x"
     }
   }, {
     "from" : 5,

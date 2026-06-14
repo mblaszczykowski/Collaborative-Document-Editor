@@ -77,7 +77,10 @@ class MarkCostMeasurement {
             + "  znaczników   odcinków   czas wyliczenia%n", TEXT_LENGTH);
 
         long previous = 0;
-        for (int markCount : new int[] {100, 400, 1_600}) {
+        // 6400 dołożone w CP20. Bez punktu, w którym liczba znaczników robi się duża, różnicy
+        // między O(m²) a O(m log m) po prostu nie widać — a przy 100 i 400 nie widać jej wcale,
+        // co samo w sobie jest wynikiem wartym zapisania.
+        for (int markCount : new int[] {100, 400, 1_600, 6_400}) {
             RgaDocument document = document();
             document.insert(0, "x".repeat(TEXT_LENGTH));
             for (int i = 0; i < markCount; i++) {
@@ -87,12 +90,23 @@ class MarkCostMeasurement {
 
             // Rozgrzewka: pierwsze wywołanie płaci za kompilację JIT i za zapełnienie
             // struktur, więc mierzenie go opisywałoby JVM, a nie algorytm.
-            for (int i = 0; i < 5; i++) {
+            for (int i = 0; i < 20; i++) {
                 document.formatting();
             }
-            long start = System.nanoTime();
-            int spans = document.formatting().size();
-            long elapsed = System.nanoTime() - start;
+
+            // MEDIANA Z 11 PRÓBEK, nie pojedynczy pomiar (CP20). Poprzednia wersja mierzyła
+            // jedno wywołanie i dawała przy 400 znacznikach raz 0,8 ms, raz 4,7 ms — pięciokrotny
+            // rozrzut na tej samej maszynie i tym samym kodzie. Porównanie „przed i po" na takich
+            // liczbach nie znaczy nic, a to jest jedyne, do czego ta tabela służy.
+            int spans = 0;
+            long[] samples = new long[11];
+            for (int sample = 0; sample < samples.length; sample++) {
+                long began = System.nanoTime();
+                spans = document.formatting().size();
+                samples[sample] = System.nanoTime() - began;
+            }
+            java.util.Arrays.sort(samples);
+            long elapsed = samples[samples.length / 2];
 
             System.out.printf("  %10d   %8d   %,10d ns%s%n", markCount, spans, elapsed,
                 previous == 0 ? "" : String.format("   (×%.1f przy ×4 znaczników)",
