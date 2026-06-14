@@ -1,16 +1,16 @@
 # Plan v3 — z czujności w konstrukcję
 
-> **Status: plan otwarty, nic nie zaczęte.** Następca [`PLAN-v2.md`](PLAN-v2.md) (CP10–CP15,
+> **Status: CP16–CP20 zamknięte, §0 w większości nie. Audyt końcowy w [§10](#10-audyt-końcowy--po-cp20).** Następca [`PLAN-v2.md`](PLAN-v2.md) (CP10–CP15,
 > zamknięty) i [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) (CP1–CP9, zamknięty).
 >
 > | Checkpoint | Stan |
 > |---|---|
-> | §0 — Dotarcie (hosting, język, kondensacja README) | otwarty |
-> | CP16 — Autoryzacja wymuszona strukturalnie | otwarty |
-> | CP17 — Deterministyczna symulacja | otwarty |
-> | CP18 — Blok bez treści, format snapshotu v3 | otwarty |
-> | CP19 — Bramka regresji wydajności + automatyzacja bezpieczeństwa | otwarty |
-> | CP20 — Drzewo przedziałowe w `MarkSet` + zaległe długi | otwarty |
+> | §0 — Dotarcie (hosting, język, kondensacja README) | **w ~15 %** — patrz [audyt](#101-niezrobione--i-to-jest-najważniejsza-część-tego-audytu) |
+> | CP16 — Autoryzacja wymuszona strukturalnie | **zamknięty** — przy okazji znaleziona czwarta dziura tej samej klasy |
+> | CP17 — Deterministyczna symulacja | **zamknięty** — 806 scenariuszy < 1 s; zero błędów w systemie, trzy w samej symulacji |
+> | CP18 — Blok bez treści, format snapshotu v3 | **zamknięty** — odzysk GC z 0 % na 100 % |
+> | CP19 — Bramka regresji wydajności + automatyzacja bezpieczeństwa | **zamknięty inaczej** — bramka na kształt złożoności, bo progu na milisekundy nie dało się obronić |
+> | CP20 — Zamiatanie w `MarkSet` + zaległe długi | **zamknięty częściowo** — `MarkSet` i `retry-after` zrobione, cztery długi nie |
 >
 > Zasady prowadzenia dokumentu przejęte z v1 i v2 bez zmian: jeśli decyzja z planu okaże się
 > zła w praktyce, poprawiamy **tutaj** i commitujemy zmianę planu razem z powodem. Sekcja
@@ -634,24 +634,94 @@ niż plan, w którym co dwa dni działa coś nowego.
 
 ---
 
-## 10. Audyt końcowy — do wypełnienia po CP20
+## 10. Audyt końcowy — po CP20
 
-Pusty z założenia, tak jak §11 w planie v2 przed jego zamknięciem.
+Przejście punkt po punkcie **przeciw kodowi**, nie przeciw pamięci. W v2 takie przejście
+znalazło `HistoryController` bez żadnej autoryzacji; tym razem znalazło czwartą dziurę tej
+samej klasy, jeszcze zanim ruszył pierwszy checkpoint — i to jest najlepszy argument, że ta
+sekcja nie jest formalnością.
 
-Wypełnia go **przejście punkt po punkcie przeciw kodowi, a nie przeciw pamięci**. W v2 takie
-przejście znalazło `HistoryController` bez żadnego sprawdzenia uprawnień — mimo że plan
-wymieniał tę ścieżkę wprost, a checkpoint był uznany za zamknięty. Wniosek z tamtego audytu
-jest jednocześnie tezą CP16 i powodem, dla którego ta sekcja istnieje:
+### 10.1 Niezrobione — i to jest najważniejsza część tego audytu
 
-> **Zabezpieczenie oparte na tym, że ktoś pamięta o punkcie z dokumentu, nie jest
-> zabezpieczeniem.**
+| Punkt | Stan | Dlaczego |
+|---|---|---|
+| **§0.1 Hosting** | **niezrobione** | Wymaga konta na Fly.io/Railway i decyzji o planie płatnym. Zrobione zostało to, co dało się zrobić w repo: sekret tokenu przestał mieć wartość domyślną, więc instancja publiczna nie wystartuje z kluczem znanym z repozytorium |
+| **§0.2 Migracja na angielski** | **zrobione w ~15 %** | Decyzja zapisana, cała nowa treść po angielsku (kod CP16–CP20, ADR-0012, ADR-0013, komunikaty commitów). **README, ADR 0001–0011 i istniejące komentarze zostają po polsku.** To jest dokładnie stan, przed którym ostrzega §0.2: repozytorium dwujęzyczne, czyli gorsze niż w każdym z języków osobno |
+| **§0.3 Kondensacja README** | **niezrobione** | README urosło, nie skurczyło się — doszły sekcje o CP18 i CP20 oraz sprostowanie do p99 |
+| **CP20 — snapshot CRDT do klienta** | **niezrobione** | Największy pozostały dług produktowy: klient nadal odtwarza cały log przy otwarciu |
+| **CP20 — `SYNC_CHUNK` w bajtach** | **niezrobione** | |
+| **CP20 — presence w klastrze** | **niezrobione** | |
+| **CP20 — pomiar indeksu w przeglądarce** | **niezrobione** | |
+| **CP20 — `App.tsx` (655 linii)** | **niezrobione** | |
+| **Testy e2e po zmianach** | **nieuruchomione** | Port 8080 zajmowała instancja uruchomiona przez autora. Uruchomienie wymagałoby albo jej zatrzymania, albo testowania nieaktualnego builda — pierwsze jest ingerencją w cudzą pracę, drugie dałoby wynik mylący. CI uruchamia e2e przy każdym pull requeście |
 
-Do rozliczenia po zamknięciu planu, w trzech kategoriach — jak w v2:
+**Punkt kontrolny z §0.2 zadziałał i wypadł negatywnie.** Sekcja mówi: *„jeśli po CP20 wiersze
+1–3 nie są zrobione, lepiej wrócić do polskiego w całości niż zostawić repozytorium w połowie
+drogi"*. Nie są zrobione. Decyzja należy do autora, ale plan przewidział ten moment i wskazał
+wyjście — zostawienie tego bez rozstrzygnięcia jest gorsze niż każda z dwóch odpowiedzi.
 
-- **niezrobione, znalezione audytem** (i naprawione);
-- **zrobione inaczej, niż zakładał plan** — świadomie, z powodem;
-- **niezrobione świadomie**, wypisane w README.
+### 10.2 Zrobione inaczej, niż zakładał plan — świadomie
 
-Osobne pytanie, na które ten plan ma odpowiedzieć na końcu, a którego nie da się rozstrzygnąć
-teraz: **czy projekt, w którym przez trzy tygodnie nie przybyła ani jedna funkcja, czyta się
-lepiej niż przed v3.** Jeśli nie — to jest wynik i należy go zapisać, a nie schować.
+| Punkt planu | Jak jest | Dlaczego |
+|---|---|---|
+| CP16: „filtr albo `@PreAuthorize` na `/api/documents/{id}/**`" | **Trzy adnotacje przy endpointach + strażnik odmawiający obsługi niezadeklarowanego** | Reguła ścieżkowa nie obejmuje `/api/comments/{threadId}/…` i nie potrafi wyrazić, że przywracanie wymaga ZAPISU, a podgląd ODCZYTU — a pomylenie tych dwóch to dokładnie sposób, w jaki endpoint przywracania stał otworem dla czytelników |
+| CP16: „test ArchUnit" | **Refleksja, bez nowej zależności** | Cała reguła to jedno przejście po metodach. Ten sam kompromis, który `TokenService` robi wobec biblioteki JWT |
+| CP16: dwie adnotacje | **Trzy** | Znalazły się endpointy, które TWORZĄ dokument: nie ma czego autoryzować, ale anonimowy wywołujący nie może ich uruchomić. Zwinięcie tego do „publiczny" zostawiłoby obie dziury otwarte, wyglądając na decyzję |
+| CP17: „symulacja obejmuje cały system rozproszony" | **Model warstwy rozproszonej na PRAWDZIWYM algorytmie scalania** | Nie dotyka Springa, Postgresa ani gniazda. Granica nazwana w ADR-0013; `ClusterChaosIT` zostaje |
+| CP19: „bramka porównująca harness z baseline'em" | **Bramka na KSZTAŁT złożoności, nie na milisekundy** | Zmierzone: rozrzut tego stanowiska (28 ms kontra 43 ms na tym samym kodzie) przekracza regresję, którą taka bramka miałaby wykrywać. Plan przewidywał ten wynik jako dopuszczalny — §5.1 mówi wprost „jeśli rozrzut okaże się za duży, trzeba to napisać zamiast wstawiać martwy job" |
+| CP20: `retry-after` | **Zrobione, i NIE dało tego, co miało dać** | Patrz 10.4 |
+
+### 10.3 Znalezione audytem i przeglądem — naprawione
+
+| Co | Gdzie |
+|---|---|
+| **Czwarta dziura w kontroli dostępu**: `POST /documents/recovered` z wygasłym tokenem dawał dokument bez właściciela i z widocznością `link` | §2.3, naprawione w CP16 |
+| **Ta sama klasa w `POST /documents`** — dokument bez właściciela, czyli niemożliwy do zabezpieczenia przez kogokolwiek | CP16 |
+| **Sekret tokenu z wartością domyślną w repo** — pełne obejście uwierzytelnienia, ciche | CP16 |
+| Metryka `crdt.gc.removed.characters.total` po CP18 liczyła coś innego, niż mówi nazwa | przegląd końcowy |
+| Log GC mówił „usunięto" przy niezmienionej liczbie bloków | przegląd końcowy |
+| `Block.append` na bloku bez treści wkleiłby do dokumentu napis `null` i zawyżył długość o cztery | przegląd końcowy |
+| `throttleRounds` w kliencie rósł bez ograniczenia i nie zerował się przy ponownym połączeniu; przy `advertised == 0` dałoby to `setTimeout(fn, NaN)`, czyli pętlę odpytywania | przegląd końcowy |
+| Martwa stała `DENIED` w `CommentController` | przegląd końcowy |
+
+### 10.4 Czego pomiar NIE potwierdził
+
+**`retry-after` nie poprawił p99, a sam z siebie go pogorszył.** Trzy przebiegi harnessu jeden
+po drugim, 100 tys. znaków / 50 klientów:
+
+| Wariant | p99 | odrzuceń |
+|---|---:|---:|
+| przed (stała 1 s) | 872 ms | 1523 |
+| sam `retry-after` | **1352 ms** | 1614 |
+| `retry-after` + wydłużanie wykładnicze | 826 ms | 1368 |
+
+Teza z README — *„odrzucone operacje są ponawiane po sekundzie, i ta sekunda jest tym, co widać
+w p99"* — jest **nieprawdziwa**. Ogon wyznacza tempo napełniania wiadra razy rozmiar
+zakolejkowanej paczki; klient z N operacjami za pustym wiadrem czeka N/60 sekundy niezależnie
+od tego, jak często pyta. Ponawianie co 17 ms zamiast co sekundę to odpytywanie w pętli.
+
+Zmiana zostaje, bo znika zgadnięta stała, a odmów jest o ~10 % mniej — ale **nie jest to zysk
+latencji i commit tego nie udaje**.
+
+**CP17 nie znalazł ani jednego błędu w systemie.** Znalazł trzy w samym sobie. `REGRESSION_SEEDS`
+jest puste i opisane jako puste. Maszyna jest zbudowana i sprawdzona mutacją (odwrócenie warunku
+skanu RGA wywala 593 z 806 testów, z kontrprzykładem na czterech operacjach), ale na razie nie
+zarobiła na siebie prawdziwą wadą.
+
+### 10.5 Zmierzone przy okazji, wcześniej nieznane
+
+**`ClusterChaosIT` jest flakiem zależnym od obciążenia, i teraz jest to liczba.** W izolacji
+**6 przebiegów na 6** zielonych; w pełnym buildzie padł w **2 z 4**. Nie jest to regresja
+wprowadzona przez v3 — padał tak samo przed CP17. Jest to natomiast dokładnie ten failure mode,
+dla którego CP17 powstał: awaria zależna od uszeregowania wątków, nieodtwarzalna, znikająca
+przy próbie zbadania. Nocny job `chaos ×10` nadal jej szuka; symulacja pokrywa tę samą klasę
+błędów odtwarzalnie, ale nie dotyka prawdziwego Redisa.
+
+### 10.6 Uchybienie w prowadzeniu historii
+
+Commit CP17 (`a6908f2`) wciągnął `.github/dependabot.yml` i `.github/workflows/codeql.yml`,
+o których jego opis nie wspomina. `CLAUDE.md` §2 wymaga jednej logicznej zmiany na commit.
+Historia nie została przepisana, bo autor pracował równolegle na tej samej gałęzi i rebase
+zniszczyłby mu stan roboczy — ale uchybienie jest uchybieniem i lepiej stoi tutaj wypisane
+niż nieznalezione.
+
