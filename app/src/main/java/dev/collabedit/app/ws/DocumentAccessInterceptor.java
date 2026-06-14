@@ -104,7 +104,10 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         if (command == StompCommand.SEND && !allowedToSend(role, destination, message)) {
             return deny(command, destination, userId, "rola " + role.wire() + " nie pozwala na tę operację");
         }
-        if (command == StompCommand.SEND && !withinRateLimit(accessor.getSessionId(), destination)) {
+        RateLimiter.Decision pace = command == StompCommand.SEND
+            ? withinRateLimit(accessor.getSessionId(), destination)
+            : new RateLimiter.Decision(true, 0);
+        if (!pace.allowed()) {
             // Odmowa z powodu tempa musi być SŁYSZALNA, w odróżnieniu od odmowy z powodu
             // uprawnień. Powód jest asymetryczny i wart zapisania:
             //
@@ -115,7 +118,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             // Cicha odmowa z powodu tempa jest UTRATĄ DANYCH — wykryte harnessem w CP15:
             // zasianie dużego dokumentu wyczerpywało zryw, 115 operacji przepadło,
             // a dokument po prostu wychodził krótszy, bez śladu w interfejsie.
-            notifyRateLimited(accessor, destination);
+            notifyRateLimited(accessor, destination, pace.retryAfterMillis());
             return deny(command, destination, userId, "przekroczone tempo wysyłania");
         }
         return message;
@@ -128,7 +131,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      * z powodu braku dostępu, a nie z powodu tempa — inaczej komunikat w logu mówiłby
      * o niewłaściwej przyczynie przy diagnozie.
      */
-    private boolean withinRateLimit(String sessionId, String destination) {
+    private RateLimiter.Decision withinRateLimit(String sessionId, String destination) {
         long now = System.currentTimeMillis();
         return destination.endsWith("/presence")
             ? rateLimiter.allowPresence(sessionId, now)
@@ -202,13 +205,20 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      *
      * <p>Klient trzyma operacje niepotwierdzone w buforze do czasu potwierdzenia ZAPISU
      * (ADR-0003), więc ma co ponowić — brakuje mu wyłącznie sygnału, że warto.
+     *
+     * <p><b>Od CP20 sygnał niesie też CZAS oczekiwania.</b> Wiadro żetonów zna go dokładnie
+     * ({@code (1 - tokens) / refillPerMs}), a klient wcześniej go zgadywał — na sztywno jedną
+     * sekundę. Ta sekunda jest tym, co widać w p99 w README: przy 50 klientach i dokumencie
+     * 100 tys. znaków ogon wynosi 1299 ms, a limit tempa jest wprost wskazany jako jego
+     * przyczyna. Odesłanie liczby, którą serwer i tak ma, zamienia zgadywanie na pomiar.
      */
-    private void notifyRateLimited(StompHeaderAccessor accessor, String destination) {
+    private void notifyRateLimited(StompHeaderAccessor accessor, String destination,
+                                   long retryAfterMillis) {
         try {
             messaging.getObject().convertAndSendToUser(
                 accessor.getSessionId(), "/queue/errors",
                 new Messages.ErrorMessage("RATE_LIMITED",
-                    "za dużo operacji na sekundę — zwolnij i ponów"),
+                    "za dużo operacji na sekundę — zwolnij i ponów", retryAfterMillis),
                 SessionAttributes.forUser(accessor));
         } catch (RuntimeException e) {
             log.warn("Nie udało się powiadomić o przekroczeniu tempa: {}", e.toString());

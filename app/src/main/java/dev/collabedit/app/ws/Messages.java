@@ -142,7 +142,16 @@ public final class Messages {
      * dłużej niż okno GC i jego operacje wskazują na tombstone'y, których już nie ma.
      * Serwer <b>odrzuca je jawnie</b>, zamiast doklejać tekst w przypadkowe miejsce albo
      * cicho go gubić — obie te alternatywy są gorsze niż uczciwe „nie potrafię tego scalić".
+     *
+     * @param retryAfterMillis how long the client should wait before retrying, or 0 when
+     *        waiting will not help. Only {@code RATE_LIMITED} sets it: a refusal for lack of
+     *        permission is not something time fixes, and telling the client to try again later
+     *        would be a lie plus a hint that the document exists.
      */
-    public record ErrorMessage(String code, String message) {
+    public record ErrorMessage(String code, String message, long retryAfterMillis) {
+
+        public ErrorMessage(String code, String message) {
+            this(code, message, 0);
+        }
     }
 }

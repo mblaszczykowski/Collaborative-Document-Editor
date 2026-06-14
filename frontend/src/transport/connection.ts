@@ -163,13 +163,17 @@ export class DocumentConnection {
       }),
       client.subscribe('/user/queue/sync', (message) => this.onSyncResponse(message)),
       client.subscribe('/user/queue/errors', (message) => {
-        const error = JSON.parse(message.body) as { code: string; message: string }
+        const error = JSON.parse(message.body) as {
+          code: string
+          message: string
+          retryAfterMillis?: number
+        }
         if (error.code === 'RATE_LIMITED') {
           // Serwer odrzucił operację z powodu tempa. Nie jest to błąd wymagający uwagi
           // użytkownika — operacja czeka w buforze niepotwierdzonych i wystarczy ją ponowić
           // po chwili. BEZ tego ponowienia sygnał byłby bezużyteczny, a operacja przepadłaby
           // po cichu: dokładnie to wykrył harness w CP15.
-          this.scheduleRetryAfterThrottling()
+          this.scheduleRetryAfterThrottling(error.retryAfterMillis)
           return
         }
         this.handlers.onError(error.code, error.message)
@@ -221,24 +225,47 @@ export class DocumentConnection {
   private throttleRetryTimer: number | null = null
 
   /**
+   * Zapas doliczany do czasu podanego przez serwer.
+   *
+   * Zegary klienta i serwera nie są zsynchronizowane, a wiadro napełnia się w sposób ciągły —
+   * ponowienie milisekundę za wcześnie jest odrzucane po raz drugi. 25 ms jest niezauważalne
+   * dla użytkownika i z zapasem pokrywa jitter przejścia przez sieć.
+   */
+  private static readonly THROTTLE_GRACE_MS = 25
+
+  /**
+   * Odstęp używany, gdy serwer nie podał własnego.
+   *
+   * Do CP20 to była JEDYNA wartość i była zgadnięta: sekunda, bo wiadro napełnia się w tempie
+   * 60/s. Zgadywanie było sześćdziesiąt razy za ostrożne — rzeczywisty czas do żetonu przy
+   * tym tempie to ~17 ms — i ta sekunda jest tym, co widać w p99 w README (1299 ms przy
+   * 50 klientach). Zostaje wyłącznie jako zabezpieczenie na wypadek starszego serwera,
+   * który pola `retryAfterMillis` jeszcze nie odsyła.
+   */
+  private static readonly THROTTLE_FALLBACK_MS = 1000
+
+  /**
    * Ponawia operacje niepotwierdzone po odrzuceniu z powodu tempa.
    *
    * Jeden timer na całą serię, nie jeden na operację: przy przekroczeniu limitu odrzuconych
    * ramek jest zwykle wiele naraz, a każda z osobna planująca własne ponowienie dałaby
    * dokładnie ten zryw, który limit właśnie odrzucił.
    *
-   * Odstęp 1 s wynika z wartości po stronie serwera: wiadro operacji napełnia się w tempie
-   * 60/s, więc sekunda zwraca do dyspozycji 60 żetonów — dość, żeby ponowienie miało szansę
-   * przejść, i nie na tyle długo, żeby użytkownik zauważył przerwę.
+   * Czas oczekiwania pochodzi od SERWERA, bo tylko on go zna — wiadro żetonów potrafi
+   * powiedzieć co do milisekundy, kiedy będzie następny.
    */
-  private scheduleRetryAfterThrottling(): void {
+  private scheduleRetryAfterThrottling(retryAfterMillis?: number): void {
     if (this.throttleRetryTimer !== null) return
+    const advertised =
+      typeof retryAfterMillis === 'number' && retryAfterMillis >= 0
+        ? retryAfterMillis + DocumentConnection.THROTTLE_GRACE_MS
+        : DocumentConnection.THROTTLE_FALLBACK_MS
     this.throttleRetryTimer = window.setTimeout(() => {
       this.throttleRetryTimer = null
       for (const op of this.unacknowledged.values()) {
         this.publishOp(op)
       }
-    }, 1000)
+    }, advertised)
   }
 
   private nextReconnectDelay(): number {

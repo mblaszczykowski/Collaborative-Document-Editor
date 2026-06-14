@@ -62,6 +62,23 @@ public class RateLimiter {
             tokens -= 1.0;
             return true;
         }
+
+        /**
+         * How long until this bucket has a token again.
+         *
+         * <p>The bucket already knows this exactly — it is what {@code refillPerMs} means — and
+         * before CP20 it kept the answer to itself while the client guessed. The guess was a
+         * hardcoded one second, which is what the README's p99 of 1299 ms is made of.
+         *
+         * <p>Assumes {@code tryConsume} has just refilled at this instant, which is the only
+         * place it is called from.
+         */
+        long millisUntilToken() {
+            if (tokens >= 1.0) {
+                return 0;
+            }
+            return (long) Math.ceil((1.0 - tokens) / refillPerMs);
+        }
     }
 
     /**
@@ -89,16 +106,31 @@ public class RateLimiter {
     private final Map<String, Bucket> operations = new ConcurrentHashMap<>();
     private final Map<String, Bucket> presence = new ConcurrentHashMap<>();
 
-    public boolean allowOperation(String sessionId, long nowMillis) {
-        return operations
-            .computeIfAbsent(sessionId, id -> new Bucket(OPS_BURST, OPS_PER_SECOND, nowMillis))
-            .tryConsume(nowMillis);
+    /**
+     * Whether the frame is allowed, and if not, how long until one would be.
+     *
+     * <p>The wait is part of the answer rather than a separate query, because asking twice
+     * would refill the bucket in between and produce a number that was never true.
+     *
+     * @param retryAfterMillis 0 when {@code allowed}
+     */
+    public record Decision(boolean allowed, long retryAfterMillis) {
     }
 
-    public boolean allowPresence(String sessionId, long nowMillis) {
-        return presence
-            .computeIfAbsent(sessionId, id -> new Bucket(PRESENCE_BURST, PRESENCE_PER_SECOND, nowMillis))
-            .tryConsume(nowMillis);
+    public Decision allowOperation(String sessionId, long nowMillis) {
+        return decide(operations.computeIfAbsent(
+            sessionId, id -> new Bucket(OPS_BURST, OPS_PER_SECOND, nowMillis)), nowMillis);
+    }
+
+    public Decision allowPresence(String sessionId, long nowMillis) {
+        return decide(presence.computeIfAbsent(
+            sessionId, id -> new Bucket(PRESENCE_BURST, PRESENCE_PER_SECOND, nowMillis)), nowMillis);
+    }
+
+    private static Decision decide(Bucket bucket, long nowMillis) {
+        return bucket.tryConsume(nowMillis)
+            ? new Decision(true, 0)
+            : new Decision(false, bucket.millisUntilToken());
     }
 
     /** Sprzątanie po rozłączeniu — bez tego mapy rosną z liczbą sesji od startu procesu. */

@@ -150,14 +150,21 @@ public class TestStompClient implements AutoCloseable {
             }
         });
 
-        // Odrzucenia z powodu tempa. Prawdziwy klient ponawia po sekundzie (connection.ts),
-        // więc stanowisko musi robić to samo — inaczej mierzy system BEZ mechanizmu
-        // naprawczego, czyli nie ten, który działa w przeglądarce.
+        // Odrzucenia z powodu tempa. Prawdziwy klient ponawia po czasie PODANYM PRZEZ SERWER
+        // (connection.ts, CP20), więc stanowisko musi robić to samo — inaczej mierzy inny
+        // mechanizm naprawczy niż ten, który działa w przeglądarce, a to właśnie z tego
+        // harnessu pochodzą liczby p99 w README.
         subscribe("/user/queue/errors", java.util.Map.class, payload -> {
-            Object code = ((Map<?, ?>) payload).get("code");
-            if ("RATE_LIMITED".equals(code)) {
-                throttled.set(true);
+            Map<?, ?> error = (Map<?, ?>) payload;
+            if (!"RATE_LIMITED".equals(error.get("code"))) {
+                return;
             }
+            throttled.set(true);
+            Object advertised = error.get("retryAfterMillis");
+            long waitMillis = advertised instanceof Number number
+                ? number.longValue() + THROTTLE_GRACE_MS
+                : THROTTLE_FALLBACK_MS;
+            scheduleThrottledRetry(waitMillis);
         });
 
         session.send("/app/doc/" + documentId + "/join", Map.of());
@@ -170,7 +177,10 @@ public class TestStompClient implements AutoCloseable {
             thread.setDaemon(true);
             return thread;
         });
-        progressReporter.scheduleWithFixedDelay(this::retryThrottledOperations, 300, 300,
+        // Bezpiecznik, nie główna ścieżka. Ponowienie planuje teraz komunikat o odmowie,
+        // na czas podany przez serwer; ten przebieg łapie wyłącznie przypadek, w którym
+        // komunikat zginął.
+        progressReporter.scheduleWithFixedDelay(this::retryThrottledOperations, 1000, 1000,
             java.util.concurrent.TimeUnit.MILLISECONDS);
         progressReporter.scheduleWithFixedDelay(this::reportProgress, 500, 500,
             java.util.concurrent.TimeUnit.MILLISECONDS);
@@ -269,6 +279,37 @@ public class TestStompClient implements AutoCloseable {
      * więc stanowisko musi robić to samo — inaczej mierzy słabszy mechanizm naprawczy
      * niż ten, który faktycznie działa u użytkownika.
      */
+    /**
+     * Zapas nad czasem podanym przez serwer — ten sam co w {@code connection.ts}.
+     *
+     * <p>Wiadro napełnia się w sposób ciągły, a zegary obu stron nie są zsynchronizowane,
+     * więc ponowienie milisekundę za wcześnie zostaje odrzucone po raz drugi.
+     */
+    private static final long THROTTLE_GRACE_MS = 25;
+
+    /** Gdy serwer nie podał czasu — zachowanie sprzed CP20. */
+    private static final long THROTTLE_FALLBACK_MS = 1000;
+
+    private final java.util.concurrent.atomic.AtomicBoolean retryScheduled =
+        new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * Planuje JEDNO ponowienie całego bufora po podanym czasie.
+     *
+     * <p>Jedno na całą serię, nie jedno na odrzuconą ramkę: przy przekroczeniu limitu odrzucanych
+     * ramek jest zwykle wiele naraz, a osobne ponowienie dla każdej odtworzyłoby dokładnie ten
+     * zryw, który limit właśnie odrzucił.
+     */
+    private void scheduleThrottledRetry(long waitMillis) {
+        if (progressReporter == null || !retryScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        progressReporter.schedule(() -> {
+            retryScheduled.set(false);
+            retryThrottledOperations();
+        }, waitMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
     private void retryThrottledOperations() {
         if (!throttled.compareAndSet(true, false)) {
             return;
