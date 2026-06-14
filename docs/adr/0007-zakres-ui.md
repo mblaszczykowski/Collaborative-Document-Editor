@@ -1,208 +1,210 @@
-# ADR-0007 — Zakres UI: przyjmujemy język wizualny mockupu, odrzucamy jego zakres funkcjonalny
+# ADR-0007 — UI scope: we adopt the mockup's visual language and reject its functional scope
 
-- **Status:** **Zastąpiony przez [ADR-0008](0008-rozszerzenie-zakresu.md)** w części dotyczącej
-  zakresu funkcjonalnego. Decyzje o języku wizualnym i o ukryciu diagnostyki pozostają w mocy.
-  Nie kasuję tego dokumentu: odrzucenie zakresu było słuszne dla v1 i przestało być słuszne
-  dopiero wtedy, gdy rdzeń był gotowy — a to jest informacja, nie wstyd., **zrewidowany** (patrz sekcja na końcu)
-- **Data:** 2026-08-14
-- **Dotyczy checkpointów:** CP4, CP5, CP6
-- **Materiał źródłowy:** [`docs/design/mockup-inkline.html`](../design/mockup-inkline.html)
+- **Status:** **Superseded by [ADR-0008](0008-rozszerzenie-zakresu.md)** as far as functional scope
+  is concerned. The decisions about the visual language and about hiding diagnostics remain in
+  force, and the document itself was **revised** (see the section at the end).
 
----
-
-## Kontekst
-
-Do projektu doszedł mockup wizualny („Inkline") — kompletny shell aplikacji w stylu
-desktopowego edytora: pasek menu, toolbar formatowania, sidebar z listą dokumentów,
-linijka, strona z tekstem szeryfowym, kursory innych użytkowników z chorągiewkami imion,
-zaznaczenia, znaczniki komentarzy, panel boczny z zakładkami Comments/History, status bar.
-
-Design jest dobry i wart przyjęcia. Problem polega na tym, że **mockup pokazuje trzy rzeczy,
-których `CLAUDE.md` każe unikać wprost** (sekcja „Czego unikać"):
-
-> Nadmiarowego scope'u (rich text formatting, komentarze, multi-dokument workspace)
-> kosztem głębi w core problemie
-
-Mockup zawiera wszystkie trzy: przyciski **B / I / U / S** z kolorami i wyróżnieniem,
-panel komentarzy z wątkami, sidebar z workspace'em i wieloma dokumentami.
-
-To jest realny konflikt, a nie kwestia interpretacji. Trzeba go rozstrzygnąć jawnie.
+  This document is not deleted: rejecting the scope was right for v1 and stopped being right only
+  once the core was finished — and that is information, not an embarrassment.
+- **Date:** 2026-08-14
+- **Applies to checkpoints:** CP4, CP5, CP6
+- **Source material:** [`docs/design/mockup-inkline.html`](../design/mockup-inkline.html)
 
 ---
 
-## Rozważane opcje
+## Context
 
-### Opcja A — Zaimplementować mockup w całości
+A visual mockup ("Inkline") joined the project — a complete application shell in the style of a
+desktop editor: a menu bar, a formatting toolbar, a sidebar with a document list, a ruler, a page
+with serif text, other users' cursors with name flags, selections, comment markers, a side panel
+with Comments/History tabs, a status bar.
 
-**Za:** demo wygląda najbogaciej, mockup jest odwzorowany 1:1.
-**Przeciw:**
-- Rich text w CRDT to **inny algorytm**, nie dodatek do istniejącego. Formatowanie wymaga
-  markerów rozpiętych na zakresie znaków, które muszą przetrwać współbieżne wstawienia
-  w środek zakresu — to jest problem, któremu poświęcono osobną pracę naukową (Peritext).
-  Realnie podwaja to zakres CP2 i CP4.
-- Komentarze to kolejny CRDT (kotwice tekstowe przeżywające edycję pod nimi) plus model danych.
-- Efekt netto: mniej czasu na property testy, obserwowalność i benchmarki — czyli na to,
-  co ten projekt ma faktycznie demonstrować.
+The design is good and worth adopting. The problem is that **the mockup shows three things
+`CLAUDE.md` explicitly says to avoid** (the "What to avoid" section):
 
-### Opcja B — Zaimplementować shell, ale przyciski formatowania zostawić dekoracyjne
+> Excessive scope (rich text formatting, comments, multi-document workspace) at the cost of depth
+> in the core problem
 
-**Za:** wygląda jak mockup, tanie.
-**Przeciw:** **przycisk, który nic nie robi, to kłamstwo w interfejsie.** W projekcie
-portfolio to gorszy sygnał niż jego brak — recenzent klika, nie działa, i od tego momentu
-nie ufa reszcie. Odrzucone.
+The mockup contains all three: **B / I / U / S** buttons with colours and highlighting, a comments
+panel with threads, a sidebar with a workspace and multiple documents.
 
-### Opcja C — Przyjąć język wizualny, wymienić zawartość na to, co w tym projekcie istnieje
-
-Zachowujemy: paletę, typografię (Source Serif 4 na stronie, Inter w chrome, IBM Plex Mono
-na danych technicznych), układ trójkolumnowy, stronę z cieniem na szarym tle, kursory
-z chorągiewkami imion, zaznaczenia w kolorze autora, status bar, panel boczny z zakładkami.
-
-Wymieniamy zawartość toolbara i panelu bocznego na funkcje, które w tym projekcie **naprawdę
-są** i które są dla niego charakterystyczne.
+This is a real conflict, not a matter of interpretation. It has to be settled explicitly.
 
 ---
 
-## Decyzja
+## Options considered
 
-**Opcja C.**
+### Option A — Implement the mockup in full
 
-### Co zostaje z mockupu bez zmian
+**For:** the demo looks richest, the mockup is reproduced 1:1.
+**Against:**
+- Rich text in a CRDT is a **different algorithm**, not an addition to the existing one. Formatting
+  requires markers spanning a range of characters which must survive concurrent insertions into
+  the middle of the range — a problem with its own research paper devoted to it (Peritext). In
+  practice it doubles the scope of CP2 and CP4.
+- Comments are another CRDT (text anchors surviving edits beneath them) plus a data model.
+- Net effect: less time for property tests, observability and benchmarks — that is, for what this
+  project is actually meant to demonstrate.
 
-| Element | Uzasadnienie |
+### Option B — Implement the shell but leave the formatting buttons decorative
+
+**For:** it looks like the mockup, and it is cheap.
+**Against:** **a button that does nothing is a lie in the interface.** In a portfolio project that
+is a worse signal than its absence — a reviewer clicks, nothing happens, and from that moment they
+do not trust the rest. Rejected.
+
+### Option C — Adopt the visual language, replace the contents with what exists in this project
+
+We keep: the palette, the typography (Source Serif 4 on the page, Inter in the chrome, IBM Plex
+Mono for technical data), the three-column layout, the page with a shadow on a grey background,
+cursors with name flags, selections in the author's colour, the status bar, the side panel with
+tabs.
+
+We replace the contents of the toolbar and side panel with features that **really exist** in this
+project and are characteristic of it.
+
+---
+
+## Decision
+
+**Option C.**
+
+### What stays from the mockup unchanged
+
+| Element | Justification |
 |---|---|
-| Cała paleta i typografia | Design jest dobry, nie ma powodu go zmieniać |
-| Układ: sidebar / kanwa / panel prawy | Dobrze mapuje się na dokumenty / edytor / historię |
-| Strona z cieniem na szarym tle, tekst szeryfowy | Odróżnia „treść" od „narzędzia" — czytelne |
-| Kursory z chorągiewką imienia, zaznaczenia w kolorze autora | To jest rdzeń demo (CP4) |
-| Avatary presence w prawym górnym rogu | Presence jest w zakresie (`idea.md`) |
-| Status bar | Idealne miejsce na stan połączenia i licznik operacji |
-| Sidebar z listą dokumentów | Wybór dokumentu jest potrzebny funkcjonalnie; to nie jest „workspace", tylko nawigacja |
+| The whole palette and typography | The design is good; there is no reason to change it |
+| Layout: sidebar / canvas / right panel | Maps well onto documents / editor / history |
+| Page with a shadow on a grey background, serif text | Distinguishes "content" from "tooling" — legible |
+| Cursors with a name flag, selections in the author's colour | This is the core of the demo (CP4) |
+| Presence avatars in the top right | Presence is in scope (`idea.md`) |
+| Status bar | An ideal place for connection state and an operation counter |
+| Sidebar with a document list | Choosing a document is functionally necessary; this is not a "workspace", it is navigation |
 
-### Co znika
+### What goes
 
-| Element | Powód |
+| Element | Reason |
 |---|---|
-| Przyciski **B / I / U / S**, kolory tekstu, wyróżnienie | Rich text poza zakresem (`CLAUDE.md`) |
-| Dropdown „Normal text" (nagłówki) | jw. |
-| Listy punktowane/numerowane, wstawianie obrazu, link | jw. |
-| Panel Comments, znaczniki komentarzy w tekście | Komentarze poza zakresem (`CLAUDE.md`) |
-| Linijka (ruler) z marginesami | Sugeruje kontrolę nad layoutem strony, której nie ma |
-| Pasek menu File / Edit / View / Insert / Format / Tools | Sześć menu, z których pięć byłoby puste |
+| **B / I / U / S** buttons, text colours, highlighting | Rich text out of scope (`CLAUDE.md`) |
+| The "Normal text" dropdown (headings) | As above |
+| Bulleted/numbered lists, image insertion, links | As above |
+| The Comments panel, comment markers in the text | Comments out of scope (`CLAUDE.md`) |
+| The ruler with margins | It implies control over the page layout, which does not exist |
+| The File / Edit / View / Insert / Format / Tools menu bar | Six menus, five of which would be empty |
 
-### Czym zastępujemy — toolbar
+### What replaces it — the toolbar
 
-Zamiast formatowania, toolbar dostaje kontrolki, które w tym projekcie coś znaczą:
+Instead of formatting, the toolbar gets controls that mean something in this project:
 
-1. **Undo / redo** — działające, świadome CRDT (cofa własne operacje użytkownika, nie cudze).
-   Zostaje z mockupu, bo tam też jest pierwsze.
-2. **Symulator sieci** — suwaki opóźnienia, jitteru, utraty pakietów i przycisk „partycja".
-   To jest funkcja wprost z `idea.md` („symulator konfliktów"), i jest to najmocniejszy
-   element demo: pozwala **na żywo pokazać, że algorytm działa**, zamiast o tym zapewniać.
-3. **Wskaźnik stanu połączenia** — online / offline / resynchronizacja, z liczbą operacji
-   w buforze offline.
+1. **Undo / redo** — working and CRDT-aware (it undoes the user's own operations, not other
+   people's). It stays from the mockup, where it is also first.
+2. **Network simulator** — sliders for latency, jitter and packet loss plus a "partition" button.
+   This is a feature straight from `idea.md` ("conflict simulator"), and it is the strongest
+   element of the demo: it lets you **show the algorithm working live** instead of asserting it.
+3. **Connection state indicator** — online / offline / resynchronising, with the number of
+   operations in the offline buffer.
 
-### Czym zastępujemy — panel prawy
+### What replaces it — the right panel
 
-Zakładki `Comments | History` → **`Historia | Repliki`**:
+The `Comments | History` tabs → **`History | Replicas`**:
 
-- **Historia** — oś czasu wersji z audit trailem (kto, co, kiedy), przewijanie do dowolnego
-  punktu, przywracanie. To jest CP5, w pełni w zakresie. Mockup już ma na to gotowy wygląd
-  wpisu historii (`.history-entry`), więc design jest do wykorzystania wprost.
-- **Repliki** — podgląd stanu wewnętrznego CRDT dla tego dokumentu: version vector każdej
-  repliki, liczba żywych znaków vs tombstone'ów, `stableVersion` i to, która replika blokuje
-  GC ([ADR-0005](0005-tombstone-gc.md)).
+- **History** — a timeline of versions with an audit trail (who, what, when), scrubbing to any
+  point, restoring. This is CP5, fully in scope. The mockup already has a ready-made look for a
+  history entry (`.history-entry`), so the design can be used directly.
+- **Replicas** — a view of the CRDT's internal state for this document: each replica's version
+  vector, the count of live characters versus tombstones, `stableVersion`, and which replica is
+  blocking GC ([ADR-0005](0005-tombstone-gc.md)).
 
-Ten drugi panel to świadoma zamiana funkcji produktowej na funkcję **diagnostyczną**.
-W zwykłej aplikacji byłby niepotrzebny. Tutaj jest sensem całego przedsięwzięcia: pokazuje,
-że pod spodem faktycznie działa struktura danych, o której mówią ADR-y, i pozwala zobaczyć
-tombstone'y oraz stabilność przyczynową na żywo, zamiast czytać o nich w README.
+That second panel is a deliberate trade of a product feature for a **diagnostic** one. In an
+ordinary application it would be unnecessary. Here it is the point of the whole exercise: it shows
+that underneath there really is the data structure the ADRs talk about, and it lets you see
+tombstones and causal stability live instead of reading about them in the README.
 
-### Nazwa
+### Name
 
-Mockup wprowadza nazwę **Inkline**. Przyjmujemy ją jako nazwę produktu w UI. Repozytorium
-i moduły zostają przy `collabedit` / `dev.collabedit` — zmiana identyfikatorów w kodzie
-nie wnosi nic poza kosztem.
-
----
-
-## Konsekwencje
-
-### Pozytywne
-- Cały budżet zostaje w problemie rdzeniowym; design nie kosztuje zakresu.
-- **Każdy widoczny element interfejsu coś robi.** Brak dekoracyjnych atrap.
-- Symulator sieci w toolbarze zamienia najtrudniejszy do pokazania aspekt projektu
-  (poprawność przy współbieżności) w coś, co widać w trakcie 20-sekundowego GIF-a.
-- Panel „Repliki" czyni wewnętrzną strukturę CRDT obserwowalną — to samo w sobie
-  jest argumentem, że jest napisana od zera, a nie zaimportowana.
-
-### Negatywne
-- **Odwzorowanie mockupu nie jest wierne.** Kto porówna repo z mockupem, zobaczy inny
-  toolbar i inny panel boczny. Dlatego mockup zostaje w repo razem z tym ADR-em —
-  różnica ma być udokumentowana, a nie ukryta.
-- **Brak rich textu ogranicza wiarygodność jako „Google Docs light"** — dokument bez
-  pogrubienia i nagłówków jest wyraźnie prostszy niż to, co sugeruje strona z tekstem
-  szeryfowym i linijką. Trafia do sekcji „co zrobiłbym inaczej w produkcji" wraz z tym,
-  że właściwą odpowiedzią jest Peritext, a nie doklejenie znaczników do RGA.
-- **Sidebar z listą dokumentów wymaga jednak minimalnego modelu wielu dokumentów** —
-  tabela `documents` i tak istnieje ([ADR-0003](0003-historia-zmian.md)), więc koszt jest
-  bliski zeru, ale formalnie jest to krok w stronę „workspace", którego mieliśmy unikać.
-  Granica: lista i wybór dokumentu tak, foldery/uprawnienia/udostępnianie nie.
-- Panel „Repliki" to element, którego **nie ma w żadnym prawdziwym edytorze** — dla osoby
-  szukającej produktu będzie dziwny. Jest tu świadomie, bo adresatem repo jest inżynier,
-  nie użytkownik końcowy.
-
-### Do zweryfikowania w CP4
-- Czy kursory z chorągiewkami z mockupu pozostają czytelne przy 5+ jednoczesnych
-  użytkownikach w jednym akapicie, czy chorągiewki zaczynają się nakładać.
-- Czy strona o stałej szerokości 620 px dobrze znosi okno podzielone na pół (scenariusz
-  demo: dwie przeglądarki obok siebie) — jeśli nie, potrzebny jest wariant zwężony.
-
+The mockup introduces the name **Inkline**. We adopt it as the product name in the UI. The
+repository and modules stay `collabedit` / `dev.collabedit` — renaming identifiers in the code adds
+nothing but cost.
 
 ---
 
-## Rewizja: diagnostyka znika z interfejsu użytkownika
+## Consequences
 
-**Decyzja o umieszczeniu symulatora sieci w toolbarze i podglądu replik CRDT w panelu
-bocznym została cofnięta.**
+### Positive
+- The whole budget stays in the core problem; the design costs no scope.
+- **Every visible element of the interface does something.** No decorative dummies.
+- The network simulator in the toolbar turns the hardest aspect of the project to show
+  (correctness under concurrency) into something visible during a 20-second GIF.
+- The "Replicas" panel makes the CRDT's internal structure observable — which is itself an argument
+  that it was written from scratch rather than imported.
 
-### Co było nie tak
+### Negative
+- **The mockup is not reproduced faithfully.** Anyone comparing the repo with the mockup will see a
+  different toolbar and a different side panel. That is why the mockup stays in the repository
+  alongside this ADR — the difference is to be documented, not hidden.
+- **The absence of rich text limits credibility as a "Google Docs light"** — a document without
+  bold and headings is visibly simpler than what a page with serif text and a ruler suggests. It
+  goes into "what I would do differently in production", together with the fact that the right
+  answer is Peritext rather than bolting markers onto RGA.
+- **The sidebar with a document list does after all require a minimal multi-document model** — the
+  `documents` table exists anyway ([ADR-0003](0003-historia-zmian.md)), so the cost is close to
+  zero, but formally it is a step towards the "workspace" we were meant to avoid. The boundary:
+  listing and choosing a document yes, folders/permissions/sharing no.
+- The "Replicas" panel is an element **no real editor has** — to somebody looking for a product it
+  will seem odd. It is here deliberately, because the audience for this repository is an engineer,
+  not an end user.
 
-Pierwotne rozumowanie brzmiało: „każdy widoczny element ma coś robić, a te dwa pokazują
-dokładnie to, czego projekt dowodzi". Rozumowanie jest poprawne co do **wartości** tych
-narzędzi i błędne co do **adresata interfejsu**.
+### To be verified in CP4
+- Whether the mockup's cursors with name flags stay legible with 5+ concurrent users in one
+  paragraph, or whether the flags start overlapping.
+- Whether a fixed 620 px page copes with a window split in half (the demo scenario: two browsers
+  side by side) — if not, a narrower variant is needed.
 
-Użytkownik edytora nie wie, czym jest tombstone ani version vector, i nie ma obowiązku
-wiedzieć. Suwak „utrata pakietów" nad dokumentem nie sprawia, że produkt wygląda na
-przemyślany — sprawia, że wygląda na stanowisko laboratoryjne. Pomyliłem dwie rzeczy:
-to, co warto **pokazać recenzentowi repozytorium**, z tym, co ma zobaczyć **użytkownik
-otwierający edytor**. To pierwsze należy do README, ADR-ów i testów. To drugie ma wyglądać
-na skończony produkt.
+---
 
-### Co zamiast tego
+## Revision: diagnostics disappear from the user interface
 
-| Element | Było | Jest |
+**The decision to put the network simulator in the toolbar and the CRDT replica view in the side
+panel has been reversed.**
+
+### What was wrong
+
+The original reasoning read: "every visible element should do something, and these two show
+exactly what the project proves". The reasoning is right about the **value** of those tools and
+wrong about the **audience** of the interface.
+
+A user of an editor does not know what a tombstone or a version vector is, and is under no
+obligation to know. A "packet loss" slider above the document does not make the product look
+considered — it makes it look like a laboratory rig. I had conflated two things: what is worth
+**showing a reviewer of the repository** with what a **user opening the editor** should see. The
+first belongs in the README, the ADRs and the tests. The second should look like a finished
+product.
+
+### What replaces it
+
+| Element | Was | Is |
 |---|---|---|
-| Toolbar | suwaki opóźnienia, jitteru, straty, „Odetnij sieć" | cofnij / ponów — jedyne dwie akcje, które faktycznie są |
-| Panel prawy | zakładki „Repliki" i „Historia" | historia zmian, bez zakładek |
-| Pasek górny | stan połączenia w języku protokołu | tytuł dokumentu, „Zapisano" / „Praca offline", awatary, „Udostępnij" |
-| Pasek stanu | znaki, bloki, tombstone'y, bufor | liczba słów i znaków, ile osób online |
+| Toolbar | latency, jitter and loss sliders, "Cut the network" | undo / redo — the only two actions that actually exist |
+| Right panel | "Replicas" and "History" tabs | change history, no tabs |
+| Top bar | connection state in protocol language | document title, "Saved" / "Working offline", avatars, "Share" |
+| Status bar | characters, blocks, tombstones, buffer | word and character count, how many people are online |
 
-Diagnostyka **nie zniknęła** — jest pod `?debug=1`, poza zasięgiem przypadkowego
-użytkownika, i nadal napędza testy chaosu.
+Diagnostics **have not disappeared** — they live behind `?debug=1`, out of reach of an accidental
+user, and they still drive the chaos tests.
 
-### Skutki uboczne, które okazały się poprawkami
+### Side effects that turned out to be fixes
 
-Rewizja wymusiła dwie zmiany, które trzeba było zrobić niezależnie:
+The revision forced two changes that had to be made regardless:
 
-1. **Cofanie musiało zacząć działać.** Wcześniej `history()` CodeMirrora było wyłączone
-   (słusznie — cofałoby cudze zmiany), ale nic go nie zastąpiło. Ctrl+Z nie robił nic,
-   co w edytorze tekstu jest brakiem widocznym w pierwszej minucie użycia. Powstał
-   `UndoManager` cofający **wyłącznie własne operacje**, ze scalaniem ciągłego pisania
-   w jeden krok — bez tego Ctrl+Z zdejmowałby po jednej literze.
+1. **Undo had to start working.** Previously CodeMirror's `history()` was disabled (rightly — it
+   would undo other people's changes), but nothing replaced it. Ctrl+Z did nothing, which in a text
+   editor is a gap visible in the first minute of use. `UndoManager` was written, undoing **only
+   the user's own operations**, merging continuous typing into a single step — without which Ctrl+Z
+   would remove one letter at a time.
 
-2. **Demo przestało polegać na symulatorze.** Scenariusz offline odcina teraz sieć
-   **naprawdę** (`context.setOffline`), a nie wstrzymuje wysyłkę w aplikacji. Test stał się
-   przez to mocniejszy: obejmuje zerwanie WebSocketa, ponowne połączenie i resynchronizację,
-   czyli pełną ścieżkę użytkownika z padniętym wi-fi. Przy okazji wyszło, że interfejs
-   pokazywał „Zapisano" jeszcze kilkanaście sekund po utracie łączności — do czasu wygaśnięcia
-   heartbeatu. Dodany nasłuch zdarzeń `online`/`offline` przeglądarki naprawia to natychmiast.
+2. **The demo stopped relying on the simulator.** The offline scenario now cuts the network **for
+   real** (`context.setOffline`) rather than pausing sending inside the application. That made the
+   test stronger: it covers the WebSocket being torn down, reconnecting and resynchronising — the
+   full path of a user whose wi-fi died. It also turned out that the interface showed "Saved" for a
+   dozen or so seconds after connectivity was lost — until the heartbeat expired. Listening for the
+   browser's `online`/`offline` events fixes that immediately.

@@ -1,29 +1,33 @@
 # Architecture Decision Records
 
-Zapis decyzji architektonicznych tego projektu. Każdy ADR ma ten sam układ:
+A record of this project's architecture decisions. Every ADR has the same shape:
 
-**Kontekst** → **Rozważane opcje** → **Decyzja** → **Konsekwencje (w tym negatywne)**
+**Context** → **Options considered** → **Decision** → **Consequences (including negative ones)**
 
-Zasada: sekcja „Konsekwencje negatywne" nigdy nie jest pusta. Jeśli nie widzę wady
-w wybranej opcji, to znaczy że nie rozumiem jej wystarczająco — a nie że wady nie ma.
+The rule: the "Negative consequences" section is never empty. If I cannot see a downside in the
+option I chose, that means I do not understand it well enough — not that there is no downside.
 
-Tam, gdzie konsekwencji nie da się przewidzieć przed implementacją, ADR mówi wprost
-**„do zweryfikowania w CP-X"** zamiast zmyślać pewność. Po zamknięciu danego checkpointu
-wracam do ADR-a i dopisuję, co faktycznie wyszło — łącznie z przypadkami, w których
-decyzja okazała się gorsza, niż zakładałem.
+Where a consequence cannot be predicted before implementation, the ADR says plainly **"to be
+verified in CP-X"** rather than manufacturing certainty. After a checkpoint closes I come back to
+the ADR and append what actually happened — including the cases where the decision turned out worse
+than I had assumed.
 
-| ADR | Decyzja | Status |
+| ADR | Decision | Status |
 |---|---|---|
-| [0001](0001-crdt-vs-ot.md) | RGA (CRDT) zamiast OT | Zaakceptowany |
-| [0002](0002-transport.md) | WebSocket + STOMP | Zaakceptowany |
-| [0003](0003-historia-zmian.md) | Event log jako źródło prawdy + snapshoty jako cache | Zaakceptowany |
-| [0004](0004-skalowanie-poziome.md) | Instancja backendu jako replika CRDT, Redis jako zawodna ścieżka szybka | Zaakceptowany |
-| [0005](0005-tombstone-gc.md) | GC oparty na stabilności przyczynowej, z jawnym odrzucaniem bardzo starych klientów | Zaakceptowany |
-| [0006](0006-warstwa-edytora.md) | CodeMirror 6 jako warstwa widoku, model dokumentu własny | Zaakceptowany |
-| [0007](0007-zakres-ui.md) | Język wizualny mockupu przyjęty, jego zakres funkcjonalny odrzucony | **Zastąpiony przez [0008](0008-rozszerzenie-zakresu.md)** |
-| [0008](0008-rozszerzenie-zakresu.md) | Rozszerzenie zakresu z artefaktu do produktu | Zaakceptowany |
-| [0009](0009-model-uprawnien.md) | Role uporządkowane, egzekwowane w obu warstwach z jednej reguły | Zaakceptowany |
-| [0010](0010-rich-text.md) | Formatowanie jako osobna warstwa CRDT (Peritext), nie atrybut znaku | Zaakceptowany |
-| [0011](0011-komentarze.md) | Kotwica komentarza w CRDT, treść rozmowy poza nim | Zaakceptowany |
-| [0012](0012-autoryzacja-strukturalna.md) | Autoryzacja deklarowana przy endpoincie i wymuszana konstrukcją — endpoint bez deklaracji nie jest obsługiwany | Zaakceptowany |
-| [0013](0013-symulacja-deterministyczna.md) | Symulacja deterministyczna jako trzeci filar testów — ziarno zamiast uszeregowania wątków | Zaakceptowany |
+| [0001](0001-crdt-vs-ot.md) | RGA (CRDT) instead of OT | Accepted |
+| [0002](0002-transport.md) | WebSocket + STOMP | Accepted |
+| [0003](0003-historia-zmian.md) | Event log as source of truth + snapshots as a cache | Accepted |
+| [0004](0004-skalowanie-poziome.md) | Backend instance as a CRDT replica, Redis as an unreliable fast path | Accepted |
+| [0005](0005-tombstone-gc.md) | GC based on causal stability, with explicit rejection of very stale clients | Accepted |
+| [0006](0006-warstwa-edytora.md) | CodeMirror 6 as the view layer, our own document model | Accepted |
+| [0007](0007-zakres-ui.md) | The mockup's visual language accepted, its functional scope rejected | **Superseded by [0008](0008-rozszerzenie-zakresu.md)** |
+| [0008](0008-rozszerzenie-zakresu.md) | Widening the scope from artifact to product | Accepted |
+| [0009](0009-model-uprawnien.md) | Ordered roles, enforced in both layers from one rule | Accepted |
+| [0010](0010-rich-text.md) | Formatting as a separate CRDT layer (Peritext), not a character attribute | Accepted |
+| [0011](0011-komentarze.md) | The comment anchor in the CRDT, the conversation outside it | Accepted |
+| [0012](0012-autoryzacja-strukturalna.md) | Authorization declared at the endpoint and enforced by construction — an endpoint that declares nothing is not served | Accepted |
+| [0013](0013-symulacja-deterministyczna.md) | Deterministic simulation as a third testing pillar — a seed instead of a thread interleaving | Accepted |
+
+Filenames keep their original Polish slugs. Renaming them would break every link in the README, in
+the commit history and in the other ADRs, in exchange for cosmetics — and the commit history is
+part of the artifact here.

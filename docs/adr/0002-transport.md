@@ -1,177 +1,179 @@
-# ADR-0002 — Transport czasu rzeczywistego: WebSocket + STOMP
+# ADR-0002 — Real-time transport: WebSocket + STOMP
 
-- **Status:** Zaakceptowany
-- **Data:** 2026-08-14
-- **Dotyczy checkpointów:** CP3 (implementacja), CP6 (reconnect), CP7 (propagacja traceparent)
-
----
-
-## Kontekst
-
-Potrzebujemy kanału, którym:
-1. klient wysyła operacje CRDT do serwera (**upstream**, wysoka częstotliwość — każde
-   naciśnięcie klawisza to potencjalna operacja),
-2. serwer rozsyła operacje innych userów oraz zdarzenia presence (**downstream**, fan-out
-   do N klientów),
-3. da się przenieść kontekst śledzenia (`traceparent`) na potrzeby ADR-0007 / CP7,
-4. da się wykryć zerwanie połączenia **szybciej niż domyślny timeout TCP**, bo cały mechanizm
-   offline (CP6) zależy od tego, że klient wie, że jest offline.
-
-Charakterystyka ruchu: dużo małych wiadomości w obie strony, opóźnienie ważniejsze niż
-przepustowość, połączenie długożyjące.
+- **Status:** Accepted
+- **Date:** 2026-08-14
+- **Applies to checkpoints:** CP3 (implementation), CP6 (reconnect), CP7 (traceparent propagation)
 
 ---
 
-## Rozważane opcje
+## Context
 
-### Opcja A — Raw WebSocket + własny protokół ramek
+We need a channel over which:
 
-**Za:**
-- Najmniejszy narzut na wiadomość — kilka bajtów nagłówka własnego formatu binarnego.
-- Pełna kontrola nad formatem, łatwo o kompaktową serializację operacji.
-- Brak zależności od modelu pub/sub narzuconego z zewnątrz.
+1. the client sends CRDT operations to the server (**upstream**, high frequency — every keystroke
+   is a potential operation),
+2. the server distributes other users' operations and presence events (**downstream**, fan-out to
+   N clients),
+3. tracing context (`traceparent`) can be carried for ADR-0007 / CP7,
+4. a broken connection can be detected **faster than the default TCP timeout**, because the whole
+   offline mechanism (CP6) depends on the client knowing it is offline.
 
-**Przeciw:**
-- Trzeba samodzielnie zbudować: multipleksowanie (jeden socket, wiele dokumentów), routing
-  wiadomości do handlerów, ack/correlation-id, heartbeat, nagłówki na metadane.
-  To jest dokładnie przepisywanie STOMP-a, tylko gorzej i bez testów.
-- Metadane per wiadomość (potrzebne dla `traceparent`) wymagają własnej konwencji.
-- Praca włożona w reimplementację warstwy transportowej nie demonstruje niczego, co ten
-  projekt ma demonstrować. Trudność ma być w CRDT, nie w ramkowaniu.
-
-### Opcja B — SSE (downstream) + HTTP POST (upstream)
-
-**Za:**
-- Przechodzi przez każde proxy i firewall bez negocjacji Upgrade.
-- Automatyczny reconnect z `Last-Event-ID` wbudowany w przeglądarkę — de facto darmowa
-  resynchronizacja po stronie downstream.
-- Prostszy model serwerowy (zwykły HTTP).
-
-**Przeciw:**
-- **Kanał upstream jest osobnym połączeniem.** Każde naciśnięcie klawisza to POST — narzut
-  nagłówków HTTP przewyższa rozmiar samej operacji, i tracimy kolejność w ramach jednego
-  strumienia bez dodatkowej pracy.
-- Dwa kanały = dwa niezależne stany połączenia = wykrywanie „jestem offline" robi się
-  dwuznaczne (downstream żyje, upstream padł). To bezpośrednio komplikuje CP6.
-- Limit połączeń na origin w HTTP/1.1 (6) — kilka otwartych kart dokumentu wyczerpuje pulę.
-  Z HTTP/2 to znika, ale nie chcę uzależniać poprawności od wersji protokołu u klienta.
-
-### Opcja C — WebSocket + STOMP (Spring `spring-websocket` + `spring-messaging`)
-
-STOMP to prosty protokół tekstowy nad WebSocketem: ramki z komendą, nagłówkami i ciałem,
-z semantyką pub/sub (`SUBSCRIBE /topic/...`, `SEND /app/...`).
-
-**Za:**
-- Multipleksowanie i routing dostajemy gotowe — jeden socket obsługuje N dokumentów przez
-  osobne destynacje `/topic/doc/{id}/ops`, `/topic/doc/{id}/presence`.
-- **Nagłówki na poziomie ramki** — `traceparent` (W3C Trace Context) wkładamy tam wprost,
-  bez zaśmiecania payloadu operacji. To realnie upraszcza CP7.
-- Pierwszorzędna integracja ze Springiem: `@MessageMapping`, `SimpMessagingTemplate`,
-  interceptory kanałów (potrzebne do auth przy `CONNECT` i do propagacji kontekstu OTel).
-- Heartbeat jest częścią protokołu, negocjowany przy `CONNECT` — nie trzeba go wymyślać.
-- Ustandaryzowany, więc istnieją klienty poza przeglądarką — istotne dla Gatlinga w CP8.
-
-**Przeciw:**
-- Ramki tekstowe, więc payload binarny wymaga base64 (~33% narzutu) albo trzymania się JSON-a.
-- Narzut nagłówków STOMP na wiadomość jest większy niż w opcji A.
-- Kolejna warstwa abstrakcji, którą trzeba rozumieć przy debugowaniu.
-
-### Opcja D — WebTransport / HTTP/3
-
-**Za:** strumienie bez head-of-line blocking, natywnie datagramy — teoretycznie idealne.
-**Przeciw:** wsparcie w przeglądarkach niepełne, po stronie Javy brak dojrzałego stacku
-serwerowego, wymaga HTTPS z prawdziwym certyfikatem nawet lokalnie. Przedwczesne.
+Traffic profile: many small messages in both directions, latency more important than throughput,
+long-lived connection.
 
 ---
 
-## Decyzja
+## Options considered
 
-**WebSocket + STOMP (opcja C).**
+### Option A — Raw WebSocket + a custom frame protocol
 
-Payload operacji CRDT: **JSON** w wersji pierwszej. Kompaktowa serializacja binarna
-(base64 w ramce STOMP) jest przygotowana w `crdt-core` od CP2, ale włączamy ją dopiero
-wtedy, gdy CP8 pokaże liczbami, że rozmiar payloadu faktycznie ogranicza przepustowość.
-Optymalizacja bez pomiaru nie wchodzi.
+**For:**
+- The smallest per-message overhead — a few bytes of header in a custom binary format.
+- Full control over the format, easy to serialise operations compactly.
+- No dependency on a pub/sub model imposed from outside.
 
-### Parametry i ich uzasadnienie
+**Against:**
+- We would have to build ourselves: multiplexing (one socket, many documents), routing messages
+  to handlers, ack/correlation-id, heartbeat, headers for metadata. That is precisely rewriting
+  STOMP, only worse and without its tests.
+- Per-message metadata (needed for `traceparent`) requires a convention of our own.
+- Effort spent reimplementing the transport layer demonstrates nothing this project is meant to
+  demonstrate. The difficulty should be in the CRDT, not in the framing.
 
-Żaden z tych parametrów nie jest wartością domyślną „bo tak było w tutorialu".
+### Option B — SSE (downstream) + HTTP POST (upstream)
 
-| Parametr | Wartość | Uzasadnienie |
+**For:**
+- Passes through every proxy and firewall without an Upgrade negotiation.
+- Automatic reconnect with `Last-Event-ID` built into the browser — effectively free
+  resynchronisation on the downstream side.
+- A simpler server model (plain HTTP).
+
+**Against:**
+- **The upstream channel is a separate connection.** Every keystroke is a POST — the HTTP header
+  overhead exceeds the size of the operation itself, and we lose ordering within a single stream
+  without extra work.
+- Two channels = two independent connection states = detecting "I am offline" becomes ambiguous
+  (downstream alive, upstream dead). That directly complicates CP6.
+- The per-origin connection limit in HTTP/1.1 (6) — a few open document tabs exhaust the pool.
+  With HTTP/2 that disappears, but I do not want correctness to depend on the client's protocol
+  version.
+
+### Option C — WebSocket + STOMP (Spring `spring-websocket` + `spring-messaging`)
+
+STOMP is a simple text protocol over WebSocket: frames with a command, headers and a body, with
+pub/sub semantics (`SUBSCRIBE /topic/...`, `SEND /app/...`).
+
+**For:**
+- Multiplexing and routing come for free — one socket serves N documents through separate
+  destinations `/topic/doc/{id}/ops`, `/topic/doc/{id}/presence`.
+- **Frame-level headers** — `traceparent` (W3C Trace Context) goes there directly, without
+  cluttering the operation payload. That genuinely simplifies CP7.
+- First-class Spring integration: `@MessageMapping`, `SimpMessagingTemplate`, channel interceptors
+  (needed for auth at `CONNECT` and for propagating OTel context).
+- Heartbeat is part of the protocol, negotiated at `CONNECT` — no need to invent it.
+- Standardised, so clients exist outside the browser — relevant for Gatling in CP8.
+
+**Against:**
+- Text frames, so a binary payload needs base64 (~33% overhead) or sticking to JSON.
+- STOMP header overhead per message is larger than in option A.
+- Another layer of abstraction to understand while debugging.
+
+### Option D — WebTransport / HTTP/3
+
+**For:** streams without head-of-line blocking, native datagrams — theoretically ideal.
+**Against:** browser support incomplete, no mature server stack on the Java side, requires HTTPS
+with a real certificate even locally. Premature.
+
+---
+
+## Decision
+
+**WebSocket + STOMP (option C).**
+
+CRDT operation payload: **JSON** in the first version. Compact binary serialisation (base64 in a
+STOMP frame) has been ready in `crdt-core` since CP2, but we enable it only once CP8 shows with
+numbers that payload size genuinely limits throughput. Optimisation without measurement is not
+allowed.
+
+### Parameters and their justification
+
+None of these parameters is a default value "because that is what the tutorial had".
+
+| Parameter | Value | Justification |
 |---|---|---|
-| Heartbeat serwer→klient | **10 000 ms** | Musi być wyraźnie krótszy niż typowy idle timeout pośredników (nginx `proxy_read_timeout` domyślnie 60 s, wiele CDN/LB ma 30–60 s). 10 s daje ~3–6× margines, a przy tysiącu sesji to 100 ramek/s — pomijalne. |
-| Heartbeat klient→serwer | **10 000 ms** | Symetrycznie. Serwer uznaje sesję za martwą po przekroczeniu tolerancji, zwalniając wpis presence. |
-| Tolerancja braku heartbeatu | **2,5 × interwał (25 s)** | Jeden zgubiony heartbeat nie może zrywać sesji — na mobilnym łączu pojedyncze opóźnienie >10 s jest normalne. Dwa z rzędu to już realna przesłanka. Kompromis: wykrycie zerwania trwa do 25 s, ale fałszywe rozłączenia są rzadkie. Zbyt agresywna wartość jest gorsza niż zbyt luźna, bo każde fałszywe rozłączenie uruchamia pełną resynchronizację (CP6). |
-| Limit rozmiaru wiadomości | **64 KiB** | Pojedyncza operacja to rzędu 100 B; 64 KiB mieści też duże wklejenie tekstu. Wyższy limit to wektor DoS przy braku rate limitingu (świadome uproszczenie, patrz README). |
-| Bufor wysyłkowy sesji | **512 KiB** | Wolny klient nie może zablokować broadcastu do reszty. Po przepełnieniu sesja jest zamykana i klient przechodzi ścieżką reconnect+resync z CP6 — kontrolowana degradacja zamiast zatoru. |
-| Limit czasu wysyłki | **20 000 ms** | Powyżej tego klient jest uznany za nieodbierającego. |
-| SockJS fallback | **wyłączony** | Dodaje ścieżki transportowe (xhr-streaming, jsonp), których nie będziemy testować, więc byłyby nieprzetestowanym kodem w ścieżce krytycznej. WebSocket ma dziś powszechne wsparcie. Świadome ograniczenie zakresu. |
+| Heartbeat server→client | **10 000 ms** | Must be clearly shorter than a typical intermediary's idle timeout (nginx `proxy_read_timeout` defaults to 60 s, many CDNs/LBs use 30–60 s). 10 s gives a ~3–6× margin, and at a thousand sessions that is 100 frames/s — negligible. |
+| Heartbeat client→server | **10 000 ms** | Symmetrically. The server treats a session as dead once tolerance is exceeded, releasing the presence entry. |
+| Missed-heartbeat tolerance | **2.5 × interval (25 s)** | One lost heartbeat must not tear down a session — on a mobile link a single delay >10 s is normal. Two in a row is a real indication. The trade-off: detecting a break takes up to 25 s, but false disconnects are rare. Too aggressive a value is worse than too loose, because every false disconnect triggers a full resynchronisation (CP6). |
+| Message size limit | **64 KiB** | A single operation is on the order of 100 B; 64 KiB also accommodates a large paste. A higher limit is a DoS vector absent rate limiting (a deliberate simplification, see README). |
+| Session send buffer | **512 KiB** | A slow client must not block the broadcast to everyone else. On overflow the session is closed and the client takes the reconnect+resync path from CP6 — controlled degradation instead of a jam. |
+| Send time limit | **20 000 ms** | Beyond this the client is treated as not receiving. |
+| SockJS fallback | **disabled** | It adds transport paths (xhr-streaming, jsonp) we will not test, which would make them untested code on the critical path. WebSocket has broad support today. A deliberate scope limitation. |
 
-Wartości żyją w `application.yml` z komentarzem przy każdej, nie w kodzie.
+The values live in `application.yml` with a comment beside each, not in the code.
 
 ---
 
-## Konsekwencje
+## Consequences
 
-### Pozytywne
-- Nagłówki STOMP dają darmowe miejsce na `traceparent`, więc trace end-to-end (CP7) nie
-  wymaga modyfikacji formatu operacji.
-- Jeden socket na klienta niezależnie od liczby otwartych dokumentów.
-- Interceptor kanału daje jeden punkt na auth (przy `CONNECT`) i jeden na instrumentację —
-  zamiast rozsypania po handlerach.
+### Positive
+- STOMP headers give free room for `traceparent`, so end-to-end tracing (CP7) needs no change to
+  the operation format.
+- One socket per client regardless of how many documents are open.
+- A channel interceptor gives one place for auth (at `CONNECT`) and one for instrumentation —
+  instead of scattering them across handlers.
 
-### Negatywne
-- **Narzut nagłówków STOMP** na każdą operację jest realny i przy 250 userach × wysoka
-  częstotliwość edycji może zdominować ruch. **Do zmierzenia w CP8** — jeśli okaże się
-  dominujący, mitygacją jest batchowanie kilku operacji w jedną ramkę, nie zmiana protokołu.
-- **Payload JSON, nie binarny** — świadomy dług, do zrewidowania po pomiarze.
-- **Brak SockJS** oznacza, że klient za egzotycznym proxy blokującym Upgrade nie połączy się
-  wcale, zamiast zdegradować do pollingu.
-- Wykrycie zerwanego połączenia zajmuje do 25 s w najgorszym przypadku. Dla użytkownika
-  znaczy to, że wskaźnik „offline" w UI może się pojawić z opóźnieniem — mitygacją po stronie
-  klienta jest dodatkowo nasłuchiwanie zdarzeń `navigator.onLine` i błędów socketu (CP6).
+### Negative
+- **STOMP header overhead** per operation is real, and at 250 users × a high editing rate it
+  could dominate the traffic. **To be measured in CP8** — if it turns out to dominate, the
+  mitigation is batching several operations into one frame, not changing protocol.
+- **JSON payload, not binary** — a deliberate debt, to be revisited after measurement.
+- **No SockJS** means a client behind an exotic proxy blocking Upgrade will not connect at all,
+  rather than degrading to polling.
+- Detecting a broken connection takes up to 25 s in the worst case. For the user that means the
+  "offline" indicator in the UI may appear with a delay — the client-side mitigation is to also
+  listen for `navigator.onLine` events and socket errors (CP6).
 
-### Zweryfikowane w CP8
+### Verified in CP8
 
-- **Limit 64 KiB na wiadomość okazał się mieć konsekwencję, której nie przewidziałem.**
-  Nie dotyczy pojedynczej operacji (te mają ~100 B), tylko **odpowiedzi na resynchronizację**:
-  klient proszący o zaległości dużego dokumentu dostawał jedną ramkę grubo powyżej limitu,
-  która po prostu nie docierała. Efekt: klient, który najbardziej potrzebował danych, nie mógł
-  ich dostać, i zostawał trwale w tyle — bez żadnego błędu w logu. Naprawione wysyłaniem
-  w porcjach po 300 operacji. Limit zostaje bez zmian; błędem było założenie, że dotyczy
-  wyłącznie ruchu przyrostowego.
-- **Bufor 512 KiB nie okazał się wąskim gardłem** przy 50 klientach — statystyki brokera
-  nie wykazały ani jednego zamknięcia sesji z powodu przepełnienia. Odnotowano natomiast
-  błędy transportu, których źródła nie ustaliłem (patrz README, punkt degradacji).
-- **Narzutu STOMP+JSON nie zmierzyłem osobno.** Wyniki pokazały, że wąskim gardłem nie jest
-  rozmiar ramki, więc optymalizacja formatu (serializacja binarna zamiast JSON) pozostaje
-  nieuzasadniona danymi — czyli dokładnie tam, gdzie powinna zostać.
-- **Tolerancji heartbeatu nie udało się sensownie sprawdzić**: klienci i serwer działali na
-  jednej maszynie, więc jitter, przed którym ta wartość ma chronić, praktycznie nie występował.
-  Zostaje jako wartość uzasadniona rozumowaniem, nie pomiarem.
+- **The 64 KiB message limit turned out to have a consequence I had not foreseen.** It does not
+  concern a single operation (those are ~100 B) but the **resynchronisation response**: a client
+  asking for the backlog of a large document received one frame well above the limit, which
+  simply never arrived. The effect: the client that needed the data most could not get it, and
+  stayed permanently behind — with no error in the log. Fixed by sending in chunks of 300
+  operations. The limit itself stays; the mistake was assuming it applied only to incremental
+  traffic.
+- **The 512 KiB buffer did not turn out to be a bottleneck** at 50 clients — the broker's
+  statistics showed not a single session closed due to overflow. Transport errors were observed
+  whose source I did not identify (see README, the degradation point).
+- **STOMP+JSON overhead was not measured separately.** The results showed that the bottleneck is
+  not frame size, so optimising the format (binary serialisation instead of JSON) remains
+  unsupported by data — which is exactly where it should stay.
+- **Heartbeat tolerance could not be checked meaningfully**: clients and server ran on one
+  machine, so the jitter this value protects against essentially did not occur. It stays as a
+  value justified by reasoning rather than by measurement.
 
-### Zweryfikowane w CP10
+### Verified in CP10
 
-- **Rozgłaszanie po jednej operacji na ramkę zostało zastąpione oknem 10 ms.** Powód nie jest
-  strojeniem, tylko własnością konstrukcji: operacja wychodzi w tylu ramkach, ilu jest
-  odbiorców, więc liczba ramek rośnie z kwadratem liczby klientów. Zmierzony zysk to 2,7×
-  krótszy czas do zbieżności przy 50 klientach (szczegóły w README). Nowa wartość
-  `broadcast-window-ms` musi być wyraźnie mniejsza od `op-batch-window-ms` — uzasadnienie
-  przy samej wartości w `application.yml`.
-- **Limit 64 KiB zaczął obowiązywać w trzecim miejscu.** Po sklejeniu rozgłoszeń wsad potrafi
-  przekroczyć limit tak samo, jak robiła to odpowiedź na resynchronizację w CP8. Dzielenie
-  jest tu jednak **po bajtach, a nie po liczbie operacji**, i przy okazji ujawnia wadę
-  rozwiązania z CP8: `SYNC_CHUNK = 300` zakłada, że operacja waży ~100 B, co przestaje być
-  prawdą przy wklejeniu dużego fragmentu tekstu — jedna taka operacja to dziesiątki kilobajtów.
-  Dla ścieżki resynchronizacji limit liczony w operacjach **pozostaje niepoprawny**;
-  jest to znany dług, nie przeoczenie.
-- **Bufor 512 KiB nadal nie okazał się wąskim gardłem**, teraz mierzone wprost metryką
-  `ws_sessions_closed_total{reason}` zamiast zbiorczymi statystykami brokera. Ani jednego
-  zamknięcia z powodu przepełnienia przy 50 klientach.
-- **Ustalenie o „błędach transportu, których źródła nie ustaliłem" (CP8) ma teraz kandydata
-  na wyjaśnienie — po stronie stanowiska, nie systemu.** Klient testowy budował
-  `StandardWebSocketClient` bez konfiguracji kontenera JSR-356, którego domyślny bufor
-  tekstowy to **8 KiB**, czyli ośmiokrotnie mniej niż limit deklarowany przez ten ADR.
-  Przy jednej operacji na ramkę próg był nieosiągalny i problem spał; przy sklejaniu ujawnił
-  się natychmiast jako „brak zbieżności przy 10 klientach" — z kompletem operacji na serwerze
-  i bez błędu w logu. Przeglądarka takiego limitu nie ma. Stanowisko mierzyło siebie.
+- **Broadcasting one operation per frame was replaced by a 10 ms window.** The reason is not
+  tuning but a property of the construction: an operation goes out in as many frames as there are
+  recipients, so the number of frames grows with the square of the client count. The measured
+  gain is a 2.7× shorter time to convergence at 50 clients (details in the README). The new
+  `broadcast-window-ms` value must be clearly smaller than `op-batch-window-ms` — justified
+  beside the value itself in `application.yml`.
+- **The 64 KiB limit started to bind in a third place.** After coalescing broadcasts, a batch can
+  exceed the limit just as the resynchronisation response did in CP8. Here, however, the split is
+  **by bytes rather than by operation count**, and that incidentally exposes a flaw in the CP8
+  solution: `SYNC_CHUNK = 300` assumes an operation weighs ~100 B, which stops being true when
+  someone pastes a large fragment of text — one such operation is tens of kilobytes. For the
+  resynchronisation path a limit counted in operations **remains incorrect**; this is a known
+  debt, not an oversight.
+- **The 512 KiB buffer still did not turn out to be a bottleneck**, now measured directly with
+  the `ws_sessions_closed_total{reason}` metric rather than with the broker's aggregate
+  statistics. Not a single closure due to overflow at 50 clients.
+- **The CP8 finding about "transport errors whose source I did not identify" now has a candidate
+  explanation — on the rig's side, not the system's.** The test client built a
+  `StandardWebSocketClient` without configuring the JSR-356 container, whose default text buffer
+  is **8 KiB**, eight times smaller than the limit this ADR declares. With one operation per
+  frame the threshold was unreachable and the problem lay dormant; with coalescing it surfaced
+  immediately as "no convergence at 10 clients" — with every operation present on the server and
+  no error in the log. The browser has no such limit. The rig was measuring itself.

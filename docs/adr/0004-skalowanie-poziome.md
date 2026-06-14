@@ -1,198 +1,197 @@
-# ADR-0004 — Skalowanie poziome: instancja backendu jako replika CRDT
+# ADR-0004 — Horizontal scaling: a backend instance as a CRDT replica
 
-- **Status:** Zaakceptowany
-- **Data:** 2026-08-14
-- **Dotyczy checkpointów:** CP3 (implementacja), CP8 (test padu instancji)
-
----
-
-## Kontekst
-
-Klienci edytujący ten sam dokument mogą trafić na różne instancje backendu (load balancer
-rozdziela połączenia WebSocket). Operacja przyjęta przez instancję A musi dotrzeć do klientów
-podłączonych do instancji B.
-
-To jest moment, w którym wybór z ADR-0001 zaczyna się opłacać albo mścić — więc traktuję
-tę decyzję jako test tamtej.
+- **Status:** Accepted
+- **Date:** 2026-08-14
+- **Applies to checkpoints:** CP3 (implementation), CP8 (instance-death test)
 
 ---
 
-## Rozważane opcje
+## Context
 
-### Opcja A — Sticky sessions: wszyscy edytujący dokument lądują na tej samej instancji
+Clients editing the same document may land on different backend instances (the load balancer
+distributes WebSocket connections). An operation accepted by instance A must reach clients
+connected to instance B.
 
-Load balancer routuje po `doc_id` (consistent hashing).
-
-**Za:** stan dokumentu istnieje w jednym miejscu, zero koordynacji, brak duplikacji pamięci.
-**Przeciw:**
-- Wymaga LB świadomego domeny (routing po treści, nie po połączeniu) — nietrywialne przy
-  WebSocketach, gdzie `doc_id` znany jest dopiero po `CONNECT`+`SUBSCRIBE`.
-- Rozkład obciążenia jest tak dobry, jak rozkład popularności dokumentów. Jeden dokument
-  z 200 userami zawsze obciąża jedną instancję — skalowanie poziome nie pomaga tam,
-  gdzie jest naprawdę potrzebne.
-- Rekonfiguracja pierścienia przy dodaniu/usunięciu instancji przerzuca dokumenty
-  między węzłami, każdorazowo z przerwą.
-
-### Opcja B — Document affinity z rozproszonym lockiem (Redis / etcd)
-
-Jedna instancja jest „właścicielem" dokumentu; pozostałe proxują do niej operacje.
-
-**Za:** pojedyncze źródło prawdy w pamięci, prosty model rozumowania.
-**Przeciw:**
-- Wprowadza **rozproszony lock i wybór lidera** do systemu, którego cały sens polega na tym,
-  że lidera nie potrzebuje. Zaprzeczenie ADR-0001.
-- Failover właściciela to najtrudniejszy przypadek: split-brain, dzierżawy, fencing tokens.
-  Dużo skomplikowanego kodu, dużo miejsc na błąd.
-- Dodatkowy hop dla każdej operacji przechodzącej przez nie-właściciela.
-
-### Opcja C — Każda instancja jest repliką CRDT, Redis pub/sub jako fan-out
-
-Instancja przyjmuje operację od swojego klienta, scala ją do własnej repliki, zapisuje
-do `operations` (ADR-0003), publikuje na kanale Redis `doc:{id}:ops`. Pozostałe instancje
-odbierają, scalają do swoich replik i rozsyłają swoim klientom.
-
-**Za:**
-- **To jest dokładnie ten model, do którego CRDT został zaprojektowany.** Repliki są
-  równorzędne, kolejność dostarczenia nie ma znaczenia, duplikaty są nieszkodliwe
-  (idempotencja z ADR-0001). Zero locków, zero lidera, zero sticky sessions.
-- Dowolna instancja obsługuje dowolnego klienta → LB może być całkowicie głupi (round-robin).
-- Dodanie instancji nie przerzuca żadnego stanu.
-
-**Przeciw:**
-- **Duplikacja pamięci:** dokument otwarty przez klientów na 3 instancjach żyje w 3 kopiach.
-- **Redis pub/sub to at-most-once.** Restart Redisa, przepełnienie bufora klienta, chwilowa
-  partycja — wiadomość ginie bez śladu i bez błędu. Replika, która przegapiła operację,
-  rozjeżdża się z resztą i **nigdy sama tego nie naprawi**, bo CRDT gwarantuje zbieżność
-  tylko przy założeniu, że wszystkie operacje w końcu dotrą.
+This is the moment where the choice from ADR-0001 either pays off or takes its revenge — so I
+treat this decision as a test of that one.
 
 ---
 
-## Decyzja
+## Options considered
 
-**Opcja C — każda instancja jest repliką CRDT** — z jawnym rozwiązaniem problemu gubionych
-wiadomości.
+### Option A — Sticky sessions: everyone editing a document lands on the same instance
 
-### Redis to ścieżka szybka. Postgres to ścieżka autorytatywna.
+The load balancer routes by `doc_id` (consistent hashing).
+
+**For:** the document state exists in one place, zero coordination, no memory duplication.
+**Against:**
+- Requires a domain-aware LB (routing by content, not by connection) — non-trivial with
+  WebSockets, where `doc_id` is known only after `CONNECT`+`SUBSCRIBE`.
+- The load distribution is only as good as the distribution of document popularity. One document
+  with 200 users always loads a single instance — horizontal scaling does not help where it is
+  actually needed.
+- Reconfiguring the ring when an instance is added or removed moves documents between nodes, each
+  time with an interruption.
+
+### Option B — Document affinity with a distributed lock (Redis / etcd)
+
+One instance is the document's "owner"; the others proxy operations to it.
+
+**For:** a single in-memory source of truth, a simple model to reason about.
+**Against:**
+- It introduces a **distributed lock and leader election** into a system whose entire point is
+  that it needs no leader. A contradiction of ADR-0001.
+- Owner failover is the hardest case: split-brain, leases, fencing tokens. A lot of complicated
+  code, a lot of places to get it wrong.
+- An extra hop for every operation passing through a non-owner.
+
+### Option C — Every instance is a CRDT replica, Redis pub/sub as fan-out
+
+An instance accepts an operation from its own client, merges it into its own replica, writes it to
+`operations` (ADR-0003), and publishes it on the Redis channel `doc:{id}:ops`. The other instances
+receive it, merge into their replicas and distribute it to their clients.
+
+**For:**
+- **This is exactly the model a CRDT was designed for.** Replicas are peers, delivery order does
+  not matter, duplicates are harmless (idempotence from ADR-0001). Zero locks, zero leader, zero
+  sticky sessions.
+- Any instance serves any client → the LB can be completely dumb (round-robin).
+- Adding an instance moves no state.
+
+**Against:**
+- **Memory duplication:** a document open by clients on 3 instances lives in 3 copies.
+- **Redis pub/sub is at-most-once.** A Redis restart, a client buffer overflow, a brief partition
+  — the message disappears without a trace and without an error. A replica that missed an
+  operation diverges from the rest and **will never repair itself**, because a CRDT guarantees
+  convergence only under the assumption that all operations eventually arrive.
+
+---
+
+## Decision
+
+**Option C — every instance is a CRDT replica** — with an explicit solution to the lost-message
+problem.
+
+### Redis is the fast path. Postgres is the authoritative path.
 
 ```
-klient ──op──► instancja A
+client ──op──► instance A
                  │
-                 ├─ 1. merge do lokalnej repliki   (natychmiast)
-                 ├─ 2. broadcast do własnych klientów (wsadowo, co 10 ms)
-                 ├─ 3. INSERT do operations         (ŹRÓDŁO PRAWDY, ADR-0003)
-                 └─ 4. PUBLISH doc:{id}:ops         (best-effort, może zginąć)
+                 ├─ 1. merge into the local replica   (immediately)
+                 ├─ 2. broadcast to its own clients   (batched, every 10 ms)
+                 ├─ 3. INSERT into operations         (SOURCE OF TRUTH, ADR-0003)
+                 └─ 4. PUBLISH doc:{id}:ops           (best-effort, may be lost)
                              │
-                    instancja B ─ SUBSCRIBE ─► merge + broadcast
+                    instance B ─ SUBSCRIBE ─► merge + broadcast
 ```
 
-> **Zmiana w kroku 2, wprowadzona w CP10.** Pierwotnie było tu „natychmiast", jedna ramka
-> na operację. Jest to zachowanie, które **z definicji nie skaluje się z liczbą klientów**:
-> operacja wychodzi w tylu ramkach, ilu jest odbiorców, więc łączna liczba ramek rośnie
-> z kwadratem liczby klientów. Przy 50 klientach × 40 operacjach to 100 tys. ramek.
+> **A change to step 2, introduced in CP10.** It originally read "immediately", one frame per
+> operation. That is behaviour which **by construction does not scale with client count**: an
+> operation goes out in as many frames as there are recipients, so the total number of frames
+> grows with the square of the client count. At 50 clients × 40 operations that is 100 000 frames.
 >
-> To jest argument z arytmetyki, a nie z pomiaru — i warto go odróżnić od hipotezy o tym,
-> **co konkretnie** psuło się w scenariuszu opisanym w README jako nierozstrzygnięty
-> („część klientów trwale w tyle"). Przypuszczenie było takie, że kolejka wysyłkowa
-> przekracza `send-buffer-size-bytes` i Spring zrywa sesję kodem 4500. **Przypuszczenie
-> to jest sprzeczne z ustaleniem z CP8** zapisanym w ADR-0002: statystyki brokera nie
-> wykazały wtedy ani jednego zamknięcia z powodu przepełnienia bufora. Dlatego CP10 dokłada
-> najpierw metrykę `ws_sessions_closed_total{reason}`, która mierzy to wprost, zamiast przez
-> zbiorcze statystyki brokera — a wnioski są dopisane niżej, po pomiarze.
+> This is an argument from arithmetic, not from measurement — and it is worth separating from the
+> hypothesis about **what specifically** was breaking in the scenario the README recorded as
+> unresolved ("some clients permanently behind"). The guess was that the send queue exceeds
+> `send-buffer-size-bytes` and Spring tears the session down with code 4500. **That guess
+> contradicts the CP8 finding** recorded in ADR-0002: the broker's statistics showed not a single
+> closure due to buffer overflow at that time. So CP10 first adds the
+> `ws_sessions_closed_total{reason}` metric, which measures this directly rather than through the
+> broker's aggregate statistics — and the conclusions are appended below, after measurement.
 >
-> Niezależnie od tego, co okaże się przyczyną rozjazdu, sklejanie ramek jest uzasadnione samo
-> w sobie: kwadratowy wzrost liczby ramek jest własnością konstrukcji, a nie objawem błędu.
+> Whatever turns out to cause the divergence, frame coalescing is justified on its own: quadratic
+> growth in frame count is a property of the construction, not a symptom of a bug.
 >
-> Okno 10 ms jest o rząd wielkości poniżej progu zauważalności w pisaniu i o rząd wielkości
-> poniżej zmierzonych latencji propagacji, więc kompromis nie jest bliski. Musi być
-> **wyraźnie krótsze niż `op-batch-window-ms`** — potwierdzenie zapisu, które wyprzedzi
-> rozgłoszenie, klient interpretuje jako lukę i prosi o pełną resynchronizację. Dla pewności
-> oba bufory są opróżniane jednym zajęciem blokady, z rozgłoszeniem przed zapisem
-> (`DocumentReplica.drainForFlush`), więc nie polegamy wyłącznie na relacji między okresami
-> dwóch schedulerów.
+> The 10 ms window is an order of magnitude below the threshold of noticeability in typing and an
+> order of magnitude below the measured propagation latencies, so the trade-off is not close. It
+> must be **clearly shorter than `op-batch-window-ms`** — a write acknowledgement that outruns the
+> broadcast is interpreted by the client as a gap, and it asks for a full resynchronisation. To be
+> safe, both buffers are drained under a single acquisition of the lock, with the broadcast before
+> the write (`DocumentReplica.drainForFlush`), so we do not rely solely on the relationship
+> between two schedulers' periods.
 
-**Anti-entropy (read-repair) — mechanizm, który zamienia zawodny broadcast w bezpieczny:**
+**Anti-entropy (read repair) — the mechanism that turns an unreliable broadcast into a safe one:**
 
-Każda operacja niesie `server_seq` (ADR-0003). Instancja B śledzi najwyższy `server_seq`
-widziany dla danego dokumentu. Jeśli przychodzi operacja z `server_seq` wyższym niż
-`ostatni + 1`, to znaczy, że w środku jest luka → B dociąga brakujący zakres bezpośrednio
-z Postgresa (`SELECT ... WHERE doc_id = ? AND server_seq BETWEEN ? AND ?`) i scala.
+Every operation carries a `server_seq` (ADR-0003). Instance B tracks the highest `server_seq` seen
+for a given document. If an operation arrives with a `server_seq` higher than `last + 1`, there is
+a gap in between → B pulls the missing range directly from Postgres
+(`SELECT ... WHERE doc_id = ? AND server_seq BETWEEN ? AND ?`) and merges it.
 
-Dodatkowo **okresowy sweep co 30 s**: dla każdego dokumentu trzymanego w pamięci instancja
-porównuje swój najwyższy `server_seq` z `MAX(server_seq)` w bazie i dociąga różnicę.
-To łapie przypadek, którego detekcja luk nie łapie: **utratę operacji na samym końcu**,
-po której nie przyszła już żadna kolejna (np. Redis pada i dokument cichnie). Bez sweepu
-taka replika zostaje rozjechana aż do następnej edycji.
+In addition, a **periodic sweep every 30 s**: for every document held in memory, the instance
+compares its highest `server_seq` with `MAX(server_seq)` in the database and pulls the difference.
+This catches the case gap detection does not: **losing the very last operation**, after which no
+further one arrives (for example, Redis dies and the document goes quiet). Without the sweep such
+a replica stays diverged until the next edit.
 
-Częstotliwość 30 s jest kompromisem: to górna granica czasu życia niewykrytego rozjazdu
-w najgorszym scenariuszu, przy koszcie jednego lekkiego zapytania na dokument w pamięci.
-**Do skalibrowania w CP8** na podstawie zmierzonego kosztu przy realistycznej liczbie
-otwartych dokumentów.
+The 30 s frequency is a trade-off: it is the upper bound on how long an undetected divergence can
+live in the worst case, at the cost of one lightweight query per in-memory document. **To be
+calibrated in CP8** based on the measured cost at a realistic number of open documents.
 
-Kluczowa własność: **żadna z tych ścieżek naprawczych nie musi być szybka ani uporządkowana**,
-bo scalanie jest przemienne i idempotentne. Operacja dociągnięta z bazy 30 sekund po fakcie
-daje ten sam wynik, co dostarczona natychmiast. To jest dokładnie ta własność, dla której
-wybraliśmy CRDT — i tu przestaje być teoretyczna.
+The key property: **none of these repair paths has to be fast or ordered**, because merging is
+commutative and idempotent. An operation pulled from the database 30 seconds after the fact gives
+the same result as one delivered immediately. That is precisely the property we chose a CRDT for —
+and here it stops being theoretical.
 
-### Ewikcja z pamięci
+### Eviction from memory
 
-Replika dokumentu bez podłączonych klientów żyje jeszcze **5 minut**, potem jest usuwana
-z pamięci (stan i tak jest w Postgresie). Krótsza wartość powoduje ciągłe przeładowywanie
-dokumentów przy chwilowych rozłączeniach; dłuższa niepotrzebnie trzyma pamięć. Do kalibracji
-w CP8 wraz z pomiarem zużycia pamięci per otwarty dokument.
+A document replica with no connected clients lives another **5 minutes**, then is removed from
+memory (the state is in Postgres anyway). A shorter value causes constant reloading of documents
+on brief disconnects; a longer one holds memory needlessly. To be calibrated in CP8 together with
+a measurement of memory use per open document.
 
 ---
 
-## Konsekwencje
+## Consequences
 
-### Pozytywne
-- **Load balancer nie musi nic wiedzieć o domenie.** Round-robin wystarcza.
-- **Brak lidera, locka, split-brain i fencingu** — czyli brak całej klasy najtrudniejszych
-  błędów systemów rozproszonych.
-- **Pad instancji nie gubi danych**: operacje są w Postgresie przed publikacją (kolejność
-  3 przed 4), klienci przełączają się na inną instancję i resynchronizują po `server_seq`.
-- Zawodność Redisa przestaje być problemem poprawności, a staje się kwestią latencji
-  naprawy — mierzalną metryką (`redis_gap_repairs_total`, CP7).
+### Positive
+- **The load balancer needs to know nothing about the domain.** Round-robin is enough.
+- **No leader, lock, split-brain or fencing** — that is, none of the hardest class of distributed
+  systems bugs.
+- **An instance dying loses no data**: operations are in Postgres before publication (order 3
+  before 4), clients switch to another instance and resynchronise by `server_seq`.
+- Redis being unreliable stops being a correctness problem and becomes a question of repair
+  latency — measurable with a metric (`redis_gap_repairs_total`, CP7).
 
-### Negatywne
-- **Zużycie pamięci mnoży się przez liczbę instancji trzymających dany dokument.** Przy
-  dokumencie 1 MB i 5 instancjach to 5 MB zamiast 1 MB. Akceptowalne przy tej skali,
-  ale to prawdziwy koszt wyboru — i pierwsza rzecz, którą bym zmienił, gdyby dokumenty
-  były duże lub instancji było dużo. Wtedy właściwą odpowiedzią jest opcja A/B, nie
-  optymalizowanie tej.
-- **Okno rozjazdu do 30 s** w najgorszym przypadku (zgubiona ostatnia operacja + cisza
-  na dokumencie). Klient podłączony do dotkniętej instancji widzi w tym czasie
-  nieaktualny tekst. Nie jest to utrata danych, ale jest to widoczna niespójność —
-  trafia do sekcji Failure modes w README.
-- **Postgres staje się ścieżką krytyczną również dla naprawy**, nie tylko dla trwałości.
-  Awaria bazy zatrzymuje zarówno zapis, jak i anti-entropy.
-- Sweep to stałe obciążenie proporcjonalne do liczby otwartych dokumentów, niezależne
-  od tego, czy coś się dzieje.
-- **Detekcja luk zakłada, że `server_seq` jest gęsty** (bez dziur).
+### Negative
+- **Memory use multiplies by the number of instances holding a document.** With a 1 MB document
+  and 5 instances that is 5 MB instead of 1 MB. Acceptable at this scale, but it is a real cost of
+  the choice — and the first thing I would change if documents were large or instances numerous.
+  At that point the right answer is option A/B, not optimising this one.
+- **A divergence window of up to 30 s** in the worst case (the last operation lost + silence on
+  the document). A client connected to the affected instance sees stale text during that time. It
+  is not data loss, but it is a visible inconsistency — it goes into the Failure modes section of
+  the README.
+- **Postgres becomes a critical path for repair too**, not only for durability. A database outage
+  stops both writes and anti-entropy.
+- The sweep is a constant load proportional to the number of open documents, regardless of whether
+  anything is happening.
+- **Gap detection assumes `server_seq` is dense** (no holes).
 
-  **Zweryfikowane w CP3 — założenie okazało się droższe, niż zakładałem.** Pierwsze podejście
-  (`INSERT ... ON CONFLICT DO NOTHING`) jest niepoprawne: numery są rezerwowane dla całego
-  wsadu *przed* odrzuceniem duplikatów, więc każdy duplikat zostawia dokładnie taką dziurę,
-  jakiej ten mechanizm zabrania. Ostateczne rozwiązanie:
-  1. blokada wiersza dokumentu (`SELECT next_server_seq ... FOR UPDATE`) — licznik w kolumnie,
-     nie sekwencja Postgresa, bo sekwencja gubi numery przy wycofanej transakcji,
-  2. odsiew duplikatów **jednym zapytaniem przed** przydziałem numerów, poprawny mimo
-     współbieżności właśnie dlatego, że blokada serializuje piszących do tego dokumentu,
-  3. numery przydzielane wyłącznie wierszom, które faktycznie zostaną wstawione.
+  **Verified in CP3 — the assumption turned out more expensive than I had assumed.** The first
+  approach (`INSERT ... ON CONFLICT DO NOTHING`) is incorrect: numbers are reserved for the whole
+  batch *before* duplicates are rejected, so every duplicate leaves exactly the kind of hole this
+  mechanism forbids. The final solution:
+  1. a row lock on the document (`SELECT next_server_seq ... FOR UPDATE`) — a counter in a column
+     rather than a Postgres sequence, because a sequence loses numbers on a rolled-back
+     transaction,
+  2. duplicate filtering **in one query before** numbers are allocated, correct despite concurrency
+     precisely because the lock serialises writers to that document,
+  3. numbers allocated only to rows that will actually be inserted.
 
-  **Cena, której nie było w pierwotnej analizie:** zapisy do jednego dokumentu są teraz
-  serializowane w całym klastrze. Wsadowanie co 50 ms sprawia, że pod blokadę wchodzi się
-  raz na wsad, a nie raz na naciśnięcie klawisza — ale to jest pierwsze miejsce, które
-  zacznie ograniczać przepustowość. **Do zmierzenia w CP8.**
+  **A price the original analysis did not include:** writes to a single document are now
+  serialised across the whole cluster. Batching every 50 ms means the lock is taken once per batch
+  rather than once per keystroke — but this is the first place that will start limiting
+  throughput. **To be measured in CP8.**
 
-  Ciągłość numeracji jest pilnowana testem integracyjnym `serverSequenceHasNoGaps`
-  na prawdziwym Postgresie, a nie założeniem.
+  Numbering continuity is enforced by the integration test `serverSequenceHasNoGaps` against a
+  real Postgres, not by assumption.
 
-### Do zweryfikowania w CP8
-- Zużycie pamięci na otwarty dokument o zadanym rozmiarze × liczba instancji.
-- Ile czasu faktycznie zajmuje naprawa po sztucznym zabiciu Redisa w trakcie edycji
-  (test chaosu: kill Redisa, edytuj dalej, zmierz czas do zbieżności wszystkich replik).
-- Czy pad instancji w trakcie edycji przechodzi bez utraty operacji — test chaosu
-  zabijający instancję między krokiem 3 a 4, i między 2 a 3 (ten drugi *powinien* zgubić
-  operację u innych klientów do czasu retransmisji przez klienta — sprawdzam, czy
-  faktycznie retransmisja to naprawia).
-- Kalibracja interwału sweepu (30 s) i TTL ewikcji (5 min).
+### To be verified in CP8
+- Memory use per open document of a given size × number of instances.
+- How long repair actually takes after artificially killing Redis mid-edit (chaos test: kill
+  Redis, keep editing, measure the time to convergence of all replicas).
+- Whether an instance dying mid-edit passes without losing operations — a chaos test killing the
+  instance between steps 3 and 4, and between 2 and 3 (the latter *should* lose the operation at
+  other clients until the client retransmits — I am checking whether retransmission actually
+  repairs it).
+- Calibration of the sweep interval (30 s) and the eviction TTL (5 min).

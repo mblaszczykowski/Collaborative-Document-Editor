@@ -1,144 +1,143 @@
-# ADR-0008 — Rozszerzenie zakresu z artefaktu do produktu
+# ADR-0008 — Widening the scope from artifact to product
 
-- **Status:** Zaakceptowany
-- **Data:** 2026-08-15
-- **Dotyczy checkpointów:** CP10–CP15
-- **Zastępuje:** [ADR-0007](0007-zakres-ui.md) w części dotyczącej zakresu funkcjonalnego
-
----
-
-## Uczciwa uwaga o kolejności
-
-[Plan v2](../PLAN-v2.md) zakładał, że ten dokument powstanie **przed** pierwszą linijką
-kodu CP10. Powstał po zamknięciu CP10, CP11 i CP12 — czyli reguła z `CLAUDE.md`
-(„ADR przed kodem domenowym") została w tym jednym przypadku złamana.
-
-Zapisuję to, zamiast antydatować, bo cała wartość tego katalogu polega na tym, że opisuje,
-jak było. ADR napisany po fakcie jest wart mniej niż napisany przed — i czytelnik ma prawo
-o tym wiedzieć, żeby odpowiednio zważyć zawarte niżej „rozważane opcje".
+- **Status:** Accepted
+- **Date:** 2026-08-15
+- **Applies to checkpoints:** CP10–CP15
+- **Supersedes:** [ADR-0007](0007-zakres-ui.md) as far as functional scope is concerned
 
 ---
 
-## Kontekst
+## An honest note about ordering
 
-Wersja 1 osiągnęła swój cel. Rdzeń CRDT jest udowodniony property testami, których zęby
-sprawdzono mutacją; zbieżność jest zmierzona; granice są nazwane, łącznie z anomalią
-przeplotu RGA i ograniczoną skutecznością GC. Ostatnie otwarte pytanie — brak powtarzalnej
-zbieżności powyżej dziesięciu klientów — zostało w CP10 rozstrzygnięte i okazało się wadą
-stanowiska pomiarowego, nie systemu.
+[Plan v2](../PLAN-v2.md) assumed this document would be written **before** the first line of CP10
+code. It was written after CP10, CP11 and CP12 were closed — that is, the rule from `CLAUDE.md`
+("an ADR before domain code") was broken in this one case.
 
-[ADR-0007](0007-zakres-ui.md) odrzucił zakres produktowy mockupu: rich text, komentarze,
-wiele dokumentów, uprawnienia. Decyzja była słuszna i nadal by taka była, gdyby rdzeń
-był niegotowy. **Przestała być słuszna w momencie, w którym rdzeń jest gotowy** — dalsze
-pogłębianie tego samego miejsca ma malejący zwrot, a cztery odrzucone funkcje są jedynym
-kierunkiem, w którym ten rdzeń da się *wykorzystać*, a nie tylko pokazać.
-
-Pytanie brzmi: **czy rozszerzać, a jeśli tak, to o co?**
+I record that instead of backdating it, because the entire value of this directory is that it
+describes how things were. An ADR written after the fact is worth less than one written before —
+and the reader is entitled to know, so as to weigh the "options considered" below accordingly.
 
 ---
 
-## Rozważane opcje
+## Context
 
-### Opcja A — Zostać przy v1 i pogłębiać rdzeń
+Version 1 achieved its goal. The CRDT core is proven by property tests whose teeth were checked
+with mutation; convergence is measured; the limits are named, including RGA's interleaving anomaly
+and the limited effectiveness of GC. The last open question — no repeatable convergence above ten
+clients — was settled in CP10 and turned out to be a flaw in the measurement rig, not in the
+system.
 
-Fugue zamiast RGA (usuwa anomalię przeplotu), undo świadome CRDT, przeprojektowanie
-reprezentacji bloku pod skuteczniejszy GC.
+[ADR-0007](0007-zakres-ui.md) rejected the mockup's product scope: rich text, comments, multiple
+documents, permissions. The decision was right, and would still be right if the core were unready.
+**It stopped being right at the moment the core was ready** — deepening the same place further has
+diminishing returns, and the four rejected features are the only direction in which that core can
+be *used* rather than merely shown.
 
-**Za:**
-- Projekt zachowuje jedno zdanie opisu: „własna implementacja CRDT, zbadana do dna".
-  To jest jego największa siła i najłatwiej ją stracić przez rozcieńczenie.
-- Każda z tych rzeczy jest trudna i mierzalna — czyli dokładnie tym, co ten projekt
-  umie pokazać najlepiej.
-- Zero ryzyka, że powstanie „kolejny klon Google Docs, tylko gorszy".
-
-**Przeciw:**
-- Malejący zwrot. Druga implementacja algorytmu sekwencji dowodzi tego samego, co pierwsza,
-  tylko dokładniej. Czytelnik, który uwierzył w pierwszą, nie potrzebuje drugiej.
-- Rdzeń bez zastosowania pozostaje ćwiczeniem. Pytanie „czy to się do czegoś nadaje"
-  zostaje bez odpowiedzi.
-
-### Opcja B — Rozszerzyć wybiórczo: tylko wiele dokumentów i uprawnienia
-
-Bez rich textu i komentarzy.
-
-**Za:** najtańsze, a domyka projekt produktowo — dokumenty, dostęp, współdzielenie.
-**Przeciw:** to jest praca *wokół* rdzenia, a nie *w* nim. Nic nie dokłada do tezy projektu;
-CRUD i autoryzacja są kompetencją, którą widać w każdym CV.
-
-### Opcja C — Rozszerzyć w pełni: rich text, komentarze, wiele dokumentów, uprawnienia
-
-**Za:**
-- **Rich text jest problemem algorytmicznym, nie produktowym.** Znaczniki formatowania
-  muszą przetrwać współbieżne wstawienia w środek zakresu, czego atrybuty per znak nie
-  zapewniają. To jest druga trudna rzecz w tym projekcie, tej samej klasy co pierwsza,
-  i wprost pogłębia tezę zamiast ją rozcieńczać.
-- Komentarze reużywają warstwę kotwic z rich textu — koszt krańcowy jest niski,
-  a funkcja produktowo widoczna.
-- Uprawnienia zmuszają do autoryzacji **per typ operacji**, bo rola „komentujący" nie da się
-  wyrazić na poziomie kanału. To jest nieoczywisty problem projektowy, a nie CRUD.
-
-**Przeciw:**
-- Największy zakres i największe ryzyko rozcieńczenia.
-- Podwójny koszt każdej zmiany algorytmu (Java + TypeScript) obejmie także znaczniki.
-- GC tombstone'ów, już dziś słaby, stanie się jeszcze słabszy.
+The question is: **should we widen the scope, and if so, to include what?**
 
 ---
 
-## Decyzja
+## Options considered
 
-**Opcja C.** Z jednym twardym warunkiem, który jest częścią tej decyzji, a nie życzeniem:
+### Option A — Stay with v1 and deepen the core
 
-> **README ma nadal otwierać się rdzeniem i demem, a nie listą funkcji.** Rich text ma być
-> przedstawiony jako *konsekwencja* dobrego rdzenia — „ten sam algorytm unosi formatowanie" —
-> a nie jako osobna pozycja na liście możliwości.
+Fugue instead of RGA (removing the interleaving anomaly), CRDT-aware undo, redesigning the block
+representation for more effective GC.
 
-Kolejność checkpointów wynika z trzech twardych zależności opisanych w [planie](../PLAN-v2.md):
-fundament przed wszystkim (bo rich text zwielokrotni ruch), wiele dokumentów przed
-uprawnieniami (bo bez wielu dokumentów uprawnienia nie mają czego chronić), uprawnienia
-przed rich textem (bo autoryzacja musi objąć typy operacji), rich text przed komentarzami
-(bo komentarz to zakotwiczony zakres i reużywa tamtą warstwę).
+**For:**
+- The project keeps a one-sentence description: "our own CRDT implementation, investigated to the
+  bottom". That is its greatest strength and the easiest thing to lose through dilution.
+- Each of these is hard and measurable — that is, exactly what this project shows best.
+- Zero risk of producing "another Google Docs clone, only worse".
+
+**Against:**
+- Diminishing returns. A second sequence-algorithm implementation proves the same thing as the
+  first, only more precisely. A reader convinced by the first does not need the second.
+- A core with no application remains an exercise. The question "is this good for anything" stays
+  unanswered.
+
+### Option B — Widen selectively: multiple documents and permissions only
+
+Without rich text and comments.
+
+**For:** cheapest, and it rounds the project off as a product — documents, access, sharing.
+**Against:** this is work *around* the core rather than *in* it. It adds nothing to the project's
+thesis; CRUD and authorization are a competence visible on every CV.
+
+### Option C — Widen fully: rich text, comments, multiple documents, permissions
+
+**For:**
+- **Rich text is an algorithmic problem, not a product one.** Formatting marks must survive
+  concurrent insertions into the middle of a range, which per-character attributes do not provide.
+  It is the second hard thing in this project, of the same class as the first, and it deepens the
+  thesis directly rather than diluting it.
+- Comments reuse the anchor layer from rich text — the marginal cost is low and the feature is
+  visible as a product.
+- Permissions force authorization **per operation type**, because the "commenter" role cannot be
+  expressed at the channel level. That is a non-obvious design problem, not CRUD.
+
+**Against:**
+- The largest scope and the greatest risk of dilution.
+- The double cost of every algorithm change (Java + TypeScript) will now cover marks as well.
+- Tombstone GC, already weak today, will get weaker still.
 
 ---
 
-## Konsekwencje
+## Decision
 
-### Pozytywne
-- Projekt odpowiada na pytanie „czy ten rdzeń się do czegoś nadaje", zamiast zostawiać je otwarte.
-- Rich text dokłada drugi trudny problem algorytmiczny zamiast pracy dookoła.
-- Uprawnienia wymusiły autoryzację per typ operacji — problem projektowy, który przy
-  samym CRUD-zie by się nie pojawił.
+**Option C.** With one hard condition that is part of this decision rather than a wish:
 
-### Negatywne
+> **The README must still open with the core and the demo, not with a feature list.** Rich text is
+> to be presented as a *consequence* of a good core — "the same algorithm carries formatting" —
+> not as a separate item on a list of capabilities.
 
-- **Ryzyko rozcieńczenia jest realne i nie znika przez zapisanie warunku.** Recenzent
-  z trzema minutami może wyjść z „kolejny edytor" zamiast „ktoś rozumie CRDT".
-  **Sprawdzone w CP15:** README nadal otwiera się rdzeniem, ale **przybyło mu ~40 %**
-  i pierwszy ekran to teraz dwa GIF-y zamiast jednego. Ryzyko nie zmaterializowało się
-  w treści — otwarcie mówi o CRDT napisanym od zera, a formatowanie i komentarze są w nim
-  przedstawione jako *zastosowania* rdzenia, nie jako lista funkcji — ale zmaterializowało
-  się w **długości**. Recenzent z trzema minutami przeczyta dziś mniejszą część dokumentu
-  niż przed CP10. Zabezpieczeniem jest sekcja „Co tu jest ciekawego" na samej górze,
-  z linkami do czterech konkretnych rzeczy; jeśli i ona przestanie wystarczać, właściwym
-  ruchem jest wydzielenie części pomiarowej do osobnego pliku, a nie skracanie uzasadnień.
-- **Podwójny koszt implementacji rośnie proporcjonalnie do zakresu.** Znaczniki formatowania
-  muszą powstać w Javie i w TypeScripcie, a korpus konformancyjny — urosnąć o ich wektory.
-- **GC tombstone'ów stanie się jeszcze mniej skuteczny.** [ADR-0005](0005-tombstone-gc.md)
-  zabrania usuwania tombstone'u będącego originem; po CP13 dojdzie „będącego kotwicą
-  znacznika", po CP14 „kotwicą komentarza". Może to wymusić przeprojektowanie reprezentacji
-  bloku, które ADR-0005 odkładał. **Decyzja do podjęcia na starcie CP13, nie w trakcie.**
-- **Wszystkie liczby wydajnościowe stają się nieaktualne** po CP13, bo rich text zmienia
-  profil ruchu. Dlatego CP15 (ponowny pomiar) jest w planie obowiązkowy, a nie opcjonalny.
-- **`CLAUDE.md` przestaje odpowiadać projektowi** w sekcji „Czego unikać" i wymaga poprawki
-  razem z tym ADR-em. Instrukcja odradzająca to, co repozytorium właśnie robi, jest gorsza
-  niż jej brak.
+The checkpoint order follows from three hard dependencies described in the [plan](../PLAN-v2.md):
+foundations before everything (because rich text multiplies traffic), multiple documents before
+permissions (because without multiple documents permissions have nothing to protect), permissions
+before rich text (because authorization must cover operation types), rich text before comments
+(because a comment is an anchored range and reuses that layer).
 
-### Zweryfikowane po CP10–CP12
+---
 
-- **Kolejność checkpointów okazała się słuszna, i to nietrywialnie.** CP11 (wiele dokumentów)
-  otworzył podatność IDOR, którą CP12 zamknął — gdyby kolejność była odwrotna, autoryzacja
-  powstałaby dla modelu „jeden dokument" i trzeba by ją przepisać.
-- **Uprawnienia rzeczywiście wymusiły autoryzację per typ operacji**, tak jak zakładał plan.
-  Rola „komentujący" nie daje się wyrazić na poziomie destynacji STOMP, bo komentarze idą
-  tym samym kanałem co edycja.
-- **Rozcieńczenia na razie nie widać**, ale CP13 jeszcze nie ruszył — a to on wnosi
-  największą zmianę w opisie projektu. Ocena należy do CP15.
+## Consequences
+
+### Positive
+- The project answers the question "is this core good for anything" instead of leaving it open.
+- Rich text adds a second hard algorithmic problem instead of work around the edges.
+- Permissions forced per-operation-type authorization — a design problem that plain CRUD would not
+  have raised.
+
+### Negative
+
+- **The risk of dilution is real and does not disappear by writing down a condition.** A reviewer
+  with three minutes may come away with "another editor" instead of "somebody understands CRDTs".
+  **Checked in CP15:** the README still opens with the core, but it has **grown by ~40%** and the
+  first screen is now two GIFs instead of one. The risk did not materialise in the *content* — the
+  opening talks about a CRDT written from scratch, and formatting and comments are presented in it
+  as *applications* of the core rather than as a feature list — but it did materialise in
+  **length**. A reviewer with three minutes reads a smaller fraction of the document today than
+  before CP10. The safeguard is the "What is interesting here" section right at the top, with links
+  to four specific things; if that stops being enough, the right move is to split the measurement
+  part into a separate file, not to shorten the justifications.
+- **The double implementation cost grows in proportion to scope.** Formatting marks have to be
+  built in Java and in TypeScript, and the conformance corpus has to grow by their vectors.
+- **Tombstone GC will become even less effective.** [ADR-0005](0005-tombstone-gc.md) forbids
+  removing a tombstone that is an origin; after CP13 "that is a mark's anchor" is added, after CP14
+  "a comment's anchor". This may force the block representation redesign that ADR-0005 deferred.
+  **A decision to be taken at the start of CP13, not during it.**
+- **All the performance numbers become stale** after CP13, because rich text changes the traffic
+  profile. That is why CP15 (re-measurement) is mandatory in the plan rather than optional.
+- **`CLAUDE.md` stops matching the project** in its "What to avoid" section and needs correcting
+  alongside this ADR. An instruction advising against what the repository is currently doing is
+  worse than no instruction.
+
+### Verified after CP10–CP12
+
+- **The checkpoint order turned out to be right, and non-trivially so.** CP11 (multiple documents)
+  opened an IDOR vulnerability that CP12 closed — had the order been reversed, authorization would
+  have been built for the "one document" model and would have had to be rewritten.
+- **Permissions did indeed force per-operation-type authorization**, exactly as the plan assumed.
+  The "commenter" role cannot be expressed at the level of a STOMP destination, because comments
+  travel the same channel as editing.
+- **No dilution is visible yet**, but CP13 has not started — and it is CP13 that brings the biggest
+  change to how the project is described. The judgement belongs to CP15.

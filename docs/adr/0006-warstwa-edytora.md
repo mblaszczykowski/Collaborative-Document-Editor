@@ -1,144 +1,145 @@
-# ADR-0006 — Warstwa edytora: CodeMirror 6 jako widok, model dokumentu własny
+# ADR-0006 — The editor layer: CodeMirror 6 as the view, our own document model
 
-- **Status:** Zaakceptowany
-- **Data:** 2026-08-14
-- **Dotyczy checkpointów:** CP4
-
----
-
-## Kontekst
-
-Frontend musi: renderować tekst, przyjmować edycję z klawiatury, rysować **kursory i zaznaczenia
-innych użytkowników** w tekście, i zamieniać lokalne edycje na operacje CRDT (oraz odwrotnie).
-
-`CLAUDE.md` zabrania używania gotowych **bibliotek CRDT** jako czarnej skrzynki. `idea.md`
-jednocześnie explicite dopuszcza bibliotekę jako **warstwę UI** („np. na bazie ContentEditable
-lub biblioteki typu Slate.js/ProseMirror jako warstwa UI, z własną logiką CRDT pod spodem").
-
-Granica jest więc jasna i warto ją nazwać wprost: **model dokumentu i algorytm scalania są
-nasze; renderowanie tekstu i obsługa zdarzeń wejściowych przeglądarki nie muszą być.**
-Trudność projektu ma leżeć w spójności rozproszonej, nie w obsłudze IME.
+- **Status:** Accepted
+- **Date:** 2026-08-14
+- **Applies to checkpoints:** CP4
 
 ---
 
-## Rozważane opcje
+## Context
 
-### Opcja A — `<textarea>`
+The frontend has to: render text, accept keyboard editing, draw **other users' cursors and
+selections** inside the text, and turn local edits into CRDT operations (and back).
 
-**Za:** trywialne, zero zależności, zerowa liczba niespodzianek.
-**Przeciw:** **nie da się narysować niczego wewnątrz tekstu.** Zdalne kursory, zaznaczenia
-i kolory autorów są niemożliwe. To wycina najbardziej efektowną i najczęściej wymienianą
-funkcję z `idea.md` — i akurat tę, która sprzedaje demo. Odrzucone.
+`CLAUDE.md` forbids using off-the-shelf **CRDT libraries** as a black box. `idea.md` at the same
+time explicitly permits a library as a **UI layer** ("e.g. based on ContentEditable, or a library
+such as Slate.js/ProseMirror as the UI layer, with our own CRDT logic underneath").
 
-### Opcja B — Własny edytor na `contentEditable`
-
-**Za:** pełna kontrola, brak zależności, „napisane od zera" brzmi mocno.
-**Przeciw:** `contentEditable` to jedna z najbardziej niespójnych między przeglądarkami części
-DOM-u. Realna lista rzeczy do rozwiązania samodzielnie:
-- **IME / composition events** — pisanie po chińsku, japońsku, koreańsku, ale też autokorekta
-  i podpowiedzi na klawiaturach mobilnych. `compositionstart`/`compositionupdate`/`compositionend`
-  vs zdarzenia `input` to źródło błędów, na których wykłada się większość naiwnych edytorów.
-- **Natywne undo/redo przeglądarki** — działa na DOM, nie na naszym modelu; trzeba je przechwycić
-  i zastąpić, w tym `Ctrl+Z` z menu kontekstowego.
-- Wklejanie (HTML → tekst), przeciąganie tekstu myszą, autokorekta iOS, różnice w normalizacji
-  węzłów tekstowych, zachowanie kursora przy granicach węzłów.
-
-Koszt: realistycznie tydzień pracy, z czego **nic nie demonstruje zrozumienia CRDT** — to jest
-walka z DOM-em, nie z algorytmem. Odrzucone jako zły podział budżetu w projekcie o skończonym
-czasie, którego celem jest głębia w problemie rdzeniowym.
-
-### Opcja C — ProseMirror / Slate
-
-**Za:** dojrzałe, dobrze rozwiązują `contentEditable`.
-**Przeciw:** oba są zbudowane wokół **modelu dokumentu drzewiastego** (rich text, schema,
-zagnieżdżone węzły). Nasz dokument to płaska sekwencja znaków (świadome ograniczenie zakresu
-z `idea.md`). Dostajemy więc całą złożoność modelu drzewiastego, żeby użyć jednego typu węzła,
-i musimy mapować nasz płaski CRDT na ich pozycje w drzewie — dodatkowa warstwa tłumaczenia
-bez korzyści.
-
-### Opcja D — CodeMirror 6 jako czysta warstwa widoku
-
-CM6 jest zbudowany wokół **płaskiego dokumentu tekstowego** — dokładnie nasz model.
-Kluczowe własności:
-- **Transakcje z `ChangeSet`** — każda edycja użytkownika przychodzi jako jawny, opisany
-  zestaw zmian (`fromA/toA/fromB/toB` + wstawiony tekst), a nie jako różnica DOM-u do odgadnięcia.
-  Mapowanie na operacje CRDT jest bezpośrednie.
-- **Rozwiązane IME, undo, wklejanie, mobile** — przetestowane w produkcji przez lata.
-- **`Decoration` i widgety** — natywny mechanizm rysowania kursorów i zaznaczeń innych
-  użytkowników bez dotykania DOM-u ręcznie.
-- **`StateField` / `StateEffect`** — miejsce na trzymanie stanu presence poza treścią dokumentu.
-- Tree-shaking, modularna budowa — bierzemy tylko potrzebne moduły.
-
-**Przeciw:**
-- Zależność zewnętrzna w ścieżce krytycznej UI.
-- CM6 ma **własny** model dokumentu (`Text`) i własną historię — dwa modele obok siebie
-  wymagają dyscypliny, żeby nie rozjechać się co do tego, który jest źródłem prawdy.
-- Krzywa uczenia się architektury CM6 (state/view, facets, transakcje) jest niepłaska.
+The boundary is therefore clear and worth stating plainly: **the document model and the merge
+algorithm are ours; rendering text and handling the browser's input events do not have to be.**
+The difficulty of the project should lie in distributed consistency, not in IME handling.
 
 ---
 
-## Decyzja
+## Options considered
 
-**Opcja D — CodeMirror 6 wyłącznie jako warstwa widoku.**
+### Option A — `<textarea>`
 
-### Granica odpowiedzialności — spisana, bo bez tego się rozmyje
+**For:** trivial, zero dependencies, zero surprises.
+**Against:** **nothing can be drawn inside the text.** Remote cursors, selections and author
+colours are impossible. That removes the most striking and most frequently mentioned feature from
+`idea.md` — and precisely the one that sells the demo. Rejected.
 
-| Odpowiedzialność | Właściciel |
+### Option B — A custom editor on `contentEditable`
+
+**For:** full control, no dependencies, "written from scratch" sounds strong.
+**Against:** `contentEditable` is one of the most inconsistent parts of the DOM across browsers.
+The real list of things to solve yourself:
+- **IME / composition events** — typing in Chinese, Japanese, Korean, but also autocorrect and
+  suggestions on mobile keyboards. `compositionstart`/`compositionupdate`/`compositionend` versus
+  `input` events is the source of bugs most naive editors fall over.
+- **The browser's native undo/redo** — it works on the DOM, not on our model; it has to be
+  intercepted and replaced, including `Ctrl+Z` from the context menu.
+- Pasting (HTML → text), dragging text with the mouse, iOS autocorrect, differences in text node
+  normalisation, cursor behaviour at node boundaries.
+
+Cost: realistically a week of work, of which **none demonstrates an understanding of CRDTs** — it
+is a fight with the DOM, not with the algorithm. Rejected as a bad allocation of budget in a
+project with finite time whose goal is depth in the core problem.
+
+### Option C — ProseMirror / Slate
+
+**For:** mature, they solve `contentEditable` well.
+**Against:** both are built around a **tree document model** (rich text, schema, nested nodes). Our
+document is a flat sequence of characters (a deliberate scope limitation from `idea.md`). We would
+get all the complexity of a tree model in order to use one node type, and we would have to map our
+flat CRDT onto their positions in a tree — an extra translation layer with no benefit.
+
+### Option D — CodeMirror 6 as a pure view layer
+
+CM6 is built around a **flat text document** — exactly our model. The key properties:
+- **Transactions with `ChangeSet`** — every user edit arrives as an explicit, described set of
+  changes (`fromA/toA/fromB/toB` + inserted text), rather than as a DOM diff to be guessed at.
+  Mapping onto CRDT operations is direct.
+- **IME, undo, pasting and mobile solved** — battle-tested in production for years.
+- **`Decoration` and widgets** — a native mechanism for drawing other users' cursors and
+  selections without touching the DOM by hand.
+- **`StateField` / `StateEffect`** — a place to keep presence state outside the document content.
+- Tree-shaking, modular build — we take only the modules we need.
+
+**Against:**
+- An external dependency on the UI critical path.
+- CM6 has **its own** document model (`Text`) and its own history — two models side by side
+  require discipline to avoid disagreeing about which is the source of truth.
+- The learning curve of CM6's architecture (state/view, facets, transactions) is not flat.
+
+---
+
+## Decision
+
+**Option D — CodeMirror 6 exclusively as the view layer.**
+
+### The responsibility boundary — written down, because otherwise it blurs
+
+| Responsibility | Owner |
 |---|---|
-| Struktura dokumentu, identyfikatory znaków, tombstone'y | **nasz kod** (`crdt-ts`) |
-| Scalanie operacji, zbieżność, version vectory | **nasz kod** |
-| Bufor offline, resynchronizacja | **nasz kod** |
-| Pozycje kursorów zdalnych (jako identyfikatory CRDT) | **nasz kod** |
-| Renderowanie tekstu, zdarzenia klawiatury, IME, wklejanie | CodeMirror |
-| Rysowanie dekoracji w miejscu wskazanym przez nasz kod | CodeMirror |
+| Document structure, character identifiers, tombstones | **our code** (`crdt-ts`) |
+| Merging operations, convergence, version vectors | **our code** |
+| Offline buffer, resynchronisation | **our code** |
+| Remote cursor positions (as CRDT identifiers) | **our code** |
+| Rendering text, keyboard events, IME, pasting | CodeMirror |
+| Drawing decorations where our code says | CodeMirror |
 
-**Źródłem prawdy jest CRDT, nie `EditorState` CodeMirrora.** CM6 jest projekcją: każda
-zmiana lokalna idzie `CM6 → operacja CRDT → merge → nowy stan → z powrotem do CM6`, nigdy
-„zmieniamy CM6 i osobno CRDT". Historia CM6 (`history()`) jest **wyłączona** — undo musi
-działać na operacjach CRDT (cofać własne operacje użytkownika), a nie na tekście, bo inaczej
-cofnięcie zdejmowałoby zmiany innych osób.
+**The source of truth is the CRDT, not CodeMirror's `EditorState`.** CM6 is a projection: every
+local change goes `CM6 → CRDT operation → merge → new state → back to CM6`, never "change CM6 and
+the CRDT separately". CM6's history (`history()`) is **disabled** — undo has to work on CRDT
+operations (undoing the user's own operations), not on the text, because otherwise an undo would
+remove other people's changes.
 
-### Kursory zdalne trzymamy jako identyfikator CRDT, nie offset
+### Remote cursors are kept as CRDT identifiers, not offsets
 
-To nie jest detal implementacyjny, tylko rozstrzygnięcie klasycznego błędu. Gdyby pozycja
-kursora Bartka była offsetem (`kolumna 42`), to wstawienie przez Anię znaku przed tą pozycją
-przesunęłoby tekst, ale nie kursor — i kursor Bartka wskazywałby cudzy znak. Trzymając
-pozycję jako **identyfikator węzła CRDT**, kursor przesuwa się razem z tekstem automatycznie,
-bo jest przyczepiony do znaku, a nie do miejsca.
+This is not an implementation detail but the resolution of a classic bug. If Bartek's cursor
+position were an offset (`column 42`), then Ania inserting a character before that position would
+shift the text but not the cursor — and Bartek's cursor would point at somebody else's character.
+Keeping the position as a **CRDT node identifier** makes the cursor move with the text
+automatically, because it is attached to a character rather than to a place.
 
-Ten sam problem dotyczy zaznaczeń (para identyfikatorów) i lokalnego kursora użytkownika
-podczas przychodzącej edycji zdalnej.
+The same problem applies to selections (a pair of identifiers) and to the user's own local cursor
+during an incoming remote edit.
 
 ---
 
-## Konsekwencje
+## Consequences
 
-### Pozytywne
-- Cały budżet czasowy trafia do problemu rdzeniowego (CRDT, spójność, obserwowalność),
-  a nie do walki z `contentEditable`.
-- `ChangeSet` CM6 mapuje się na operacje CRDT niemal jeden do jednego — mniej miejsca na błąd
-  niż przy odgadywaniu zmian z mutacji DOM.
-- Zdalne kursory i zaznaczenia dostają wsparcie z pierwszej ręki (`Decoration`), więc
-  najlepiej wyglądająca część demo jest jednocześnie najtańsza w wykonaniu.
-- Edycja na urządzeniu mobilnym i z IME działa, choć nie jest przedmiotem tego projektu.
+### Positive
+- The entire time budget goes to the core problem (CRDT, consistency, observability) rather than to
+  fighting `contentEditable`.
+- CM6's `ChangeSet` maps onto CRDT operations almost one to one — less room for error than
+  guessing changes from DOM mutations.
+- Remote cursors and selections get first-class support (`Decoration`), so the best-looking part of
+  the demo is also the cheapest to build.
+- Editing on a mobile device and with an IME works, even though it is not the subject of this
+  project.
 
-### Negatywne
-- **Dwa modele dokumentu obok siebie** (CRDT i `EditorState`). Każdy rozjazd między nimi
-  to trudny do wyśledzenia błąd typu „tekst na ekranie nie zgadza się ze stanem". Mitygacja:
-  invariant sprawdzany w trybie deweloperskim po każdej transakcji (`crdtDoc.text() === cmState.doc.toString()`),
-  z głośnym błędem przy niezgodności. To ma być asercja, nie nadzieja.
-- **Zależność zewnętrzna** — jeśli CM6 zmieni API transakcji, warstwa mostkująca wymaga pracy.
-  Ograniczone do jednego modułu (`frontend/src/editor/`), żeby zmiana nie promieniowała.
-- **Wyłączenie `history()` CM6** oznacza, że undo/redo musimy zbudować sami na operacjach
-  CRDT. To jest nietrywialne (undo w CRDT to nowa operacja odwracająca, nie usunięcie starej)
-  i jest **realnym ryzykiem zakresu w CP4** — jeśli zabraknie czasu, undo zostaje ograniczone
-  do cofania własnych operacji z bieżącej sesji, co trafi do „co inaczej w produkcji".
-- Krzywa uczenia CM6 — koszt jednorazowy, ale niezerowy.
+### Negative
+- **Two document models side by side** (the CRDT and `EditorState`). Any divergence between them is
+  a hard-to-trace bug of the "the text on screen does not match the state" kind. Mitigation: an
+  invariant checked in development mode after every transaction
+  (`crdtDoc.text() === cmState.doc.toString()`), with a loud error on mismatch. This is meant to be
+  an assertion, not a hope.
+- **An external dependency** — if CM6 changes its transaction API, the bridging layer needs work.
+  Confined to one module (`frontend/src/editor/`) so the change does not radiate.
+- **Disabling CM6's `history()`** means we have to build undo/redo ourselves on CRDT operations.
+  That is non-trivial (undo in a CRDT is a new inverse operation, not the removal of an old one)
+  and is a **real scope risk in CP4** — if time runs short, undo is limited to undoing the user's
+  own operations from the current session, which goes into "what I would do differently in
+  production".
+- The CM6 learning curve — a one-off cost, but not zero.
 
-### Do zweryfikowania w CP4
-- Czy `ChangeSet` faktycznie da się mapować bez przypadków brzegowych przy operacjach
-  łączonych (wielokrotne zaznaczenia, zamiana zaznaczonego tekstu jedną transakcją).
-- Czy invariant „tekst CM6 == tekst CRDT" utrzymuje się przy jednoczesnej edycji lokalnej
-  i przychodzącej zdalnej (to jest test, nie założenie).
-- Czy dekoracje kursorów wytrzymują 20+ jednoczesnych użytkowników bez zauważalnego
-  spadku płynności — jeśli nie, mitygacją jest ograniczenie liczby rysowanych kursorów.
+### To be verified in CP4
+- Whether `ChangeSet` can actually be mapped without edge cases for compound operations (multiple
+  selections, replacing selected text in one transaction).
+- Whether the invariant "CM6 text == CRDT text" holds under simultaneous local editing and
+  incoming remote edits (this is a test, not an assumption).
+- Whether cursor decorations survive 20+ concurrent users without a noticeable loss of smoothness —
+  if not, the mitigation is capping the number of cursors drawn.

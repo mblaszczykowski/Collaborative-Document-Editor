@@ -1,113 +1,113 @@
-# ADR-0011 — Komentarze: kotwica w CRDT, treść poza nim
+# ADR-0011 — Comments: the anchor in the CRDT, the content outside it
 
-- **Status:** Zaakceptowany
-- **Data:** 2026-08-15
-- **Dotyczy checkpointów:** CP14
-
----
-
-## Kontekst
-
-Komentarz w edytorze dokumentów składa się z dwóch rzeczy, które łatwo pomylić:
-
-1. **Zakotwiczenie** — informacja, którego fragmentu tekstu rozmowa dotyczy.
-2. **Rozmowa** — wiadomości, ich autorzy, kolejność.
-
-Pytanie brzmi, **które z nich potrzebuje CRDT**. Odpowiedź „obie, skoro CRDT już mamy"
-jest kusząca i kosztowna.
+- **Status:** Accepted
+- **Date:** 2026-08-15
+- **Applies to checkpoints:** CP14
 
 ---
 
-## Rozważane opcje
+## Context
 
-### Zakotwiczenie
+A comment in a document editor consists of two things that are easy to conflate:
 
-**Opcja A — offsety w bazie** (`from`, `to` w tabeli wątku).
+1. **The anchoring** — which fragment of text the conversation is about.
+2. **The conversation** — the messages, their authors, their order.
 
-**Przeciw:** offsety rozjeżdżają się przy każdej cudzej edycji. Jest to ten sam błąd,
-który [ADR-0006](0006-warstwa-edytora.md) odrzucił przy kursorach i [ADR-0010](0010-rich-text.md)
-przy formatowaniu — **trzeci raz ten sam błąd, w trzecim miejscu**.
-
-**Opcja B — znacznik CRDT typu `comment`** z identyfikatorem wątku jako wartością.
-
-**Za:** to jest dokładnie ta sama maszyneria, którą wprowadził CP13. Kotwice przesuwają się
-razem z tekstem, przeżywają edycję sąsiedztwa i scalają się jak każda inna operacja —
-bez ani jednej nowej linijki w warstwie CRDT.
-
-### Rozmowa
-
-**Opcja A — wiadomości jako CRDT.**
-
-**Za:** jednolitość. Wszystko jest operacją, wszystko idzie tym samym kanałem.
-
-**Przeciw:** CRDT rozwiązuje **konkretny problem** — współbieżną edycję tej samej sekwencji.
-Wiadomość ma jednego autora, powstaje w całości i nie jest edytowana znak po znaku przez
-dwie osoby naraz. Zastosowanie CRDT to więc log operacji, scalanie, tombstone'y, GC
-i podwójna implementacja dla tekstu, który tego nie potrzebuje.
-
-**Opcja B — zwykłe tabele relacyjne.**
+The question is **which of them needs a CRDT**. The answer "both, since we already have a CRDT" is
+tempting and expensive.
 
 ---
 
-## Decyzja
+## Options considered
 
-**Kotwica w CRDT (B), rozmowa poza nim (B).**
+### The anchoring
 
-Wątek i jego kotwica powstają więc **dwiema drogami**: treść przez REST, kotwica przez
-WebSocket jako operacja CRDT. Wygląda to na niespójność i nią nie jest — to są dwie rzeczy
-o różnych wymaganiach:
+**Option A — offsets in the database** (`from`, `to` in the thread table).
 
-| | kotwica | rozmowa |
+**Against:** offsets drift with every edit by somebody else. It is the same mistake
+[ADR-0006](0006-warstwa-edytora.md) rejected for cursors and [ADR-0010](0010-rich-text.md) rejected
+for formatting — **the same mistake a third time, in a third place**.
+
+**Option B — a CRDT mark of type `comment`** with the thread identifier as its value.
+
+**For:** this is exactly the machinery CP13 introduced. Anchors move with the text, survive edits to
+their surroundings, and merge like any other operation — without a single new line in the CRDT
+layer.
+
+### The conversation
+
+**Option A — messages as a CRDT.**
+
+**For:** uniformity. Everything is an operation, everything travels the same channel.
+
+**Against:** a CRDT solves **one specific problem** — concurrent editing of the same sequence. A
+message has a single author, is created whole, and is not edited character by character by two
+people at once. Using a CRDT therefore means an operation log, merging, tombstones, GC and a double
+implementation, for text that needs none of it.
+
+**Option B — ordinary relational tables.**
+
+---
+
+## Decision
+
+**The anchor in the CRDT (B), the conversation outside it (B).**
+
+A thread and its anchor are therefore created by **two different routes**: the content over REST,
+the anchor over WebSocket as a CRDT operation. This looks like an inconsistency and is not — they
+are two things with different requirements:
+
+| | anchor | conversation |
 |---|---|---|
-| musi scalać się bez arbitra | tak | nie |
-| musi przetrwać cudzą edycję | tak | nie dotyczy |
-| wymaga niskiej latencji | tak (podświetlenie) | nie |
-| ma jednego autora | nie | tak |
+| must merge without an arbiter | yes | no |
+| must survive somebody else's edit | yes | not applicable |
+| requires low latency | yes (the highlight) | no |
+| has a single author | no | yes |
 
-Widać to w zachowaniu: podświetlenie zakotwiczonego fragmentu pojawia się u drugiej osoby
-natychmiast, kanałem operacji; treść rozmowy — przy odświeżeniu panelu.
+You can see it in the behaviour: the highlight of an anchored fragment appears for the other person
+immediately, over the operation channel; the conversation content appears when the panel refreshes.
 
-### Wątek odłączony zamiast usuniętego
+### A detached thread rather than a deleted one
 
-Gdy zakotwiczony tekst zostanie skasowany, kotwice pozostają tombstone'ami (chronionymi
-przez GC — [ADR-0005](0005-tombstone-gc.md)), a zakres przestaje cokolwiek obejmować.
-Wątek jest wtedy **odłączony**: pokazywany z zacytowanym fragmentem z chwili założenia
-i wyraźnie oznaczony.
+When anchored text is deleted, the anchors remain as tombstones (protected from GC —
+[ADR-0005](0005-tombstone-gc.md)) and the range stops covering anything. The thread is then
+**detached**: shown with the fragment quoted as of when it was created, and clearly marked.
 
-Kopia cytowanego tekstu w bazie jest **celowo redundantna** wobec kotwic. Bez niej odłączona
-rozmowa nie miałaby jak pokazać, czego dotyczyła — a rozmowa o nieznanym fragmencie jest
-niewiele warta.
+The copy of the quoted text in the database is **deliberately redundant** with respect to the
+anchors. Without it a detached conversation would have no way of showing what it was about — and a
+conversation about an unknown fragment is worth little.
 
-### Rozwiązanie nie jest usunięciem
+### Resolving is not deleting
 
-Ta sama zasada, co przy miękkim usuwaniu dokumentów w CP11: kontekst decyzji jest zwykle
-jedyną rzeczą, dla której ktoś wraca do komentarzy po miesiącach.
+The same principle as with soft-deleting documents in CP11: the context of a decision is usually the
+only thing anyone comes back to comments for, months later.
 
 ---
 
-## Konsekwencje
+## Consequences
 
-### Pozytywne
-- CP14 nie dołożył **ani jednej linijki** do warstwy CRDT. Cała kotwica to znacznik z CP13,
-  co jest najlepszym dowodem, że tamta warstwa została wydzielona właściwie.
-- Rola `commenter` z [ADR-0009](0009-model-uprawnien.md) nabrała treści i potwierdziła
-  swój projekt: autoryzacja musiała zejść do **typu operacji**, bo komentarze idą tym samym
-  kanałem co edycja. Przewidziane w CP12, sprawdzone w CP14.
-- Rozmowy da się czytać zwykłym `SELECT`-em, bez odtwarzania stanu z logu operacji.
+### Positive
+- CP14 added **not a single line** to the CRDT layer. The entire anchor is a mark from CP13, which
+  is the best proof that the layer was extracted correctly.
+- The `commenter` role from [ADR-0009](0009-model-uprawnien.md) gained substance and confirmed its
+  design: authorization had to descend to the **operation type**, because comments travel the same
+  channel as editing. Anticipated in CP12, verified in CP14.
+- Conversations can be read with a plain `SELECT`, without rebuilding state from the operation log.
 
-### Negatywne
+### Negative
 
-- **Dwie drogi zamiast jednej.** Wątek powstaje REST-em, kotwica WebSocketem, i między nimi
-  jest okno, w którym wątek istnieje bez kotwicy. Jeśli klient padnie dokładnie wtedy,
-  zostanie wątek niezakotwiczony — widoczny jako odłączony od chwili powstania. Nie jest to
-  utrata danych, ale jest to stan, którego nie da się odróżnić od „tekst skasowano".
-- **Treść komentarzy nie działa offline.** Bufor offline obejmuje operacje CRDT; komentarz
-  wymaga połączenia. Jest to konsekwencja decyzji o wyłączeniu rozmowy z CRDT i świadoma cena.
-- **Brak powiadomień i wzmianek.** Komentarz, którego nikt nie zauważy, jest wart tyle,
-  co jego brak. Poza zakresem, wymieniony w README.
-- **Panel odświeża się przez odpytywanie**, a nie przez zdarzenie. Nowa wiadomość w wątku
-  pojawia się u innych dopiero przy ponownym otwarciu panelu albo zmianie dokumentu.
-  Właściwym rozwiązaniem jest kanał zdarzeń komentarzy — niezrobione.
-- **Usunięcie dokumentu kaskaduje na wątki** (`ON DELETE CASCADE`). Przy miękkim usuwaniu
-  z CP11 nie ma to znaczenia, bo dokument nigdy nie jest usuwany twardo — ale jest to
-  zależność, która przestanie być bezpieczna, jeśli kiedykolwiek powstanie twarde usuwanie.
+- **Two routes instead of one.** A thread is created over REST and its anchor over WebSocket, and
+  between them there is a window in which the thread exists without an anchor. If the client dies
+  exactly then, an unanchored thread remains — shown as detached from the moment of creation. It is
+  not data loss, but it is a state indistinguishable from "the text was deleted".
+- **Comment content does not work offline.** The offline buffer covers CRDT operations; a comment
+  requires a connection. This is a consequence of excluding the conversation from the CRDT, and a
+  deliberate price.
+- **No notifications and no mentions.** A comment nobody notices is worth as much as no comment. Out
+  of scope, listed in the README.
+- **The panel refreshes by polling** rather than by an event. A new message in a thread appears for
+  others only when the panel is reopened or the document is changed. The right solution is a comment
+  event channel — not done.
+- **Deleting a document cascades to its threads** (`ON DELETE CASCADE`). With the soft delete from
+  CP11 this does not matter, because a document is never hard-deleted — but it is a dependency that
+  will stop being safe if hard deletion is ever introduced.

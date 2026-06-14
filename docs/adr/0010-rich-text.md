@@ -1,185 +1,209 @@
-# ADR-0010 — Formatowanie tekstu jako osobna warstwa CRDT
+# ADR-0010 — Text formatting as a separate CRDT layer
 
-- **Status:** Zaakceptowany
-- **Data:** 2026-08-15
-- **Dotyczy checkpointów:** CP13 (implementacja), CP14 (komentarze reużywają kotwic), CP15 (pomiar)
-
----
-
-## Kontekst
-
-[ADR-0008](0008-rozszerzenie-zakresu.md) rozszerzył zakres o rich text, uzasadniając to tym,
-że jest to **problem algorytmiczny, a nie produktowy**. Ten dokument opisuje, na czym ten
-problem polega i dlaczego rozwiązanie wyglądające na oczywiste jest błędne.
-
-Sytuacja do rozstrzygnięcia jest jedna i wystarcza za całą specyfikację:
-
-> Ania pogrubia zakres tekstu. Bartek — nie widząc jeszcze jej zmiany — wpisuje tekst
-> w środek tego zakresu. Co powinno się stać z formatowaniem wstawionego tekstu?
-
-Odpowiedź, której oczekuje użytkownik: wstawiony tekst jest pogrubiony, bo znalazł się
-w środku pogrubionego fragmentu. Odpowiedź, którą daje naiwna implementacja: nie jest,
-bo w chwili powstania operacji pogrubienie do Bartka nie dotarło.
+- **Status:** Accepted
+- **Date:** 2026-08-15
+- **Applies to checkpoints:** CP13 (implementation), CP14 (comments reuse the anchors),
+  CP15 (measurement), CP20 (complexity)
 
 ---
 
-## Rozważane opcje
+## Context
 
-### Opcja A — Formatowanie jako atrybut znaku
+[ADR-0008](0008-rozszerzenie-zakresu.md) widened the scope to include rich text, on the grounds
+that it is **an algorithmic problem, not a product one**. This document describes what that problem
+is and why the solution that looks obvious is wrong.
 
-Każdy znak niesie zbiór znaczników. Pogrubienie zakresu to operacja ustawiająca atrybut
-na wymienionych znakach.
+There is one situation to resolve, and it serves as the whole specification:
 
-**Za:** trywialne w implementacji, zero nowych pojęć, zerowy koszt wyliczania wyglądu.
+> Ania bolds a range of text. Bartek — not yet seeing her change — types text into the middle of
+> that range. What should happen to the formatting of the inserted text?
 
-**Przeciw — i to jest decydujące:** **nie rozwiązuje sytuacji z kontekstu.** Operacja Ani
-wymienia znaki, które istniały w chwili jej powstania. Znaki Bartka nie są w tej liście
-i nie mają jak się w niej znaleźć, bo powstały równolegle. Wynik: dziura w pogrubieniu,
-której nikt nie zrobił i której nie da się wyjaśnić użytkownikowi.
-
-Nie jest to problem do obejścia „doklejaniem atrybutu przy wstawianiu", bo replika wstawiająca
-o pogrubieniu nie wie — dowie się dopiero za chwilę.
-
-### Opcja B — Zakres zapisany jako para offsetów
-
-Znacznik trzyma pozycje początku i końca.
-
-**Przeciw:** offsety rozjeżdżają się przy każdej cudzej edycji. Jest to ten sam błąd, który
-[ADR-0006](0006-warstwa-edytora.md) odrzucił przy kursorach, tylko groźniejszy: kursor
-w złym miejscu jest widoczny natychmiast, a formatowanie w złym miejscu wygląda jak decyzja
-autora.
-
-### Opcja C — Zakres między kotwicami zaczepionymi w znakach (Peritext)
-
-Znacznik to osobna operacja: `(typ, wartość, kotwica początkowa, kotwica końcowa)`, gdzie
-kotwica wskazuje **znak** i **stronę** tego znaku. Wygląd tekstu jest wyliczany przy
-renderowaniu, a nie przechowywany.
-
-**Za:** rozwiązuje sytuację z kontekstu bez żadnego przypadku szczególnego — kotwice
-przesuwają się razem z tekstem, więc tekst wstawiony w środek zakresu **jest** w środku
-zakresu, niezależnie od kolejności dostarczenia operacji.
-
-**Przeciw:** więcej pojęć, wyliczanie wyglądu przy każdym renderowaniu, i — co okazało się
-najdotkliwsze — pogorszenie skuteczności GC.
+The answer a user expects: the inserted text is bold, because it ended up inside a bold fragment.
+The answer a naive implementation gives: it is not, because at the moment the operation was created
+the bolding had not reached Bartek.
 
 ---
 
-## Decyzja
+## Options considered
 
-**Opcja C.** Wraz z dwoma rozstrzygnięciami, które z niej wynikają:
+### Option A — Formatting as a character attribute
 
-### Strona kotwicy decyduje o rozszerzaniu
+Every character carries a set of marks. Bolding a range is an operation setting the attribute on
+the listed characters.
 
-Kotwica „za znakiem X" i „przed znakiem Y" wskazują to samo miejsce w tekście `XY` —
-**dopóki nikt nie wstawi czegoś między nie**. Wtedy się rozchodzą:
+**For:** trivial to implement, no new concepts, zero cost to compute the appearance.
+
+**Against — and this is decisive:** **it does not solve the situation from the context.** Ania's
+operation lists the characters that existed when it was created. Bartek's characters are not in
+that list and have no way of getting into it, because they were created in parallel. The result: a
+hole in the bolding that nobody made and that cannot be explained to the user.
+
+This is not a problem to work around by "attaching the attribute on insert", because the inserting
+replica does not know about the bolding — it will find out in a moment.
+
+### Option B — A range stored as a pair of offsets
+
+The mark holds the start and end positions.
+
+**Against:** offsets drift with every edit by somebody else. It is the same mistake
+[ADR-0006](0006-warstwa-edytora.md) rejected for cursors, only more dangerous: a cursor in the
+wrong place is visible immediately, whereas formatting in the wrong place looks like the author's
+decision.
+
+### Option C — A range between anchors pinned to characters (Peritext)
+
+A mark is a separate operation: `(type, value, start anchor, end anchor)`, where an anchor points at
+a **character** and a **side** of that character. The appearance of the text is computed at render
+time rather than stored.
+
+**For:** it solves the situation from the context with no special case — anchors move with the
+text, so text inserted into the middle of a range **is** in the middle of the range, regardless of
+delivery order.
+
+**Against:** more concepts, computing the appearance on every render, and — what turned out to hurt
+most — worse GC effectiveness.
+
+---
+
+## Decision
+
+**Option C.** Together with two consequences that follow from it:
+
+### The side of an anchor decides expansion
+
+An anchor "after character X" and one "before character Y" point at the same place in the text `XY`
+— **until somebody inserts something between them**. Then they diverge:
 
 ```
-tekst:            a [b] c          (pogrubione „b")
+text:              a [b] c          ("b" is bold)
 
-koniec = ZA „b":     wpisanie „x" → a [b] x c     — pogrubienie NIE rośnie
-koniec = PRZED „c":  wpisanie „x" → a [b x] c     — pogrubienie ROŚNIE
+end = AFTER "b":     typing "x" → a [b] x c     — the bold does NOT grow
+end = BEFORE "c":    typing "x" → a [b x] c     — the bold DOES grow
 ```
 
-Cała różnica między „pogrubienie rośnie, gdy dopisuję na jego końcu" a „link nie rośnie"
-to wybór jednej strony jednej kotwicy. Alternatywą byłoby osobne pole „czy rozszerzać",
-które opisuje to samo — tylko w oderwaniu od tego, gdzie kotwica faktycznie jest, więc
-gorzej.
+The entire difference between "bold grows when I type at its end" and "a link does not grow" is the
+choice of one side of one anchor. The alternative would be a separate "should it expand" field,
+which describes the same thing — only detached from where the anchor actually is, and therefore
+worse.
 
-**Rozszerzanie jest własnością TYPU znacznika, nie operacji.** Użytkownik nie podejmuje tej
-decyzji przy każdym pogrubieniu; ma oczekiwanie związane z rodzajem formatowania. Gdyby to
-była własność operacji, dwa pogrubienia w jednym dokumencie mogłyby zachowywać się różnie,
-a użytkownik nie miałby jak przewidzieć którego.
+**Expansion is a property of the mark TYPE, not of the operation.** The user does not make this
+decision on every bolding; they have an expectation tied to the kind of formatting. If it were a
+property of the operation, two bolds in one document could behave differently and the user would
+have no way of predicting which.
 
-### Konflikty rozstrzyga porządek, który już mamy
+### Conflicts are settled by an order we already have
 
-Dla danego znaku i typu znacznika wygrywa operacja o najwyższym `(lamport, replicaId)`
-spośród obejmujących ten znak. Jest to **ten sam porządek totalny**, którego używa reguła
-wstawiania RGA — bez nowego mechanizmu arbitrażu i bez nowego założenia o zegarze.
+For a given character and mark type, the winning operation is the one with the highest
+`(lamport, replicaId)` among those covering that character. This is **the same total order** RGA's
+insertion rule uses — with no new arbitration mechanism and no new assumption about clocks.
 
-Zdjęcie formatowania jest operacją **zakresową**, nie referencją do konkretnego nadania.
-Powód: zdejmowanie nie jest cofaniem cudzej operacji. Dwoje ludzi może pogrubić zachodzące
-na siebie zakresy, a trzeci odgrubić ich część wspólną — nie ma wtedy jednej operacji,
-którą dałoby się wskazać.
+Removing formatting is a **range** operation, not a reference to a specific application. The reason:
+removing is not undoing somebody else's operation. Two people may bold overlapping ranges and a
+third unbold their intersection — at which point there is no single operation to point at.
 
 ---
 
-## Konsekwencje
+## Consequences
 
-### Pozytywne
-- Sytuacja z kontekstu działa bez przypadku szczególnego. Jest to wprost sprawdzone
-  wektorem konformancyjnym `201-mark-inherited-by-concurrent-insert`.
-- Sekwencja znaków **nie zmieniła się ani o jedno pole**. `Block` i `BlockList` są w CP13
-  identyczne jak w CP2 — co jest najlepszym dowodem, że warstwy są rzeczywiście rozdzielone.
-- Warstwa kotwic jest gotowa pod komentarze (CP14) bez żadnej dodatkowej pracy: komentarz
-  to zakotwiczony zakres, czyli dokładnie to samo pojęcie.
-- Podniesienie wersji formatu snapshotu okazało się darmowe dzięki decyzji z ADR-0003
-  (snapshot niezgodny jest ignorowany, nie migrowany).
+### Positive
+- The situation from the context works with no special case. It is checked directly by the
+  conformance vector `201-mark-inherited-by-concurrent-insert`.
+- The character sequence **did not change by a single field**. `Block` and `BlockList` in CP13 are
+  identical to CP2 — which is the best proof that the layers really are separate.
+- The anchor layer is ready for comments (CP14) with no additional work: a comment is an anchored
+  range, which is exactly the same concept.
+- Raising the snapshot format version turned out to be free thanks to the ADR-0003 decision (an
+  incompatible snapshot is ignored, not migrated).
 
-### Negatywne
+### Negative
 
-- **GC tombstone'ów stał się słabszy proporcjonalnie do ilości formatowania.** Każdy zakres
-  przypina dwa tombstone'y, zwykle w środku tekstu. Szczegóły i kierunek rozwiązania
-  w [ADR-0005](0005-tombstone-gc.md), sekcja „Zweryfikowane w CP13".
-- **Wyliczanie wyglądu jest O(m²)** przy `m` operacjach znacznikowych. Przy setkach znaczników
-  to ułamek milisekundy, przy dziesiątkach tysięcy — zauważalne. Właściwe rozwiązanie to
-  zamiatanie z kopcem aktywnych zakresów, `O(m log m)`. **Niezrobione**, bo wymaga pomiaru,
-  którego nie mam. Do CP15.
-- **Zakres kończący się na samym końcu dokumentu nie może rosnąć**, bo nie ma znaku, o który
-  zaczepić kotwicę rozszerzającą. Peritext używa tam wartownika końca dokumentu; tutaj go nie
-  ma, więc pogrubienie postawione na ostatnim słowie nie obejmie tekstu dopisanego po nim.
-- **Tekst wpisany w miejsce skasowanego sformatowanego fragmentu nie dziedziczy formatowania.**
-  Wstawienie ląduje przed tombstone'ami (reguła RGA), czyli poza zakresem. Przewidywalne
-  i wynikające wprost z algorytmu, ale różne od zachowania edytorów opartych na offsetach.
-  Utrwalone testem, żeby zmiana wymagała świadomej decyzji.
-- **Dług dwóch implementacji urósł.** Warstwa znaczników istnieje w Javie i w TypeScripcie,
-  bo klient musi wyliczać wygląd offline. Korpus konformancyjny chroni przed rozjazdem
-  operacji **już utworzonych**, ale nie przed rozjazdem tabeli typów rozszerzalnych — ta jest
-  używana przy TWORZENIU operacji, więc wektory jej nie widzą.
+- **Tombstone GC became weaker in proportion to the amount of formatting.** Every range pins two
+  tombstones, usually in the middle of the text. Details and the direction of a solution in
+  [ADR-0005](0005-tombstone-gc.md), the "Verified in CP13" section. **Removed in CP18** — see the
+  CP18 section of that ADR.
+- **Computing the appearance is O(m²)** with `m` mark operations. At hundreds of marks that is a
+  fraction of a millisecond; at tens of thousands it is noticeable. The right solution is a sweep
+  with a heap of active ranges, `O(m log m)`. **Not done**, because it requires a measurement I do
+  not have. Deferred to CP15. **Done in CP20** — see the section at the end.
+- **A range ending at the very end of the document cannot grow**, because there is no character to
+  pin an expanding anchor to. Peritext uses an end-of-document sentinel there; there is none here,
+  so a bold placed on the last word will not cover text appended after it.
+- **Text typed in place of a deleted formatted fragment does not inherit the formatting.** The
+  insertion lands before the tombstones (RGA's rule), that is, outside the range. Predictable and
+  following directly from the algorithm, but different from the behaviour of offset-based editors.
+  Pinned down by a test, so that changing it requires a conscious decision.
+- **The dual-implementation debt grew.** The mark layer exists in Java and in TypeScript, because
+  the client has to compute the appearance offline. The conformance corpus protects against
+  divergence in operations **already created**, but not against divergence in the table of
+  expandable types — that table is used when CREATING operations, so the vectors do not see it.
 
-  <p><b>To zdanie brzmiało pierwotnie „pilnuje jej osobny test jednostkowy po obu stronach"
-  i było nieprawdziwe</b> — takiego testu nie było po żadnej ze stron. Wyszło przy przeglądzie
-  kodu. Teraz istnieje: obie strony czytają ten sam plik
-  [`conformance/schema/mark-types.json`](../../conformance/schema/mark-types.json), więc zmiana
-  jednej z nich wywala testy tej strony. Wniosek ogólniejszy: **ADR opisujący zabezpieczenie
-  jest wart tyle, co samo zabezpieczenie, a nie więcej** — i akurat ten opis przez dwa
-  checkpointy zastępował rzecz, której nie było.
+  **That sentence originally read "a separate unit test on both sides guards it" and was untrue** —
+  no such test existed on either side. It came out during a code review. It exists now: both sides
+  read the same file [`conformance/schema/mark-types.json`](../../conformance/schema/mark-types.json),
+  so changing one of them fails that side's tests. The more general conclusion: **an ADR describing
+  a safeguard is worth exactly as much as the safeguard itself, and no more** — and this particular
+  description stood in for something that did not exist for two checkpoints.
 
-### Zweryfikowane w CP15
+### Verified in CP15
 
-Pomiar: [`MarkCostMeasurement`](../../crdt-core/src/test/java/dev/collabedit/crdt/MarkCostMeasurement.java).
+Measurement: [`MarkCostMeasurement`](../../crdt-core/src/test/java/dev/collabedit/crdt/MarkCostMeasurement.java).
 
-**Ile kosztuje wyliczanie wyglądu.** Dokument 50 tys. znaków, jedno wywołanie `formatting()`:
+**What computing the appearance costs.** A 50 000-character document, one `formatting()` call:
 
-| Znaczników | Czas |
+| Marks | Time |
 |---:|---:|
-| 100 | 0,6 ms |
-| 400 | 0,8 ms |
-| 1600 | **5,3 ms** |
+| 100 | 0.6 ms |
+| 400 | 0.8 ms |
+| 1600 | **5.3 ms** |
 
-Wzrost jest **wyraźnie ponadliniowy** (×6,4 przy czterokrotnym wzroście liczby znaczników
-między dwoma ostatnimi pomiarami) i zgadza się z tym, co widać w kodzie: `MarkSet` przy
-każdym wyliczeniu przechodzi wszystkie znaczniki i dla każdego odcinka szuka zwycięzcy
-liniowo. Pierwszy stosunek (×1,5) nie znaczy nic — przy setkach mikrosekund dominuje szum.
+The growth is **clearly superlinear** (×6.4 for a fourfold increase in marks between the last two
+measurements) and matches what the code shows: on every computation `MarkSet` walks all the marks
+and, for each segment, searches linearly for a winner. The first ratio (×1.5) means nothing — at
+hundreds of microseconds, noise dominates.
 
-Znaczenie praktyczne jest większe, niż wygląda, bo `formatting()` jest wołane **przy każdej
-zmianie treści**, czyli przy każdym naciśnięciu klawisza. 5 ms na klawisz przy 1600
-znacznikach to już widoczne opóźnienie; przy setkach — nie. Granicą użyteczności obecnej
-implementacji jest więc **rząd setek znaczników na dokument**, i to jest liczba, której
-przed pomiarem nie miałem.
+The practical significance is greater than it looks, because `formatting()` is called **on every
+content change**, that is, on every keystroke. 5 ms per keystroke at 1600 marks is already a
+visible delay; at hundreds it is not. The usable limit of the current implementation is therefore
+**on the order of hundreds of marks per document**, and that is a number I did not have before the
+measurement.
 
-Właściwe rozwiązanie: drzewo przedziałowe indeksowane pozycją, przeliczane przyrostowo.
-Niezrobione — obecna wielkość dokumentów tego nie wymaga, a wpisanie liczby jest uczciwsze
-niż optymalizacja w ciemno.
+The right solution: an interval tree indexed by position, recomputed incrementally. Not done — the
+current document sizes do not require it, and writing the number down is more honest than
+optimising blind.
 
-**Ile pamięci trzymają kotwice.** Odpowiedź w [ADR-0005, sekcja CP15](0005-tombstone-gc.md):
-gorzej, niż zakładano. Znacznik nie przypina dwóch tombstone'ów, tylko **cały blok
-run-length**, w którym siedzi jego kotwica. Przy dokumencie napisanym jednym ciągiem GC
-po dodaniu formatowania nie odzyskuje **nic**. Przeprojektowanie reprezentacji bloku
-przestaje więc być opcjonalne — pytanie „czy warto" ma odpowiedź „tak".
+**How much memory the anchors hold.** The answer is in [ADR-0005, the CP15
+section](0005-tombstone-gc.md): worse than assumed. A mark does not pin two tombstones but **a whole
+run-length block**, the one its anchor sits in. In a document written in one run, GC reclaims
+**nothing** once formatting is added. Redesigning the block representation therefore stops being
+optional — the question "is it worth it" has the answer "yes".
 
-W samym snapshocie znacznik kosztuje **8 B** i to jest wiadomość dobra: nie kopiuje objętego
-tekstu, czyli nie robi tego, przed czym Peritext ma bronić.
+In the snapshot itself a mark costs **8 B**, and that is good news: it does not copy the text it
+covers, that is, it does not do the thing Peritext exists to prevent.
 
-**Jak formatowanie zmienia profil ruchu.** Tabela w README (sekcja „Profil ruchu"). Znaczniki
-to co dziesiąta edycja w harnessie i nie one okazały się kosztowne — kosztowna była
-**obecność**, której poprzednie pomiary nie wysyłały wcale.
+**How formatting changes the traffic profile.** The table in the README ("Traffic profile"). Marks
+are every tenth edit in the harness, and they did not turn out to be the expensive part — the
+expensive part was **presence**, which the previous measurements were not sending at all.
+
+### Verified in CP20 — the O(m²) is gone, and the limit moved somewhere else
+
+The sweep with an incrementally maintained set of active ranges was implemented. Measured on the
+same rig, before and after (median of 11 samples, the CP15 measurement having timed a single call
+and been too noisy to compare with):
+
+| Marks | `O(m²)` — before | sweep — after | Speed-up |
+|---:|---:|---:|---:|
+| 100 | 0.39 ms | 0.27 ms | 1.5× |
+| 400 | 0.58 ms | 0.49 ms | 1.2× |
+| 1600 | 4.18 ms | 1.49 ms | 2.8× |
+| 6400 | **62.1 ms** | **4.72 ms** | **13×** |
+
+Growth per fourfold increase in marks fell from ×7.2 → ×14.9 to ×3.1 → ×3.2. The usable limit moved
+from **hundreds** of marks to **thousands**.
+
+**Two findings more interesting than the speed-up.** First: below roughly a thousand marks the
+change buys nothing, because the dominant cost is not picking a winner at all — it is **resolving
+anchors** through the block index, two lookups per mark. The complexity fix starts paying exactly
+where CP15 said the limit was, and not one bit earlier. Second: the CP15 measurement above timed
+one call and gave 0.8 ms and 4.7 ms on identical code at 400 marks. The numbers 0.6 / 0.8 / 5.3 ms
+quoted here are therefore single shots, and are kept only as a record of what was believed at the
+time.
