@@ -1,28 +1,56 @@
-Collaborative Document Editor — opis projektu
-Koncepcja
-Edytor tekstu w czasie rzeczywistym (Google Docs light), umożliwiający wielu użytkownikom jednoczesną edycję tego samego dokumentu bez konfliktów i utraty danych — nawet przy słabym połączeniu, jednoczesnej edycji tego samego fragmentu tekstu czy chwilowym rozłączeniu klienta.
-Problem, który rozwiązuje
-Naiwna synchronizacja tekstu (np. "ostatni zapis wygrywa") prowadzi do utraty zmian, gdy dwóch userów edytuje ten sam fragment jednocześnie. Projekt pokazuje, jak zbudować system, w którym zmiany od wielu klientów zawsze się bezkonfliktowo scalają, zachowując intencję każdego autora — to klasyczny, twardy problem inżynierii rozproszonej (distributed consistency bez centralnego lockowania).
-Architektura i podejście techniczne
-Algorytm synchronizacji — do wyboru/porównania:
-CRDT (Conflict-free Replicated Data Type) — np. struktura oparta na RGA/Peritext, gdzie każdy znak ma unikalny identyfikator pozycyjny; scalanie jest matematycznie gwarantowane bez centralnego arbitra
-Operational Transform (OT) — transformacja operacji względem siebie na serwerze (podejście używane historycznie przez Google Docs)
-Rekomendacja: zacząć od CRDT (prostsze do poprawnego zaimplementowania samodzielnie, mniej "magicznych" edge case'ów niż OT) i w README opisać świadomie, dlaczego ten wybór, z porównaniem trade-offów obu podejść.
+Collaborative Document Editor — project brief
+
+Concept
+A real-time text editor (Google Docs light) letting many users edit the same document
+simultaneously without conflicts or data loss — even over a poor connection, with concurrent
+editing of the same fragment of text, or a momentary client disconnect.
+
+The problem it solves
+Naive text synchronisation (e.g. "last write wins") loses changes when two users edit the same
+fragment at once. The project shows how to build a system in which changes from many clients always
+merge without conflict while preserving each author's intent — the classic, hard problem of
+distributed engineering (distributed consistency without central locking).
+
+Architecture and technical approach
+Synchronisation algorithm — to choose between / compare:
+CRDT (Conflict-free Replicated Data Type) — e.g. a structure based on RGA/Peritext, where every
+character has a unique positional identifier; merging is mathematically guaranteed without a
+central arbiter
+Operational Transform (OT) — transforming operations against each other on the server (the approach
+historically used by Google Docs)
+Recommendation: start with a CRDT (simpler to implement correctly yourself, fewer "magic" edge
+cases than OT) and describe deliberately in the README why that choice was made, with a comparison
+of both approaches' trade-offs.
+
 Stack:
-Backend: Java (Spring Boot) + WebSocket (STOMP) do propagacji operacji w czasie rzeczywistym
-Persystencja: PostgreSQL — snapshoty dokumentu + log operacji (event sourcing dla historii zmian)
-Frontend: React + TypeScript, custom text editor (np. na bazie ContentEditable lub biblioteki typu Slate.js/ProseMirror jako warstwa UI, z własną logiką CRDT pod spodem)
-Reconnect handling: bufor operacji offline + resynchronizacja po powrocie połączenia
-Kluczowe funkcjonalności
-Edycja wieloosobowa w czasie rzeczywistym — widoczne kursory i zaznaczenia innych userów (jak w Google Docs)
-Historia zmian / wersjonowanie — możliwość cofnięcia się do dowolnego punktu w czasie, z widokiem "kto co zmienił" (audit trail)
-Obsługa offline i reconnect — edycja działa lokalnie przy braku sieci, po powrocie połączenia zmiany scalają się automatycznie
-Presence — lista aktywnych userów w dokumencie, statusy "kto teraz pisze"
-Symulator konfliktów — tryb demo pokazujący świadomie sztuczne opóźnienia sieciowe i jednoczesną edycję tego samego fragmentu, żeby zademonstrować poprawność algorytmu (to bardzo mocno "sprzedaje" projekt na rozmowie rekrutacyjnej)
-Co ten projekt demonstruje (senior signal)
-Zrozumienie teorii spójności danych rozproszonych (CAP theorem w praktyce, eventual consistency)
-Umiejętność zaimplementowania nietrywialnego algorytmu od podstaw, a nie tylko użycia gotowej biblioteki
-Projektowanie protokołu komunikacji real-time (WebSocket) z myśleniem o edge case'ach: race conditions, network partition, reconnect
-Full-stack: złożona logika domenowa na backendzie + wymagający, stanowy UI na froncie
-Ryzyka / na co uważać
-CRDT dla tekstu jest trudniejsze niż się wydaje na pierwszy rzut oka (memory overhead tombstone'ów, wydajność przy długich dokumentach). Warto ograniczyć scope do prostego edytora tekstu (bez rich formatting na start) i jasno opisać w README świadome uproszczenia oraz "co zrobiłbym inaczej w produkcji" — to samo w sobie jest senior-level sygnałem.
+Backend: Java (Spring Boot) + WebSocket (STOMP) for propagating operations in real time
+Persistence: PostgreSQL — document snapshots + an operation log (event sourcing for change history)
+Frontend: React + TypeScript, a custom text editor (e.g. based on ContentEditable, or a library such
+as Slate.js/ProseMirror as the UI layer, with our own CRDT logic underneath)
+Reconnect handling: an offline operation buffer + resynchronisation once the connection returns
+
+Key features
+Multi-user real-time editing — other users' cursors and selections visible (as in Google Docs)
+Change history / versioning — the ability to roll back to any point in time, with a "who changed
+what" view (audit trail)
+Offline and reconnect support — editing works locally with no network, and once the connection
+returns the changes merge automatically
+Presence — a list of active users in the document, "who is typing now" statuses
+Conflict simulator — a demo mode showing deliberately artificial network delays and simultaneous
+editing of the same fragment, to demonstrate the algorithm's correctness (this "sells" the project
+very strongly in an interview)
+
+What this project demonstrates (senior signal)
+An understanding of distributed consistency theory (the CAP theorem in practice, eventual
+consistency)
+The ability to implement a non-trivial algorithm from scratch rather than merely using an
+off-the-shelf library
+Designing a real-time communication protocol (WebSocket) while thinking about edge cases: race
+conditions, network partition, reconnect
+Full-stack: complex domain logic on the backend + a demanding, stateful UI on the frontend
+
+Risks / what to watch out for
+CRDTs for text are harder than they look at first glance (the memory overhead of tombstones,
+performance on long documents). It is worth limiting the scope to a simple text editor (no rich
+formatting to begin with) and describing clearly in the README the deliberate simplifications and
+"what I would do differently in production" — that is itself a senior-level signal.

@@ -1,124 +1,156 @@
-# Collaborative Document Editor — instrukcje projektowe dla Claude Code
+# Collaborative Document Editor — project instructions for Claude Code
 
-## Cel projektu (przeczytaj to najpierw)
+## Project goal (read this first)
 
-Aplikacja ma solidnie działać — to warunek konieczny, nie opcjonalny. Ale "działa" to za mało, żeby to był dobry projekt portfolio. Budujemy **artefakt, który ma udowodnić senior-level full-stack engineering** rekruterowi/tech leadowi przeglądającemu repo przez 3-5 minut, więc oprócz działającego kodu każda decyzja techniczna ma być:
-1. Świadoma i uzasadniona (nie "bo tak się zwykle robi")
-2. Udokumentowana w miejscu, gdzie ktoś ją znajdzie
-3. Testowalna i zmierzona liczbami, nie przymiotnikami
+The application has to work solidly — that is a necessary condition, not an optional one. But
+"it works" is not enough for this to be a good portfolio project. We are building an **artifact
+meant to prove senior-level full-stack engineering** to a recruiter or tech lead browsing the repo
+for 3–5 minutes, so beyond working code every technical decision must be:
+1. Deliberate and justified (not "because that is how it is usually done")
+2. Documented somewhere a person will find it
+3. Testable and measured in numbers, not adjectives
 
-Jeśli w trakcie pracy pojawi się wybór między "szybciej działające" a "pokazuje głębsze zrozumienie problemu" — wybieraj to drugie i **nie pytaj o zgodę**, nawet gdy wydłuża to pracę znacząco. Koszt zapisz w raporcie końcowym (patrz *Tryb pracy* na dole pliku).
+If a choice comes up between "works sooner" and "shows a deeper understanding of the problem" —
+choose the second and **do not ask for approval**, even when it lengthens the work considerably.
+Record the cost in the final report (see *Working mode* at the bottom of this file).
 
-## Język
+## Language
 
-**Językiem projektu jest angielski.** Decyzja i jej uzasadnienie: [PLAN-v3 §0.2](docs/PLAN-v3.md).
+**The project language is English.** The decision and its justification:
+[PLAN-v3 §0.2](docs/PLAN-v3.md).
 
-- **Cała nowa treść powstaje po angielsku** — kod, komentarze, javadoc, testy, ADR-y, komunikaty commitów, README.
-- Istniejąca treść po polsku jest migrowana w kolejności: README → `docs/adr/` → komentarze w kodzie → `docs/architektura.md` i `docs/crdt-design.md` → plany.
-- **Plany (`IMPLEMENTATION_PLAN.md`, `PLAN-v2.md`, `PLAN-v3.md`) zostają po polsku.** To seria historyczna — zapis tego, co myślano w danym momencie. Tłumaczenie takiego zapisu niesie ryzyko, że przy okazji „poprawi się" wnioski, które wtedy brzmiały inaczej.
-- Ten plik (`CLAUDE.md`) też zostaje po polsku — to instrukcja dla mnie i dla Claude'a, nie artefakt dla czytelnika repozytorium.
-- Tłumacząc, **nie skracaj i nie wygładzaj**. Wartością tych komentarzy jest to, że mówią *dlaczego* i przyznają się do pomyłek. Angielski ma zachować tę samą szczerość i tę samą konkretność, łącznie ze zdaniami typu „to nie zadziałało i oto dlaczego".
+- **All new content is written in English** — code, comments, javadoc, tests, ADRs, commit
+  messages, README.
+- Existing Polish content is migrated in this order: README → `docs/adr/` → code comments →
+  `docs/architektura.md` and `docs/crdt-design.md` → the plans → configuration and UI strings.
+- **The migration covers everything, including the plans and this file.** An earlier version of
+  this rule exempted the plans as a "historical series". That exemption is withdrawn: a repository
+  in two languages reads worse than in either one, and a reader arriving from an English README at
+  a Polish comment gets told where the part written for them ends.
+- When translating, **do not shorten and do not smooth over**. The value of these comments is that
+  they say *why* and admit mistakes. The English has to carry the same bluntness and the same
+  specificity, including sentences like "this did not work, and here is why".
+- Filenames keep their original Polish slugs (`0003-historia-zmian.md` and so on). Renaming them
+  would break every link in the README, in the ADRs and in the commit history in exchange for
+  cosmetics — and the commit history is part of the artifact here.
 
-## Kontekst techniczny
+## Technical context
 
 - Backend: Java 21, Spring Boot, PostgreSQL, WebSocket (STOMP)
 - Frontend: React + TypeScript
-- Algorytm sync: CRDT (nie OT — patrz ADR-001, do napisania jako pierwszy dokument w projekcie)
-- Infrastruktura: Docker Compose, GitHub Actions CI/CD
+- Sync algorithm: CRDT (not OT — see ADR-0001, the first document to be written in the project)
+- Infrastructure: Docker Compose, GitHub Actions CI/CD
 - Observability: OpenTelemetry + Prometheus/Grafana
 
-## Twarde wymagania — nie pomijaj żadnego
+## Hard requirements — skip none of them
 
-### 1. Zanim napiszesz pierwszą linijkę kodu domenowego
-- Stwórz `/docs/adr/` i zapisz ADR dla: wyboru CRDT vs OT, wyboru transportu (WebSocket+STOMP vs SSE vs raw WS), strategii historii zmian (event log vs periodic snapshoty), strategii scalowania horyzontalnego (Redis pub/sub między instancjami)
-- Format ADR: kontekst → rozważane opcje → decyzja → konsekwencje (w tym negatywne). Jeśli nie znasz jeszcze konsekwencji, napisz "do zweryfikowania w fazie X" — nie zmyślaj pewności, której nie masz
+### 1. Before you write the first line of domain code
+- Create `/docs/adr/` and record an ADR for: the CRDT vs OT choice, the transport choice
+  (WebSocket+STOMP vs SSE vs raw WS), the change-history strategy (event log vs periodic
+  snapshots), the horizontal scaling strategy (Redis pub/sub between instances)
+- ADR format: context → options considered → decision → consequences (including negative ones). If
+  you do not know the consequences yet, write "to be verified in phase X" — do not manufacture
+  certainty you do not have
 
-### 2. Commit history jako narracja
+### 2. Commit history as narrative
 - Conventional Commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`)
-- Każdy commit to jedna logiczna zmiana, nie "wip" ani "final v3"
-- Commituj też decyzje, które się nie udały, jeśli są pouczające (np. "revert: naive last-write-wins merge — patrz ADR-001 dlaczego to nie działa") — historia porażek i iteracji jest bardziej wiarygodna niż linowy sukces
+- Every commit is one logical change, not "wip" or "final v3"
+- Commit decisions that did not work out too, if they are instructive (e.g. "revert: naive
+  last-write-wins merge — see ADR-0001 for why it does not work") — a history of failures and
+  iteration is more credible than linear success
 
-### 3. Testy — priorytetyzuj w tej kolejności
-1. Property-based testy algorytmu CRDT (losowe sekwencje operacji w losowej kolejności muszą zawsze konwergować do tego samego stanu) — to jest NAJWAŻNIEJSZY test w całym projekcie, bo dowodzi poprawności core algorytmu
-2. Testy integracyjne WebSocket z Testcontainers (prawdziwy Postgres, nie mock)
-3. Test chaosu: symulacja losowych opóźnień i rozłączeń, sprawdzenie że system się nie rozjeżdża
-4. Dopiero potem standardowe testy jednostkowe kontrolerów/serwisów
+### 3. Tests — prioritise in this order
+1. Property-based tests of the CRDT algorithm (random operation sequences in random order must
+   always converge to the same state) — this is the MOST IMPORTANT test in the whole project,
+   because it proves the correctness of the core algorithm
+2. WebSocket integration tests with Testcontainers (a real Postgres, not a mock)
+3. A chaos test: simulating random delays and disconnects, checking the system does not diverge
+4. Only then standard unit tests of controllers/services
 
-Nie pisz testów "dla pokrycia". Każdy test ma odpowiadać na pytanie "jaki realny failure mode to wyłapuje".
+Do not write tests "for coverage". Every test must answer the question "what real failure mode does
+this catch".
 
-### 4. Observability od pierwszego dnia, nie na końcu
-- Distributed tracing pojedynczej operacji edycji: klient → WebSocket → merge CRDT → zapis → broadcast do innych klientów
-- Metryki: liczba aktywnych sesji, latencja propagacji (p50/p95/p99), liczba konfliktów rozwiązanych/sekundę
-- Jeśli zabraknie czasu na coś, obserwowalność NIE jest tym, z czego rezygnujemy — to jeden z głównych sygnałów senioralności
+### 4. Observability from day one, not at the end
+- Distributed tracing of a single edit operation: client → WebSocket → CRDT merge → write →
+  broadcast to other clients
+- Metrics: number of active sessions, propagation latency (p50/p95/p99), conflicts resolved per
+  second
+- If time runs out for something, observability is NOT what we drop — it is one of the main signals
+  of seniority
 
-### 5. Benchmarki z prawdziwymi liczbami
-- Napisz scenariusz Gatling/k6 symulujący N jednoczesnych userów edytujących ten sam dokument
-- Zmierz i zapisz w README: throughput, latencję propagacji w zależności od liczby userów, punkt degradacji wydajności przy rosnącym rozmiarze dokumentu
-- Nie akceptuj sformułowań typu "system jest szybki" w dokumentacji — zawsze konkretna liczba z metodologią pomiaru
+### 5. Benchmarks with real numbers
+- Write a Gatling/k6 scenario simulating N concurrent users editing the same document
+- Measure and record in the README: throughput, propagation latency as a function of user count,
+  the point of performance degradation as document size grows
+- Do not accept phrasing like "the system is fast" in documentation — always a concrete number with
+  the measurement methodology
 
-### 6. Failure modes — dokumentuj explicité
-Sekcja w README opisująca dokładnie co się dzieje przy:
-- Utracie połączenia klienta w trakcie edycji
-- Padzie instancji backendu (failover)
-- Jednoczesnej edycji tego samego znaku przez dwóch userów
-- Bardzo dużym dokumencie (tombstone garbage collection w CRDT)
+### 6. Failure modes — document them explicitly
+A README section describing exactly what happens on:
+- A client losing its connection mid-edit
+- A backend instance dying (failover)
+- Two users editing the same character at once
+- A very large document (tombstone garbage collection in the CRDT)
 
-### 7. Sekcja "co zrobiłbym inaczej w produkcji"
-Świadomie wypisz uproszczenia podjęte dla scope'u portfolio (brak rich text, uproszczony auth, brak shardingu dokumentów) i jak adresowałbyś je przy realnej skali. To pokazuje, że znasz granice własnego rozwiązania — nie pomijaj tej sekcji, nawet jeśli "psuje" wrażenie kompletności.
+### 7. A "what I would do differently in production" section
+Deliberately list the simplifications made for portfolio scope (no rich text, simplified auth, no
+document sharding) and how you would address them at real scale. This shows you know the limits of
+your own solution — do not skip this section, even if it "spoils" the impression of completeness.
 
-### 8. Demo, które sprzedaje się samo
-Na końcu prac nagraj GIF/wideo (poproś mnie o instrukcję jak to zrobić, jeśli nie masz narzędzia) pokazujące: dwóch userów edytujących ten sam fragment bez konfliktu, reconnect po rozłączeniu, cofnięcie do wcześniejszej wersji. To ma być pierwsza rzecz widoczna w README, przed jakimkolwiek tekstem.
+## What to avoid
 
-## Czego unikać
+- Off-the-shelf CRDT libraries (e.g. Yjs) as a black box with no implementation of your own — the
+  goal is to show an understanding of the algorithm, not the ability to `npm install`. You may draw
+  on them and compare against them in an ADR, but the core logic must be ours
+- Excessive scope **at the cost of depth in the core problem** — better narrow and deep than broad
+  and shallow. Up to the close of CP9 this meant plainly: no rich text, no comments, no
+  multi-document. Since [ADR-0008](docs/adr/0008-rozszerzenie-zakresu.md) the scope is wider, but
+  the principle does NOT change — every new feature must bring its own engineering problem (rich
+  text: anchors surviving concurrent insertions; permissions: authorization per operation type)
+  rather than being work around the core. A feature that adds nothing to the project's thesis is
+  still excessive.
+- Default configuration values with no comment explaining why (e.g. "why this particular WebSocket
+  heartbeat interval")
+- A README written only at the end — write it alongside the code, section by section, so you do not
+  have to guess after the fact what mattered
 
-- Gotowych bibliotek CRDT (np. Yjs) jako czarnej skrzynki bez własnej implementacji — cel jest pokazać zrozumienie algorytmu, nie umiejętność `npm install`. Można się nimi inspirować/porównać w ADR, ale core logic ma być własny
-- Nadmiarowego scope'u **kosztem głębi w core problemie** — lepiej wąsko i dogłębnie niż szeroko
-  i płytko. Do zamknięcia CP9 znaczyło to wprost: żadnego rich textu, komentarzy ani multi-dokumentu.
-  Od [ADR-0008](docs/adr/0008-rozszerzenie-zakresu.md) zakres jest rozszerzony, ale zasada NIE ulega
-  zmianie — każda nowa funkcja ma wnosić własny problem inżynierski (rich text: kotwice przeżywające
-  współbieżne wstawienia; uprawnienia: autoryzacja per typ operacji), a nie być pracą dookoła rdzenia.
-  Funkcja, która niczego nie dokłada do tezy projektu, nadal jest nadmiarowa.
-- Domyślnych configów bez komentarza dlaczego (np. "dlaczego akurat taki interwał heartbeat WebSocket")
-- README napisanego dopiero na końcu — pisz go równolegle z kodem, sekcja po sekcji, żeby nie zgadywać post factum co było ważne
+## Order of work (checkpoints)
 
-## Kolejność pracy (checkpointy)
+The checkpoints are no longer listed here — they live in the plans, because that is where what
+actually happened can be recorded next to them:
 
-Checkpointy nie są już wypisane tutaj — mieszkają w planach, bo tam da się przy nich
-zapisać, co faktycznie wyszło:
-
-| Plan | Checkpointy | Stan |
+| Plan | Checkpoints | State |
 |---|---|---|
-| [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | CP1–CP9 — rdzeń CRDT, transport, historia, klaster, obserwowalność | zamknięty |
-| [`docs/PLAN-v2.md`](docs/PLAN-v2.md) | CP10–CP15 — wydajność, multi-dokument, uprawnienia, rich text, komentarze | zamknięty |
-| [`docs/PLAN-v3.md`](docs/PLAN-v3.md) | CP16–CP20 — autoryzacja strukturalnie, symulacja deterministyczna, blok bez treści, bramka regresji | **otwarty** |
+| [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | CP1–CP9 — CRDT core, transport, history, cluster, observability | closed |
+| [`docs/PLAN-v2.md`](docs/PLAN-v2.md) | CP10–CP15 — performance, multi-document, permissions, rich text, comments | closed |
+| [`docs/PLAN-v3.md`](docs/PLAN-v3.md) | CP16–CP20 — structural authorization, deterministic simulation, content-dropped blocks, regression gate | closed |
 
-### Tryb pracy: bez zatrzymywania się na checkpointach
+### Working mode: no stopping at checkpoints
 
-Poprzednia wersja tego pliku kazała zatrzymać się po każdym checkpoincie i zapytać,
-czy kontynuować. **Ta zasada jest wycofana** — pracuj przez kolejne checkpointy bez pytania
-o zgodę na przejście dalej.
+An earlier version of this file required stopping after every checkpoint and asking whether to
+continue. **That rule is withdrawn** — work through consecutive checkpoints without asking
+permission to move on.
 
-Powód zmiany jest konkretny, a nie kosmetyczny: przy planie v1 i v2 pytanie o zgodę miało
-sens, bo każdy checkpoint zmieniał kształt produktu i zła kolejność kosztowałaby dni pracy.
-Plan v3 nie dokłada funkcji — domyka rzeczy, których uzasadnienie jest **już zmierzone
-i zapisane w repozytorium**. Pytanie „czy kontynuować" przy pozycji, którą ADR-0005 nazywa
-wprost nieopcjonalną, jest kosztem bez treści.
+The reason for the change is concrete rather than cosmetic: in plans v1 and v2 asking made sense,
+because every checkpoint changed the shape of the product and a wrong order would cost days of
+work. Plan v3 adds no features — it closes items whose justification is **already measured and
+written down in this repository**. Asking "shall I continue" about an item ADR-0005 calls
+explicitly non-optional is a cost with no content.
 
-Co zastępuje zgodę na przejście — bo zniesienie kontroli nie znaczy zniesienia rozliczenia:
+What replaces the approval to proceed — because removing the gate does not remove the accounting:
 
-- **Testy i build są bramką.** Checkpoint jest zamknięty, gdy przechodzi to, co go sprawdza,
-  a nie gdy skończył się kod. Zielony build bez testu z zębami nie zamyka niczego (§3).
-- **Raport zbiorczy na końcu**, nie zgoda po drodze: co zrobione, co zrobione inaczej niż
-  zakładał plan i **dlaczego**, co niezrobione. To jest ta sama treść, która wcześniej padała
-  przy pytaniu — tylko zebrana, zamiast rozproszona.
-- **Zatrzymaj się mimo wszystko**, gdy rzecz jest nieodwracalna albo wychodzi poza plan:
-  zmiana schematu bazy niosąca utratę danych, publikacja czegokolwiek na zewnątrz,
-  `git push`, rezygnacja z pozycji wpisanej do planu. Autonomia dotyczy **wykonania planu**,
-  nie zmiany jego zakresu.
-- **Nie udawaj ukończenia.** Jeśli checkpoint utknął, napisz to wprost i przejdź do
-  następnego — plan v3 §1 mówi, które da się uciąć bez szkody. Zgłoszenie „zrobione"
-  dla czegoś, co nie przechodzi testów, jest gorsze niż niezrobienie.
+- **Tests and the build are the gate.** A checkpoint is closed when what checks it passes, not when
+  the code stops. A green build with no test that has teeth closes nothing (§3).
+- **A single report at the end**, not approval along the way: what was done, what was done
+  differently from the plan and **why**, and what was not done. That is the same content that used
+  to be delivered at each question — only gathered rather than scattered.
+- **Stop anyway** when something is irreversible or goes beyond the plan: a schema change that
+  loses data, publishing anything externally, `git push`, dropping an item written into the plan.
+  The autonomy covers **executing the plan**, not changing its scope.
+- **Do not fake completion.** If a checkpoint is stuck, say so plainly and move to the next — plan
+  v3 §1 says which ones can be cut without harm. Reporting "done" for something that does not pass
+  its tests is worse than not doing it.
 
-To samo dotyczy wyboru „szybciej" kontra „głębiej" z sekcji **Cel projektu**: wybieraj głębiej
-i **nie pytaj o zgodę na przekroczenie ~30%** — zapisz koszt w raporcie końcowym.
-Pytaj tylko wtedy, gdy głębsza droga zmienia zakres planu, a nie czas jego wykonania.
+The same applies to the "faster" versus "deeper" choice in **Project goal**: choose deeper and **do
+not ask permission to exceed ~30%** — record the cost in the final report. Ask only when the deeper
+route changes the plan's scope rather than the time it takes.
