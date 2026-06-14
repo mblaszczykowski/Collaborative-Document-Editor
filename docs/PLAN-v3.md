@@ -13,10 +13,12 @@
 > | CP20 — Zamiatanie w `MarkSet` + zaległe długi | **zamknięty częściowo** — `MarkSet` i `retry-after` zrobione, cztery długi nie |
 >
 > Zasady prowadzenia dokumentu przejęte z v1 i v2 bez zmian: jeśli decyzja z planu okaże się
-> zła w praktyce, poprawiamy **tutaj** i commitujemy zmianę planu razem z powodem. Sekcja
-> „audyt końcowy" (§10) jest pusta z założenia — wypełnia ją przejście punkt po punkcie
-> **przeciw kodowi**, po zamknięciu CP20. W v2 to przejście znalazło otwarty endpoint historii,
-> więc nie jest formalnością.
+> zła w praktyce, poprawiamy **tutaj** i commitujemy zmianę planu razem z powodem.
+>
+> Sekcja „audyt końcowy" (§10) jest **wypełniona**: przejście punkt po punkcie przeciw kodowi.
+> W v2 takie przejście znalazło otwarty endpoint historii; tutaj znalazło czwartą dziurę tej
+> samej klasy jeszcze przed pierwszym checkpointem, jedno twierdzenie z README obalone własnym
+> pomiarem i siedem usterek w kodzie napisanym w ramach tego planu.
 
 ---
 
