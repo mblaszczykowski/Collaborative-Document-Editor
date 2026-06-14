@@ -33,10 +33,32 @@ public record CollabEditProperties(
         int maxMessageSizeBytes,
         int sendBufferSizeBytes,
         long sendTimeLimitMs,
-        long broadcastWindowMs
+        long broadcastWindowMs,
+        java.util.List<String> allowedOriginPatterns
     ) {
+        /**
+         * Origins allowed to open the WebSocket.
+         *
+         * <p>Configurable rather than compiled in, because the previous version pinned
+         * {@code http://localhost:*} in {@code WebSocketConfig} and thereby made every hosted
+         * deployment fail at the handshake — the browser sends the deployed origin, the server
+         * compares it against localhost and refuses. That was one of four code-level reasons
+         * plan v3 §0.1 could not ship, none of which its audit records, because the audit
+         * looked for a hosting account rather than at the code.
+         *
+         * <p>The default stays local-only. An origin allow-list that defaults to permissive is
+         * the same class of mistake as a signing secret that defaults to a value in the repo
+         * ({@link dev.collabedit.app.auth.TokenService}): it works everywhere, including
+         * everywhere it should not.
+         */
+        public WebSocket {
+            allowedOriginPatterns = allowedOriginPatterns == null || allowedOriginPatterns.isEmpty()
+                ? java.util.List.of("http://localhost:*", "http://127.0.0.1:*")
+                : java.util.List.copyOf(allowedOriginPatterns);
+        }
+
         static WebSocket defaults() {
-            return new WebSocket(10_000, 2.5, 65_536, 524_288, 20_000, 10);
+            return new WebSocket(10_000, 2.5, 65_536, 524_288, 20_000, 10, null);
         }
 
         /** Po jakim czasie bez heartbeatu uznajemy sesję za martwą. */

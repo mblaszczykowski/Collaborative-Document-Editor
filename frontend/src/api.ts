@@ -7,7 +7,7 @@
  * pod komunikaty rzędu stu bajtów (ADR-0002 ustala limit 64 KiB na ramkę).
  */
 
-const BASE = `http://${window.location.hostname}:8080/api`
+import { API_BASE as BASE } from './config'
 
 export interface Session {
   token: string

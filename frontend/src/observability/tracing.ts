@@ -3,6 +3,7 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { resourceFromAttributes } from '@opentelemetry/resources'
 import { BatchSpanProcessor, WebTracerProvider } from '@opentelemetry/sdk-trace-web'
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
+import { TRACE_ENDPOINT } from '../config'
 
 /**
  * Śledzenie zaczynające się w przeglądarce (CP7).
@@ -25,15 +26,29 @@ import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
 
 let provider: WebTracerProvider | null = null
 
+/**
+ * Starts browser tracing, if a collector has been configured.
+ *
+ * <p>Returns without doing anything when {@link TRACE_ENDPOINT} is unset, and that case is now
+ * the default. The exporter used to point unconditionally at `http://localhost:4318`, which is
+ * correct on the machine running the observability profile and wrong everywhere else: on a
+ * hosted instance every visitor's browser would attempt a request per second to a collector on
+ * *their* machine, blocked as mixed content before it left the page.
+ *
+ * <p>Tracing being off is not a degraded mode here. The spans this file produces cover the
+ * client half of an edit; the server half is exported by the Java agent regardless, and the
+ * numbers in the README come from the load harness, not from these spans.
+ */
 export function initialiseTracing(): void {
   if (provider !== null) return
+  if (TRACE_ENDPOINT === null) return
 
   provider = new WebTracerProvider({
     resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: 'inkline-frontend' }),
     spanProcessors: [
       new BatchSpanProcessor(
-        // Kolektor przyjmuje OTLP po HTTP na 4318 (gRPC z przeglądarki nie działa).
-        new OTLPTraceExporter({ url: 'http://localhost:4318/v1/traces' }),
+        // The collector accepts OTLP over HTTP on 4318 (gRPC does not work from a browser).
+        new OTLPTraceExporter({ url: `${TRACE_ENDPOINT}/v1/traces` }),
         {
           // Krótkie okno: przy demo i przy diagnozowaniu chcemy zobaczyć trace niemal
           // od razu, a nie po domyślnych pięciu sekundach.

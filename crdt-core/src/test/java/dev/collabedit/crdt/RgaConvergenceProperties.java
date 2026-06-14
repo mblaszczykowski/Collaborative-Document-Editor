@@ -12,15 +12,15 @@ import net.jqwik.api.constraints.IntRange;
 import net.jqwik.api.constraints.LongRange;
 
 /**
- * Najważniejsze testy w całym projekcie.
+ * The most important tests in the whole project.
  *
- * <p>Każdy z nich odpowiada na konkretne pytanie „jaki realny failure mode to wyłapuje" —
- * żaden nie istnieje dla pokrycia. Tabela w README.
+ * <p>Each of them answers a specific "what real failure mode does this catch" — none exists for
+ * coverage. The table is in the README.
  *
- * <p>Testy chodzą domyślnie ze <b>stałym ziarnem</b> (determinizm — kontrprzykład da się
- * odtworzyć jednym poleceniem), a w nocnym buildzie z losowym ziarnem i 10× większą liczbą
- * prób ({@code -Pjqwik.thorough}). Znaleziony nocą kontrprzykład trafia do repo jako zwykły
- * test regresyjny.
+ * <p>The tests run by default with a <b>fixed seed</b> (determinism — a counterexample can be
+ * reproduced with one command), and in the nightly build with a random seed and 10× the number of
+ * tries ({@code -Pjqwik.thorough}). A counterexample found overnight goes into the repository as an
+ * ordinary regression test.
  */
 class RgaConvergenceProperties {
 
@@ -30,12 +30,12 @@ class RgaConvergenceProperties {
     }
 
     /**
-     * <b>Zbieżność.</b> Repliki edytują całkowicie niezależnie, potem wymieniają się operacjami,
-     * każda w innej losowej kolejności. Wszystkie muszą skończyć z identycznym tekstem.
+     * <b>Convergence.</b> The replicas edit entirely independently, then exchange operations, each
+     * in a different random order. All of them must end up with identical text.
      *
-     * <p><b>Failure mode:</b> brak przemienności scalania — czyli ciche gubienie lub
-     * duplikowanie zmian, gdy dwie osoby piszą jednocześnie. To jest ten błąd, dla którego
-     * uniknięcia cały projekt istnieje, i jedyny, którego nie da się wyłapać ręcznym klikaniem.
+     * <p><b>Failure mode:</b> merging is not commutative — that is, changes are silently lost or
+     * duplicated when two people type at once. This is the bug the whole project exists to avoid,
+     * and the only one that cannot be caught by clicking around manually.
      */
     @Property
     void convergence(
@@ -48,24 +48,24 @@ class RgaConvergenceProperties {
         replicas.deliverAllShuffled(new Random(deliverySeed));
 
         assertThat(replicas.texts())
-            .as("repliki nie zbiegły się:%n%s", replicas.diagnostics())
+            .as("the replicas did not converge:%n%s", replicas.diagnostics())
             .allMatch(text -> text.equals(replicas.texts().getFirst()));
     }
 
     /**
-     * <b>Zbieżność przy przeplocie edycji i dostawy.</b> Repliki wymieniają się częścią
-     * operacji w trakcie pisania, więc kolejne edycje powstają już na stanie uwzględniającym
-     * cudze zmiany.
+     * <b>Convergence with interleaved editing and delivery.</b> The replicas exchange some of
+     * their operations while typing, so later edits are made on state that already includes other
+     * people's changes.
      *
-     * <p><b>Failure mode:</b> błędy ujawniające się wyłącznie wtedy, gdy replika generuje
-     * operację na stanie już scalonym z cudzymi zmianami — czyli w normalnej pracy, a nie
-     * w sztucznym układzie „wszyscy piszą w izolacji, potem synchronizacja".
+     * <p><b>Failure mode:</b> bugs that only appear when a replica generates an operation on state
+     * already merged with somebody else's changes — that is, in normal use rather than in the
+     * artificial arrangement "everyone types in isolation, then synchronises".
      *
-     * <p><b>Ten test istnieje, bo go zabrakło.</b> Pierwotny zestaw zawierał wyłącznie
-     * scenariusz bez przeplotu, w którym replika nigdy nie odbiera operacji przed
-     * wygenerowaniem własnej — więc cała ścieżka podbijania zegara Lamporta
-     * ({@code docs/crdt-design.md} sekcja 1) nie była wykonywana ani razu. Wykryte przez
-     * celowe wprowadzenie mutacji do kodu produkcyjnego i sprawdzenie, czy testy ją złapią.
+     * <p><b>This test exists because it was missing.</b> The original suite contained only the
+     * non-interleaved scenario, in which a replica never receives an operation before generating
+     * its own — so the entire Lamport clock bumping path ({@code docs/crdt-design.md} section 1)
+     * was never executed once. Found by deliberately introducing a mutation into production code
+     * and checking whether the tests would catch it.
      */
     @Property
     void convergenceWithInterleavedDelivery(
@@ -79,20 +79,20 @@ class RgaConvergenceProperties {
         replicas.deliverAllShuffled(random);
 
         assertThat(replicas.allConverged())
-            .as("repliki nie zbiegły się przy przeplocie edycji i dostawy:%n%s", replicas.diagnostics())
+            .as("the replicas did not converge with interleaved editing and delivery:%n%s", replicas.diagnostics())
             .isTrue();
         assertThat(replicas.hasPendingOps())
-            .as("operacje utknęły w buforze:%n%s", replicas.diagnostics())
+            .as("operations are stuck in the buffer:%n%s", replicas.diagnostics())
             .isFalse();
     }
 
     /**
-     * <b>Brak osieroconych operacji.</b> Po dostarczeniu wszystkiego bufor operacji
-     * oczekujących musi być pusty w każdej replice.
+     * <b>No orphaned operations.</b> Once everything has been delivered, the pending-operation
+     * buffer must be empty in every replica.
      *
-     * <p><b>Failure mode:</b> operacja utknęła w buforze na zawsze, bo jej warunek gotowości
-     * został sformułowany zbyt ostro. Tekst wyglądałby wtedy na zbieżny (wszystkie repliki
-     * zgodnie <i>nie mają</i> tej zmiany), więc sam test zbieżności by tego nie wykrył.
+     * <p><b>Failure mode:</b> an operation stuck in the buffer forever, because its readiness
+     * condition was stated too strictly. The text would then look converged (every replica agrees
+     * in <i>not</i> having that change), so a convergence test alone would not detect it.
      */
     @Property
     void noOperationStaysPending(
@@ -105,17 +105,17 @@ class RgaConvergenceProperties {
         replicas.deliverAllShuffled(new Random(deliverySeed));
 
         assertThat(replicas.hasPendingOps())
-            .as("operacje utknęły w buforze:%n%s", replicas.diagnostics())
+            .as("operations are stuck in the buffer:%n%s", replicas.diagnostics())
             .isFalse();
     }
 
     /**
-     * <b>Idempotencja.</b> Dostarczenie każdej operacji dwukrotnie daje ten sam wynik,
-     * co dostarczenie jednokrotne.
+     * <b>Idempotence.</b> Delivering every operation twice gives the same result as delivering it
+     * once.
      *
-     * <p><b>Failure mode:</b> retransmisja po ponownym połączeniu (CP6) albo powtórzona
-     * wiadomość z Redisa (ADR-0004) duplikuje tekst. Bez tej własności cała architektura
-     * z zawodnym broadcastem jest niebezpieczna.
+     * <p><b>Failure mode:</b> a retransmission after reconnect (CP6) or a repeated message from
+     * Redis (ADR-0004) duplicates text. Without this property the entire architecture with an
+     * unreliable broadcast is unsafe.
      */
     @Property
     void idempotence(
@@ -132,19 +132,19 @@ class RgaConvergenceProperties {
         twice.deliverAllShuffledTwice(new Random(deliverySeed));
 
         assertThat(twice.texts().getFirst())
-            .as("podwójne dostarczenie zmieniło wynik")
+            .as("double delivery changed the result")
             .isEqualTo(once.texts().getFirst());
         assertThat(twice.allConverged()).isTrue();
     }
 
     /**
-     * <b>Kolejność dostawy nie ma znaczenia.</b> Ten sam zbiór operacji dostarczony w dwóch
-     * różnych losowych kolejnościach daje ten sam tekst.
+     * <b>Delivery order does not matter.</b> The same set of operations delivered in two different
+     * random orders gives the same text.
      *
-     * <p><b>Failure mode:</b> algorytm jest deterministyczny, ale zależny od kolejności —
-     * czyli dwie instancje backendu (ADR-0004) rozjeżdżają się mimo posiadania kompletu
-     * operacji. To jest podstępne, bo taki system działa poprawnie w testach z jednym
-     * serwerem i psuje się dopiero przy skalowaniu.
+     * <p><b>Failure mode:</b> the algorithm is deterministic but order-dependent — that is, two
+     * backend instances (ADR-0004) diverge despite holding the full set of operations. This is
+     * insidious, because such a system works correctly in single-server tests and only breaks when
+     * scaled out.
      */
     @Property
     void deliveryOrderDoesNotMatter(
@@ -164,13 +164,13 @@ class RgaConvergenceProperties {
     }
 
     /**
-     * <b>Zgodność z modelem odniesienia.</b> Na pojedynczej replice CRDT musi zachowywać się
-     * dokładnie jak {@link StringBuilder} — sprawdzane po każdej operacji, nie tylko na końcu.
+     * <b>Agreement with a reference model.</b> On a single replica the CRDT must behave exactly
+     * like a {@link StringBuilder} — checked after every operation, not only at the end.
      *
-     * <p><b>Failure mode:</b> błąd w mapowaniu pozycji widocznej na identyfikator, w podziale
-     * bloków albo w kompresji run-length. Takie błędy potrafią być niewidoczne w teście
-     * zbieżności, bo wszystkie repliki mylą się tak samo — zbiegają się do wspólnego,
-     * ale <i>błędnego</i> tekstu.
+     * <p><b>Failure mode:</b> a bug in mapping a visible position to an identifier, in splitting
+     * blocks, or in run-length compression. Such bugs can be invisible to a convergence test,
+     * because every replica is wrong in the same way — they converge on shared but <i>incorrect</i>
+     * text.
      */
     @Property
     void singleReplicaBehavesLikeStringBuilder(@ForAll("editScripts") List<EditScript.Cmd> script) {
@@ -194,13 +194,13 @@ class RgaConvergenceProperties {
     }
 
     /**
-     * <b>Niezmiennik linearyzacji RGA.</b> W każdej replice, dla każdego bloku, wszystko
-     * co leży między nim a jego originem musi mieć wyższy znacznik czasu.
+     * <b>The RGA linearisation invariant.</b> In every replica, for every block, everything lying
+     * between it and its origin must have a higher timestamp.
      *
-     * <p><b>Failure mode:</b> błąd, w którym <i>wszystkie</i> repliki mylą się tak samo.
-     * Testy zbieżności porównują repliki między sobą, więc taki błąd przez nie przechodzi —
-     * repliki zgodnie mają tę samą, niepoprawną strukturę. Ten test patrzy na strukturę
-     * samą w sobie i nie ma jak zostać oszukany przez wspólny błąd.
+     * <p><b>Failure mode:</b> a bug in which <i>every</i> replica is wrong in the same way.
+     * Convergence tests compare replicas against each other, so such a bug passes them — the
+     * replicas agree on the same incorrect structure. This test looks at the structure itself and
+     * has no way of being fooled by a shared error.
      */
     @Property
     void rgaLinearizationInvariantHolds(
@@ -215,19 +215,19 @@ class RgaConvergenceProperties {
 
         for (int i = 0; i < replicas.size(); i++) {
             assertThat(RgaInvariants.violations(replicas.get(i)))
-                .as("replika %d ma niepoprawną strukturę", i)
+                .as("replica %d has an invalid structure", i)
                 .isEmpty();
         }
     }
 
     /**
-     * <b>Kompresja run-length faktycznie działa.</b> Po zwykłym pisaniu ciągiem dokument
-     * nie może rozpaść się na bloki jednoznakowe.
+     * <b>Run-length compression actually works.</b> After ordinary continuous typing the document
+     * must not fall apart into one-character blocks.
      *
-     * <p><b>Failure mode:</b> warunek scalania bloków jest zbyt ostry i nigdy nie zachodzi.
-     * Poprawność nie cierpi, ale znika cała korzyść z reprezentacji blokowej — dokument
-     * na 100 tys. znaków to znowu 100 tys. obiektów. Błąd niewidoczny w testach poprawności,
-     * a kosztowny; dlatego jest osobny test, a nie tylko benchmark.
+     * <p><b>Failure mode:</b> the block-merging condition is too strict and never holds.
+     * Correctness does not suffer, but the entire benefit of the block representation disappears —
+     * a 100 000-character document is 100 000 objects again. A bug invisible to correctness tests
+     * and expensive; hence a separate test rather than only a benchmark.
      */
     @Property
     void sequentialTypingCompressesIntoFewBlocks(
@@ -239,18 +239,18 @@ class RgaConvergenceProperties {
         }
         assertThat(document.text()).hasSize(characters);
         assertThat(document.blockCount())
-            .as("pisanie ciągiem %d znaków dało %d bloków zamiast 1", characters, document.blockCount())
+            .as("typing %d characters in a row produced %d blocks instead of 1", characters, document.blockCount())
             .isEqualTo(1);
         assertThat(RgaInvariants.fragmentation(document)).isEmpty();
     }
 
     /**
-     * <b>GC zachowuje tekst.</b> Usunięcie przyczynowo stabilnych tombstone'ów nie może
-     * zmienić widocznego tekstu ani rozspójnić struktury.
+     * <b>GC preserves the text.</b> Removing causally stable tombstones must not change the
+     * visible text or corrupt the structure.
      *
-     * <p><b>Failure mode:</b> GC kasuje węzeł, który jest originem innego znaku — struktura
-     * rozpada się natychmiast, ale objawia się to dopiero przy następnym wstawieniu w to
-     * miejsce. Patrz ADR-0005.
+     * <p><b>Failure mode:</b> GC deletes a node that is another character's origin — the structure
+     * breaks immediately, but the symptom appears only at the next insertion in that spot. See
+     * ADR-0005.
      */
     @Property
     void gcPreservesText(
@@ -262,8 +262,8 @@ class RgaConvergenceProperties {
         EditScript.runIndependently(replicas, script);
         replicas.deliverAllShuffled(new Random(deliverySeed));
 
-        // Wszystkie repliki widziały już wszystko, więc stableVersion to po prostu
-        // element wspólny ich version vectorów — cała historia jest przyczynowo stabilna.
+        // Every replica has now seen everything, so stableVersion is simply the meet of their
+        // version vectors — the whole history is causally stable.
         VersionVector stable = VersionVector.meet(
             java.util.stream.IntStream.range(0, replicas.size())
                 .mapToObj(i -> replicas.get(i).version())
@@ -274,12 +274,12 @@ class RgaConvergenceProperties {
             String before = document.text();
             document.gc(stable);
             assertThat(document.text())
-                .as("GC zmienił tekst w replice %d", i)
+                .as("GC changed the text in replica %d", i)
                 .isEqualTo(before);
         }
 
-        // Po GC struktura musi nadal przyjmować nowe edycje — to właśnie tu wychodzi
-        // skasowanie węzła, który był czyimś originem.
+        // After GC the structure must still accept new edits — this is exactly where deleting a
+        // node that was somebody's origin shows up.
         RgaDocument first = replicas.get(0);
         first.insert(first.visibleLength(), "x");
         assertThat(first.text()).endsWith("x");

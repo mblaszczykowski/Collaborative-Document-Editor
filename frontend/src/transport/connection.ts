@@ -1,4 +1,5 @@
 import { Client, type IMessage, type StompSubscription } from '@stomp/stompjs'
+import { WS_URL } from '../config'
 import { decodeOp, encodeOp, type WireOp } from '../crdt/codec'
 import type { Id, Op } from '../crdt/types'
 import { traceOperation } from '../observability/tracing'
@@ -116,7 +117,10 @@ export class DocumentConnection {
     window.addEventListener('online', this.handleBrowserOnline)
 
     const client = new Client({
-      brokerURL: `ws://${window.location.hostname}:8080/ws`,
+      // Scheme and host come from config.ts, which derives them from the page. Writing
+      // `ws://…:8080` here meant the app could not run over TLS at all: a page served over
+      // https may not open a ws: socket, and the browser blocks it as mixed content.
+      brokerURL: WS_URL,
       connectHeaders: { token: this.token },
 
       // Wartości z ADR-0002. Heartbeat 10 s jest wyraźnie krótszy niż typowy idle timeout

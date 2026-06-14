@@ -131,6 +131,16 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Empty = same origin. nginx inside this container proxies /api and /ws to the app
+        # service, so the browser only ever talks to localhost:5173. That removes the CORS
+        # preflight on every REST call and, more importantly, is the only arrangement that
+        # can ever work over TLS — a page on https may not open a ws: socket.
+        VITE_API_BASE: ""
+        # Browser tracing points at the collector published by the observability profile.
+        # Empty would disable it; it is named here because `docker compose --profile app
+        # --profile observability up` is the combination the README documents for CP7.
+        VITE_OTLP_ENDPOINT: "http://localhost:4318"
     container_name: collabedit-frontend
     profiles: ["app"]
     ports:

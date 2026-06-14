@@ -6,20 +6,20 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Serializacja snapshotu (ADR-0003).
+ * Snapshot serialisation (ADR-0003).
  *
- * <p>Snapshot jest cache'em, więc jego uszkodzenie nie powinno gubić danych — ale
- * <b>niemożność jego zapisania</b> to już realny problem: bez snapshotów każde otwarcie
- * dokumentu wymaga odtworzenia całego logu operacji.
+ * <p>A snapshot is a cache, so corrupting one should not lose data — but <b>being unable to write
+ * one</b> is a real problem: without snapshots every document open requires replaying the entire
+ * operation log.
  */
 class SnapshotCodecTest {
 
     @Test
-    @DisplayName("kodowanie w obie strony zachowuje strukturę, zegar i version vector")
+    @DisplayName("a round trip preserves the structure, the clock and the version vector")
     void roundTrip() {
         RgaDocument document = new RgaDocument(7);
         document.insert(0, "Inkline");
-        document.insert(7, " dziala");
+        document.insert(7, " works");
         document.delete(0, 3);
 
         DocumentSnapshot decoded = SnapshotCodec.decode(SnapshotCodec.encode(document.snapshot()));
@@ -29,27 +29,26 @@ class SnapshotCodecTest {
         assertThat(restored.text()).isEqualTo(document.text());
         assertThat(restored.clock()).isEqualTo(document.clock());
         assertThat(restored.version()).isEqualTo(document.version());
-        // Tombstone'y MUSZĄ przetrwać: mogą być punktem zaczepienia operacji, która
-        // jeszcze nie dotarła. Snapshot bez nich rozspójniłby replikę po odtworzeniu.
+        // Tombstones MUST survive: they may be the anchor point of an operation that has not
+        // arrived yet. A snapshot without them would corrupt the replica once restored.
         assertThat(restored.tombstoneCount()).isEqualTo(document.tombstoneCount());
     }
 
     @Test
-    @DisplayName("REGRESJA: blok większy niż 64 KB daje się zapisać")
+    @DisplayName("REGRESSION: a block larger than 64 KB can be written")
     void handlesBlocksLargerThan64Kilobytes() {
-        // DataOutputStream.writeUTF koduje długość na dwóch bajtach i przy tekście powyżej
-        // 64 KB rzuca „encoded string too long". Blok run-length po scaleniu ciągłego
-        // pisania spokojnie ten rozmiar przekracza.
+        // DataOutputStream.writeUTF encodes the length in two bytes and throws "encoded string
+        // too long" above 64 KB. A run-length block formed by merging continuous typing comfortably
+        // exceeds that size.
         //
-        // Błąd był niewidoczny dla wszystkich testów poprawności, bo żaden nie tworzył
-        // tak dużego bloku. Ujawnił się dopiero w harnessie obciążeniowym na dokumencie
-        // o 100 tys. znaków — i to nie jako pad, tylko jako wpis w logu, przy jednoczesnym
-        // cichym zaprzestaniu zapisywania snapshotów.
+        // The bug was invisible to every correctness test, because none of them created such a
+        // large block. It surfaced only in the load harness on a 100 000-character document — and
+        // not as a crash but as a log entry, while snapshot writing silently stopped.
         RgaDocument document = new RgaDocument(1);
         document.insert(0, "x".repeat(100_000));
 
         assertThat(document.blockCount())
-            .as("test nie tworzy jednego dużego bloku, więc nie sprawdza tego, co miał")
+            .as("the test does not create one large block, so it is not checking what it was meant to")
             .isEqualTo(1);
 
         DocumentSnapshot decoded = SnapshotCodec.decode(SnapshotCodec.encode(document.snapshot()));
@@ -60,9 +59,12 @@ class SnapshotCodecTest {
     }
 
     @Test
-    @DisplayName("znaki spoza ASCII przeżywają kodowanie")
+    @DisplayName("non-ASCII characters survive encoding")
     void handlesNonAsciiText() {
         RgaDocument document = new RgaDocument(1);
+        // Deliberately not translated: this string is test DATA, not prose. Polish diacritics,
+        // Japanese and an emoji cover two-, three- and four-byte UTF-8 sequences respectively,
+        // which is the point — an ASCII-only payload would not exercise the encoder at all.
         document.insert(0, "zażółć gęślą jaźń — 日本語 — 🙂");
 
         DocumentSnapshot decoded = SnapshotCodec.decode(SnapshotCodec.encode(document.snapshot()));
@@ -72,11 +74,11 @@ class SnapshotCodecTest {
     }
 
     @Test
-    @DisplayName("snapshot w nieobsługiwanym formacie jest ignorowany, a nie wysadza odczytu")
+    @DisplayName("a snapshot in an unsupported format is ignored rather than blowing up the read")
     void unknownFormatIsIgnored() {
-        // ADR-0003: przy niezgodności wersji formatu snapshot ma zostać POMINIĘTY, a stan
-        // odtworzony z logu. Rzucenie wyjątkiem uniemożliwiłoby otwarcie dokumentu po
-        // każdej zmianie formatu serializacji.
+        // ADR-0003: on a format version mismatch the snapshot is to be SKIPPED and the state
+        // rebuilt from the log. Throwing would make a document impossible to open after every
+        // change to the serialisation format.
         byte[] garbage = {0, 1, 2, 3, 4, 5};
         assertThat(SnapshotCodec.decode(garbage)).isNull();
     }

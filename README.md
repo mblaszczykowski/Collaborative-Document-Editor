@@ -202,6 +202,34 @@ cd frontend && npm install && npm run dev
 docker compose --profile observability up -d
 ```
 
+### Deploying it somewhere that is not a laptop
+
+The frontend resolves the backend address at build time
+([`frontend/src/config.ts`](frontend/src/config.ts)) and defaults to **the same origin it was
+served from**, with nginx proxying `/api` and `/ws`. That is the only arrangement that works
+over TLS: a page served over `https:` may not open a `ws:` socket, and browsers block it as
+mixed content with no fallback.
+
+```bash
+# Same origin (recommended). BACKEND_ORIGIN tells the container's nginx where the app is.
+docker build -t collabedit-web ./frontend
+docker run -e BACKEND_ORIGIN=http://app:8080 -p 80:80 collabedit-web
+
+# Separate origins, if the backend genuinely lives elsewhere.
+docker build --build-arg VITE_API_BASE=https://api.example.test -t collabedit-web ./frontend
+```
+
+Two things the server needs, both defaulting to local-only on purpose:
+
+| Variable | Why it has no permissive default |
+|---|---|
+| `COLLABEDIT_AUTH_SECRET` | No default at all — a secret in the repository means any reader can mint a token for any user (CP16) |
+| `COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS` | Defaults to `localhost` only. An allow-list that defaults to `*` works everywhere, including everywhere it should not |
+
+Browser tracing is **off** unless `VITE_OTLP_ENDPOINT` is set at build time. It used to point at
+`http://localhost:4318` unconditionally, which on a hosted instance means every visitor's browser
+firing a blocked request once a second at a collector on *their* machine.
+
 The project **does not inherit from `spring-boot-starter-parent`**. That is deliberate: if it
 did, the `crdt-core` module — which by design has nothing to do with Spring
 ([ADR-0001](docs/adr/0001-crdt-vs-ot.md)) — would inherit its dependency management and

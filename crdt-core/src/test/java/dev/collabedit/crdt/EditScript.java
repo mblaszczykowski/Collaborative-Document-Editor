@@ -7,12 +7,12 @@ import net.jqwik.api.Arbitrary;
 import net.jqwik.api.Combinators;
 
 /**
- * Generator losowych sekwencji edycji dla testów property-based.
+ * A generator of random edit sequences for the property-based tests.
  *
- * <p>Polecenie nie zawiera pozycji bezwzględnej, tylko <b>ziarno</b>, z którego pozycja jest
- * wyliczana względem aktualnej długości tekstu. Bez tego większość wygenerowanych poleceń
- * byłaby odrzucona jako wykraczająca poza dokument, a test sprawdzałby głównie walidację
- * argumentów zamiast algorytmu.
+ * <p>A command does not contain an absolute position but a <b>seed</b>, from which the position is
+ * computed relative to the current text length. Without that, most generated commands would be
+ * rejected as being outside the document, and the test would mostly be checking argument validation
+ * rather than the algorithm.
  */
 final class EditScript {
 
@@ -20,11 +20,11 @@ final class EditScript {
     }
 
     /**
-     * @param replicaSeed która replika wykonuje edycję (modulo liczba replik)
-     * @param insert      true = wstawienie, false = usunięcie
-     * @param positionSeed ziarno pozycji, brane modulo aktualna długość
-     * @param lengthSeed  ile znaków usunąć (ograniczone do końca tekstu)
-     * @param text        tekst do wstawienia
+     * @param replicaSeed which replica performs the edit (modulo the replica count)
+     * @param insert      true = insertion, false = deletion
+     * @param positionSeed the position seed, taken modulo the current length
+     * @param lengthSeed  how many characters to delete (capped at the end of the text)
+     * @param text        the text to insert
      */
     record Cmd(int replicaSeed, boolean insert, int positionSeed, int lengthSeed, String text) { }
 
@@ -35,14 +35,14 @@ final class EditScript {
     static Arbitrary<List<Cmd>> scripts(int minSize, int maxSize) {
         Arbitrary<Cmd> command = Combinators.combine(
             Arbitraries.integers().between(0, 255),
-            // Wstawienia przeważają nad usunięciami 2:1. Przy rozkładzie 1:1 tekst
-            // oscylowałby wokół zera i większość scenariuszy testowałaby pusty dokument —
-            // czyli nie testowałaby niczego ciekawego.
+            // Insertions outweigh deletions 2:1. With a 1:1 distribution the text would hover
+            // around zero and most scenarios would be testing an empty document — that is, nothing
+            // interesting.
             Arbitraries.of(true, true, false),
             Arbitraries.integers().between(0, 100_000),
             Arbitraries.integers().between(1, 4),
-            // Krótkie słowa z wąskiego alfabetu: przy kontrprzykładzie chcę móc przeczytać
-            // wynik i zobaczyć, co poszło nie tak, a nie odcyfrowywać losowy Unicode.
+            // Short words from a narrow alphabet: when a counterexample appears I want to be able
+            // to read the result and see what went wrong, not decipher random Unicode.
             Arbitraries.strings().withCharRange('a', 'z').ofMinLength(1).ofMaxLength(4)
         ).as(Cmd::new);
 
@@ -50,8 +50,8 @@ final class EditScript {
     }
 
     /**
-     * Wykonuje skrypt na zbiorze replik — każda edycja lokalnie, bez propagacji.
-     * Propagacja jest osobnym krokiem, bo to właśnie jej kolejność jest przedmiotem testu.
+     * Runs a script over a set of replicas — every edit locally, with no propagation. Propagation
+     * is a separate step, because its order is precisely what the test is about.
      */
     static void runIndependently(ReplicaSet replicas, List<Cmd> script) {
         for (Cmd cmd : script) {
@@ -60,14 +60,14 @@ final class EditScript {
     }
 
     /**
-     * Wykonuje skrypt z <b>przeplotem</b>: co kilka edycji repliki wymieniają się częścią
-     * operacji, po czym edytują dalej — już na stanie uwzględniającym cudze zmiany.
+     * Runs a script with <b>interleaving</b>: every few edits the replicas exchange some of their
+     * operations and then keep editing — now on state that includes other people's changes.
      *
-     * <p>To jest scenariusz bliższy rzeczywistości niż {@link #runIndependently}, ale przede
-     * wszystkim jest to <b>jedyny</b> scenariusz, w którym replika generuje operację po
-     * odebraniu cudzej. Bez niego reguła podbijania zegara Lamporta nie jest w ogóle
-     * wykonywana, a testy przechodzą mimo jej usunięcia — sprawdzone eksperymentalnie
-     * przez wprowadzenie mutacji do kodu produkcyjnego.
+     * <p>This is a scenario closer to reality than {@link #runIndependently}, but above all it is
+     * the <b>only</b> scenario in which a replica generates an operation after receiving somebody
+     * else's. Without it the Lamport clock bumping rule is never executed at all, and the tests
+     * pass despite its removal — verified experimentally by introducing a mutation into production
+     * code.
      */
     static void runInterleaved(ReplicaSet replicas, List<Cmd> script, Random random, int roundSize) {
         int executed = 0;

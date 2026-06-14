@@ -73,6 +73,23 @@ collabedit:
     # mniejsza od op-batch-window-ms: potwierdzenie zapisu nie może wyprzedzić rozgłoszenia,
     # bo klient wykrywa luki właśnie po potwierdzeniu operacji, której u siebie nie ma.
     broadcast-window-ms: 10
+    # Origins allowed to open the WebSocket. Local only by default.
+    #
+    # This used to be pinned in WebSocketConfig, which meant a hosted deployment failed at the
+    # handshake with no way to fix it short of a rebuild — the browser sends the deployed
+    # origin, the server compares it against localhost, and refuses.
+    #
+    # The default stays restrictive on purpose. An allow-list that defaults to "*" works
+    # everywhere, including everywhere it should not — the same mistake TokenService used to
+    # make with a signing secret that had a default. A hosted instance sets
+    # COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS to its own origin.
+    #
+    # Note that a same-origin deployment (nginx proxying /api and /ws, which is what
+    # frontend/nginx.conf.template now does) needs the FRONTEND's origin here, not the
+    # backend's — the Origin header describes the page, not the destination.
+    allowed-origin-patterns:
+      - "http://localhost:*"
+      - "http://127.0.0.1:*"
 
   persistence:
     # Batchowanie zapisu operacji (ADR-0003 pkt 5). W tym oknie operacja jest już

@@ -4,11 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Sprawdzanie niezmienników strukturalnych RGA — niezależnie od tego, jaki tekst wychodzi.
+ * Checking RGA's structural invariants — regardless of what text comes out.
  *
- * <p>Testy zbieżności porównują repliki między sobą, więc nie wykryją błędu, w którym
- * wszystkie repliki mylą się <b>tak samo</b>. Ten checker patrzy na strukturę pojedynczej
- * repliki i pyta, czy jest w ogóle poprawną linearyzacją RGA.
+ * <p>Convergence tests compare replicas against each other, so they will not detect a bug in which
+ * every replica is wrong <b>in the same way</b>. This checker looks at a single replica's structure
+ * and asks whether it is a valid RGA linearisation at all.
  */
 final class RgaInvariants {
 
@@ -16,17 +16,17 @@ final class RgaInvariants {
     }
 
     /**
-     * Niezmiennik linearyzacji RGA: dla każdego bloku B o originie O
+     * The RGA linearisation invariant: for every block B with origin O
      * <ol>
-     *   <li>O występuje w sekwencji <b>przed</b> B,</li>
-     *   <li>każdy element leżący <b>ściśle między</b> O a B ma wyższy znacznik czasu niż B.</li>
+     *   <li>O appears in the sequence <b>before</b> B,</li>
+     *   <li>every element lying <b>strictly between</b> O and B has a higher timestamp than B.</li>
      * </ol>
      *
-     * <p>Drugi warunek jest sercem RGA: to on sprawia, że pozycja elementu jest funkcją
-     * zbioru elementów, a nie kolejności ich wstawiania. Jego naruszenie oznacza, że dwie
-     * repliki mogą umieścić ten sam element w różnych miejscach.
+     * <p>The second condition is the heart of RGA: it is what makes an element's position a
+     * function of the set of elements rather than of the order they were inserted in. Violating it
+     * means two replicas may place the same element in different spots.
      *
-     * @return lista naruszeń w formie czytelnej dla człowieka; pusta gdy struktura jest poprawna
+     * @return a human-readable list of violations; empty when the structure is valid
      */
     static List<String> violations(RgaDocument document) {
         BlockList blocks = document.blocks();
@@ -41,20 +41,20 @@ final class RgaInvariants {
 
             BlockList.Locator originLoc = blocks.locateId(origin);
             if (originLoc == null) {
-                problems.add("blok " + block + " ma origin " + origin + ", którego nie ma w strukturze");
+                problems.add("block " + block + " has origin " + origin + ", which is not in the structure");
                 continue;
             }
             if (originLoc.blockIndex() > i) {
-                problems.add("blok " + block + " stoi PRZED swoim originem " + origin);
+                problems.add("block " + block + " stands BEFORE its origin " + origin);
                 continue;
             }
-            // Origin musi być ostatnim znakiem swojego bloku albo blok originu musi być
-            // bezpośrednio przed nami — inaczej „między" liczyłoby się źle.
+            // The origin has to be the last character of its block, or the origin's block has to
+            // be immediately before us — otherwise "between" would be counted wrongly.
             for (int between = originLoc.blockIndex() + 1; between < i; between++) {
                 Block middle = blocks.get(between);
                 if (middle.start().compareTo(block.start()) <= 0) {
-                    problems.add("między originem " + origin + " a blokiem " + block
-                        + " leży " + middle + " o NIŻSZYM znaczniku — naruszenie reguły RGA");
+                    problems.add("between origin " + origin + " and block " + block
+                        + " lies " + middle + " with a LOWER timestamp — RGA rule violated");
                 }
             }
         }
@@ -62,17 +62,17 @@ final class RgaInvariants {
     }
 
     /**
-     * Czy każdy blok run-length jest maksymalny, tzn. nie da się go scalić z następnym.
-     * Naruszenie nie jest błędem poprawności — jest błędem wydajności: struktura rozdrabnia
-     * się na bloki jednoznakowe i kompresja run-length przestaje cokolwiek dawać.
+     * Whether every run-length block is maximal, i.e. cannot be merged with the next one. A
+     * violation is not a correctness bug but a performance one: the structure fragments into
+     * one-character blocks and run-length compression stops achieving anything.
      */
     static List<String> fragmentation(RgaDocument document) {
         BlockList blocks = document.blocks();
         List<String> problems = new ArrayList<>();
         for (int i = 0; i + 1 < blocks.size(); i++) {
             if (blocks.get(i).canAppend(blocks.get(i + 1))) {
-                problems.add("bloki " + blocks.get(i) + " i " + blocks.get(i + 1)
-                    + " powinny być scalone");
+                problems.add("blocks " + blocks.get(i) + " and " + blocks.get(i + 1)
+                    + " should have been merged");
             }
         }
         return problems;

@@ -63,7 +63,12 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
             // Bez SockJS — świadomie (ADR-0002). Fallbacki (xhr-streaming, jsonp) to ścieżki
             // transportowe, których nie testujemy, czyli nieprzetestowany kod w miejscu
             // krytycznym. Ceną jest brak połączenia zza proxy blokującego Upgrade.
-            .setAllowedOriginPatterns("http://localhost:*", "http://127.0.0.1:*");
+            //
+            // The patterns come from configuration and default to localhost only. Pinning them
+            // here is what made a hosted deployment fail at the handshake: the browser sends
+            // the deployed origin and the server compares it against localhost.
+            .setAllowedOriginPatterns(
+                properties.websocket().allowedOriginPatterns().toArray(String[]::new));
     }
 
     @Override
