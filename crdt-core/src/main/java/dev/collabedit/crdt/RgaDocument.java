@@ -9,28 +9,28 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Replika dokumentu tekstowego jako CRDT typu RGA.
+ * A replica of a text document as an RGA-style CRDT.
  *
- * <p>Kluczowa własność, dla której cała ta konstrukcja istnieje: <b>zastosowanie tego samego
- * zbioru operacji w dowolnej kolejności i z dowolnymi powtórzeniami daje ten sam tekst.</b>
- * Nie wymaga to centralnego arbitra ani uporządkowanego transportu — i to jest powód, dla
- * którego architektura z ADR-0004 (każda instancja backendu jako równorzędna replika, Redis
- * jako zawodny broadcast) jest bezpieczna, a nie tylko „zwykle działa".
+ * <p>The key property this whole construction exists for: <b>applying the same set of operations in
+ * any order and with any repetitions gives the same text.</b> It requires no central arbiter and no
+ * ordered transport — and that is why the architecture in ADR-0004 (every backend instance a peer
+ * replica, Redis as an unreliable broadcast) is safe rather than merely "usually working".
  *
- * <p>Ta klasa zawiera <b>wyłącznie algorytm</b>. Nie wie nic o sieci, bazie danych ani
- * o Springu — patrz ADR-0001 i konfiguracja modułu {@code crdt-core}.
+ * <p>This class contains <b>the algorithm and nothing else</b>. It knows nothing about the network,
+ * the database or Spring — see ADR-0001 and the configuration of the {@code crdt-core} module.
  *
- * <h2>Trzy rzeczy, które łatwo zrobić źle</h2>
+ * <h2>Three things that are easy to get wrong</h2>
  * <ol>
- *   <li><b>Zegar Lamporta.</b> Przy odbiorze operacji zegar musi zostać podbity ponad jej
- *       znacznik ({@link #observeClock}). Bez tego reguła wstawiania RGA przestaje być
- *       poprawna — kontrprzykład w {@code docs/crdt-design.md} sekcja 1.</li>
- *   <li><b>Wykrywanie duplikatów.</b> Nie przez version vector (zegar Lamporta jest nieciągły),
- *       tylko przez obecność znaku w strukturze. Usunięcia są idempotentne, więc ich duplikatów
- *       nie sprawdzamy wcale.</li>
- *   <li><b>Operacje niegotowe.</b> Operacja, której origin jeszcze nie dotarł, trafia do bufora
- *       i jest ponawiana po każdym udanym zastosowaniu. Rdzeń musi znieść dowolną kolejność
- *       dostawy, bo dokładnie tego wymaga property test {@code convergence}.</li>
+ *   <li><b>The Lamport clock.</b> On receiving an operation the clock must be bumped past its
+ *       timestamp ({@link #observeClock}). Without that RGA's insertion rule stops being correct —
+ *       counterexample in {@code docs/crdt-design.md} section 1.</li>
+ *   <li><b>Duplicate detection.</b> Not via the version vector (a Lamport clock is not
+ *       contiguous), but via the presence of the character in the structure. Deletions are
+ *       idempotent, so we do not check their duplicates at all.</li>
+ *   <li><b>Operations that are not ready.</b> An operation whose origin has not yet arrived goes
+ *       into a buffer and is retried after every successful application. The core has to survive
+ *       any delivery order, because that is exactly what the {@code convergence} property test
+ *       demands.</li>
  * </ol>
  */
 public final class RgaDocument {
@@ -38,21 +38,21 @@ public final class RgaDocument {
     private final int replicaId;
     private final BlockList blocks;
 
-    /** Zegar Lamporta — wartość, którą dostanie następna operacja lokalna. */
+    /** The Lamport clock — the value the next local operation will receive. */
     private long clock;
 
-    /** Najwyższy zastosowany lamport per replika. Do GC i resynchronizacji, nie do dedup. */
+    /** The highest applied lamport per replica. For GC and resynchronisation, not for dedup. */
     private final Map<Integer, Long> maxSeen = new HashMap<>();
 
-    /** Operacje, których nie da się jeszcze zastosować (brakuje originu lub celu usunięcia). */
+    /** Operations that cannot be applied yet (a missing origin or deletion target). */
     private final List<Op> pending = new ArrayList<>();
 
     /**
-     * Formatowanie jako osobna warstwa nad sekwencją znaków (CP13).
+     * Formatting as a separate layer above the character sequence (CP13).
      *
-     * <p>Osobna, bo nie jest atrybutem znaku i nie może nim być — uzasadnienie w
-     * {@link MarkSet}. Sekwencja znaków nic o niej nie wie, co jest widoczne w tym,
-     * że {@link BlockList} nie zmienił się w CP13 ani o jedno pole.
+     * <p>Separate because it is not a character attribute and cannot be one — the justification is
+     * in {@link MarkSet}. The character sequence knows nothing about it, which is visible in the
+     * fact that {@link BlockList} did not change by a single field in CP13.
      */
     private final MarkSet marks = new MarkSet();
 
@@ -66,21 +66,21 @@ public final class RgaDocument {
     }
 
     // ------------------------------------------------------------------
-    // Operacje lokalne
+    // Local operations
     // ------------------------------------------------------------------
 
     /**
-     * Wstawia tekst na podanej pozycji w <b>widocznym</b> tekście i zwraca operację
-     * do rozesłania do pozostałych replik.
+     * Inserts text at the given position in the <b>visible</b> text and returns the operation to
+     * broadcast to the other replicas.
      */
     public Op.Insert insert(int visibleIndex, String text) {
         int length = visibleLength();
         if (visibleIndex < 0 || visibleIndex > length) {
             throw new IndexOutOfBoundsException(
-                "pozycja " + visibleIndex + " poza tekstem o długości " + length);
+                "position " + visibleIndex + " outside text of length " + length);
         }
-        // Origin to widoczny poprzednik punktu wstawienia. Gdy przed pozycją stoją
-        // tombstone'y, nowy tekst ląduje przed nimi — zachowanie standardowe dla RGA.
+        // The origin is the visible predecessor of the insertion point. When tombstones stand
+        // before the position, new text lands before them — standard RGA behaviour.
         Id originLeft = visibleIndex == 0 ? null : idAtVisible(visibleIndex - 1);
 
         Op.Insert op = new Op.Insert(new Id(replicaId, clock), originLeft, text);
@@ -91,25 +91,25 @@ public final class RgaDocument {
     }
 
     /**
-     * Usuwa {@code count} znaków od podanej pozycji w widocznym tekście i zwraca operację
-     * do rozesłania.
+     * Deletes {@code count} characters from the given position in the visible text and returns
+     * the operation to broadcast.
      */
     public Op.Delete delete(int visibleIndex, int count) {
         if (count <= 0) {
-            throw new IllegalArgumentException("liczba znaków do usunięcia musi być dodatnia");
+            throw new IllegalArgumentException("the number of characters to delete must be positive");
         }
         int length = visibleLength();
         if (visibleIndex < 0 || visibleIndex + count > length) {
             throw new IndexOutOfBoundsException(
-                "zakres [" + visibleIndex + ", " + (visibleIndex + count)
-                    + ") poza tekstem o długości " + length);
+                "range [" + visibleIndex + ", " + (visibleIndex + count)
+                    + ") outside text of length " + length);
         }
 
         List<Op.Range> targets = new ArrayList<>();
         int remaining = count;
         while (remaining > 0) {
-            // Po oznaczeniu bloku tombstone'em przestaje on być widoczny, więc visibleIndex
-            // wskazuje już na kolejny znak do usunięcia — dlatego nie jest zwiększany.
+            // Once a block is marked as a tombstone it stops being visible, so visibleIndex
+            // already points at the next character to delete — which is why it is not advanced.
             BlockList.Locator loc = blocks.locateVisible(visibleIndex);
             int index = loc.blockIndex();
             if (loc.offset() > 0) {
@@ -133,30 +133,31 @@ public final class RgaDocument {
     }
 
     // ------------------------------------------------------------------
-    // Formatowanie (CP13)
+    // Formatting (CP13)
     // ------------------------------------------------------------------
 
     /**
-     * Nadaje formatowanie zakresowi widocznego tekstu {@code [from, to)}.
+     * Applies formatting to the range of visible text {@code [from, to)}.
      *
-     * <h2>Wybór stron kotwic — tu decyduje się zachowanie przy pisaniu</h2>
-     * <b>Początek: {@code before(znak na pozycji from)}.</b> Tekst wpisany bezpośrednio
-     * PRZED zakresem ma do niego nie należeć, a przy tej kotwicy nowy tekst ląduje przed
-     * kotwicą, więc zostaje poza zakresem. Kotwica {@code after(znak from-1)} wskazywałaby
-     * tę samą pozycję dziś i rozeszła się jutro — formatowanie rosłoby wstecz.
+     * <h2>Choosing the anchor sides — this is where typing behaviour is decided</h2>
+     * <b>Start: {@code before(the character at position from)}.</b> Text typed directly BEFORE the
+     * range should not belong to it, and with this anchor new text lands before the anchor, so it
+     * stays outside the range. An anchor {@code after(the character at from-1)} would point at the
+     * same position today and diverge tomorrow — the formatting would grow backwards.
      *
-     * <b>Koniec: zależy od typu znacznika.</b> {@code before(znak na pozycji to)} sprawia,
-     * że pisanie na końcu zakresu do niego DOŁĄCZA (pogrubienie ma tak działać),
-     * a {@code after(znak to-1)} — że nie (link ma tak działać). Cała różnica między
-     * „pogrubienie rośnie przy pisaniu" a „link nie rośnie" to wybór jednej strony kotwicy.
+     * <b>End: depends on the mark type.</b> {@code before(the character at position to)} makes
+     * typing at the end of the range JOIN it (which is how bold should behave), while
+     * {@code after(the character at to-1)} makes it not (which is how a link should behave). The
+     * entire difference between "bold grows as you type" and "a link does not" is which side one
+     * anchor sits on.
      *
-     * <h2>Znane ograniczenie</h2>
-     * Zakres kończący się na SAMYM KOŃCU dokumentu nie może rosnąć, bo nie ma znaku,
-     * o który zaczepić kotwicę rozszerzającą. Peritext rozwiązuje to wartownikiem końca
-     * dokumentu; tutaj tego nie ma, więc pogrubienie postawione na ostatnim słowie
-     * nie obejmie tekstu dopisanego po nim. Wymienione w README.
+     * <h2>Known limitation</h2>
+     * A range ending at the VERY END of the document cannot grow, because there is no character to
+     * pin an expanding anchor to. Peritext solves this with an end-of-document sentinel; there is
+     * none here, so a bold placed on the last word will not cover text appended after it. Listed in
+     * the README.
      *
-     * @return operacja do rozesłania do pozostałych replik
+     * @return the operation to broadcast to the other replicas
      */
     public Op.AddMark addMark(int from, int to, String type, String value) {
         Op.AddMark op = new Op.AddMark(
@@ -167,7 +168,7 @@ public final class RgaDocument {
         return op;
     }
 
-    /** Zdejmuje formatowanie z zakresu widocznego tekstu {@code [from, to)}. */
+    /** Removes formatting from the range of visible text {@code [from, to)}. */
     public Op.RemoveMark removeMark(int from, int to, String type) {
         Op.RemoveMark op = new Op.RemoveMark(
             new Id(replicaId, clock), type, anchorStart(from), anchorEnd(to, type));
@@ -181,7 +182,7 @@ public final class RgaDocument {
         int length = visibleLength();
         if (from < 0 || from >= length) {
             throw new IndexOutOfBoundsException(
-                "początek zakresu " + from + " poza tekstem o długości " + length);
+                "range start " + from + " outside text of length " + length);
         }
         return Anchor.before(idAtVisible(from));
     }
@@ -190,61 +191,61 @@ public final class RgaDocument {
         int length = visibleLength();
         if (to <= 0 || to > length) {
             throw new IndexOutOfBoundsException(
-                "koniec zakresu " + to + " poza tekstem o długości " + length);
+                "range end " + to + " outside text of length " + length);
         }
-        // Zakres sięgający końca dokumentu nie ma znaku, o który zaczepić kotwicę
-        // rozszerzającą — patrz „znane ograniczenie" w addMark.
+        // A range reaching the end of the document has no character to pin an expanding anchor
+        // to — see "known limitation" in addMark.
         return MarkTypes.expandsAtEnd(type) && to < length
             ? Anchor.before(idAtVisible(to))
             : Anchor.after(idAtVisible(to - 1));
     }
 
-    /** Formatowanie widocznego tekstu jako rozłączne odcinki, w kolejności. */
+    /** The formatting of the visible text as disjoint segments, in order. */
     public List<MarkSet.Span> formatting() {
         return marks.spans(blocks);
     }
 
-    /** Liczba operacji znacznikowych — miara narzutu warstwy formatowania. */
+    /** The number of mark operations — a measure of the formatting layer's overhead. */
     public int markCount() {
         return marks.size();
     }
 
     // ------------------------------------------------------------------
-    // Operacje zdalne
+    // Remote operations
     // ------------------------------------------------------------------
 
-    /** Co się stało z zastosowaną operacją. */
+    /** What happened to an applied operation. */
     public enum ApplyResult {
-        /** Operacja wniosła nową zmianę do dokumentu. */
+        /** The operation contributed a new change to the document. */
         APPLIED,
-        /** Operację już wcześniej widzieliśmy — nic się nie zmieniło. */
+        /** We had seen this operation before — nothing changed. */
         DUPLICATE,
-        /** Brakuje jej przyczyny (originu albo celu usunięcia); czeka w buforze. */
+        /** Its cause is missing (the origin or the deletion target); it waits in the buffer. */
         BUFFERED;
 
-        /** Czy operacja jest dla tej repliki nowością — czyli czy warto ją zapisać i rozesłać. */
+        /** Whether the operation is news to this replica — i.e. worth persisting and broadcasting. */
         public boolean isNews() {
             return this != DUPLICATE;
         }
     }
 
     /**
-     * Stosuje operację pochodzącą z innej repliki.
+     * Applies an operation originating from another replica.
      *
-     * <p>Bezpieczne przy dowolnej kolejności i dowolnym powtórzeniu. Operacja, której nie da
-     * się jeszcze zastosować, trafia do bufora i zostanie ponowiona automatycznie.
+     * <p>Safe under any order and any repetition. An operation that cannot be applied yet goes into
+     * the buffer and will be retried automatically.
      *
-     * <p>Rozróżnienie {@link ApplyResult#APPLIED} od {@link ApplyResult#DUPLICATE} nie jest
-     * potrzebne samemu algorytmowi — z jego punktu widzenia to jest to samo, bo scalanie jest
-     * idempotentne. Jest potrzebne <b>warstwie wyżej</b>: duplikatu nie ma sensu zapisywać
-     * do logu ani rozsyłać po klastrze. Bez tego rozróżnienia jedyną alternatywą byłoby
-     * porównywanie tekstu przed i po, czyli kopiowanie całego dokumentu na każde naciśnięcie
-     * klawisza.
+     * <p>Distinguishing {@link ApplyResult#APPLIED} from {@link ApplyResult#DUPLICATE} is not
+     * needed by the algorithm itself — from its point of view they are the same, because merging is
+     * idempotent. It is needed by <b>the layer above</b>: there is no point writing a duplicate to
+     * the log or broadcasting it across the cluster. Without that distinction the only alternative
+     * would be comparing the text before and after, that is, copying the whole document on every
+     * keystroke.
      */
     public ApplyResult apply(Op op) {
-        // Zegar podbijamy nawet dla operacji zbuforowanej: reguła Lamporta dotyczy odbioru,
-        // nie zastosowania. Version vector aktualizujemy dopiero po faktycznym zastosowaniu,
-        // bo oznacza on "mam to zintegrowane", a nie "widziałem w sieci".
+        // The clock is bumped even for a buffered operation: the Lamport rule concerns receipt,
+        // not application. The version vector is updated only after actual application, because it
+        // means "I have this integrated", not "I saw it on the network".
         observeClock(op);
         if (isAlreadyKnown(op)) {
             return ApplyResult.DUPLICATE;
@@ -259,22 +260,23 @@ public final class RgaDocument {
     }
 
     /**
-     * Czy tę konkretną operację już widzieliśmy.
+     * Whether we have already seen this particular operation.
      *
-     * <p>Dla wstawienia: czy znak o tym identyfikatorze jest w strukturze. Dla usunięcia:
-     * czy wszystkie objęte nim znaki są już tombstone'ami. Ta druga odpowiedź bywa fałszywie
-     * pozytywna — jeśli ktoś inny usunął dokładnie ten sam zakres, uznamy operację za znaną
-     * mimo że jest nowa. Skutek jest wyłącznie taki, że nie zapiszemy jej do logu; stan
-     * dokumentu pozostaje poprawny, bo usunięcie jest idempotentne. Świadomy kompromis:
-     * dokładne rozróżnienie wymagałoby pamiętania identyfikatorów wszystkich usunięć.
+     * <p>For an insertion: whether a character with that identifier is in the structure. For a
+     * deletion: whether every character it covers is already a tombstone. That second answer is
+     * sometimes a false positive — if somebody else deleted exactly the same range, we will treat
+     * the operation as known even though it is new. The only effect is that we will not write it to
+     * the log; the document's state stays correct, because deletion is idempotent. A deliberate
+     * trade-off: distinguishing exactly would require remembering the identifiers of every
+     * deletion.
      */
     private boolean isAlreadyKnown(Op op) {
         return switch (op) {
             case Op.Insert insert -> blocks.locateId(insert.id()) != null;
             case Op.Delete delete -> isEntirelyDeleted(delete);
-            // Operacje znacznikowe są kluczowane własnym identyfikatorem, więc rozpoznanie
-            // duplikatu jest dokładne i darmowe — w odróżnieniu od usunięcia, gdzie musimy
-            // wnioskować z zawartości struktury.
+            // Mark operations are keyed by their own identifier, so recognising a duplicate is
+            // exact and free — unlike a deletion, where we have to infer it from the contents of
+            // the structure.
             case Op.AddMark mark -> marks.contains(mark.id());
             case Op.RemoveMark mark -> marks.contains(mark.id());
         };
@@ -315,8 +317,8 @@ public final class RgaDocument {
     }
 
     private boolean tryApplyInsert(Op.Insert op) {
-        // Duplikat: znak o tym identyfikatorze już jest w strukturze. Dokładne i darmowe —
-        // struktura i tak indeksuje po identyfikatorach (docs/crdt-design.md sekcja 2).
+        // Duplicate: a character with this identifier is already in the structure. Exact and
+        // free — the structure indexes by identifier anyway (docs/crdt-design.md section 2).
         if (blocks.locateId(op.id()) != null) {
             return true;
         }
@@ -328,9 +330,9 @@ public final class RgaDocument {
     }
 
     private boolean tryApplyDelete(Op.Delete op) {
-        // Wszystko albo nic: częściowe zastosowanie usunięcia zostawiłoby operację w buforze
-        // i przy ponowieniu oznaczyłoby część zakresów drugi raz. Byłoby to nieszkodliwe
-        // (idempotencja), ale utrudniałoby rozumowanie o stanie.
+        // All or nothing: applying a deletion partially would leave the operation in the buffer
+        // and, on retry, mark some ranges a second time. That would be harmless (idempotence) but
+        // would make reasoning about the state harder.
         for (Op.Range range : op.targets()) {
             if (!isRangeFullyPresent(range)) {
                 return false;
@@ -343,11 +345,11 @@ public final class RgaDocument {
     }
 
     /**
-     * Znacznik daje się zastosować dopiero, gdy OBIE jego kotwice są w strukturze.
+     * A mark can only be applied once BOTH of its anchors are in the structure.
      *
-     * <p>Wcześniej trafia do bufora — dokładnie tak jak wstawienie, które wyprzedziło swój
-     * origin. Zastosowanie znacznika o nieosadzalnej kotwicy dałoby formatowanie w przypadkowym
-     * miejscu, czyli cichą korupcję wyglądu dokumentu.
+     * <p>Before that it goes into the buffer — exactly like an insertion that outran its origin.
+     * Applying a mark with an unresolvable anchor would produce formatting in a random place, that
+     * is, silent corruption of the document's appearance.
      */
     private boolean tryApplyMark(Op op) {
         if (!MarkSet.anchorsResolvable(op, blocks)) {
@@ -366,8 +368,8 @@ public final class RgaDocument {
                 return false;
             }
             Block block = blocks.get(loc.blockIndex());
-            // Przeskakujemy do końca bloku — zakres może obejmować kilka bloków, również
-            // takich, które powstały z podziału albo z osobnych operacji o ciągłych lamportach.
+            // Skip to the end of the block — a range may cover several blocks, including ones
+            // produced by a split or by separate operations with contiguous lamports.
             cursor += block.length() - loc.offset();
         }
         return true;
@@ -395,25 +397,27 @@ public final class RgaDocument {
     }
 
     // ------------------------------------------------------------------
-    // Serce algorytmu
+    // The heart of the algorithm
     // ------------------------------------------------------------------
 
     /**
-     * Wstawia nowy blok w miejsce wyznaczone regułą RGA.
+     * Inserts a new block at the place RGA's rule determines.
      *
-     * <p>Reguła: znajdź origin, przejdź w prawo tak długo, jak napotykane bloki mają wyższy
-     * znacznik czasu niż wstawiany, i wstaw w pierwszym miejscu, gdzie napotkany blok ma niższy.
+     * <p>The rule: find the origin, walk right for as long as the blocks encountered have a higher
+     * timestamp than the one being inserted, and insert at the first place where the block
+     * encountered has a lower one.
      *
-     * <p>Dlaczego to jest poprawne — dwa argumenty, oba opierające się na tym, że
-     * {@code lamport} jest zegarem Lamporta:
+     * <p>Why this is correct — two arguments, both resting on {@code lamport} being a Lamport
+     * clock:
      * <ul>
-     *   <li>Element w poddrzewie rodzeństwa S powstał przyczynowo po S, więc ma wyższy znacznik
-     *       niż S. Jeśli więc pomijamy S, pomijamy też całe jego poddrzewo — rodzeństwo nigdy
-     *       nie zostaje rozerwane.</li>
-     *   <li>Pierwszy element za poddrzewem originu to rodzeństwo originu (albo rodzeństwo jego
-     *       przodka), a takie ma znacznik <i>niższy</i> niż origin — a wstawiany element ma
-     *       znacznik <i>wyższy</i> niż origin, bo jego autor origin widział. Skan zatrzyma się
-     *       tam samoczynnie i nie wyjdzie poza poddrzewo originu.</li>
+     *   <li>An element in the subtree of a sibling S was created causally after S, so it has a
+     *       higher timestamp than S. So if we skip S, we skip its entire subtree — siblings are
+     *       never torn apart.</li>
+     *   <li>The first element past the origin's subtree is a sibling of the origin (or a sibling of
+     *       its ancestor), and such an element has a <i>lower</i> timestamp than the origin — while
+     *       the element being inserted has a <i>higher</i> timestamp than the origin, because its
+     *       author had seen the origin. The scan therefore stops there of its own accord and never
+     *       leaves the origin's subtree.</li>
      * </ul>
      */
     private void integrate(Op.Insert op) {
@@ -424,9 +428,10 @@ public final class RgaDocument {
             BlockList.Locator loc = blocks.locateId(op.originLeft());
             int index = loc.blockIndex();
             Block originBlock = blocks.get(index);
-            // Origin musi być ostatnim znakiem swojego bloku, żeby "zaraz za originem"
-            // było granicą bloków. Podział jest operacją czysto techniczną — nie zmienia
-            // struktury logicznej, bo prawa część zostaje dzieckiem ostatniego znaku lewej.
+            // The origin has to be the last character of its block so that "immediately after the
+            // origin" is a block boundary. The split is a purely technical operation — it does not
+            // change the logical structure, because the right part becomes the child of the last
+            // character of the left one.
             if (loc.offset() < originBlock.length() - 1) {
                 splitBlock(index, loc.offset() + 1);
             }
@@ -440,8 +445,9 @@ public final class RgaDocument {
 
         Block block = new Block(newId, op.text(), op.originLeft(), false);
 
-        // Szybka ścieżka zwykłego pisania: dopisz do poprzedniego bloku zamiast tworzyć nowy.
-        // Bez tego run-length nie dawałby nic, bo każdy klawisz to osobna operacja.
+        // The fast path for ordinary typing: append to the previous block instead of creating a
+        // new one. Without it run-length encoding would achieve nothing, because every keystroke
+        // is a separate operation.
         if (position > 0) {
             Block previous = blocks.get(position - 1);
             if (previous.canAppend(block)) {
@@ -475,19 +481,19 @@ public final class RgaDocument {
     }
 
     // ------------------------------------------------------------------
-    // Garbage collection tombstone'ów (ADR-0005)
+    // Tombstone garbage collection (ADR-0005)
     // ------------------------------------------------------------------
 
     /**
-     * Usuwa fizycznie tombstone'y, które są przyczynowo stabilne względem {@code stable}
-     * i nie są originem żadnego istniejącego bloku.
+     * Physically removes tombstones that are causally stable with respect to {@code stable} and
+     * are not the origin of any existing block.
      *
-     * <p>Oba warunki są konieczne. Stabilność przyczynowa gwarantuje, że żadna <i>przyszła</i>
-     * operacja nie może się o ten znak zaczepić; brak referencji gwarantuje, że nie robi tego
-     * żadna operacja <i>już zastosowana</i>. Pominięcie drugiego warunku rozspójniłoby
-     * strukturę natychmiast.
+     * <p>Both conditions are necessary. Causal stability guarantees that no <i>future</i> operation
+     * can anchor to that character; the absence of references guarantees that no <i>already
+     * applied</i> operation does. Dropping the second condition would corrupt the structure
+     * immediately.
      *
-     * @return liczba fizycznie usuniętych znaków
+     * @return the number of characters whose memory was reclaimed
      */
     public int gc(VersionVector stable) {
         Set<Id> referenced = new HashSet<>();
@@ -496,15 +502,14 @@ public final class RgaDocument {
                 referenced.add(block.originLeft());
             }
         }
-        // TRZECI warunek, dołożony w CP13: tombstone będący KOTWICĄ ZNACZNIKA też musi
-        // zostać. Usunięcie go sprawia, że kotwica przestaje być rozwiązywalna, a znacznik
-        // po cichu znika — formatowanie przepada bez śladu i bez błędu, przy okazji
-        // sprzątania pamięci.
+        // The THIRD condition, added in CP13: a tombstone that is a MARK ANCHOR also has to stay.
+        // Removing it makes the anchor unresolvable and the mark silently disappears — the
+        // formatting is lost without a trace and without an error, as a side effect of tidying up
+        // memory.
         //
-        // Konsekwencja jest niewygodna i trzeba ją nazwać: GC był już słaby (ADR-0005 —
-        // zbieralny jest praktycznie tylko ogon dokumentu), a teraz jest SŁABSZY,
-        // bo formatowanie przypina kolejne tombstone'y w środku tekstu. Im więcej
-        // formatowania, tym mniej da się odzyskać.
+        // Since CP18 this no longer means the block keeps its characters: a block that must not be
+        // removed drops its content instead. The condition below decides whether the block stays,
+        // not whether it holds text.
         for (Op mark : marks.all()) {
             switch (mark) {
                 case Op.AddMark add -> {
@@ -567,7 +572,7 @@ public final class RgaDocument {
     // Snapshoty (ADR-0003)
     // ------------------------------------------------------------------
 
-    /** Migawka pełnego stanu do zapisania jako cache w bazie. */
+    /** A snapshot of the full state, to be stored as a cache in the database. */
     public DocumentSnapshot snapshot() {
         List<Block> copies = new ArrayList<>(blocks.size());
         for (Block block : blocks) {
@@ -578,11 +583,11 @@ public final class RgaDocument {
     }
 
     /**
-     * Odtwarza replikę z migawki.
+     * Rebuilds a replica from a snapshot.
      *
-     * <p>Bloki są wstawiane po kolei bez uruchamiania algorytmu integracji — migawka
-     * zapisuje je już w porządku dokumentu. To jest cała oszczędność, dla której snapshoty
-     * istnieją: odtworzenie jest liniowe zamiast kosztować pełne przetworzenie historii.
+     * <p>The blocks are inserted in sequence without running the integration algorithm — the
+     * snapshot stores them in document order already. That is the entire saving snapshots exist
+     * for: rebuilding is linear rather than costing a full replay of the history.
      */
     public static RgaDocument restore(int replicaId, BlockList storage, DocumentSnapshot snapshot) {
         RgaDocument document = new RgaDocument(replicaId, storage);
@@ -592,8 +597,8 @@ public final class RgaDocument {
         }
         document.clock = snapshot.clock();
         document.maxSeen.putAll(snapshot.maxSeen());
-        // Znaczniki wracają jako operacje, więc odtworzona replika potrafi rozstrzygnąć
-        // konflikt z każdym znacznikiem, który dopiero nadejdzie — patrz SnapshotCodec.
+        // Marks come back as operations, so a rebuilt replica can resolve a conflict with any
+        // mark still to arrive — see SnapshotCodec.
         for (Op mark : snapshot.marks()) {
             document.marks.apply(mark);
         }
@@ -630,12 +635,12 @@ public final class RgaDocument {
         return blocks.visibleLength();
     }
 
-    /** Liczba znaków będących tombstone'ami — licznik metryki {@code doc_tombstone_ratio}. */
+    /** The number of characters that are tombstones — the numerator of {@code doc_tombstone_ratio}. */
     public int tombstoneCount() {
         return blocks.totalLength() - blocks.visibleLength();
     }
 
-    /** Liczba bloków — miara skuteczności kompresji run-length. */
+    /** The number of blocks — a measure of how effective run-length compression is. */
     public int blockCount() {
         return blocks.size();
     }
@@ -661,21 +666,22 @@ public final class RgaDocument {
     }
 
     /**
-     * Czy znak o podanym identyfikatorze jest w strukturze — również jako tombstone.
+     * Whether a character with the given identifier is in the structure — including as a
+     * tombstone.
      *
-     * <p>Potrzebne do odróżnienia dwóch bardzo różnych sytuacji, które z zewnątrz wyglądają
-     * tak samo: „operacja przyszła przed swoją przyczyną" (przejściowe, poczeka w buforze)
-     * od „przyczyna została skasowana przez GC" (trwałe, nie da się już scalić — ADR-0005).
+     * <p>Needed to distinguish two very different situations that look the same from outside: "the
+     * operation arrived before its cause" (transient, it will wait in the buffer) from "the cause
+     * was removed by GC" (permanent, it can no longer be merged — ADR-0005).
      */
     public boolean contains(Id id) {
         return blocks.locateId(id) != null;
     }
 
-    /** Identyfikator znaku o podanym indeksie w widocznym tekście — pozycja kursora (ADR-0006). */
+    /** The identifier of the character at a given index in the visible text — a cursor position (ADR-0006). */
     public Id idAtVisible(int visibleIndex) {
         BlockList.Locator loc = blocks.locateVisible(visibleIndex);
         if (loc == null) {
-            throw new IndexOutOfBoundsException("brak widocznego znaku na pozycji " + visibleIndex);
+            throw new IndexOutOfBoundsException("no visible character at position " + visibleIndex);
         }
         return blocks.get(loc.blockIndex()).idAt(loc.offset());
     }
@@ -692,7 +698,7 @@ public final class RgaDocument {
 
     @Override
     public String toString() {
-        return "RgaDocument(replika=" + replicaId + ", tekst=\"" + text() + "\", bloki="
-            + blocks.size() + ", tombstony=" + tombstoneCount() + ", oczekujące=" + pending.size() + ")";
+        return "RgaDocument(replica=" + replicaId + ", text=\"" + text() + "\", blocks="
+            + blocks.size() + ", tombstones=" + tombstoneCount() + ", pending=" + pending.size() + ")";
     }
 }
