@@ -554,6 +554,82 @@ is a stronger version of the argument CP19 already made when it refused to put a
 threshold in CI: on this rig, absolute times are comparable only against other times measured
 the same way, which is why the tables above state how they were run.
 
+### How often the interleaving anomaly actually fires
+
+RGA's interleaving anomaly is the most-cited weakness of the algorithm this project chose, and
+until now it was described here in words. `RgaInterleavingTest` proves it **exists** — it builds
+the case by hand and pins it. [ADR-0001](docs/adr/0001-crdt-vs-ot.md) names Fugue as the fix and
+declines it on budget. Neither said how often a real session runs into it.
+
+Measurement:
+[`InterleavingMeasurement`](crdt-core/src/test/java/dev/collabedit/crdt/InterleavingMeasurement.java).
+Two authors typing 8 characters each, **at the same point in the document**, each in complete
+isolation before exchanging operations in shuffled order — the worst case, so every rate below is
+an upper bound. The metric is **fragments**: how many pieces an author's writing is broken into.
+One means it survived intact.
+
+The variable is not the author count and not the document size. It is **whether the cursor moves
+forward**. RGA orders *siblings* — insertions sharing one origin — by timestamp, and that is the
+only place two authors can get mixed. Typing forward makes each character the origin of the next,
+so a run is a chain, and a chain cannot be broken by anything arriving concurrently. Going back to
+the same spot produces nothing but siblings.
+
+| Cursor advances with probability | Scenarios interleaved | Median fragments | Worst seen |
+|---:|---:|---:|---:|
+| 1.00 — ordinary typing | **0.0%** | 1 | 1 |
+| 0.99 | 1.2% | 1 | 2 |
+| 0.95 | 4.9% | 1 | 2 |
+| 0.90 | 10.9% | 1 | 3 |
+| 0.75 | 25.8% | 1 | 4 |
+| 0.50 | 49.2% | 1 | 7 |
+| 0.25 | 74.3% | 2 | 8 |
+| 0.00 — the hand-built case | **100.0%** | 8 | 8 |
+
+**The 0.0% in the first row is structural, not statistical**, and it is the load-bearing result:
+pure forward typing cannot interleave, for the reason above. A separate test asserts it over 2000
+trials, so if it ever stops holding the failure is a merge bug rather than a shifted percentage.
+
+More authors meeting at one point, at 90% forward:
+
+| Authors | Interleaved | Worst fragments |
+|---:|---:|---:|
+| 2 | 10.9% | 3 |
+| 3 | 20.3% | 3 |
+| 5 | 35.9% | 3 |
+| 8 | 52.4% | 3 |
+
+**What this changes about the Fugue decision.** It stays rejected, and now for a measured reason
+rather than a budgetary one. The anomaly needs three things at once: two people in the *same
+spot*, at the *same time*, with at least one of them *going back to fix something*. When it does
+fire the damage is usually one extra fragment, not the shredding the hand-built case shows — that
+case is `p = 0`, which is nobody's typing.
+
+<details>
+<summary>The first version of this table was an artefact of <code>java.util.Random</code> (expand)</summary>
+
+The measurement initially reported **0% at p = 0.90 and 100% at p = 0.50** — a cliff where the
+mechanism predicts a smooth curve. Chasing it found nothing wrong with the merge rule. The fault
+was the seeding: trials ran `new Random(0)`, `new Random(1)`, and so on.
+
+```
+new Random(0).nextDouble() = 0.730968
+new Random(1).nextDouble() = 0.730878
+new Random(2).nextDouble() = 0.731147
+new Random(9).nextDouble() = 0.730162
+```
+
+`java.util.Random` is a linear congruential generator whose **first** output barely moves across
+consecutive small seeds. Every trial therefore made the same decision at the first keystroke —
+and the first keystroke is the only one that matters here, because it decides whether an author
+gets two children of the shared origin. Above 0.731 the answer was always "advance" and nothing
+interleaved; below it, always "stay" and everything did.
+
+Two thousand trials per row, reported to three significant figures, describing a property of the
+random number generator. The seed now goes through splitmix64 first — the same mixing function
+`TreapBlockList` uses for heap priorities, for the same reason.
+
+</details>
+
 ### The degradation point — settled, and not in my rig's favour
 
 The previous version of this README ended here with "I do not know whether the cause lies in the
@@ -626,10 +702,10 @@ solution loses its point if it shows only the limits that still stand. Full reck
 [PLAN-v2](docs/PLAN-v2.md), [PLAN-v3](docs/PLAN-v3.md).
 
 **Algorithm**
-- **Fugue instead of RGA.** RGA has a documented interleaving anomaly: two people typing
-  backwards produce interleaved letters ([the test that pins it
-  down](crdt-core/src/test/java/dev/collabedit/crdt/RgaInterleavingTest.java)). Fugue does not
-  have it. Rejected on budget, not on technical grounds.
+- **Fugue instead of RGA.** RGA has an interleaving anomaly Fugue does not have. Still rejected
+  on budget — but the entry used to end there, and "documented anomaly" was the one claim in this
+  repository carrying an adjective where everything else carries a number. It now carries a
+  number too: [how often it actually happens](#how-often-the-interleaving-anomaly-actually-fires).
 - ~~**A formatting anchor blocks the WHOLE run-length block**, not just its own tombstone.~~
   **Done (CP18).** Measured at 0% reclamation in CP15, and now 100% — a deleted block drops its
   content and keeps its identity. [Numbers above](#the-cost-of-the-mark-layer--a-fear-confirmed-in-cp15-removed-in-cp18).

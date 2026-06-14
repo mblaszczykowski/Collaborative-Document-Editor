@@ -172,6 +172,30 @@ The approach in this project — **we do not hide it**:
 A test that documents a defect is worth more than its absence. Removing it would be pretending
 the algorithm has a property it does not have.
 
+### How often it fires — added after the fact, and it should have been here from the start
+
+The three points above establish that the anomaly **exists**. For a long time that was all this
+ADR said, which made it the one decision in the project justified by an adjective. The rate is
+now measured (`InterleavingMeasurement`, numbers and method in the README):
+
+| Cursor advances with probability | Scenarios interleaved | Median fragments |
+|---:|---:|---:|
+| 1.00 — ordinary typing | **0.0%** | 1 |
+| 0.95 | 4.9% | 1 |
+| 0.75 | 25.8% | 1 |
+| 0.00 — the case in point 2 above | 100.0% | 8 |
+
+**The first row is a structural guarantee, not a low probability.** RGA reorders only *siblings*
+— insertions sharing an origin. Typing forward makes each character the origin of the next, so a
+forward run is a chain, and no concurrent operation can enter it. The anomaly needs one of the
+authors to go back to a point someone else is also writing at.
+
+This does not change the decision, and that is worth saying plainly: Fugue stays rejected. It
+changes what the decision rests on. "Rejected on budget" was a statement about the project; "the
+anomaly requires two people in the same spot at the same time with one of them going back, and
+costs one extra fragment when it does" is a statement about the trade-off — which is what an ADR
+is supposed to record.
+
 ---
 
 ## Consequences
