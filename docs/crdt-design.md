@@ -1,157 +1,160 @@
-# Projekt struktury CRDT — decyzje na poziomie implementacji
+# CRDT structure design — decisions at the implementation level
 
-Uzupełnienie [ADR-0001](adr/0001-crdt-vs-ot.md). ADR odpowiada na pytanie „dlaczego RGA".
-Ten dokument odpowiada na pytanie „jak dokładnie", i zapisuje trzy rozstrzygnięcia, które
-wyszły dopiero przy pisaniu kodu i które łatwo zrobić źle.
-
----
-
-## 1. Zegar Lamporta — co faktycznie z niego wynika, a co nie
-
-Reguła wstawiania w RGA brzmi: *znajdź origin, potem idź w prawo tak długo, jak napotkane
-elementy mają wyższy znacznik czasu niż wstawiany, i wstaw w pierwszym miejscu, gdzie
-napotkany element ma niższy*.
-
-Klasyczny argument za poprawnością tej reguły opiera się na tym, że znacznik jest **zegarem
-Lamporta**, czyli że *jeśli E powstało przyczynowo po S, to `ts(E) > ts(S)`*. Dzięki temu
-pominięcie rodzeństwa S pociąga za sobą pominięcie całego jego poddrzewa, a skan nie wychodzi
-poza poddrzewo originu. Implementacja to realizuje: przy odbiorze operacji zdalnej zegar jest
-podbijany do `max(clock, lamport_operacji + 1)`.
-
-### Czego NIE udało się potwierdzić
-
-Pierwsza wersja tego dokumentu twierdziła, że bez podbijania zegara implementacja się
-**rozjeżdża**, i podawała kontrprzykład. To twierdzenie było za mocne i zostało wycofane.
-
-Weryfikacja: usunąłem podbijanie zegara z kodu produkcyjnego (mutacja `clock = max(clock, 0)`)
-i uruchomiłem wyszukiwanie rozbieżności brute-force — **200 000 losowych scenariuszy**,
-3–5 replik, po 30 edycji, z agresywnym przeplotem generowania i dostawy, pełną wymianą
-w losowej kolejności i podwójnym dostarczeniem każdej operacji.
-
-**Wynik: zero rozbieżności, zero operacji utkniętych w buforze.**
-
-Podany wcześniej kontrprzykład również nie odtwarza się przy ręcznym prześledzeniu: repliki
-dochodzą do tego samego wyniku, bo funkcja integracji jest deterministyczna względem
-*zbioru* obecnych elementów, a nie kolejności ich dostarczenia — a to wystarcza do zbieżności
-niezależnie od tego, czy znaczniki respektują przyczynowość.
-
-### Co z tego wynika dla kodu
-
-Podbijanie zegara **zostaje**, ale z uczciwie nazwanego powodu:
-
-- Jest wymogiem opublikowanego dowodu poprawności RGA i standardem w każdej znanej mi
-  implementacji tej rodziny.
-- Zbieżność bez niego jest w tej implementacji **zaobserwowana, a nie udowodniona**.
-  200 tys. losowych scenariuszy to mocna przesłanka, nie dowód — a rezygnacja z warunku,
-  na którym opiera się dowód, w zamian za wynik empiryczny, jest złym interesem.
-- Gwarantuje własność, na której opierają się rozważania o zachowaniu intencji autora
-  (zwartość poddrzew) — nawet jeśli sama zbieżność jej nie potrzebuje.
-
-### Czego to nauczyło o testach
-
-Pierwotny zestaw property testów **nie wykrywał tej mutacji w ogóle** — i to niezależnie
-od tego, czy była szkodliwa. Powód był strukturalny: wszystkie scenariusze miały postać
-„najpierw wszystkie edycje lokalnie, potem cała wymiana", w której replika nigdy nie generuje
-operacji *po* odebraniu cudzej. Reguła podbijania zegara nie była więc wykonywana ani razu.
-
-Stąd property `convergenceWithInterleavedDelivery` i metoda `ReplicaSet.deliverSome` —
-scenariusz, w którym repliki wymieniają się operacjami w trakcie pisania. Dziura została
-znaleziona przez celowe wprowadzenie mutacji do kodu produkcyjnego i sprawdzenie, czy testy
-ją złapią. Nie złapały. Zestaw testów, który przechodzi na uszkodzonym kodzie, nie jest
-zestawem testów.
-
-**To samo powtórzyło się jeszcze dwa razy**, i za każdym razem inaczej.
-
-*Drugi raz* — agregaty treapa. Usunięcie ich aktualizacji po oznaczeniu węzła tombstone'em
-przechodziło przez testy zbieżności bez zarzutu, bo wszystkie repliki myliły się **tak samo**.
-Tekst był zgodny, tylko pozycje z drzewa fałszywe — czyli błąd, który wygląda jak zdrowy
-dokument z kursorami stojącymi nie tam, gdzie powinny. Odpowiedzią jest para property
-porównująca implementację indeksowaną z naiwną **na odpowiedziach na zapytania**, a nie
-na wynikowym tekście.
-
-*Trzeci raz* — ochrona kotwic formatowania przed GC (CP13). Test `garbageCollectionSparesMarkAnchors`
-napisałem, uruchomiłem, przeszedł. Potem wyłączyłem mechanizm, który miał sprawdzać —
-i **nadal przechodził**. Powód: zakotwiczyłem znacznik na znaku w środku tekstu, a taki znak
-jest originem następnego bloku, więc chroniła go reguła, która istniała od CP2. Test
-sprawdzał starą regułę i przypisywał jej zasługę nowej. Naprawa polegała na zakotwiczeniu
-na **ostatnim** znaku dokumentu, znacznikiem nierozszerzającym się — tam nikt inny go nie
-chroni. Dopiero wtedy mutacja go wywaliła.
-
-Wspólny mianownik jest niewygodny: **test napisany po to, żeby sprawdzić mechanizm X, może
-przechodzić dzięki mechanizmowi Y** — i nie ma jak tego zauważyć inaczej niż przez zepsucie
-X-a i sprawdzenie, czy test to zgłosi. Robię to teraz dla każdego mechanizmu, który jest
-jedyną linią obrony przed cichą utratą danych.
+A companion to [ADR-0001](adr/0001-crdt-vs-ot.md). The ADR answers "why RGA". This document answers
+"how exactly", and records three findings that emerged only while writing the code and that are
+easy to get wrong.
 
 ---
 
-## 2. Dlaczego dedup NIE opiera się na version vectorze
+## 1. The Lamport clock — what actually follows from it, and what does not
 
-Naturalny odruch: trzymać version vector i odrzucać operacje już widziane. To jest niepoprawne
-przy zegarze Lamporta, bo **liczniki per replika nie są ciągłe** — zegar skacze przy odbiorze
-operacji z innych replik. Replika A może wygenerować operacje o lamportach 1, 2, 47, 48, 103.
-Zapis „widziałem od A wszystko do 48" nie odróżnia dziury po zgubionej operacji od dziury
-po skoku zegara.
+RGA's insertion rule reads: *find the origin, then walk right for as long as the elements
+encountered have a higher timestamp than the one being inserted, and insert at the first place
+where the element encountered has a lower one*.
 
-Zamiast tego:
+The classic argument for the correctness of this rule rests on the timestamp being a **Lamport
+clock**, that is, on *if E was created causally after S, then `ts(E) > ts(S)`*. That is what makes
+skipping a sibling S entail skipping its whole subtree, so the scan never leaves the origin's
+subtree. The implementation does this: on receiving a remote operation the clock is bumped to
+`max(clock, operation_lamport + 1)`.
 
-| Typ operacji | Jak wykrywamy duplikat |
+### What could NOT be confirmed
+
+The first version of this document claimed that without bumping the clock the implementation
+**diverges**, and gave a counterexample. That claim was too strong and has been withdrawn.
+
+Verification: I removed the clock bump from production code (the mutation `clock = max(clock, 0)`)
+and ran a brute-force divergence search — **200 000 random scenarios**, 3–5 replicas, 30 edits
+each, with aggressive interleaving of generation and delivery, a full exchange in random order and
+double delivery of every operation.
+
+**Result: zero divergences, zero operations stuck in the buffer.**
+
+The counterexample given earlier does not reproduce under manual tracing either: the replicas
+arrive at the same result, because the integration function is deterministic with respect to the
+*set* of present elements rather than the order of their delivery — and that is enough for
+convergence regardless of whether the timestamps respect causality.
+
+### What this means for the code
+
+The clock bump **stays**, but for an honestly named reason:
+
+- It is a requirement of the published RGA correctness proof and standard in every implementation
+  of this family I know of.
+- Convergence without it is, in this implementation, **observed rather than proven**. 200 000 random
+  scenarios are strong evidence, not a proof — and giving up a condition a proof rests on in
+  exchange for an empirical result is a bad trade.
+- It guarantees the property that arguments about preserving author intent rely on (subtree
+  contiguity) — even if convergence itself does not need it.
+
+### What this taught me about tests
+
+The original property-test suite **did not detect that mutation at all** — and would not have,
+whether or not it was harmful. The reason was structural: every scenario had the shape "first all
+the edits locally, then the whole exchange", in which a replica never generates an operation *after*
+receiving somebody else's. The clock-bumping rule was therefore never executed once.
+
+Hence the property `convergenceWithInterleavedDelivery` and the method `ReplicaSet.deliverSome` — a
+scenario in which replicas exchange operations while typing. The blind spot was found by
+deliberately introducing a mutation into production code and checking whether the tests would catch
+it. They did not. A test suite that passes on broken code is not a test suite.
+
+**The same thing has happened twice more**, and differently each time.
+
+*The second time* — the treap aggregates. Removing their update after marking a node as a tombstone
+sailed through the convergence tests, because every replica was wrong **in the same way**. The text
+agreed; only the positions from the tree were false — a bug that looks like a healthy document with
+cursors standing in the wrong places. The answer is a pair of properties comparing the indexed
+implementation against the naive one **on query answers**, not on the resulting text.
+
+*The third time* — protecting formatting anchors from GC (CP13). I wrote the test
+`garbageCollectionSparesMarkAnchors`, ran it, and it passed. Then I switched off the mechanism it
+was supposed to check — and **it still passed**. The reason: I had anchored the mark on a character
+in the middle of the text, and such a character is the next block's origin, so a rule that had
+existed since CP2 was protecting it. The test was checking the old rule and crediting the new one.
+The fix was to anchor on the **last** character of the document, with a non-expanding mark — there
+nobody else protects it. Only then did the mutation break it.
+
+The common denominator is uncomfortable: **a test written to check mechanism X may be passing thanks
+to mechanism Y** — and there is no way to notice other than by breaking X and checking whether the
+test reports it. I now do this for every mechanism that is the only line of defence against silent
+data loss.
+
+---
+
+## 2. Why dedup is NOT based on the version vector
+
+The natural reflex: keep a version vector and reject operations already seen. That is incorrect with
+a Lamport clock, because **per-replica counters are not contiguous** — the clock jumps when
+operations from other replicas arrive. Replica A may generate operations with lamports 1, 2, 47, 48,
+103. The record "I have seen everything from A up to 48" cannot tell a hole left by a lost operation
+from a hole left by a clock jump.
+
+Instead:
+
+| Operation type | How we detect a duplicate |
 |---|---|
-| `InsertOp` | Sprawdzamy, czy znak o tym identyfikatorze **już jest w strukturze**. Dokładne, zerowy koszt pamięciowy — struktura i tak indeksuje po identyfikatorach. |
-| `DeleteOp` | Nie wykrywamy wcale. Ustawienie tombstone'u drugi raz jest operacją pustą — delete jest idempotentny z natury. |
+| `InsertOp` | We check whether a character with that identifier **is already in the structure**. Exact, and free in memory terms — the structure indexes by identifier anyway. |
+| `DeleteOp` | We do not detect it at all. Setting a tombstone a second time is a no-op — delete is idempotent by nature. |
 
-Version vector nadal istnieje, ale służy do **innych** celów: stabilności przyczynowej dla GC
-([ADR-0005](adr/0005-tombstone-gc.md)) i wymiany „co mam" przy reconnect (CP6). Nie jest
-mechanizmem poprawności rdzenia.
+The version vector still exists, but serves **other** purposes: causal stability for GC
+([ADR-0005](adr/0005-tombstone-gc.md)) and the "what do I have" exchange on reconnect (CP6). It is
+not a correctness mechanism of the core.
 
-To rozdzielenie jest celowe i warto je nazwać: **wykrywanie luk w dostawie to zadanie
-transportu (`server_seq`, [ADR-0004](adr/0004-skalowanie-poziome.md)), a nie algorytmu.**
-Rdzeń CRDT musi być poprawny przy dowolnej kolejności i dowolnym powtórzeniu — i taki jest.
+This separation is deliberate and worth naming: **detecting gaps in delivery is the transport's job
+(`server_seq`, [ADR-0004](adr/0004-skalowanie-poziome.md)), not the algorithm's.** The CRDT core has
+to be correct under any order and any repetition — and it is.
 
 ---
 
-## 3. Blok jako jednostka, czyli run-length w praktyce
+## 3. The block as a unit, or run-length in practice
 
-Dokument nie jest listą znaków, tylko listą **bloków**:
+The document is not a list of characters but a list of **blocks**:
 
 ```java
 Block { replicaId, startLamport, String text, Id originLeft, boolean deleted }
 ```
 
-Znak o indeksie `i` wewnątrz bloku ma identyfikator `(replicaId, startLamport + i)`, a jego
-originem jest znak `i-1`. Dzięki temu wpisanie 20 znaków pod rząd to **jeden** obiekt i jedna
-operacja, a nie 20.
+The character at index `i` inside a block has the identifier `(replicaId, startLamport + i)`, and its
+origin is the character `i-1`. That makes typing 20 characters in a row **one** object and one
+operation instead of 20.
 
-Dwa niezmienniki, które to utrzymują:
+Two invariants keep this working:
 
-1. **Blok jest w całości żywy albo w całości usunięty.** Usunięcie fragmentu bloku dzieli go
-   najpierw na części. Alternatywa (tablica flag per znak) komplikuje każdą operację
-   indeksowania, a oszczędza niewiele.
-2. **Skanowanie przy wstawianiu jest gruboziarniste — po blokach, nie po znakach.** Jest to
-   poprawne, bo znaki w bloku mają rosnące lamporty i są przyczynowo połączone: jeśli pierwszy
-   znak bloku ma wyższy znacznik niż wstawiany, to wszystkie pozostałe też. Nigdy nie trzeba
-   zatrzymać się w środku bloku — chyba że origin wstawianego znaku *jest* w środku bloku,
-   a wtedy blok i tak najpierw dzielimy.
+1. **A block is entirely alive or entirely deleted.** Deleting part of a block splits it first. The
+   alternative (an array of per-character flags) complicates every indexing operation and saves
+   little.
+2. **The scan on insertion is coarse — by blocks, not by characters.** That is correct because the
+   characters in a block have increasing lamports and are causally linked: if the first character of
+   a block has a higher timestamp than the one being inserted, so do all the rest. There is never a
+   need to stop in the middle of a block — unless the inserted character's origin *is* in the middle
+   of a block, in which case the block gets split first anyway.
 
-**Scalanie z powrotem:** przy wstawianiu na końcu bloku od tej samej repliki, z ciągłym
-lamportem i pasującym originem, dopisujemy do istniejącego bloku zamiast tworzyć nowy.
-To jest szybka ścieżka dla najczęstszego wzorca — zwykłego pisania.
+**Merging back:** when inserting at the end of a block from the same replica, with a contiguous
+lamport and a matching origin, we append to the existing block instead of creating a new one. This
+is the fast path for the most common pattern — ordinary typing.
+
+> **Since CP18** a deleted block may additionally drop its `text` while keeping its identity and its
+> length. Both invariants above survive unchanged: a content-dropped block is still entirely
+> deleted, and the scan still works on lamports rather than on characters. Details in
+> [ADR-0005](adr/0005-tombstone-gc.md), the CP18 section.
 
 ---
 
-## 4. Dwie implementacje indeksu, jeden algorytm
+## 4. Two index implementations, one algorithm
 
-`RgaDocument` nie wie, jak przechowywana jest lista bloków — dostaje ją przez interfejs
-`BlockList`. Istnieją dwie implementacje:
+`RgaDocument` does not know how the block list is stored — it receives it through the `BlockList`
+interface. There are two implementations:
 
-| Implementacja | Wstawienie bloku | Znajdź po offsecie | Znajdź po identyfikatorze |
+| Implementation | Insert a block | Find by offset | Find by identifier |
 |---|---|---|---|
 | `ArrayBlockList` | O(n) | O(n) | O(n) |
 | `TreapBlockList` | O(log n) | O(log n) | O(log n) |
 
-Obie przechodzą **ten sam** zestaw property testów, w tym test `naiveEqualsIndexed`, który
-podaje obu identyczną losową sekwencję operacji i porównuje wyniki krok po kroku. To jest
-dowód, że optymalizacja niczego nie zmieniła w zachowaniu — a nie nadzieja, że nie zmieniła.
+Both pass **the same** property test suite, including the test `naiveEqualsIndexed`, which feeds
+both an identical random sequence of operations and compares the results step by step. That is proof
+that the optimisation changed nothing in the behaviour — rather than a hope that it did not.
 
-Kolejność prac jest celowa: najpierw wersja naiwna i komplet testów, potem pomiar (JMH),
-dopiero potem wersja zoptymalizowana. Historia commitów pokazuje ten ciąg, bo jest on
-uczciwszy niż od razu wrzucona sprytna struktura.
+The order of the work is deliberate: first the naive version and a full test suite, then measurement
+(JMH), and only then the optimised version. The commit history shows that sequence, because it is
+more honest than dropping in a clever structure straight away.
