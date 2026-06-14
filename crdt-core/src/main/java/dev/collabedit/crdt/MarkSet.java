@@ -10,66 +10,66 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
- * Formatowanie tekstu jako osobna warstwa nad sekwencją znaków (CP13, podejście Peritext).
+ * Text formatting as a separate layer above the character sequence (CP13, the Peritext approach).
  *
- * <h2>Model</h2>
- * Znacznik nie jest atrybutem znaku, tylko <b>zakresem między dwiema kotwicami</b>
- * ({@link Anchor}). Zbiór operacji znacznikowych jest rosnący i nigdy nie jest modyfikowany
- * w miejscu — zdjęcie formatowania to kolejna operacja, a nie skasowanie poprzedniej.
- * Wynik dla dowolnego znaku wylicza się dopiero przy renderowaniu.
+ * <h2>The model</h2>
+ * A mark is not a character attribute but a <b>range between two anchors</b> ({@link Anchor}). The
+ * set of mark operations only grows and is never modified in place — removing formatting is another
+ * operation, not the deletion of an earlier one. The result for any given character is computed
+ * only at render time.
  *
- * <h2>Dlaczego atrybut per znak nie działa</h2>
- * Ania pogrubia zakres. Bartek, nie widząc jeszcze jej zmiany, wpisuje tekst w środek tego
- * zakresu. Przy atrybutach per znak wstawiony tekst nie ma skąd wziąć pogrubienia: w chwili
- * powstania operacja Ani do Bartka nie dotarła, a gdy dotrze, wymienia znaki, których w niej
- * nie ma. Wynik — dziura w pogrubieniu, której nikt nie zrobił.
+ * <h2>Why a per-character attribute does not work</h2>
+ * Ania bolds a range. Bartek, not yet seeing her change, types text into the middle of that range.
+ * With per-character attributes the inserted text has nowhere to get the bold from: when it was
+ * created Ania's operation had not reached Bartek, and when it does arrive it lists characters that
+ * are not in it. The result — a hole in the bolding that nobody made.
  *
- * <p>Zakres między kotwicami tego problemu nie ma, bo kotwice przesuwają się razem z tekstem:
- * tekst wstawiony w środek zakresu <b>jest</b> w środku zakresu, niezależnie od kolejności
- * dostarczenia operacji.
+ * <p>A range between anchors does not have that problem, because the anchors move with the text:
+ * text inserted into the middle of a range <b>is</b> in the middle of the range, regardless of the
+ * order operations are delivered in.
  *
- * <h2>Rozstrzyganie konfliktów</h2>
- * Dla danego znaku i danego typu znacznika wygrywa operacja o najwyższym
- * {@code (lamport, replicaId)} spośród obejmujących ten znak. Jest to <b>ten sam porządek
- * totalny</b>, którego używa reguła wstawiania RGA — bez nowego mechanizmu arbitrażu
- * i bez nowego założenia o zegarze. Zbieżność wynika stąd, że porządek jest totalny
- * i identyczny na każdej replice, a zbiór operacji — ten sam.
+ * <h2>Conflict resolution</h2>
+ * For a given character and a given mark type, the winner is the operation with the highest
+ * {@code (lamport, replicaId)} among those covering that character. This is <b>the same total
+ * order</b> RGA's insertion rule uses — with no new arbitration mechanism and no new assumption
+ * about clocks. Convergence follows from the order being total and identical on every replica,
+ * with the set of operations being the same.
  *
- * <h2>Złożoność — zamiatanie, {@code O(m log m)} (CP20)</h2>
- * Granice zakresów dzielą tekst na {@code O(m)} odcinków. Poprzednia wersja dla KAŻDEGO odcinka
- * przeglądała wszystkie operacje, więc całość była {@code O(m²)} — i nie był to problem
- * teoretyczny, bo {@link #spans} woła się przy każdym naciśnięciu klawisza. CP15 to zmierzył:
- * <b>0,6 ms przy 100 znacznikach, 5,3 ms przy 1600</b> w dokumencie 50 tys. znaków, czyli
- * widoczne opóźnienie pisania przy kilkuset znacznikach.
+ * <h2>Complexity — a sweep, {@code O(m log m)} (CP20)</h2>
+ * Range boundaries divide the text into {@code O(m)} segments. The previous version walked ALL the
+ * operations for EVERY segment, making the whole thing {@code O(m²)} — and that was not a
+ * theoretical problem, because {@link #spans} is called on every keystroke. CP15 measured it:
+ * <b>0.6 ms at 100 marks, 5.3 ms at 1600</b> on a 50 000-character document, that is, visible
+ * typing lag at a few hundred marks.
  *
- * <p>Teraz odcinki przechodzone są od lewej do prawej, a zbiór zakresów aktywnych utrzymywany
- * przyrostowo: każdy zakres wchodzi i wychodzi dokładnie raz. Zwycięzcę danego typu odczytuje
- * się z czoła posortowanego zbioru, a typów jest stała garść ({@link MarkTypes}), więc koszt
- * odcinka nie rośnie z liczbą znaczników.
+ * <p>Now the segments are walked left to right with the set of active ranges maintained
+ * incrementally: each range enters and leaves exactly once. The winner for a type is read off the
+ * front of a sorted set, and there is a fixed handful of types ({@link MarkTypes}), so the
+ * per-segment cost does not grow with the number of marks.
  */
 public final class MarkSet {
 
     /**
      * Operacje znacznikowe, kluczowane identyfikatorem.
      *
-     * <p>{@link LinkedHashMap} zamiast zwykłej mapy dla powtarzalności iteracji — wynik
-     * nie zależy od niej (porządek rozstrzygania jest jawny), ale test, który zawodzi
-     * raz na dziesięć przebiegów, jest gorszy od testu, który zawodzi zawsze.
+     * <p>{@link LinkedHashMap} rather than a plain map, for repeatable iteration — the result does
+     * not depend on it (the resolution order is explicit), but a test that fails one run in ten is
+     * worse than one that fails every time.
      */
     private final Map<Id, Op> operations = new LinkedHashMap<>();
 
-    /** Rozwiązany znacznik na odcinku widocznego tekstu {@code [from, to)}. */
+    /** A resolved mark over a segment of visible text {@code [from, to)}. */
     public record Span(int from, int to, Map<String, String> marks) {
     }
 
     /**
-     * Dopisuje operację znacznikową.
+     * Adds a mark operation.
      *
-     * @return {@code true}, gdy operacja była nowością dla tej repliki
+     * @return {@code true} when the operation was new to this replica
      */
     public boolean apply(Op op) {
         if (!(op instanceof Op.AddMark) && !(op instanceof Op.RemoveMark)) {
-            throw new IllegalArgumentException("to nie jest operacja znacznikowa: " + op);
+            throw new IllegalArgumentException("this is not a mark operation: " + op);
         }
         return operations.putIfAbsent(op.id(), op) == null;
     }
@@ -87,11 +87,11 @@ public final class MarkSet {
     }
 
     /**
-     * Czy obie kotwice operacji da się osadzić w strukturze.
+     * Whether both of the operation's anchors can be located in the structure.
      *
-     * <p>Znacznik, którego kotwica jeszcze nie dotarła, musi poczekać w buforze — dokładnie
-     * tak jak wstawienie, które wyprzedziło swój origin. Zastosowanie go od razu dałoby
-     * zakres zaczepiony o nieistniejące znaki, czyli formatowanie w przypadkowym miejscu.
+     * <p>A mark whose anchor has not yet arrived has to wait in the buffer — exactly like an
+     * insertion that outran its origin. Applying it immediately would give a range pinned to
+     * characters that do not exist, that is, formatting in a random place.
      */
     public static boolean anchorsResolvable(Op op, BlockList blocks) {
         return switch (op) {
@@ -109,15 +109,15 @@ public final class MarkSet {
     // Wyliczanie formatowania
     // ------------------------------------------------------------------
 
-    /** Operacja z wyliczonym zakresem w widocznych współrzędnych. */
+    /** An operation with its range resolved into visible coordinates. */
     private record Resolved(Op op, String type, String value, boolean adding, int from, int to) {
     }
 
     /**
-     * Formatowanie widocznego tekstu jako ciąg odcinków.
+     * The formatting of the visible text as a sequence of segments.
      *
-     * <p>Odcinki są rozłączne, pokrywają tekst w kolejności i <b>nie zawierają odcinków
-     * bez formatowania</b> — warstwa widoku dostaje wyłącznie to, co ma narysować.
+     * <p>The segments are disjoint, cover the text in order, and <b>contain no unformatted
+     * segments</b> — the view layer receives only what it has to draw.
      */
     public List<Span> spans(BlockList blocks) {
         List<Resolved> resolved = resolveAll(blocks);
@@ -125,17 +125,17 @@ public final class MarkSet {
             return List.of();
         }
 
-        // Granice odcinków: początek i koniec każdego zakresu. Między dwiema kolejnymi
-        // granicami formatowanie jest z definicji stałe, bo żaden zakres się tam nie zaczyna
-        // ani nie kończy.
+        // Segment boundaries: the start and end of every range. Between two consecutive
+        // boundaries the formatting is constant by definition, because no range begins or ends
+        // there.
         TreeSet<Integer> boundaries = new TreeSet<>();
         for (Resolved entry : resolved) {
             boundaries.add(entry.from());
             boundaries.add(entry.to());
         }
 
-        // Zakresy zaczynające się i kończące w danej granicy — żeby zamiatanie nie musiało
-        // przy każdej granicy przeglądać wszystkich operacji.
+        // The ranges starting and ending at a given boundary — so the sweep does not have to
+        // walk every operation at every boundary.
         Map<Integer, List<Resolved>> startingAt = new HashMap<>();
         Map<Integer, List<Resolved>> endingAt = new HashMap<>();
         for (Resolved entry : resolved) {
@@ -143,13 +143,13 @@ public final class MarkSet {
             endingAt.computeIfAbsent(entry.to(), key -> new ArrayList<>()).add(entry);
         }
 
-        // Aktywne zakresy per typ, uporządkowane MALEJĄCO po (lamport, replicaId).
-        // Pierwszy element to zwycięzca danego typu na bieżącym odcinku — ten sam porządek
-        // totalny co przy wstawianiu w RGA, więc nie pojawia się tu żaden nowy arbiter.
+        // Active ranges per type, ordered DESCENDING by (lamport, replicaId). The first element
+        // is the winner for that type on the current segment — the same total order as RGA
+        // insertion, so no new arbiter appears here.
         //
-        // TreeMap, nie HashMap: kolejność typów w wyniku ma być powtarzalna. Wynik od niej
-        // nie zależy, ale test zawodzący raz na dziesięć przebiegów jest gorszy od testu
-        // zawodzącego zawsze.
+        // TreeMap rather than HashMap: the order of types in the result should be repeatable. The
+        // result does not depend on it, but a test that fails one run in ten is worse than one
+        // that fails every time.
         Map<String, TreeSet<Resolved>> activeByType = new TreeMap<>();
 
         List<Span> spans = new ArrayList<>();
@@ -158,9 +158,9 @@ public final class MarkSet {
             int from = points.get(i);
             int to = points.get(i + 1);
 
-            // Najpierw zdejmujemy zakresy kończące się w tej granicy, potem dodajemy
-            // zaczynające. Odwrotna kolejność sprawiłaby, że zakres [a,b) i [b,c) tego samego
-            // typu przez chwilę byłyby aktywne jednocześnie.
+            // Remove the ranges ending at this boundary first, then add the ones starting here.
+            // The reverse order would briefly have ranges [a,b) and [b,c) of the same type active
+            // at the same time.
             for (Resolved ending : endingAt.getOrDefault(from, List.of())) {
                 TreeSet<Resolved> active = activeByType.get(ending.type());
                 if (active != null) {
@@ -188,11 +188,11 @@ public final class MarkSet {
     }
 
     /**
-     * Porządek rozstrzygania: malejąco po {@code (lamport, replicaId)}.
+     * The resolution order: descending by {@code (lamport, replicaId)}.
      *
-     * <p>Ten sam porządek totalny, którego używa reguła wstawiania RGA. Jest ostry — dwie różne
-     * operacje nie mogą mieć tego samego identyfikatora — więc {@link TreeSet} nigdy nie uzna
-     * dwóch różnych zakresów za ten sam element.
+     * <p>The same total order RGA's insertion rule uses. It is strict — two different operations
+     * cannot share an identifier — so {@link TreeSet} will never treat two different ranges as the
+     * same element.
      */
     private static final Comparator<Resolved> BY_PRIORITY_DESCENDING = Comparator
         .comparingLong((Resolved entry) -> entry.op().id().lamport())
@@ -200,24 +200,24 @@ public final class MarkSet {
         .reversed();
 
     /**
-     * Zwycięzcy per typ spośród zakresów aktywnych na bieżącym odcinku.
+     * The winners per type among the ranges active on the current segment.
      *
-     * <p>Poprzednia wersja przeglądała przy KAŻDYM odcinku wszystkie operacje, co dawało
-     * {@code O(m²)} — zmierzone w CP15: 0,6 ms przy 100 znacznikach i 5,3 ms przy 1600
-     * w dokumencie 50 tys. znaków, przy czym {@code spans()} woła się na każde naciśnięcie
-     * klawisza. Zamiatanie dokłada i zdejmuje każdy zakres dokładnie raz, więc koszt całości
-     * to {@code O(m log m)}, a ta metoda patrzy wyłącznie na czoło każdego typu.
+     * <p>The previous version walked every operation at EVERY segment, which made it
+     * {@code O(m²)} — measured in CP15: 0.6 ms at 100 marks and 5.3 ms at 1600 on a
+     * 50 000-character document, with {@code spans()} being called on every keystroke. The sweep
+     * adds and removes each range exactly once, so the whole thing costs {@code O(m log m)}, and
+     * this method looks only at the front of each type.
      *
-     * <p>Typów jest stała garść ({@link MarkTypes}), więc ta pętla nie rośnie z liczbą
-     * znaczników — i to jest cała różnica względem poprzedniej wersji.
+     * <p>There is a fixed handful of types ({@link MarkTypes}), so this loop does not grow with
+     * the number of marks — and that is the entire difference from the previous version.
      */
     private static Map<String, String> winnersOf(Map<String, TreeSet<Resolved>> activeByType) {
         Map<String, String> marks = new LinkedHashMap<>();
         for (Map.Entry<String, TreeSet<Resolved>> entry : activeByType.entrySet()) {
             Resolved winner = entry.getValue().first();
-            // Zdjęcie formatowania wygrywa tak samo jak nadanie — po prostu nic nie wnosi
-            // do wyniku. Pominięcie tego rozróżnienia sprawiłoby, że starsze pogrubienie
-            // „przebija się" przez nowsze odpogrubienie.
+            // A removal wins exactly as an application does — it simply contributes nothing to
+            // the result. Skipping this distinction would let an older bold "show through" a
+            // newer unbold.
             if (winner.adding()) {
                 marks.put(winner.type(), winner.value());
             }
@@ -226,12 +226,12 @@ public final class MarkSet {
     }
 
     /**
-     * Skleja sąsiadujące odcinki o identycznym formatowaniu.
+     * Merges adjacent segments with identical formatting.
      *
-     * <p>Granice pochodzą od WSZYSTKICH zakresów, więc dwa pogrubienia stykające się końcami
-     * dałyby dwa odcinki o tej samej treści. Warstwa widoku poradziłaby sobie z tym, ale
-     * dwa sąsiednie identyczne zakresy dekoracji to dwa elementy DOM tam, gdzie wystarczy
-     * jeden — a przy renderowaniu na każde naciśnięcie klawisza to jest różnica.
+     * <p>The boundaries come from ALL ranges, so two bolds meeting end to end would produce two
+     * segments with the same content. The view layer would cope, but two adjacent identical
+     * decoration ranges are two DOM elements where one would do — and when rendering on every
+     * keystroke that is a difference.
      */
     private static List<Span> mergeAdjacent(List<Span> spans) {
         if (spans.size() < 2) {
@@ -281,9 +281,9 @@ public final class MarkSet {
             Integer from = position(start, blocks);
             Integer to = position(end, blocks);
             if (from == null || to == null || from >= to) {
-                // Kotwica poza strukturą (usunięta przez GC albo operacja wyprzedziła
-                // swoją przyczynę) albo zakres pusty po skasowaniu całej zawartości.
-                // Znacznik po prostu nic nie obejmuje — nie jest to błąd.
+                // The anchor is outside the structure (removed by GC, or the operation outran
+                // its cause), or the range is empty after everything in it was deleted. The mark
+                // simply covers nothing — this is not an error.
                 continue;
             }
             resolved.add(new Resolved(op, type, value, adding, from, to));
@@ -292,13 +292,13 @@ public final class MarkSet {
     }
 
     /**
-     * Pozycja kotwicy w widocznych współrzędnych.
+     * The anchor's position in visible coordinates.
      *
-     * <p>Kotwica przyczepiona do tombstone'u nie znika — wskazuje szczelinę między widocznymi
-     * znakami, które go otaczają. Dzięki temu skasowanie sformatowanego tekstu i wpisanie
-     * nowego w to samo miejsce zachowuje formatowanie, zamiast je gubić.
+     * <p>An anchor attached to a tombstone does not disappear — it points at the gap between the
+     * visible characters surrounding it. That is what makes deleting formatted text and typing new
+     * text in the same place preserve the formatting rather than lose it.
      *
-     * @return pozycja albo {@code null}, gdy znaku nie ma w strukturze
+     * @return the position, or {@code null} when the character is not in the structure
      */
     private static Integer position(Anchor anchor, BlockList blocks) {
         BlockList.Locator locator = blocks.locateId(anchor.charId());
@@ -308,8 +308,8 @@ public final class MarkSet {
         Block block = blocks.get(locator.blockIndex());
         int base = blocks.visibleOffsetOf(locator.blockIndex());
         if (block.deleted()) {
-            // Tombstone nie zajmuje miejsca w widocznym tekście — obie strony kotwicy
-            // wskazują tę samą szczelinę.
+            // A tombstone takes no space in the visible text — both sides of the anchor point at
+            // the same gap.
             return base;
         }
         return anchor.side() == Anchor.Side.BEFORE

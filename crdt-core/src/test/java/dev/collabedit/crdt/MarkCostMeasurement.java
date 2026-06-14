@@ -70,54 +70,135 @@ class MarkCostMeasurement {
             .isLessThan(120);
     }
 
+    /**
+     * Median of eleven calls, after a warm-up.
+     *
+     * <p>An earlier version timed a single call and reported 0.8 ms one run and 4.7 ms the next
+     * for the same 400 marks on the same machine and the same code. A five-fold spread makes a
+     * before/after comparison meaningless, and a before/after comparison is the only thing this
+     * table is for.
+     */
+    private static long medianResolveNanos(RgaDocument document) {
+        // Warm-up: the first calls pay for JIT compilation and for filling the structures, so
+        // timing them would describe the JVM rather than the algorithm.
+        for (int i = 0; i < 20; i++) {
+            document.formatting();
+        }
+        long[] samples = new long[11];
+        for (int sample = 0; sample < samples.length; sample++) {
+            long began = System.nanoTime();
+            document.formatting();
+            samples[sample] = System.nanoTime() - began;
+        }
+        java.util.Arrays.sort(samples);
+        return samples[samples.length / 2];
+    }
+
+    /**
+     * Lays {@code markCount} ranges over the text <b>without letting them overlap</b>.
+     *
+     * <p>The width is capped at one less than the stride, and that cap is the whole point of
+     * this method. The previous version used a fixed width of 30 characters at every mark
+     * count, which is fine while the stride is larger than 30 — and at 6400 marks over 50 000
+     * characters the stride is 7. The ranges then overlapped four to five deep, and since they
+     * all carried the same type and the same value, {@code mergeAdjacent} collapsed the entire
+     * document into <b>one</b> span.
+     *
+     * <p>So the last row of the table measured a different shape of problem from the three
+     * above it (1600 ranges → 1600 spans, 6400 ranges → 1 span) while being labelled as a plain
+     * ×4 in mark count. That row was added in CP20 specifically to make the O(m²) → O(m log m)
+     * difference visible, which made it the one row that had to be comparable and the one row
+     * that was not.
+     */
+    private static RgaDocument withDisjointMarks(int markCount) {
+        RgaDocument document = document();
+        document.insert(0, "x".repeat(TEXT_LENGTH));
+        int stride = TEXT_LENGTH / markCount;
+        int width = Math.min(30, stride - 1);
+        for (int i = 0; i < markCount; i++) {
+            int from = i * stride;
+            document.addMark(from, from + width, MarkTypes.BOLD, null);
+        }
+        return document;
+    }
+
     @Test
-    @DisplayName("wyliczanie wyglądu rośnie szybciej niż liniowo po liczbie znaczników")
-    void resolvingFormattingScalesQuadratically() {
-        System.out.printf("%nKOSZT WYLICZENIA WYGLĄDU (%d znaków)%n"
-            + "  znaczników   odcinków   czas wyliczenia%n", TEXT_LENGTH);
+    @DisplayName("resolving formatting scales with the mark count, geometry held constant")
+    void resolvingFormattingScalesWithMarkCount() {
+        System.out.printf("%nCOST OF RESOLVING FORMATTING (%,d characters, disjoint ranges)%n"
+            + "  marks    spans   median resolve      growth%n", TEXT_LENGTH);
 
         long previous = 0;
-        // 6400 dołożone w CP20. Bez punktu, w którym liczba znaczników robi się duża, różnicy
-        // między O(m²) a O(m log m) po prostu nie widać — a przy 100 i 400 nie widać jej wcale,
-        // co samo w sobie jest wynikiem wartym zapisania.
+        int previousCount = 0;
         for (int markCount : new int[] {100, 400, 1_600, 6_400}) {
+            RgaDocument document = withDisjointMarks(markCount);
+            int spans = document.formatting().size();
+            long elapsed = medianResolveNanos(document);
+
+            System.out.printf("  %6d   %6d   %,12d ns%s%n", markCount, spans, elapsed,
+                previous == 0 ? "" : String.format("   x%.1f at x%d marks",
+                    (double) elapsed / previous, markCount / previousCount));
+            previous = elapsed;
+            previousCount = markCount;
+
+            // Every count must produce one span per mark. This is the assertion that keeps the
+            // table honest: if a future change makes the ranges overlap again, the series stops
+            // comparing like with like, and it should fail here rather than be read as a
+            // complexity regression.
+            assertThat(spans)
+                .as("ranges are meant to stay disjoint at %d marks, so spans should equal marks; "
+                    + "%d spans means the geometry changed and the row is not comparable "
+                    + "with the others", markCount, spans)
+                .isEqualTo(markCount);
+
+            // The only timing assertion: resolving has to TERMINATE. Not an assertion on
+            // milliseconds — on a machine shared with Postgres, Redis and a browser, time means
+            // nothing and the test would be randomly red. This bound catches an order-of-
+            // magnitude regression, not noise.
+            assertThat(elapsed)
+                .as("resolving formatting with %d marks took over a second", markCount)
+                .isLessThan(1_000_000_000L);
+        }
+    }
+
+    /**
+     * The cost of <b>overlap depth</b>, which is a separate variable from the mark count.
+     *
+     * <p>Split out of the table above rather than mixed into it. Depth drives a different part
+     * of the sweep: it is the size of the {@code TreeSet} of active ranges that
+     * {@code winnersOf} reads the front of, whereas the mark count drives how many boundaries
+     * there are to walk. Holding the mark count fixed at 1600 and varying only the width shows
+     * the second cost without the first moving underneath it.
+     *
+     * <p>Note what happens to the span count as depth rises: identical marks stacked on the
+     * same text resolve to one winner, so {@code mergeAdjacent} folds the result back down.
+     * More work in, less output out — which is exactly why measuring this together with the
+     * mark count produced a number that could not be interpreted.
+     */
+    @Test
+    @DisplayName("overlap depth is a second, separate cost from the number of marks")
+    void overlapDepthIsMeasuredSeparately() {
+        final int markCount = 1_600;
+        int stride = TEXT_LENGTH / markCount;
+
+        System.out.printf("%nCOST OF OVERLAP DEPTH (%,d characters, %d marks held constant)%n"
+            + "  width   approx depth   spans   median resolve%n", TEXT_LENGTH, markCount);
+
+        for (int width : new int[] {stride - 1, stride * 2, stride * 4, stride * 8}) {
             RgaDocument document = document();
             document.insert(0, "x".repeat(TEXT_LENGTH));
             for (int i = 0; i < markCount; i++) {
-                int from = i * (TEXT_LENGTH / markCount);
-                document.addMark(from, from + 30, MarkTypes.BOLD, null);
+                int from = i * stride;
+                document.addMark(from, Math.min(from + width, TEXT_LENGTH), MarkTypes.BOLD, null);
             }
 
-            // Rozgrzewka: pierwsze wywołanie płaci za kompilację JIT i za zapełnienie
-            // struktur, więc mierzenie go opisywałoby JVM, a nie algorytm.
-            for (int i = 0; i < 20; i++) {
-                document.formatting();
-            }
+            int spans = document.formatting().size();
+            long elapsed = medianResolveNanos(document);
+            System.out.printf("  %5d   %12d   %5d   %,12d ns%n",
+                width, Math.max(1, width / stride), spans, elapsed);
 
-            // MEDIANA Z 11 PRÓBEK, nie pojedynczy pomiar (CP20). Poprzednia wersja mierzyła
-            // jedno wywołanie i dawała przy 400 znacznikach raz 0,8 ms, raz 4,7 ms — pięciokrotny
-            // rozrzut na tej samej maszynie i tym samym kodzie. Porównanie „przed i po" na takich
-            // liczbach nie znaczy nic, a to jest jedyne, do czego ta tabela służy.
-            int spans = 0;
-            long[] samples = new long[11];
-            for (int sample = 0; sample < samples.length; sample++) {
-                long began = System.nanoTime();
-                spans = document.formatting().size();
-                samples[sample] = System.nanoTime() - began;
-            }
-            java.util.Arrays.sort(samples);
-            long elapsed = samples[samples.length / 2];
-
-            System.out.printf("  %10d   %8d   %,10d ns%s%n", markCount, spans, elapsed,
-                previous == 0 ? "" : String.format("   (×%.1f przy ×4 znaczników)",
-                    (double) elapsed / previous));
-            previous = elapsed;
-
-            // Jedyna asercja: rozstrzyganie ma się KOŃCZYĆ. Nie asercja na czas — na maszynie
-            // dzielonej z Postgresem, Redisem i przeglądarką czas nie znaczy nic i test
-            // byłby losowo czerwony. Ta granica wyłapie regresję o rząd wielkości, nie szum.
             assertThat(elapsed)
-                .as("wyliczenie wyglądu przy %d znacznikach przekroczyło sekundę", markCount)
+                .as("resolving formatting at overlap width %d took over a second", width)
                 .isLessThan(1_000_000_000L);
         }
     }

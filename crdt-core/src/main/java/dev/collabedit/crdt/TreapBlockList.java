@@ -9,29 +9,30 @@ import java.util.NavigableMap;
 import java.util.TreeMap;
 
 /**
- * Implementacja {@link BlockList} oparta na treapie z agregatami w węzłach — wersja O(log n).
+ * A {@link BlockList} implementation based on a treap with aggregates in the nodes — the O(log n)
+ * version.
  *
- * <p>Powstała <b>po</b> {@link ArrayBlockList} i po zmierzeniu jej benchmarkiem JMH. Kolejność
- * jest celowa: najpierw wersja oczywiście poprawna, potem liczby pokazujące, że jest za wolna,
- * dopiero potem optymalizacja — i ten sam zestaw property testów na obu, żeby optymalizacja
- * niczego nie zmieniła w zachowaniu (property {@code naiveAndIndexedAgree}).
+ * <p>It was written <b>after</b> {@link ArrayBlockList} and after measuring that one with a JMH
+ * benchmark. The order is deliberate: first the obviously correct version, then numbers showing it
+ * is too slow, and only then the optimisation — with the same property test suite on both, so that
+ * the optimisation changed nothing in the behaviour (the {@code naiveAndIndexedAgree} property).
  *
- * <h2>Trzy agregaty w każdym węźle</h2>
+ * <h2>Three aggregates in every node</h2>
  * <ul>
- *   <li>{@code size} — liczba bloków w poddrzewie, daje wyszukiwanie po indeksie bloku,</li>
- *   <li>{@code visible} — liczba widocznych znaków, daje wyszukiwanie po pozycji w tekście
- *       <b>z pominięciem tombstone'ów</b> bez ich odwiedzania,</li>
- *   <li>{@code total} — wszystkie znaki, daje pomiar narzutu tombstone'ów w O(1).</li>
+ *   <li>{@code size} — the number of blocks in the subtree, which gives lookup by block index,</li>
+ *   <li>{@code visible} — the number of visible characters, which gives lookup by position in the
+ *       text <b>skipping tombstones</b> without visiting them,</li>
+ *   <li>{@code total} — all characters, which gives the tombstone overhead in O(1).</li>
  * </ul>
  *
- * <p>Wyszukiwanie po identyfikatorze nie da się zrobić samym drzewem, bo drzewo jest
- * uporządkowane pozycyjnie, a nie po identyfikatorach. Stąd dodatkowa mapa
- * {@code replika → (początkowy lamport → węzeł)}: {@code floorEntry} znajduje kandydata,
- * a wyliczenie jego pozycji odbywa się przez wspinaczkę po wskaźnikach do rodzica.
+ * <p>Lookup by identifier cannot be done with the tree alone, because the tree is ordered by
+ * position rather than by identifier. Hence an additional map
+ * {@code replica → (starting lamport → node)}: {@code floorEntry} finds the candidate, and its
+ * position is computed by climbing the parent pointers.
  *
- * <p>Priorytety kopca są <b>deterministyczne</b> — liczone z identyfikatora bloku, nie losowe.
- * Dzięki temu ta sama sekwencja operacji daje identyczne drzewo przy każdym uruchomieniu,
- * co jest warunkiem odtwarzalności kontrprzykładów z testów property-based.
+ * <p>The heap priorities are <b>deterministic</b> — computed from the block's identifier rather
+ * than random. That way the same sequence of operations produces an identical tree on every run,
+ * which is a precondition for reproducing counterexamples from the property-based tests.
  */
 public final class TreapBlockList implements BlockList {
 
@@ -52,12 +53,12 @@ public final class TreapBlockList implements BlockList {
     }
 
     private Node root;
-    /** replika → (początkowy lamport bloku → węzeł). Do wyszukiwania po identyfikatorze. */
+    /** replica → (block's starting lamport → node). For lookup by identifier. */
     private final Map<Integer, NavigableMap<Long, Node>> index = new HashMap<>();
 
     /**
-     * Priorytet kopca wyliczony deterministycznie z identyfikatora (wariant splitmix64).
-     * Losowy generator dałby to samo zrównoważenie, ale zabrałby odtwarzalność.
+     * The heap priority, computed deterministically from the identifier (a splitmix64 variant). A
+     * random generator would give the same balance but would take away reproducibility.
      */
     private static int priorityOf(Id id) {
         long h = id.replicaId() * 0x9E3779B97F4A7C15L + id.lamport() * 0xBF58476D1CE4E5B9L;
@@ -68,7 +69,7 @@ public final class TreapBlockList implements BlockList {
     }
 
     // ------------------------------------------------------------------
-    // Agregaty
+    // Aggregates
     // ------------------------------------------------------------------
 
     private static int sizeOf(Node node) {
@@ -89,7 +90,7 @@ public final class TreapBlockList implements BlockList {
         node.total = node.block.length() + totalOf(node.left) + totalOf(node.right);
     }
 
-    /** Aktualizuje agregaty od podanego węzła w górę do korzenia. */
+    /** Updates the aggregates from the given node up to the root. */
     private static void pullUp(Node from) {
         for (Node node = from; node != null; node = node.parent) {
             pull(node);
@@ -97,7 +98,7 @@ public final class TreapBlockList implements BlockList {
     }
 
     // ------------------------------------------------------------------
-    // Rotacje
+    // Rotations
     // ------------------------------------------------------------------
 
     private void replaceInParent(Node node, Node replacement) {
@@ -141,7 +142,7 @@ public final class TreapBlockList implements BlockList {
     }
 
     // ------------------------------------------------------------------
-    // Nawigacja
+    // Navigation
     // ------------------------------------------------------------------
 
     private Node nodeAt(int blockIndex) {
@@ -158,10 +159,10 @@ public final class TreapBlockList implements BlockList {
                 node = node.right;
             }
         }
-        throw new IndexOutOfBoundsException("brak bloku o indeksie " + blockIndex);
+        throw new IndexOutOfBoundsException("no block at index " + blockIndex);
     }
 
-    /** Pozycja węzła w porządku in-order — wspinaczka po rodzicach, O(log n). */
+    /** A node's position in in-order traversal — climbing the parents, O(log n). */
     private static int rankOf(Node node) {
         int rank = sizeOf(node.left);
         for (Node current = node; current.parent != null; current = current.parent) {
@@ -219,8 +220,8 @@ public final class TreapBlockList implements BlockList {
         pullUp(node.parent);
         registerIndex(node);
 
-        // Przywrócenie własności kopca. Rotacje nie zmieniają zawartości poddrzew
-        // przodków, więc ich agregaty pozostają poprawne — wystarczy pull w rotacji.
+        // Restoring the heap property. Rotations do not change the contents of the ancestors'
+        // subtrees, so their aggregates stay correct — a pull inside the rotation is enough.
         while (node.parent != null && node.priority > node.parent.priority) {
             if (node.parent.left == node) {
                 rotateRight(node.parent);
@@ -244,8 +245,8 @@ public final class TreapBlockList implements BlockList {
         Node node = nodeAt(blockIndex);
         unregisterIndex(node);
 
-        // Zsuwamy węzeł do liścia rotacjami, zawsze podnosząc dziecko o wyższym priorytecie —
-        // dzięki temu własność kopca zostaje zachowana bez dodatkowej naprawy.
+        // Rotate the node down to a leaf, always promoting the child with the higher priority —
+        // that keeps the heap property intact with no extra repair.
         while (node.left != null || node.right != null) {
             if (node.right == null
                 || (node.left != null && node.left.priority > node.right.priority)) {
@@ -267,8 +268,8 @@ public final class TreapBlockList implements BlockList {
             return;
         }
         node.block.markDeleted();
-        // Bez tego agregat `visible` w przodkach zostałby nieaktualny, a wyszukiwanie
-        // po pozycji zaczęłoby zwracać złe wyniki — cicho i tylko czasem.
+        // Without this the `visible` aggregate in the ancestors would go stale, and lookup by
+        // position would start returning wrong results — silently, and only sometimes.
         pullUp(node);
     }
 

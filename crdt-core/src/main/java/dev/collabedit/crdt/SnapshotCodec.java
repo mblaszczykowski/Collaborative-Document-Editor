@@ -14,45 +14,45 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Kodowanie {@link DocumentSnapshot} do postaci binarnej.
+ * Encoding a {@link DocumentSnapshot} into binary form.
  *
- * <p>Binarnie, a nie JSON-em, bo snapshot dużego dokumentu z długą historią to najcięższy
- * pojedynczy obiekt w systemie, a jego rozmiar wprost przekłada się na czas otwarcia dokumentu.
- * JSON kosztowałby tu kilkukrotnie więcej przy zerowej korzyści — snapshotu nikt nie czyta
- * oczami, w przeciwieństwie do operacji w logu, gdzie {@link OpCodec} celowo używa JSON-a.
+ * <p>Binary rather than JSON, because the snapshot of a large document with a long history is the
+ * heaviest single object in the system, and its size translates directly into how long a document
+ * takes to open. JSON would cost several times more here for zero benefit — nobody reads a snapshot
+ * with their eyes, unlike the operations in the log, where {@link OpCodec} deliberately uses JSON.
  *
- * <p>Warstwa GZIP na wierzchu: tekst dokumentu kompresuje się bardzo dobrze, a koszt
- * procesora jest pomijalny wobec ruchu na dysku i w sieci.
+ * <p>A GZIP layer on top: document text compresses very well, and the CPU cost is negligible
+ * against the disk and network traffic.
  *
- * <h2>Format (wersja 3)</h2>
+ * <h2>Format (version 3)</h2>
  * <pre>
  *   int    formatVersion
  *   long   clock
- *   int    liczba wpisów version vectora
+ *   int    number of version vector entries
  *     int  replicaId, long maxLamport
- *   int    liczba bloków
+ *   int    number of blocks
  *     int  replicaId, long startLamport
- *     bool ma origin, [int replicaId, long lamport]
+ *     bool has origin, [int replicaId, long lamport]
  *     bool deleted
- *     bool ma treść
- *       jeśli tak:  int długość bajtów UTF-8, bajty
- *       jeśli nie:  int długość w znakach          &lt;- CP18
+ *     bool has content
+ *       if yes: int length in UTF-8 bytes, the bytes
+ *       if no:  int length in characters          &lt;- CP18
  * </pre>
  *
- * <p>Wersja 3 dokłada jeden bit na blok. Blok, którego treść porzucił GC (CP18), niesie
- * wyłącznie swoją długość — a długość jest tym, czego potrzebuje każdy indeks w dokumencie.
- * Blok z treścią zapisuje się dokładnie jak w wersji 2, więc rozmiar typowego snapshotu
- * rośnie o jeden bajt na blok i nic poza tym.
+ * <p>Version 3 adds one bit per block. A block whose content GC dropped (CP18) carries only its
+ * length — and the length is what every index in the document needs. A block with content is
+ * written exactly as in version 2, so a typical snapshot grows by one byte per block and nothing
+ * else.
  *
- * <p><b>Migracja jest darmowa i nie jest to przypadek.</b> Snapshot w niezgodnej wersji jest
- * IGNOROWANY, a nie migrowany ({@link #decode} zwraca {@code null}), bo snapshot to usuwalny
- * cache — stan odtworzy się z logu operacji, wolniej i poprawnie. Decyzja z ADR-0003 spłaca
- * się tu po raz drugi: podniesienie wersji formatu nie wymaga ani jednej linijki kodu
- * migracyjnego.
+ * <p><b>Migration is free, and that is not an accident.</b> A snapshot in an incompatible version
+ * is IGNORED rather than migrated ({@link #decode} returns {@code null}), because a snapshot is a
+ * disposable cache — the state rebuilds from the operation log, more slowly and correctly. The
+ * ADR-0003 decision pays for itself a second time here: raising the format version requires not a
+ * single line of migration code.
  *
- * <p>Bloki zapisane są <b>w kolejności dokumentu</b>, więc odtworzenie nie wymaga ponownego
- * uruchamiania algorytmu integracji — wystarczy je wczytać po kolei. To jest cała oszczędność
- * czasu, dla której snapshoty istnieją.
+ * <p>The blocks are written <b>in document order</b>, so rebuilding does not require running the
+ * integration algorithm again — they can simply be read in sequence. That is the entire time saving
+ * snapshots exist for.
  */
 public final class SnapshotCodec {
 
@@ -60,16 +60,16 @@ public final class SnapshotCodec {
     }
 
     /**
-     * Zapis tekstu bloku jako długość + bajty UTF-8.
+     * Writing a block's text as a length + UTF-8 bytes.
      *
-     * <p>NIE {@code writeUTF}: ta metoda koduje długość na dwóch bajtach i wywala się przy
-     * tekście dłuższym niż 64 KB, komunikatem „encoded string too long". Blok run-length
-     * po scaleniu ciągłego pisania spokojnie przekracza ten rozmiar — wykryte przy pierwszym
-     * uruchomieniu harnessu obciążeniowego na dokumencie o 100 tys. znaków, gdzie snapshoty
-     * przestały się zapisywać, a jedynym objawem był wpis w logu.
+     * <p>NOT {@code writeUTF}: that method encodes the length in two bytes and fails on text longer
+     * than 64 KB with "encoded string too long". A run-length block formed by merging continuous
+     * typing comfortably exceeds that size — found on the first run of the load harness against a
+     * 100 000-character document, where snapshots stopped being written and the only symptom was a
+     * log entry.
      *
-     * <p>Błąd był niewidoczny dla wszystkich wcześniejszych testów, bo żaden nie tworzył
-     * pojedynczego bloku większego niż kilkadziesiąt znaków.
+     * <p>The bug was invisible to every earlier test, because none of them created a single block
+     * larger than a few dozen characters.
      */
     private static void writeLongString(DataOutputStream out, String text) throws IOException {
         byte[] bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -114,25 +114,24 @@ public final class SnapshotCodec {
                 }
             }
 
-            // Znaczniki (CP13) zapisywane JAKO OPERACJE, w formacie przewodowym OpCodec,
-            // a nie jako rozwiązane odcinki formatowania. Odcinki są wynikiem, nie stanem:
-            // zapisanie ich oznaczałoby, że po odtworzeniu z snapshotu replika nie potrafi
-            // już poprawnie scalić znacznika, który przyjdzie później — bo nie ma z czym
-            // rozstrzygnąć konfliktu.
+            // Marks (CP13) are stored AS OPERATIONS, in the OpCodec wire format, rather than as
+            // resolved formatting segments. Segments are a result, not state: storing them would
+            // mean a replica restored from a snapshot could no longer merge a mark arriving later
+            // correctly — because it would have nothing to resolve the conflict against.
             out.writeInt(snapshot.marks().size());
             for (Op mark : snapshot.marks()) {
                 writeLongString(out, OpCodec.encode(mark));
             }
         } catch (IOException e) {
-            throw new UncheckedIOException("nie da się zakodować snapshotu", e);
+            throw new UncheckedIOException("cannot encode the snapshot", e);
         }
         return bytes.toByteArray();
     }
 
     /**
-     * @return odczytany snapshot, albo {@code null} gdy danych nie da się odczytać.
-     *         Zwracanie {@code null} zamiast rzucania wyjątku jest celowe: snapshot to cache,
-     *         a nieczytelny cache ma prowadzić do odtworzenia z logu, a nie do awarii.
+     * @return the decoded snapshot, or {@code null} when the data cannot be read. Returning
+     *         {@code null} rather than throwing is deliberate: a snapshot is a cache, and an
+     *         unreadable cache should lead to a rebuild from the log, not to a failure.
      */
     public static DocumentSnapshot decode(byte[] data) {
         try (DataInputStream in = new DataInputStream(

@@ -456,7 +456,6 @@ document. The table is before and after CP20, measured in one run on the same ma
 | 400 | 0.58 ms | 0.49 ms | 1.2× |
 | 1600 | 4.18 ms | 1.49 ms | 2.8× |
 | 6400 | **62.1 ms** | **4.72 ms** | **13×** |
-| **growth per 4× marks** | ×7.2 → ×14.9 | ×3.1 → ×3.2 | |
 
 This runs **on every keystroke**. The previous version walked every mark at every segment; now
 the segments are walked left to right with the set of active ranges maintained incrementally —
@@ -474,6 +473,58 @@ itself:
    call and gave 0.8 ms once and 4.7 ms another time at 400 marks — a fivefold spread on
    identical code. The figures 0.6 / 0.8 / 5.3 ms in the previous version of this README came
    from exactly that kind of single shot.
+
+#### A row of that table was measuring two things at once
+
+The version above also carried a **growth per 4× marks** row, quoting ×3.1 → ×3.2 for the
+sweep. That row is gone, because the series it summarised was not comparable with itself.
+
+Marks were laid down every `50000 / markCount` characters and each covered a fixed 30. That is
+fine while the stride exceeds 30 — and at 6400 marks the stride is **7**. The ranges then
+overlapped four to five deep and, all carrying the same type and value, `mergeAdjacent` folded
+the whole document into **one** span. So the last row measured 6400 ranges → 1 span while the
+row above it measured 1600 ranges → 1600 spans, and the label said only "×4 marks".
+
+The irony is that this row was **added in CP20** precisely to make the `O(m²)` → `O(m log m)`
+difference visible. The one row that had to be comparable was the one that was not.
+
+**What survives and what does not.** The before/after columns stand: both implementations were
+fed identical input, so the 13× speed-up at 6400 is real. What does not stand is reading a
+complexity *shape* off that series. Re-measured with the width capped at `stride - 1`, so the
+ranges stay disjoint at every count (median of 11 samples, median of 3 runs):
+
+| Marks | Spans | Resolve | Growth per 4× marks |
+|---:|---:|---:|---:|
+| 100 | 100 | 0.28 ms | |
+| 400 | 400 | 0.48 ms | ×1.7 |
+| 1600 | 1600 | 1.43 ms | ×3.0 |
+| 6400 | 6400 | 3.27 ms | ×2.3 |
+
+Every ratio is **at or below ×4 for a ×4 in marks** — sub-linear in this range, because a fixed
+cost independent of the mark count still dominates. `O(m²)` would predict ×16. The test now
+asserts `spans == markCount` at every step, so if a future change makes the ranges overlap
+again it fails as a broken measurement rather than reading as a complexity regression.
+
+**Overlap depth turns out to be a separate variable, and a cheap one.** Holding the mark count
+at 1600 and varying only the width:
+
+| Width | Approx. depth | Spans | Resolve |
+|---:|---:|---:|---:|
+| 30 | 1 | 1600 | 1.44 ms |
+| 62 | 2 | 1 | 1.21 ms |
+| 124 | 4 | 1 | 1.07 ms |
+| 248 | 8 | 1 | 1.30 ms |
+
+Flat within noise. The sweep's cost is driven by **how many marks there are**, not by how deeply
+they stack — which is what the per-type `TreeSet` predicts, since resolving a segment reads only
+the front of each type regardless of how many ranges sit behind it.
+
+**One caveat that applies to every millisecond on this page.** The same code, same marks, same
+machine measured **0.28 ms** for 100 marks when the test ran alone and **0.039 ms** when it ran
+inside the full suite — a sevenfold difference produced by nothing but JIT warm-up state. That
+is a stronger version of the argument CP19 already made when it refused to put a millisecond
+threshold in CI: on this rig, absolute times are comparable only against other times measured
+the same way, which is why the tables above state how they were run.
 
 ### The degradation point — settled, and not in my rig's favour
 
