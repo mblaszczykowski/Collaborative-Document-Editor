@@ -1,194 +1,195 @@
 # Collaborative Document Editor
 
-![Demo: dwie osoby edytują jednocześnie, jedna traci sieć, zmiany scalają się po powrocie, wersja zostaje cofnięta](docs/demo.gif)
+![Demo: two people editing at once, one loses the network, changes merge on reconnect, a version is rolled back](docs/demo.gif)
 
-*Dwie przeglądarki, jeden dokument. Współbieżna edycja tego samego akapitu, praca po odcięciu
-sieci, scalenie po powrocie łączności i cofnięcie do wcześniejszej wersji — bez konfliktu
-i bez utraty ani jednego znaku. Nagranie powstaje ze
-[skryptu](frontend/e2e/demo.spec.ts), nie z ręcznego klikania, więc pokazuje dokładnie to,
-co sprawdza CI.*
+*Two browsers, one document. Concurrent editing of the same paragraph, work continuing after
+the network is cut, merging on reconnect, and a rollback to an earlier version — with no
+conflict and without losing a single character. The recording is produced from a
+[script](frontend/e2e/demo.spec.ts), not from manual clicking, so it shows exactly what CI
+checks.*
 
-![Demo: pogrubienie nadane przez jedną osobę, dopisanie tekstu w środku pogrubionego zakresu przez drugą, komentarz do fragmentu, skasowanie zakotwiczonego tekstu i przywrócenie dokumentu z kosza](docs/demo-v2.gif)
+![Demo: one person bolds a range, another types inside it, a comment on a selection, deleting anchored text, restoring a document from the trash](docs/demo-v2.gif)
 
-*To samo, warstwę wyżej. Anna pogrubia fragment, Marek — nie widząc tego — dopisuje słowo
-w jego **środku**; formatowanie obejmuje nowy tekst, zamiast zostawić w sobie dziurę.
-Potem komentarz do zaznaczenia (podświetlenie pojawia się u drugiej osoby natychmiast,
-bo kotwica jest zwykłą operacją CRDT), skasowanie zakotwiczonego tekstu — rozmowa zostaje,
-oznaczona jako odłączona — i przywrócenie dokumentu z kosza.*
+*The same thing, one layer up. Anna bolds a fragment; Marek — not seeing it yet — types a word
+in the **middle** of it, and the formatting covers the new text instead of leaving a hole in
+itself. Then a comment on a selection (the highlight appears for the other person immediately,
+because the anchor is an ordinary CRDT operation), deleting the anchored text — the thread
+stays, marked as detached — and restoring a document from the trash.*
 
-Edytor tekstu czasu rzeczywistego: wielu użytkowników edytuje ten sam dokument jednocześnie,
-bez konfliktów i bez utraty zmian — również przy słabym łączu, przy jednoczesnej edycji tego
-samego fragmentu i po rozłączeniu klienta.
+A real-time text editor: many users edit the same document at once, without conflicts and
+without losing changes — including over a poor connection, while editing the same fragment,
+and after a client disconnects.
 
-Algorytm scalania (CRDT typu RGA) jest **napisany od zera**, w Javie po stronie serwera
-i w TypeScripcie po stronie klienta. Nie jest to opakowanie na Yjs ani Automerge — powód
-i porównanie z gotowymi rozwiązaniami są w [ADR-0001](docs/adr/0001-crdt-vs-ot.md).
+The merge algorithm (an RGA-style CRDT) is **written from scratch**, in Java on the server and
+in TypeScript on the client. It is not a wrapper around Yjs or Automerge — the reason, and a
+comparison with the off-the-shelf options, is in [ADR-0001](docs/adr/0001-crdt-vs-ot.md).
 
-Ten sam rdzeń unosi **formatowanie tekstu i komentarze**. Nie są to funkcje doklejone obok
-algorytmu, tylko jego zastosowania: znacznik formatowania to zakres między kotwicami
-zaczepionymi w znakach, a kotwica komentarza to ten sam mechanizm z identyfikatorem rozmowy
-zamiast rodzaju formatowania. Warstwa sekwencji znaków nie zmieniła się przy tym **ani
-o jedno pole** ([ADR-0010](docs/adr/0010-rich-text.md)).
-
----
-
-## Co tu jest ciekawego
-
-Jeśli masz trzy minuty:
-
-1. **[Testy zostały sprawdzone pod kątem tego, czy w ogóle łapią błędy](docs/crdt-design.md#czego-to-nauczyło-o-testach).**
-   Wprowadziłem mutację do kodu produkcyjnego i cały zestaw property testów przeszedł — bo
-   wszystkie scenariusze miały jedną, wspólną lukę. Przy okazji **wycofałem z dokumentacji
-   tezę, której nie udało mi się potwierdzić**: 200 tys. losowych scenariuszy pokazało,
-   że algorytm zbiega się również bez warunku, który uważałem za konieczny.
-2. **[ADR-0004](docs/adr/0004-skalowanie-poziome.md) — każda instancja backendu jest repliką
-   CRDT.** Bez lidera, bez rozproszonego locka, bez sticky sessions. Redis to zawodna ścieżka
-   szybka, log operacji w Postgresie — autorytatywna. Zgubiona wiadomość jest przez to
-   problemem latencji, a nie poprawności; [test chaosu](app/src/test/java/dev/collabedit/app/ClusterChaosIT.java)
-   zatrzymuje Redisa w trakcie pisania i sprawdza, że tak faktycznie jest.
-3. **[Otwarte pytanie o wydajność okazało się wadą mojego stanowiska pomiarowego,
-   nie systemu.](#punkt-degradacji--rozstrzygnięty-i-to-nie-na-korzyść-mojego-stanowiska)**
-   Przez cały CP8 „powyżej ~10 klientów zbieżność przestaje być powtarzalna" wyglądało jak
-   granica systemu. Był to domyślny bufor 8 KiB w kliencie testowym, który przepuszczał
-   rozgłoszenia, a **zatrzymywał wyłącznie odpowiedzi na resynchronizację** — czyli jedyny
-   mechanizm zdolny naprawić zgubioną operację. Treap jest przy okazji 210× szybszy
-   od skanowania liniowego przy 100 tys. znaków — i 1,4× **wolniejszy** przy odczycie całości.
-4. **[Rich text w CRDT to inny problem niż formatowanie w edytorze](docs/adr/0010-rich-text.md).**
-   Wystarczy jedno zdanie, żeby zobaczyć dlaczego: Ania pogrubia zakres, Bartek — nie widząc
-   tego — wpisuje tekst w jego środek. Przy formatowaniu zapisanym jako atrybut znaku powstaje
-   dziura, której nikt nie zrobił. Rozwiązanie (kotwice zamiast offsetów) jest tą samą zasadą,
-   którą projekt zastosował już przy kursorach — i to jest najlepszy argument, że tamta
-   decyzja była trafna.
-
-Dziewięć błędów w tym projekcie znalazły testy, pomiar albo audyt planu, a nie przegląd kodu: dublowanie
-dokumentu przy otwarciu, snapshot niezapisywalny powyżej 64 KB, odpowiedź na resynchronizację
-przekraczająca limit ramki, nazwa użytkownika ze znakiem `|` unieważniająca własny token,
-GC kasujący kotwice formatowania, zaznaczenie od pozycji zero niewidoczne dla panelu
-komentarzy, **operacje odrzucane przez limit tempa i gubione po cichu** oraz — znaleziona
-dopiero przy końcowym audycie planu — **historia jako trzecia, niezabezpieczona droga
-do treści i do zapisu cudzego dokumentu**, oraz — znaleziona przy pisaniu planu v3 przeciw
-kodowi — **czwarta droga: odzyskany szkic tworzony bez ważnego tokenu lądował jako dokument
-edytowalny dla wszystkich**, dokładnie odwrotnie do intencji poprawki, która miała go uczynić
-prywatnym.
-Wszystkie są opisane w commitach i w komentarzach w miejscu naprawy.
-
-Do tej listy dochodzi jeszcze jedna kategoria, której wcześniej nie było: **twierdzenie
-z tego README, które okazało się nieprawdziwe po zmierzeniu.** Wyjaśnienie grubego ogona p99
-(„to przez tę sekundę oczekiwania") zostało obalone własnym pomiarem — szczegóły
-w sekcji [Wydajność](#wydajność).
+The same core carries **text formatting and comments**. These are not features bolted on beside
+the algorithm; they are applications of it. A formatting mark is a range between anchors pinned
+to characters, and a comment anchor is that same mechanism with a thread identifier instead of a
+formatting type. The character-sequence layer did not change by **a single field** in the
+process ([ADR-0010](docs/adr/0010-rich-text.md)).
 
 ---
 
-## Architektura
+## What is interesting here
+
+If you have three minutes:
+
+1. **[The tests were checked for whether they catch anything at all](docs/crdt-design.md#what-this-taught-me-about-tests).**
+   I introduced a mutation into production code and the entire property-test suite passed —
+   because every scenario shared one blind spot. Along the way I **withdrew a claim from the
+   documentation that I could not confirm**: 200 000 random scenarios showed the algorithm
+   converges even without a condition I had believed was necessary.
+2. **[ADR-0004](docs/adr/0004-skalowanie-poziome.md) — every backend instance is a CRDT
+   replica.** No leader, no distributed lock, no sticky sessions. Redis is an unreliable fast
+   path; the operation log in Postgres is the authoritative one. A lost message is therefore a
+   latency problem rather than a correctness problem, and a
+   [chaos test](app/src/test/java/dev/collabedit/app/ClusterChaosIT.java) stops Redis mid-write
+   to check that this is actually true.
+3. **[An open performance question turned out to be a flaw in my measurement rig, not in the
+   system.](#the-degradation-point--settled-and-not-in-my-rigs-favour)**
+   For all of CP8, "above ~10 clients convergence stops being repeatable" looked like a limit of
+   the system. It was a default 8 KiB buffer in the test client, which let broadcasts through
+   and **blocked only the resynchronisation responses** — that is, the one mechanism capable of
+   repairing a lost operation. Incidentally, the treap is 210× faster than a linear scan at
+   100 000 characters — and 1.4× **slower** when reading the whole text.
+4. **[Rich text in a CRDT is a different problem from formatting in an editor](docs/adr/0010-rich-text.md).**
+   One sentence shows why: Ania bolds a range, and Bartek — not seeing it yet — types inside it.
+   With formatting stored as a per-character attribute you get a hole nobody made. The solution
+   (anchors instead of offsets) is the same principle the project already applied to cursors,
+   which is the best argument that the earlier decision was right.
+
+Nine bugs in this project were found by tests, by measurement or by a plan audit rather than by
+code review: a document duplicated on open; a snapshot that could not be written above 64 KB; a
+resynchronisation response exceeding the frame limit; a display name containing `|` invalidating
+its own token; GC deleting formatting anchors; a selection starting at position zero invisible
+to the comments panel; **operations rejected by the rate limiter and lost silently**; and —
+found only during the final plan audit — **history as a third, unsecured route to the content
+and to overwriting someone else's document**; and — found while writing plan v3 against the
+code — **a fourth route: a recovered draft created without a valid token landed as a document
+editable by everyone**, the exact inverse of the intent of the fix that was supposed to make it
+private. All of them are described in the commits and in comments at the point of repair.
+
+One more category joins that list, which did not exist before: **a claim in this README that
+turned out to be false once measured.** The explanation of the fat p99 tail ("it is that one
+second of waiting") was disproved by its own measurement — details in
+[Performance](#performance).
+
+---
+
+## Architecture
 
 ```
 ┌─ frontend (React + TypeScript, Vite) ───────────────────────┐
-│  CodeMirror 6 — WYŁĄCZNIE warstwa widoku (ADR-0006)          │
-│  crdt/        — własna implementacja RGA + warstwa znaczników │
-│  transport/   — STOMP + bufor offline + symulator sieci      │
-│  ui/          — lista dokumentów, historia, komentarze       │
+│  CodeMirror 6 — VIEW LAYER ONLY (ADR-0006)                   │
+│  crdt/        — own RGA implementation + mark layer           │
+│  transport/   — STOMP + offline buffer + network simulator    │
+│  ui/          — document list, history, comments              │
 └──────────────────────────┬──────────────────────────────────┘
                            │  WebSocket / STOMP
-                           │  (traceparent w nagłówku ramki)
+                           │  (traceparent in the frame header)
 ┌──────────────────────────▼──────────────────────────────────┐
 │ app — Spring Boot 3, Java 21                                 │
-│   ws/        STOMP, presence, autoryzacja ramek, limit tempa  │
-│   auth/      role, uprawnienia, token                         │
-│   domain/    replika dokumentu w pamięci                      │
-│   persist/   log operacji + snapshoty + katalog dokumentów    │
+│   ws/        STOMP, presence, frame authorization, rate limit │
+│   auth/      roles, permissions, tokens                       │
+│   domain/    in-memory document replica                       │
+│   persist/   operation log + snapshots + document catalog     │
 │   history/   time travel                                      │
-│   comments/  wątki (treść poza CRDT — ADR-0011)               │
+│   comments/  threads (content outside the CRDT — ADR-0011)    │
 │   cluster/   Redis pub/sub + anti-entropy                     │
 └────────┬─────────────────────────┬──────────────────────────┘
          │                         │
     PostgreSQL                  Redis
-  (źródło prawdy)        (zawodna ścieżka szybka)
+  (source of truth)        (unreliable fast path)
 
-crdt-core/ — osobny moduł Mavena, ZERO zależności od Springa.
-             Algorytm + warstwa formatowania + property testy + JMH.
+crdt-core/ — a separate Maven module, ZERO dependencies on Spring.
+             Algorithm + mark layer + property tests + JMH.
 ```
 
-Podział na `crdt-core` bez Springa jest celowy: algorytm da się testować i benchmarkować
-w izolacji, a kompilator pilnuje, żeby warstwa aplikacyjna nie wyciekła do rdzenia.
+Splitting out `crdt-core` without Spring is deliberate: the algorithm can be tested and
+benchmarked in isolation, and the compiler enforces that the application layer does not leak
+into the core.
 
 ---
 
-## Decyzje architektoniczne
+## Architecture decisions
 
-Wszystkie w [`docs/adr/`](docs/adr/). Każdy ADR ma sekcję **Konsekwencje negatywne**, która
-nigdy nie jest pusta, oraz — tam, gdzie czegoś jeszcze nie wiem — jawne
-*„do zweryfikowania w CP-X"* zamiast udawanej pewności.
+All of them in [`docs/adr/`](docs/adr/). Every ADR has a **Negative consequences** section that
+is never empty, and — where I do not know something yet — an explicit *"to be verified in CP-X"*
+rather than manufactured certainty.
 
-| ADR | Decyzja |
+| ADR | Decision |
 |---|---|
-| [0001](docs/adr/0001-crdt-vs-ot.md) | RGA (CRDT) zamiast OT — i dlaczego nie Logoot, nie Fugue, nie Yjs |
-| [0002](docs/adr/0002-transport.md) | WebSocket + STOMP; uzasadnienie każdej wartości heartbeatu i limitu bufora |
-| [0003](docs/adr/0003-historia-zmian.md) | Log operacji jako źródło prawdy, snapshoty jako usuwalny cache |
-| [0004](docs/adr/0004-skalowanie-poziome.md) | Instancja backendu jako replika CRDT + anti-entropy |
-| [0005](docs/adr/0005-tombstone-gc.md) | GC tombstone'ów przez stabilność przyczynową |
-| [0006](docs/adr/0006-warstwa-edytora.md) | CodeMirror 6 jako widok; model dokumentu własny |
-| [0007](docs/adr/0007-zakres-ui.md) | Język wizualny mockupu przyjęty; jego zakres funkcjonalny odrzucony — **zastąpiony przez 0008** |
-| [0008](docs/adr/0008-rozszerzenie-zakresu.md) | Rozszerzenie zakresu z artefaktu do produktu, z warunkiem utrzymania głębi rdzenia |
-| [0009](docs/adr/0009-model-uprawnien.md) | Role uporządkowane, egzekwowane w obu warstwach z jednej reguły |
-| [0010](docs/adr/0010-rich-text.md) | Formatowanie jako osobna warstwa CRDT (Peritext), nie atrybut znaku |
-| [0011](docs/adr/0011-komentarze.md) | Kotwica komentarza w CRDT, treść rozmowy poza nim |
-| [0012](docs/adr/0012-autoryzacja-strukturalna.md) | Autoryzacja deklarowana przy endpoincie; endpoint bez deklaracji **nie jest obsługiwany** |
-| [0013](docs/adr/0013-symulacja-deterministyczna.md) | Symulacja deterministyczna jako trzeci filar testów — ziarno zamiast uszeregowania wątków |
+| [0001](docs/adr/0001-crdt-vs-ot.md) | RGA (CRDT) rather than OT — and why not Logoot, not Fugue, not Yjs |
+| [0002](docs/adr/0002-transport.md) | WebSocket + STOMP; a justification for every heartbeat and buffer-limit value |
+| [0003](docs/adr/0003-historia-zmian.md) | Operation log as the source of truth, snapshots as a disposable cache |
+| [0004](docs/adr/0004-skalowanie-poziome.md) | Backend instance as a CRDT replica + anti-entropy |
+| [0005](docs/adr/0005-tombstone-gc.md) | Tombstone GC via causal stability |
+| [0006](docs/adr/0006-warstwa-edytora.md) | CodeMirror 6 as the view; the document model is our own |
+| [0007](docs/adr/0007-zakres-ui.md) | The mockup's visual language accepted; its functional scope rejected — **superseded by 0008** |
+| [0008](docs/adr/0008-rozszerzenie-zakresu.md) | Widening the scope from artifact to product, conditional on keeping the core deep |
+| [0009](docs/adr/0009-model-uprawnien.md) | Ordered roles, enforced in both layers from one rule |
+| [0010](docs/adr/0010-rich-text.md) | Formatting as a separate CRDT layer (Peritext), not a character attribute |
+| [0011](docs/adr/0011-komentarze.md) | The comment anchor lives in the CRDT, the conversation does not |
+| [0012](docs/adr/0012-autoryzacja-strukturalna.md) | Authorization declared at the endpoint; an endpoint that declares nothing **is not served** |
+| [0013](docs/adr/0013-symulacja-deterministyczna.md) | Deterministic simulation as a third testing pillar — a seed instead of a thread interleaving |
 
-Diagramy (architektura, droga pojedynczej edycji, stany połączenia):
+Diagrams (architecture, the path of a single edit, connection states):
 [`docs/architektura.md`](docs/architektura.md).
-Szczegóły implementacyjne algorytmu: [`docs/crdt-design.md`](docs/crdt-design.md).
-Plan pracy i checkpointy: [v1](docs/IMPLEMENTATION_PLAN.md) (CP1–CP9), [v2](docs/PLAN-v2.md) (CP10–CP15),
-[v3](docs/PLAN-v3.md) (CP16–CP20, **otwarty** — nie dokłada funkcji, zamienia czujność na konstrukcję).
+Implementation details of the algorithm: [`docs/crdt-design.md`](docs/crdt-design.md).
+Work plans and checkpoints: [v1](docs/IMPLEMENTATION_PLAN.md) (CP1–CP9),
+[v2](docs/PLAN-v2.md) (CP10–CP15), [v3](docs/PLAN-v3.md) (CP16–CP20 — adds no features, trades
+vigilance for construction).
 
 ---
 
-## Uruchomienie
+## Running it
 
-### Najszybciej: sam Docker
+### Fastest: Docker only
 
 ```bash
 docker compose --profile app up -d     # → http://localhost:5173
 ```
 
-Buduje backend i frontend z tego repozytorium i podnosi całość razem z bazą i Redisem.
-Nie wymaga JDK ani Node'a. Pierwsze uruchomienie trwa kilka minut (Maven ściąga zależności),
-kolejne są natychmiastowe.
+Builds the backend and the frontend from this repository and brings everything up together with
+the database and Redis. Needs neither a JDK nor Node. The first run takes a few minutes (Maven
+fetching dependencies); later ones are instant.
 
-### Do pracy nad kodem
+### For working on the code
 
-**Wymagania:** JDK 21, Node 22.12+, Docker.
+**Requirements:** JDK 21, Node 22.12+, Docker.
 
 <details>
-<summary>Jeśli używasz colimy zamiast Docker Desktop (rozwinąć)</summary>
+<summary>If you use colima instead of Docker Desktop (expand)</summary>
 
-Testcontainers nie czyta kontekstu dockera, a Docker 29+ odrzuca API w wersji, którą
-domyślnie negocjuje docker-java. Potrzebne są trzy rzeczy — każda naprawia inny objaw
-tego samego problemu, wszystkie mylące, bo brzmią jak „brak Dockera":
+Testcontainers does not read the docker context, and Docker 29+ rejects the API version that
+docker-java negotiates by default. Three things are needed — each fixes a different symptom of
+the same problem, and all of them are misleading because they read like "no Docker":
 
 ```bash
-# 1. wskazanie gniazda (inaczej: "Could not find a valid Docker environment")
+# 1. point at the socket (otherwise: "Could not find a valid Docker environment")
 export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
 
-# 2. ścieżka gniazda WEWNĄTRZ maszyny wirtualnej — dla kontenera-sprzątacza Ryuk
-#    (inaczej: "error while creating mount source path ... operation not supported")
+# 2. the socket path INSIDE the virtual machine — for the Ryuk cleanup container
+#    (otherwise: "error while creating mount source path ... operation not supported")
 export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
 
-# 3. wersja API (inaczej: "client version 1.32 is too old")
+# 3. API version (otherwise: "client version 1.32 is too old")
 echo "api.version=1.44" > ~/.docker-java.properties
 ```
 
-Na runnerach GitHuba nic z tego nie jest potrzebne — Docker jest tam natywny.
+None of this is needed on GitHub runners — Docker is native there.
 </details>
 
 ```bash
-# Zależności infrastrukturalne
+# Infrastructure dependencies
 docker compose up -d postgres redis
 
-# Sekret podpisujący tokeny — WYMAGANY, bez wartości domyślnej (CP16).
-# Serwer odmawia startu bez niego, i to jest celowe: sekret wpisany w repozytorium
-# znaczyłby, że każdy czytelnik może wystawić token dowolnego użytkownika. Docker Compose
-# i CI ustawiają go same; tylko uruchomienie wprost wymaga tej linii.
+# Token signing secret — REQUIRED, with no default (CP16).
+# The server refuses to start without it, and that is deliberate: a secret checked into the
+# repository would mean any reader could mint a token for any user. Docker Compose and CI set
+# it themselves; only running directly needs this line.
 export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)
 
 # Backend
@@ -197,560 +198,574 @@ export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)
 # Frontend
 cd frontend && npm install && npm run dev
 
-# Stack obserwowalności (CP7) — Prometheus, Tempo, Grafana na :3001
+# Observability stack (CP7) — Prometheus, Tempo, Grafana on :3001
 docker compose --profile observability up -d
 ```
 
-Projekt **nie dziedziczy po `spring-boot-starter-parent`**. To celowe: gdyby dziedziczył,
-moduł `crdt-core` — który z założenia nie ma nic wspólnego ze Springiem ([ADR-0001](docs/adr/0001-crdt-vs-ot.md)) —
-dostawałby jego zarządzanie zależnościami i konwencje, a deklarowana granica architektoniczna
-byłaby tylko deklaracją. Zamiast tego `spring-boot-dependencies` jest importowany jako BOM,
-więc wersje są spójne, ale zależność idzie w jedną stronę i dotyczy wyłącznie modułu `app`.
+The project **does not inherit from `spring-boot-starter-parent`**. That is deliberate: if it
+did, the `crdt-core` module — which by design has nothing to do with Spring
+([ADR-0001](docs/adr/0001-crdt-vs-ot.md)) — would inherit its dependency management and
+conventions, and the architectural boundary being claimed would be only a claim. Instead
+`spring-boot-dependencies` is imported as a BOM, so versions stay consistent while the
+dependency points one way and touches only the `app` module.
 
 ---
 
-## Testy
+## Tests
 
 ```bash
-./mvnw -pl crdt-core test              # property testy (stałe ziarno, determinizm)
-./mvnw -pl crdt-core -Pthorough test   # 10 000 prób — jak w nocnym CI
-./mvnw install                         # wszystko, w tym integracyjne na prawdziwym Postgresie
-./mvnw -pl crdt-core exec:exec@run-benchmarks                # benchmarki JMH (~7 min)
-./mvnw -pl app test -Dtest=LoadHarnessIT -Dbenchmark=true    # harness obciążeniowy (~10 min)
-./mvnw -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true   # ilu klientów zbiega się POWTARZALNIE
-./mvnw -pl app test -Dtest=ClusterSimulationTest              # symulacja deterministyczna (~1 s)
-./mvnw -pl app test -Dtest=ClusterSimulationTest -Dsimulation.seeds=20000   # jak w nocnym CI
-cd frontend && npm test                                      # testy jednostkowe klienta (vitest)
-cd frontend && npm run e2e                                   # dwie przeglądarki (wymaga działającego stacku)
+./mvnw -pl crdt-core test              # property tests (fixed seed, deterministic)
+./mvnw -pl crdt-core -Pthorough test   # 10 000 tries — as in the nightly CI run
+./mvnw install                         # everything, including integration on a real Postgres
+./mvnw -pl crdt-core exec:exec@run-benchmarks                # JMH benchmarks (~7 min)
+./mvnw -pl app test -Dtest=LoadHarnessIT -Dbenchmark=true    # load harness (~10 min)
+./mvnw -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true   # how many clients converge REPEATABLY
+./mvnw -pl app test -Dtest=ClusterSimulationTest             # deterministic simulation (~1 s)
+./mvnw -pl app test -Dtest=ClusterSimulationTest -Dsimulation.seeds=20000   # as in nightly CI
+cd frontend && npm test                                      # client unit tests (vitest)
+cd frontend && npm run e2e                                   # two browsers (needs a running stack)
 ```
 
-Testy są uporządkowane wg tego, jaki failure mode wyłapują, a nie wg pokrycia.
+Tests are organised by the failure mode they catch, not by coverage.
 
-| Test | Jaki realny failure mode wyłapuje |
+| Test | The real failure mode it catches |
 |---|---|
-| `convergence` | Brak przemienności scalania — ciche gubienie zmian, gdy dwie osoby piszą jednocześnie |
-| `convergenceWithInterleavedDelivery` | Błędy widoczne tylko wtedy, gdy replika pisze na stanie już scalonym z cudzymi zmianami |
-| `noOperationStaysPending` | Operacja utknęła w buforze na zawsze — repliki zgodnie *nie mają* zmiany, więc sam test zbieżności tego nie widzi |
-| `idempotence` | Retransmisja po reconnect albo powtórka z Redisa dubluje tekst |
-| `deliveryOrderDoesNotMatter` | Algorytm deterministyczny, ale zależny od kolejności — działa na jednym serwerze, psuje się przy skalowaniu |
-| `singleReplicaBehavesLikeStringBuilder` | Błąd w mapowaniu pozycji na identyfikator; wszystkie repliki mylą się tak samo i zbiegają do wspólnego, ale **błędnego** tekstu |
-| `rgaLinearizationInvariantHolds` | Jw. — patrzy na strukturę samą w sobie, więc wspólny błąd go nie oszuka |
-| `sequentialTypingCompressesIntoFewBlocks` | Kompresja run-length nigdy nie zachodzi; poprawność cała, ale dokument 100 tys. znaków to znów 100 tys. obiektów |
-| `naiveAndIndexedProduceIdenticalDocuments` | Błąd w agregatach treapa — najczęściej brak aktualizacji po oznaczeniu tombstone'em |
-| `bothImplementationsAnswerQueriesIdentically` | Zła pozycja z drzewa po rotacji: tekst poprawny, ale kursor użytkownika ląduje gdzie indziej |
-| `gcPreservesText` | GC kasuje węzeł będący czyimś originem — struktura pada dopiero przy następnej edycji w to miejsce |
-| `backwardTypingInterleaves_knownLimitation` | Nie wyłapuje błędu — **utrwala znane ograniczenie RGA** ([ADR-0001](docs/adr/0001-crdt-vs-ot.md)) |
-| `formattingConverges` | Znaczniki scalają się inaczej niż tekst — dokument zgodny, ale wygląda różnie u dwóch osób |
-| `textInsertedIntoMarkedRangeInheritsMark` | Pisanie w środku pogrubienia tworzy dziurę, której nikt nie zrobił — powód, dla którego kotwice zastąpiły offsety ([ADR-0010](docs/adr/0010-rich-text.md)) |
-| `markWaitsForItsAnchors` | Znacznik dotarł przed znakiem, w którym jest zaczepiony — cicho ginie zamiast poczekać |
-| `garbageCollectionSparesMarkAnchors` | GC kasuje kotwicę: formatowanie znika **nie przy edycji, tylko przy najbliższym snapshocie**, więc winowajca jest już dawno poza podejrzeniem |
-| `textTypedOverDeletedRangeDoesNotInheritItsMark` | Odwrotność powyższego — chroniona kotwica zaczyna formatować tekst, który powstał po skasowaniu zakresu |
-| `websocketCannotSubscribeToForeignPrivateDocument` | Znajomość identyfikatora wystarcza do czytania cudzego dokumentu — dziura, którą **otworzył** CP11 i którą CP12 zamknął w obu warstwach |
-| `historyEndpointsCheckAccess` | **Trzecia droga do tych samych danych.** CP12 zabezpieczył WebSocket i `GET /documents/{id}`, a historia oddawała pełną treść dowolnego dokumentu i pozwalała go **nadpisać** — czyli jedyne miejsce, w którym czytelnik mógł zmienić cudzy tekst |
-| `documentRoleOverridesWorkspaceRole` | Dziedziczenie z workspace'u nadpisuje jawne ograniczenie — nie da się odebrać dostępu do jednego dokumentu bez wyrzucania kogoś z zespołu |
-| `threadSurvivesDocumentRestore` | Cofnięcie wersji kasuje rozmowy dodane później |
-| `viewerCannotFormatText` | Uprawnienia sprawdzane dla tekstu, ale nie dla formatowania — a idzie ono tym samym kanałem i jest tak samo zmianą dokumentu |
-| `identityComesFromTokenNotFromRequest` | Tożsamość brana z parametru żądania zamiast z tokenu; identyfikator innej osoby widać w każdej ramce obecności |
-| `recoveredDraftIsPrivateToItsOwner` | Ratunkowa kopia niezsynchronizowanej pracy jednej osoby powstaje widoczna dla wszystkich |
-| `dokument, którego nie da się otworzyć` (e2e) | Odmowa dostępu kończy się pustą stroną — objaw nieodróżnialny od awarii |
-| `viewerCannotWriteText` / `commenterCannotChangeText` | Uprawnienia egzekwowane tylko w interfejsie; ramka wysłana z konsoli przechodzi |
-| `everyDocumentScopedEndpointIsCoveredByTheRule` | **Nowy kontroler startuje bez autoryzacji i milczy o tym** — dokładnie tak, jak `HistoryController` przez cały jeden checkpoint. Test architektury wywala build; strażnik odmawia obsługi w czasie działania |
-| `publicEndpointsAreExactlyTheseThree` | Ktoś ucisza strażnika, żeby build był zielony. Lista endpointów bez autoryzacji jest przypięta po nazwach, więc zmiana widać w diffie |
-| `recoveredDraftCannotBeCreatedAnonymously` | **Wygasły token** sprawia, że odzyskany szkic powstaje jako `link` — edytowalny dla każdego zalogowanego. Odwrotność intencji poprawki, która miała go uczynić prywatnym |
-| `undeclaredEndpointFailsClosed` | Endpoint bez deklaracji jest OBSŁUGIWANY zamiast odrzucony — czyli cała konstrukcja z ADR-0012 jest ozdobą |
-| `sameSeedProducesIdenticalHistory` | **Symulacja nie jest deterministyczna.** Wtedy każdy scenariusz na niej zbudowany jest testem chaosu z dodatkowymi krokami, a znaleziona awaria i tak nie jest odtwarzalna |
-| `differentSeedsProduceDifferentHistories` | Ziarno jest ignorowane i wszystkie przebiegi badają jedno uszeregowanie — zestaw, który wygląda na tysiąc scenariuszy, będąc jednym |
-| `totalFastPathFailureStillConverges` | Najmocniejsza forma tezy z ADR-0004: przy Redisie gubiącym **wszystko** sam log musi doprowadzić instancje do zgody. Inaczej „zawodna ścieżka szybka" nie jest prawdziwym opisem systemu |
-| `droppedContentBlockKeepsIdentityAndLength` | Blok, który zapomniał swojej długości, zapomina, gdzie leży każdy znak za nim — tekst czyta się poprawnie, a kursory od tego miejsca są przesunięte |
-| `visibleBlockRefusesToDropItsContent` | Porzucenie treści widocznego bloku kasuje tekst, którego nikt nie kasował, i robi to po cichu — bo długość zostaje |
-| `naiveLookupIsVisiblyLinear` | Bramka kształtu złożoności przechodzi, nic nie mierząc. Kontrola: naiwny indeks MUSI przekroczyć budżet, w którym mieści się treap |
-| `waitingTheAdvertisedTimeIsEnough` | Czas podany przez serwer jest o milisekundę za krótki, więc uczciwy klient dostaje drugą odmowę — mechanizm zwiększa obciążenie, które miał zmniejszyć |
-| `threadSurvivesDeletionOfAnchoredText` | Skasowanie tekstu kasuje rozmowę o nim — utrata kontekstu decyzji, po którą ludzie wracają po miesiącach |
+| `convergence` | Merging is not commutative — changes silently lost when two people type at once |
+| `convergenceWithInterleavedDelivery` | Bugs visible only when a replica writes on state already merged with someone else's changes |
+| `noOperationStaysPending` | An operation stuck in the buffer forever — the replicas agree in *not* having the change, so a convergence test alone cannot see it |
+| `idempotence` | A retransmission after reconnect, or a repeat from Redis, duplicates text |
+| `deliveryOrderDoesNotMatter` | An algorithm that is deterministic but order-dependent — works on one server, breaks when scaled out |
+| `singleReplicaBehavesLikeStringBuilder` | A bug mapping position to identifier; every replica is wrong in the same way and converges on a shared but **incorrect** text |
+| `rgaLinearizationInvariantHolds` | As above — it looks at the structure itself, so a shared error cannot fool it |
+| `sequentialTypingCompressesIntoFewBlocks` | Run-length compression never happens; correctness intact, but a 100 000-character document is 100 000 objects again |
+| `naiveAndIndexedProduceIdenticalDocuments` | A bug in the treap aggregates — most often a missing update after marking a tombstone |
+| `bothImplementationsAnswerQueriesIdentically` | A wrong position out of the tree after a rotation: the text is right, but the user's cursor lands elsewhere |
+| `gcPreservesText` | GC deletes a node that is someone's origin — the structure breaks only at the next edit in that spot |
+| `backwardTypingInterleaves_knownLimitation` | Catches no bug — it **pins down a known RGA limitation** ([ADR-0001](docs/adr/0001-crdt-vs-ot.md)) |
+| `formattingConverges` | Marks merge differently from text — the document agrees but looks different to two people |
+| `textInsertedIntoMarkedRangeInheritsMark` | Typing inside bold creates a hole nobody made — the reason anchors replaced offsets ([ADR-0010](docs/adr/0010-rich-text.md)) |
+| `markWaitsForItsAnchors` | A mark arrived before the character it is anchored to — it vanishes silently instead of waiting |
+| `garbageCollectionSparesMarkAnchors` | GC deletes an anchor: formatting disappears **not at the edit, but at the next snapshot**, so the culprit is long out of suspicion |
+| `textTypedOverDeletedRangeDoesNotInheritItsMark` | The inverse of the above — a protected anchor starts formatting text created after the range was deleted |
+| `websocketCannotSubscribeToForeignPrivateDocument` | Knowing an identifier is enough to read someone else's document — a hole **opened** by CP11 and closed by CP12 in both layers |
+| `historyEndpointsCheckAccess` | **A third route to the same data.** CP12 secured the WebSocket and `GET /documents/{id}`, while history handed out the full content of any document and allowed it to be **overwritten** — the only place a reader could change someone else's text |
+| `documentRoleOverridesWorkspaceRole` | Workspace inheritance overrides an explicit restriction — you cannot revoke access to one document without removing somebody from the team |
+| `threadSurvivesDocumentRestore` | Rolling back a version deletes conversations added later |
+| `viewerCannotFormatText` | Permissions checked for text but not for formatting — which travels the same channel and is just as much a change to the document |
+| `identityComesFromTokenNotFromRequest` | Identity taken from a request parameter instead of the token; another person's identifier is visible in every presence frame |
+| `recoveredDraftIsPrivateToItsOwner` | The rescue copy of one person's unsynchronised work is created visible to everyone |
+| `a document that cannot be opened` (e2e) | An access denial ends in a blank page — a symptom indistinguishable from a crash |
+| `viewerCannotWriteText` / `commenterCannotChangeText` | Permissions enforced only in the interface; a frame sent from the console goes through |
+| `everyDocumentScopedEndpointIsCoveredByTheRule` | **A new controller starts without authorization and says nothing about it** — exactly as `HistoryController` did for a whole checkpoint. The architecture test fails the build; the guard refuses to serve it at runtime |
+| `publicEndpointsAreExactlyTheseThree` | Somebody silences the guard to make the build green. The list of endpoints without authorization is pinned by name, so the change is visible in the diff |
+| `recoveredDraftCannotBeCreatedAnonymously` | An **expired token** makes a recovered draft come out as `link` — editable by every logged-in user. The inverse of the intent of the fix that was supposed to make it private |
+| `undeclaredEndpointFailsClosed` | An undeclared endpoint is SERVED rather than refused — which makes the whole construction in ADR-0012 decoration |
+| `sameSeedProducesIdenticalHistory` | **The simulation is not deterministic.** Then every scenario built on it is a chaos test with extra steps, and a failure found there still cannot be reproduced |
+| `differentSeedsProduceDifferentHistories` | The seed is ignored and every run explores one interleaving — a suite that looks like a thousand scenarios while being one |
+| `totalFastPathFailureStillConverges` | The strongest form of the ADR-0004 claim: with Redis dropping **everything**, the log alone must bring the instances into agreement. Otherwise "unreliable fast path" is not a true description of the system |
+| `droppedContentBlockKeepsIdentityAndLength` | A block that forgot its length forgets where every character after it lives — the text reads correctly and every cursor past that point is off |
+| `visibleBlockRefusesToDropItsContent` | Dropping the content of a visible block deletes text nobody deleted, and does it silently — because the length stays |
+| `naiveLookupIsVisiblyLinear` | The complexity-shape gate passes while measuring nothing. The control: the naive index MUST blow the budget the treap stays inside |
+| `waitingTheAdvertisedTimeIsEnough` | The wait the server advertises is a millisecond too short, so an honest client is refused a second time — the mechanism amplifies the load it was meant to reduce |
+| `threadSurvivesDeletionOfAnchoredText` | Deleting text deletes the conversation about it — losing the context of a decision people come back to months later |
 
-**Czy te testy mają zęby — sprawdzone, nie założone.** Odwrócenie warunku skanu RGA
-w kodzie produkcyjnym wywala 9 z 13 testów zbieżności. Usunięcie aktualizacji agregatów
-w treapie wywala dokładnie te dwa, które to opisują. Wyłączenie ochrony kotwic w GC wywala
-`garbageCollectionSparesMarkAnchors` — ale za **pierwszym** razem go nie wywalało, bo test
-zakotwiczył się na znaku, który i tak był chroniony jako origin następnego bloku. Test
-przeszedł przy wyłączonym mechanizmie, który miał sprawdzać. To był **trzeci raz**, kiedy
-mutacja ujawniła test niesprawdzający niczego — [notatka o tym, czego to
-nauczyło](docs/crdt-design.md#czego-to-nauczyło-o-testach).
+**Whether these tests have teeth — checked, not assumed.** Inverting the RGA scan condition in
+production code fails 9 of 13 convergence tests. Removing the aggregate updates in the treap
+fails exactly the two that describe it. Disabling anchor protection in GC fails
+`garbageCollectionSparesMarkAnchors` — but the **first** time it did not, because the test had
+anchored on a character that was already protected as the next block's origin. The test passed
+with the mechanism it was checking switched off. That was the **third time** a mutation revealed
+a test that verified nothing — [a note on what that
+taught me](docs/crdt-design.md#what-this-taught-me-about-tests).
 
-Osobna kategoria tego samego problemu: **test, który się nie uruchamia**. `pom.xml` ma własną
-listę wzorców nazw klas testowych, bo domyślne wzorce Surefire nie obejmują `*Properties` —
-i kiedy w CP15 doszła klasa `*Measurement`, historia powtórzyła się co do objawu: klasa
-przechodziła uruchamiana wprost, nie uruchamiała się w buildzie, build był zielony.
-Ostrzeżenie o tej pułapce stało w `pom.xml` od CP2 i nie wystarczyło. Wyłapało to dopiero
-policzenie testów w raportach i porównanie z listą plików w repozytorium.
+A separate category of the same problem: **a test that does not run**. `pom.xml` carries its own
+list of test class-name patterns, because Surefire's defaults do not cover `*Properties` — and
+when a `*Measurement` class arrived in CP15, history repeated itself symptom for symptom: the
+class passed when run directly, did not run in the build, and the build was green. A warning
+about that trap had been sitting in `pom.xml` since CP2 and was not enough. What caught it was
+counting the tests in the reports and comparing against the list of files in the repository.
 
 ---
 
-## Wydajność
+## Performance
 
-Wszystkie liczby pochodzą z jednej maszyny: **MacBook, Apple Silicon (aarch64), 10 rdzeni,
-JDK 25-ea, 4 GB sterty JVM**, Postgres i Redis w kontenerach na tej samej maszynie.
-Liczba bez maszyny jest bezużyteczna, więc podaję ją przy każdej tabeli.
+All numbers come from one machine: **MacBook, Apple Silicon (aarch64), 10 cores, JDK 25-ea, 4 GB
+JVM heap**, with Postgres and Redis in containers on the same machine. A number without its
+machine is useless, so it is stated next to every table.
 
-### Struktura indeksująca: O(n) kontra O(log n)
+### The index structure: O(n) versus O(log n)
 
-Benchmark JMH (`./mvnw -pl crdt-core exec:exec@run-benchmarks`), średni czas operacji
-w mikrosekundach, 3 iteracje rozgrzewki + 5 pomiarowych po 2 s.
+JMH benchmark (`./mvnw -pl crdt-core exec:exec@run-benchmarks`), average operation time in
+microseconds, 3 warm-up iterations + 5 measurement iterations of 2 s.
 
-| Operacja | Dokument | `ArrayBlockList` | `TreapBlockList` | Różnica |
+| Operation | Document | `ArrayBlockList` | `TreapBlockList` | Difference |
 |---|---:|---:|---:|---:|
-| Pozycja w tekście → identyfikator | 1 000 | 0,367 µs | 0,065 µs | 5,6× |
-| | 10 000 | 5,510 µs | 0,149 µs | 37× |
-| | 100 000 | **60,2 µs** | **0,286 µs** | **210×** |
-| Identyfikator → pozycja | 1 000 | 0,187 µs | 0,068 µs | 2,7× |
-| | 10 000 | 2,863 µs | 0,122 µs | 23× |
-| | 100 000 | **40,3 µs** | **0,210 µs** | **192×** |
-| Pełne wstawienie | 100 000 | 684 µs | 4,66 µs | 147× |
-| Odczyt całego tekstu | 100 000 | 310 µs | 429 µs | **0,72× (treap WOLNIEJSZY)** |
+| Position in text → identifier | 1 000 | 0.367 µs | 0.065 µs | 5.6× |
+| | 10 000 | 5.510 µs | 0.149 µs | 37× |
+| | 100 000 | **60.2 µs** | **0.286 µs** | **210×** |
+| Identifier → position | 1 000 | 0.187 µs | 0.068 µs | 2.7× |
+| | 10 000 | 2.863 µs | 0.122 µs | 23× |
+| | 100 000 | **40.3 µs** | **0.210 µs** | **192×** |
+| Full insertion | 100 000 | 684 µs | 4.66 µs | 147× |
+| Reading the whole text | 100 000 | 310 µs | 429 µs | **0.72× (treap SLOWER)** |
 
-Kształt jest ważniejszy od pojedynczych liczb. Przy dziesięciokrotnym wzroście dokumentu
-wyszukiwanie w wersji naiwnej rośnie **15× i 11×** (liniowo), a w treapie **2,3× i 1,9×**
-(logarytmicznie). To jest dokładnie ta różnica, dla której warto było napisać drugą
-implementację — i którą widać dopiero po zmierzeniu, a nie po przeczytaniu złożoności.
+The shape matters more than the individual numbers. For a tenfold larger document, the naive
+search grows **15× and 11×** (linearly) and the treap grows **2.3× and 1.9×** (logarithmically).
+That is exactly the difference that made the second implementation worth writing — and it is
+visible only after measuring, not after reading off the complexity.
 
-**Odczyt całego tekstu jest w treapie wolniejszy o 40%** i nie jest to błąd pomiaru:
-przejście drzewa ma gorszą lokalność pamięci niż iteracja po tablicy. Ta operacja wykonuje
-się raz przy otwarciu dokumentu, a wyszukiwanie — na każde naciśnięcie klawisza, więc
-kompromis jest oczywisty. Ale jest to kompromis, a nie darmowa poprawa, i zamiatanie
-go pod dywan byłoby nieuczciwe wobec liczb.
+**Reading the whole text is 40% slower in the treap**, and that is not a measurement error:
+walking a tree has worse memory locality than iterating an array. That operation runs once when
+a document is opened, while lookup runs on every keystroke, so the trade is obvious. But it is a
+trade, not a free improvement, and sweeping it under the rug would be dishonest towards the
+numbers.
 
-### Propagacja zmian między klientami
+### Propagation between clients
 
-Harness własny, nie Gatling — uzasadnienie w `LoadHarnessIT`: interesująca wielkość to
-odstęp między zdarzeniami u **dwóch różnych klientów**, więc oba końce muszą dzielić jeden
-zegar. Klienci i serwer działają w jednym procesie, latencja sieci ≈ 0; liczby opisują
-koszt systemu, nie doświadczenie użytkownika przez internet.
+A custom harness rather than Gatling — the justification is in `LoadHarnessIT`: the quantity of
+interest is the gap between events at **two different clients**, so both ends must share one
+clock. Clients and server run in one process and network latency is ≈ 0; the numbers describe
+the cost of the system, not the experience of a user over the internet.
 
-Każdy klient wykonuje 40 wstawień **na początek dokumentu** (nie na koniec — pisanie ciągiem
-kompresuje się do jednego bloku i omija ścieżkę, która faktycznie skaluje się z rozmiarem).
+Each client performs 40 insertions **at the start of the document** (not at the end — typing
+continuously compresses into a single block and bypasses the path that actually scales with
+size).
 
-| Dokument | Klienci | p50 | p95 | p99 | Zbieżność |
+| Document | Clients | p50 | p95 | p99 | Convergence |
 |---:|---:|---:|---:|---:|---|
-| pusty | 2 | 27 ms | 29 ms | 30 ms | 55 ms |
-| pusty | 10 | 74 ms | 83 ms | 86 ms | 516 ms |
-| pusty | 25 | 114 ms | 154 ms | 165 ms | 513 ms |
-| pusty | 50 | 202 ms | 360 ms | 374 ms | 499 ms |
-| 10 000 znaków | 2 | 9,3 ms | 10 ms | 10 ms | 60 ms |
-| 10 000 znaków | 10 | 28 ms | 31 ms | 32 ms | 60 ms |
-| 10 000 znaków | 25 | 46 ms | 76 ms | 84 ms | 107 ms |
-| 10 000 znaków | 50 | 135 ms | 218 ms | 230 ms | 267 ms |
-| 100 000 znaków | 2 | 4,5 ms | 586 ms | 586 ms | 603 ms |
-| 100 000 znaków | 10 | 13 ms | 518 ms | 830 ms | 831 ms |
-| 100 000 znaków | 25 | 67 ms | 92 ms | 695 ms | 712 ms |
-| 100 000 znaków | 50 | 124 ms | 212 ms | 1299 ms | 1647 ms |
+| empty | 2 | 27 ms | 29 ms | 30 ms | 55 ms |
+| empty | 10 | 74 ms | 83 ms | 86 ms | 516 ms |
+| empty | 25 | 114 ms | 154 ms | 165 ms | 513 ms |
+| empty | 50 | 202 ms | 360 ms | 374 ms | 499 ms |
+| 10 000 chars | 2 | 9.3 ms | 10 ms | 10 ms | 60 ms |
+| 10 000 chars | 10 | 28 ms | 31 ms | 32 ms | 60 ms |
+| 10 000 chars | 25 | 46 ms | 76 ms | 84 ms | 107 ms |
+| 10 000 chars | 50 | 135 ms | 218 ms | 230 ms | 267 ms |
+| 100 000 chars | 2 | 4.5 ms | 586 ms | 586 ms | 603 ms |
+| 100 000 chars | 10 | 13 ms | 518 ms | 830 ms | 831 ms |
+| 100 000 chars | 25 | 67 ms | 92 ms | 695 ms | 712 ms |
+| 100 000 chars | 50 | 124 ms | 212 ms | 1299 ms | 1647 ms |
 
-**Wszystkie dwanaście scenariuszy zbiega się**, w tym 50 klientów w dokumencie
-100 tys. znaków. Tabela została **powtórzona po zmianach z przeglądu kodu** i odtworzyła się
-w granicach szumu — z jednym wyjątkiem wartym zapisania: p50 dla 10 tys. znaków i 10 klientów
-wyszło raz 28 ms, raz 43 ms. To jest **rozrzut między przebiegami na tej samej maszynie**,
-nie różnica między wersjami kodu, i najlepsza miara tego, jak serio traktować drugą cyfrę
-znaczącą w tej tabeli. Rozmiar dokumentu praktycznie nie wpływa na medianę latencji — po wymianie
-indeksu na treap wąskim gardłem przestała być struktura danych.
+**All twelve scenarios converge**, including 50 clients in a 100 000-character document. The
+table was **repeated after the code-review changes** and reproduced within noise — with one
+exception worth recording: p50 for 10 000 characters and 10 clients came out as 28 ms once and
+43 ms another time. That is the **spread between runs on the same machine**, not a difference
+between versions of the code, and it is the best measure of how seriously to take the second
+significant digit in this table. Document size has almost no effect on median latency — after
+swapping the index for a treap, the data structure stopped being the bottleneck.
 
-**Ogony (p99) są tu wyraźnie grubsze niż w poprzednim pomiarze i jest to CENA
-OGRANICZANIA TEMPA**, wprowadzonego w CP12. Harness zasiewa dokument 100 tys. znaków
-dwustoma operacjami wysłanymi bez przerwy, co wyczerpuje zryw limitu. Zachowanie jest poprawne
-— nic nie ginie — ale liczba jest gorsza i zostaje w tabeli taka, jaka jest.
+**The p99 tails here are noticeably fatter than in the previous measurement, and this is the
+PRICE OF RATE LIMITING** introduced in CP12. The harness seeds the 100 000-character document
+with two hundred operations sent without pause, which exhausts the limiter's burst. The
+behaviour is correct — nothing is lost — but the number is worse, and it stays in the table as
+it is.
 
-#### Wyjaśnienie tego ogona, które tu stało, było BŁĘDNE — sprawdzone w CP20
+#### The explanation of that tail which used to stand here was WRONG — checked in CP20
 
-Poprzednia wersja tego akapitu kończyła się zdaniem: *„odrzucone operacje są ponawiane
-po sekundzie, i ta sekunda jest tym, co widać w p99"*. Brzmiało sensownie: klient czekał
-na sztywno 1000 ms, a wiadro żetonów napełnia się w tempie 60/s, więc rzeczywisty czas
-do jednego żetonu to ~17 ms. Sześćdziesięciokrotne przeszacowanie wyglądało na oczywistą
-przyczynę grubego ogona.
+The previous version of this paragraph ended with: *"rejected operations are retried after a
+second, and that second is what the p99 shows"*. It sounded reasonable: the client waited a
+hardcoded 1000 ms, while the token bucket refills at 60/s, so the real time to one token is
+~17 ms. A sixtyfold overestimate looked like the obvious cause of a fat tail.
 
-CP20 kazał serwerowi odsyłać dokładny czas oczekiwania, który wiadro i tak zna. Zmierzone
-trzema przebiegami harnessu jeden po drugim, na tej samej maszynie:
+CP20 made the server send back the exact wait, which the bucket knows anyway. Measured with
+three harness runs back to back on the same machine:
 
-| 100 tys. znaków, 50 klientów | p99 | odrzuceń |
+| 100 000 chars, 50 clients | p99 | rejections |
 |---|---:|---:|
-| przed (stała 1 s) | 872 ms | 1523 |
-| sam `retry-after` | **1352 ms** | 1614 |
-| `retry-after` + wydłużanie wykładnicze | 826 ms | 1368 |
+| before (fixed 1 s) | 872 ms | 1523 |
+| `retry-after` alone | **1352 ms** | 1614 |
+| `retry-after` + exponential backoff | 826 ms | 1368 |
 
-**Sam czas z serwera pogorszył ogon o 55 %.** Powód jest pouczający: serwer podaje czas
-do JEDNEGO żetonu, a klient ma w buforze kilkadziesiąt operacji. Ponawianie całego bufora
-co 17 ms to odpytywanie w pętli — żetonów od tego nie przybywa, a odmów przybywa.
+**The server-supplied wait alone made the tail 55% worse.** The reason is instructive: the
+server states the time to ONE token, while the client holds dozens of operations in its buffer.
+Resending the whole buffer every 17 ms is busy-polling — it creates no tokens and does create
+rejections.
 
-Wydłużanie wykładnicze usuwa tę regresję, i **na tym kończy się zysk**: 826 ms wobec 872 ms
-mieści się w rozrzucie tego stanowiska (patrz akapit wyżej — 28 ms kontra 43 ms na tym samym
-kodzie). Prawdziwym ogranicznikiem ogona jest **tempo napełniania wiadra razy rozmiar
-zakolejkowanej paczki**: klient z N operacjami za pustym wiadrem czeka N/60 sekundy niezależnie
-od tego, jak często pyta.
+Exponential backoff removes that regression, and **that is where the gain ends**: 826 ms against
+872 ms sits inside the spread of this rig (see the paragraph above — 28 ms versus 43 ms on
+identical code). What actually bounds the tail is **the refill rate times the size of the queued
+batch**: a client with N operations behind an empty bucket waits N/60 seconds no matter how
+often it asks.
 
-Co ta zmiana daje naprawdę, skoro nie daje latencji: znika zgadnięta stała po stronie klienta,
-serwer podaje wartość, którą jako jedyny zna, a liczba odmów przy 50 klientach spada o ~10 %.
-Zostaje w README, bo teza „to przez tę sekundę" była tu opublikowana i okazała się nieprawdziwa.
+What the change really buys, since it does not buy latency: a guessed constant disappears from
+the client, the server states a value only it knows, and rejections at 50 clients drop by ~10%.
+It stays in the README because the claim "it is that one second" was published here and turned
+out to be untrue.
 
-### Profil ruchu — czego poprzednie pomiary NIE obejmowały
+### Traffic profile — what the previous measurements did NOT cover
 
-Ta tabela jest pierwszą, w której harness generuje **komplet ruchu produkcyjnego**:
+This is the first table in which the harness generates **the full production traffic mix**:
 
-| Rodzaj | Do CP15 | Teraz |
+| Kind | Up to CP15 | Now |
 |---|---|---|
-| operacje tekstowe | tak | tak |
-| **obecność (kursory)** | **nie** | co drugie naciśnięcie klawisza |
-| **formatowanie** | **nie** | co dziesiąta edycja |
+| text operations | yes | yes |
+| **presence (cursors)** | **no** | every other keystroke |
+| **formatting** | **no** | every tenth edit |
 
-Kursor jest najczęstszym zdarzeniem w całym systemie, a harness go nie wysyłał. Poprzednie
-liczby opisywały więc system lżejszy niż ten, którego używa przeglądarka — w sposób
-niemożliwy do zauważenia, dopóki się tego nie sprawdzi.
+The cursor is the most frequent event in the entire system, and the harness was not sending it.
+The previous numbers therefore described a lighter system than the one the browser uses — in a
+way that is impossible to notice until you check.
 
-### Koszt warstwy znaczników — obawa potwierdzona w CP15, usunięta w CP18
+### The cost of the mark layer — a fear confirmed in CP15, removed in CP18
 
-Plan v2 zakładał, że kotwice formatowania mogą zablokować garbage collector: każdy znacznik
-zaczepia dwa tombstone'y i chroni je przed usunięciem. CP15 miał to potwierdzić albo obalić
-**liczbą**. Potwierdził — i to mocniej, niż zakładałem.
+Plan v2 assumed that formatting anchors could block the garbage collector: every mark pins two
+tombstones and protects them from removal. CP15 was meant to confirm or refute that **with a
+number**. It confirmed it, and more strongly than I had assumed.
 
-Pomiar: [`MarkCostMeasurement`](crdt-core/src/test/java/dev/collabedit/crdt/MarkCostMeasurement.java),
-1000 znaków, cały tekst skasowany, 100 znaczników (= 200 kotwic), GC z w pełni stabilnym
-wektorem wersji.
+Measurement: [`MarkCostMeasurement`](crdt-core/src/test/java/dev/collabedit/crdt/MarkCostMeasurement.java),
+1000 characters, all text deleted, 100 marks (= 200 anchors), GC with a fully stable version
+vector.
 
-| Jak powstał tekst | Bez znaczników | Ze znacznikami (CP15) | Ze znacznikami (**po CP18**) |
+| How the text was written | Without marks | With marks (CP15) | With marks (**after CP18**) |
 |---|---:|---:|---:|
-| jednym ciągiem (**1 blok** run-length) | 1000 | **0** (0 %) | **1000** (**100 %**) |
-| znak po znaku (1000 bloków) | 1000 | 800 (80 %) | **1000** (**100 %**) |
+| in one run (**1** run-length block) | 1000 | **0** (0%) | **1000** (**100%**) |
+| character by character (1000 blocks) | 1000 | 800 (80%) | **1000** (**100%**) |
 
-Środkowa kolumna to pomiar z CP15 i to on wymusił zmianę. **GC działał na blokach, nie
-na znakach**: blok, w którym choć jeden znak był kotwicą, zostawał w całości. Tekst napisany
-ciągiem to jeden blok, więc jedna kotwica ratowała cały dokument. Plan przewidywał koszt
-„dwa tombstone'y na znacznik"; rzeczywisty koszt wynosił „cały blok na znacznik", a rozmiar
-bloku zależy od historii pisania, nie od formatowania.
+The middle column is the CP15 measurement, and it is what forced the change. **GC worked on
+blocks, not on characters**: a block in which even one character was an anchor stayed whole.
+Text written in one run is one block, so a single anchor rescued the entire document. The plan
+predicted a cost of "two tombstones per mark"; the real cost was "one whole block per mark", and
+block size depends on the history of typing, not on the formatting.
 
-**CP18 usunął ten problem, biorąc dosłownie zdanie, które stało w [ADR-0005](docs/adr/0005-tombstone-gc.md)
-od początku.** Wszystkie trzy powody trzymania tombstone'u — bycie originem, bycie kotwicą,
-stabilność przyczynowa — potrzebują **tożsamości** znaku, nigdy jego treści. Blok, którego nie
-wolno usunąć, **porzuca więc treść i zostaje w strukturze**: zachowuje identyfikator, długość
-i pozycję, traci tylko znaki, których nikt nie widzi. Błąd nie leżał w warunkach ochrony —
-leżał w tym, że „muszę zachować tożsamość" i „muszę zachować wszystko" traktowano jako
-to samo wymaganie.
+**CP18 removed this problem by taking literally a sentence that had been in
+[ADR-0005](docs/adr/0005-tombstone-gc.md) from the beginning.** All three reasons for keeping a
+tombstone — being an origin, being an anchor, causal stability — need the **identity** of a
+character, never its content. A block that must not be removed therefore **drops its content and
+stays in the structure**: it keeps its identifier, its length and its position, and loses only
+the characters nobody can see. The mistake was not in the protection conditions — it was in
+treating "I must keep the identity" and "I must keep everything" as the same requirement.
 
-Format snapshotu poszedł z 2 na 3 (jeden bit na blok: **107 B → 108 B** przy 50 tys. znaków).
-Migracja była **darmowa**, i to drugi raz, kiedy spłaca się decyzja z ADR-0003: snapshot
-w nieznanej wersji jest ignorowany, a nie migrowany, więc stan odtwarza się z logu.
+The snapshot format went from 2 to 3 (one bit per block: **107 B → 108 B** at 50 000
+characters). The migration was **free**, and that is the second time the ADR-0003 decision has
+paid for itself: a snapshot in an unknown version is ignored rather than migrated, so the state
+rebuilds from the log.
 
-Czego CP18 **nie** naprawia: same obiekty bloków zostają. Dokument edytowany dostatecznie
-długo nadal zbiera wpisy na liście bloków i to jest teraz dominujący pozostały koszt.
+What CP18 does **not** fix: the block objects themselves stay. A document edited long enough
+still accumulates entries in the block list, and that is now the dominant remaining cost.
 
-Koszt w snapshocie jest natomiast pomijalny: **8 B na znacznik** (dwie kotwice, typ, wartość).
-Znacznik nie kopiuje objętego tekstu — czyli nie robi dokładnie tego, przed czym broni Peritext.
+The snapshot cost, on the other hand, is negligible: **8 B per mark** (two anchors, type, value).
+A mark does not copy the text it covers — which is precisely what Peritext exists to avoid.
 
-Trzecia zmierzona rzecz — **koszt wyliczenia wyglądu**, dokument 50 tys. znaków. Tabela jest
-przed i po CP20, mierzona jednym przebiegiem na tej samej maszynie (mediana z 11 próbek):
+The third thing measured — **the cost of computing the appearance**, on a 50 000-character
+document. The table is before and after CP20, measured in one run on the same machine (median of
+11 samples):
 
-| Znaczników | `O(m²)` — przed | zamiatanie — po | Przyspieszenie |
+| Marks | `O(m²)` — before | sweep — after | Speed-up |
 |---:|---:|---:|---:|
-| 100 | 0,39 ms | 0,27 ms | 1,5× |
-| 400 | 0,58 ms | 0,49 ms | 1,2× |
-| 1600 | 4,18 ms | 1,49 ms | 2,8× |
-| 6400 | **62,1 ms** | **4,72 ms** | **13×** |
-| **wzrost przy ×4 znaczników** | ×7,2 → ×14,9 | ×3,1 → ×3,2 | |
+| 100 | 0.39 ms | 0.27 ms | 1.5× |
+| 400 | 0.58 ms | 0.49 ms | 1.2× |
+| 1600 | 4.18 ms | 1.49 ms | 2.8× |
+| 6400 | **62.1 ms** | **4.72 ms** | **13×** |
+| **growth per 4× marks** | ×7.2 → ×14.9 | ×3.1 → ×3.2 | |
 
-Wołane jest to **przy każdym naciśnięciu klawisza**. Poprzednia wersja przy każdym odcinku
-przeglądała wszystkie znaczniki; teraz odcinki są przechodzone od lewej do prawej, a zbiór
-zakresów aktywnych utrzymywany przyrostowo — każdy zakres wchodzi i wychodzi dokładnie raz.
-Granica użyteczności przesunęła się z **setek** znaczników na **tysiące**.
+This runs **on every keystroke**. The previous version walked every mark at every segment; now
+the segments are walked left to right with the set of active ranges maintained incrementally —
+each range enters and leaves exactly once. The usable limit moved from **hundreds** of marks to
+**thousands**.
 
-Dwie rzeczy, które ten pomiar pokazał przy okazji i które są ciekawsze od samego przyspieszenia:
+Two things this measurement showed along the way, both more interesting than the speed-up
+itself:
 
-1. **Przy 100 i 400 znacznikach różnicy praktycznie nie ma.** Poniżej mniej więcej tysiąca
-   dominującym kosztem nie jest wcale wybór zwycięzcy, tylko **rozwiązywanie kotwic** przez
-   indeks bloków — dwa wyszukiwania na znacznik. Poprawka złożoności zaczyna się opłacać
-   dokładnie tam, gdzie README wskazywał granicę, i ani trochę wcześniej.
-2. **Poprzedni pomiar był zbyt hałaśliwy, żeby cokolwiek nim porównać.** Mierzył
-   **jedno** wywołanie i dawał przy 400 znacznikach raz 0,8 ms, raz 4,7 ms — pięciokrotny
-   rozrzut na tym samym kodzie. Liczby 0,6 / 0,8 / 5,3 ms z poprzedniej wersji tego README
-   pochodziły z takiego właśnie pojedynczego strzału.
+1. **At 100 and 400 marks there is practically no difference.** Below roughly a thousand, the
+   dominant cost is not picking a winner at all — it is **resolving anchors** through the block
+   index, two lookups per mark. The complexity fix starts paying exactly where the README said
+   the limit was, and not one bit earlier.
+2. **The previous measurement was far too noisy to compare anything with.** It timed **one**
+   call and gave 0.8 ms once and 4.7 ms another time at 400 marks — a fivefold spread on
+   identical code. The figures 0.6 / 0.8 / 5.3 ms in the previous version of this README came
+   from exactly that kind of single shot.
 
-### Punkt degradacji — rozstrzygnięty, i to nie na korzyść mojego stanowiska
+### The degradation point — settled, and not in my rig's favour
 
-Poprzednia wersja tego README kończyła się tutaj zdaniem „nie wiem, czy przyczyna leży
-w systemie, czy w stanowisku pomiarowym". **Leżała w stanowisku.**
+The previous version of this README ended here with "I do not know whether the cause lies in the
+system or in the measurement rig". **It was in the rig.**
 
-`TestStompClient` budował `StandardWebSocketClient` bez konfiguracji kontenera JSR-356,
-którego domyślny bufor tekstowy to **8 KiB** — ośmiokrotnie mniej niż limit ramki, który
-ten system deklaruje ([ADR-0002](docs/adr/0002-transport.md)). Każda większa wiadomość
-po prostu do klienta testowego nie docierała.
+`TestStompClient` built a `StandardWebSocketClient` without configuring the JSR-356 container,
+whose default text buffer is **8 KiB** — eight times smaller than the frame limit this system
+declares ([ADR-0002](docs/adr/0002-transport.md)). Any larger message simply never reached the
+test client.
 
-Dlaczego objawiało się to jako *nieodwracalny* rozjazd, a nie jako zwykłe zgubienie ramki:
+Why this presented as an *unrecoverable* divergence rather than an ordinary dropped frame:
 
-1. Rozgłoszenia szły po jednej operacji na ramkę (~70 B), więc **próg był nieosiągalny**
-   i mechanizm wyglądał na sprawny.
-2. Gdy jedna operacja jednak zginęła, klient poprawnie wykrywał lukę i prosił o resynchronizację.
-3. Odpowiedź na resynchronizację jest dzielona na porcje po **300 operacji** (poprawka z CP8),
-   a to jest ok. **15 KB** — czyli powyżej 8 KiB. **Mechanizm ratunkowy był jedyną rzeczą,
-   której bufor nie przepuszczał.**
+1. Broadcasts went one operation per frame (~70 B), so **the threshold was unreachable** and the
+   mechanism looked healthy.
+2. When one operation did get lost, the client correctly detected the gap and asked for
+   resynchronisation.
+3. The resynchronisation response is split into chunks of **300 operations** (a CP8 fix), which
+   is about **15 KB** — above 8 KiB. **The recovery mechanism was the only thing the buffer did
+   not let through.**
 
-Stąd dokładnie ten objaw, który był w README: serwer z kompletem operacji, część klientów
-trwale kilka operacji w tyle, brak błędu w logu. Naprawa polegająca na skróceniu porcji
-resynchronizacji „naprawiłaby" to na stanowisku i nic nie zmieniła w systemie.
+Hence exactly the symptom that was in the README: a server holding every operation, some clients
+permanently a few operations behind, and no error in the log. A "fix" that shortened the
+resynchronisation chunk would have repaired this on the rig and changed nothing in the system.
 
-Po podniesieniu bufora stanowiska **wszystkie 12 scenariuszy zbiega się**, a `BroadcastFanoutIT`
-daje 3/3 powtarzalnych zbieżności dla 2, 10, 25 i 50 klientów — również na kodzie *sprzed*
-sklejania rozgłoszeń. Sklejanie uzasadnia się więc **latencją, a nie naprawą zbieżności**,
-i tak jest opisane wyżej.
+After raising the rig's buffer, **all 12 scenarios converge**, and `BroadcastFanoutIT` gives 3/3
+repeatable convergences for 2, 10, 25 and 50 clients — including on the code from *before*
+broadcast coalescing. Coalescing is therefore justified by **latency, not by fixing
+convergence**, and it is described that way above.
 
-Czego to nie dowodzi: klienci i serwer nadal działają w jednym procesie, więc liczby opisują
-koszt systemu, nie doświadczenie przez internet. Rozdzielenie na osobne maszyny pozostaje
-niezrobione — ale nie jest już potrzebne do odpowiedzi na pytanie „system czy stanowisko".
+What this does not prove: clients and server still run in one process, so the numbers describe
+the cost of the system, not the experience over the internet. Splitting the rig across separate
+machines remains undone — but it is no longer needed to answer the question "system or rig".
 
 ---
 
 ## Failure modes
 
-Co dokładnie dzieje się, gdy coś pójdzie nie tak. Każdy wiersz ma źródło decyzji, a te
-oznaczone jako zweryfikowane mają test, który to sprawdza.
+Exactly what happens when something goes wrong. Every row has the source of the decision, and
+those marked as verified have a test that checks it.
 
-| Scenariusz | Zachowanie | Zweryfikowane |
+| Scenario | Behaviour | Verified |
 |---|---|---|
-| **Utrata połączenia w trakcie edycji** | Edycja lokalna działa dalej. Operacje trafiają do bufora w IndexedDB i przeżywają zamknięcie karty. Po powrocie klient wymienia kursor z serwerem i dosyła zaległości. | `e2e: odcięcie sieci`, `e2e: bufor trwały` |
-| **Pad instancji między rozgłoszeniem a zapisem** | Operacja jest u innych klientów, ale nie w bazie. Klient retransmituje ją po ponownym połączeniu, bo bufor zwalnia dopiero po potwierdzeniu **zapisu**, nie rozgłoszenia. | [ADR-0003](docs/adr/0003-historia-zmian.md) |
-| **Utrata repliki z pamięci / restart instancji** | Stan odtwarzany z logu operacji: najbliższy snapshot + ogon. Skasowanie wszystkich snapshotów nie zmienia wyniku, tylko czas. | `stateSurvivesReplicaLoss`, `snapshotsAreOnlyACache` |
-| **Awaria Redisa w trakcie edycji** | Edycja i zapis działają dalej — Redis jest ścieżką szybką, nie krytyczną. Instancje rozjeżdżają się na czas awarii, a przegląd anti-entropy dociąga różnicę z logu. | `redisOutageIsRepairedByAntiEntropy` |
-| **Zgubione rozgłoszenie do klienta** | Klient wykrywa lukę po potwierdzeniu operacji, której u siebie nie ma, i sam prosi o resynchronizację. Kursor `server_seq` by tu nie wystarczył — rośnie od potwierdzeń, więc byłby „na bieżąco" mimo braku. | wykryte i naprawione w CP8 |
-| **Dwoje ludzi edytuje ten sam znak** | Obie zmiany zachowane, deterministyczny porządek wg `(lamport, replicaId)`, bez arbitra. | `concurrentEditOfSameCharacterKeepsBoth`, property `convergence` |
-| **Klient offline dłużej niż okno GC (7 dni)** | Operacje **odrzucone jawnie** (`RESYNC_REQUIRED`), lokalna wersja zapisana jako osobny dokument „Odzyskany szkic". Świadomie nie udajemy scalenia — informacja o pozycji tych znaków została utracona. | `staleOperationIsRejectedExplicitly` |
-| **Operacja wyprzedza swoją przyczynę** | Trafia do bufora i jest ponawiana po każdym udanym scaleniu. NIE jest mylona z sytuacją powyżej — warunek odmowy wymaga jednocześnie braku originu i pozycji poniżej granicy GC. | `operationAheadOfItsCauseIsNotRejected` |
-| **Bardzo duży dokument** | Rozmiar praktycznie nie wpływa na latencję (100 tys. znaków ≈ dokument pusty) po wymianie indeksu na treap. Tombstone'y rosną z liczbą edycji, a GC odzyskuje mniej, niż zakładałem. | sekcja [Wydajność](#wydajność), [ADR-0005](docs/adr/0005-tombstone-gc.md) |
-| **50 klientów w jednym dokumencie** | Zbiega się powtarzalnie — wszystkie 12 scenariuszy harnessu, łącznie z 50 klientami w dokumencie 100 tys. znaków. Wcześniejsza obserwacja „powyżej ~10 klientów zbieżność przestaje być powtarzalna" okazała się **wadą stanowiska pomiarowego, nie systemu** — patrz [Punkt degradacji](#punkt-degradacji--rozstrzygnięty-i-to-nie-na-korzyść-mojego-stanowiska). | `BroadcastFanoutIT`, harness CP15 |
-| **Przekroczenie limitu tempa** | Serwer odrzuca ramkę i **odsyła `RATE_LIMITED`**, a klient ponawia po sekundzie z bufora niepotwierdzonych. Odrzucenie z powodu uprawnień jest ciche (informacja „ten dokument istnieje" byłaby wyciekiem), z powodu tempa — nie: cicha odmowa tempa jest utratą danych. | harness CP15: 351 odrzuceń, zero utraconych operacji |
-| **Skasowanie sformatowanego tekstu** | Formatowanie zostaje na tym, co przetrwało. Kotwice znaczników są tombstone'ami chronionymi przed GC — bez tego wygląd dokumentu znikałby przy sprzątaniu pamięci, i to nie w chwili kasowania, tylko przy najbliższym snapshocie. | `garbageCollectionSparesMarkAnchors` |
-| **Skasowanie skomentowanego tekstu** | Rozmowa **zostaje**, oznaczona jako odłączona, z zacytowanym fragmentem z chwili założenia. Kasowanie rozmowy w reakcji na edycję tekstu jest zachowaniem, którego nikt się nie spodziewa. | `threadSurvivesDeletionOfAnchoredText`, e2e |
-| **Rola bez prawa zapisu** | Edytor jest tylko do odczytu, pasek formatowania wyszarzony, panel komentarzy bez pola treści — bo rola przyjeżdża razem ze stanem początkowym. Serwer sprawdza tak samo jak przedtem; klient przestaje jedynie proponować gest, który zostałby odrzucony. Bez tego czytelnik pisał u siebie, widział swój tekst, a jego replika po cichu rozjeżdżała się z resztą. | `openedDocumentCarriesCallersRole` |
-| **Odebranie dostępu w trakcie sesji** | Działa w granicy 5 s (czas życia wpisu w cache'u uprawnień). Odebranie przez właściciela unieważnia cache natychmiast na TEJ instancji; pozostałe czekają na wygaśnięcie. | `revokingAccessTakesEffect` |
+| **Connection lost mid-edit** | Local editing continues. Operations go into an IndexedDB buffer and survive the tab being closed. On reconnect the client exchanges cursors with the server and sends the backlog. | `e2e: network cut`, `e2e: durable buffer` |
+| **Instance dies between broadcast and write** | The operation is at the other clients but not in the database. The client retransmits it after reconnecting, because the buffer releases only on confirmation of the **write**, not of the broadcast. | [ADR-0003](docs/adr/0003-historia-zmian.md) |
+| **In-memory replica lost / instance restart** | State rebuilt from the operation log: nearest snapshot + tail. Deleting every snapshot does not change the result, only the time. | `stateSurvivesReplicaLoss`, `snapshotsAreOnlyACache` |
+| **Redis outage mid-edit** | Editing and writing continue — Redis is the fast path, not the critical one. Instances diverge for the duration of the outage, and the anti-entropy sweep pulls the difference from the log. | `redisOutageIsRepairedByAntiEntropy` |
+| **Broadcast to a client lost** | The client detects the gap on receiving an acknowledgement for an operation it does not have, and asks for resynchronisation itself. A `server_seq` cursor would not be enough here — it grows from acknowledgements, so it would look "current" despite the gap. | found and fixed in CP8 |
+| **Two people edit the same character** | Both changes kept, deterministic order by `(lamport, replicaId)`, no arbiter. | `concurrentEditOfSameCharacterKeepsBoth`, property `convergence` |
+| **Client offline longer than the GC window (7 days)** | Operations **rejected explicitly** (`RESYNC_REQUIRED`), and the local version is saved as a separate "Recovered draft" document. We deliberately do not fake a merge — the information about where those characters belong has been lost. | `staleOperationIsRejectedExplicitly` |
+| **An operation arrives ahead of its cause** | It goes into the buffer and is retried after every successful merge. It is NOT confused with the case above — refusal requires both a missing origin and a position below the GC boundary. | `operationAheadOfItsCauseIsNotRejected` |
+| **Very large document** | Size has almost no effect on latency (100 000 characters ≈ an empty document) after swapping the index for a treap. Tombstones grow with the number of edits, and GC reclaims less than I had assumed. | [Performance](#performance) section, [ADR-0005](docs/adr/0005-tombstone-gc.md) |
+| **50 clients in one document** | Converges repeatably — all 12 harness scenarios, including 50 clients in a 100 000-character document. The earlier observation "above ~10 clients convergence stops being repeatable" turned out to be **a flaw in the measurement rig, not in the system** — see [The degradation point](#the-degradation-point--settled-and-not-in-my-rigs-favour). | `BroadcastFanoutIT`, CP15 harness |
+| **Rate limit exceeded** | The server refuses the frame and **sends back `RATE_LIMITED` together with the exact wait**, and the client retries from its unacknowledged buffer with exponential backoff. A refusal for lack of permission is silent (saying "this document exists" would be a leak); a refusal for pace is not — a silent pace refusal is data loss. | CP15 harness: 351 rejections, zero lost operations |
+| **Deleting formatted text** | Formatting stays on what survived. Mark anchors are tombstones protected from GC — without that, the document's appearance would vanish during memory cleanup, and not at the moment of deletion but at the next snapshot. | `garbageCollectionSparesMarkAnchors` |
+| **Deleting commented text** | The conversation **stays**, marked as detached, with the fragment quoted as of when it was created. Deleting a conversation in response to a text edit is behaviour nobody expects. | `threadSurvivesDeletionOfAnchoredText`, e2e |
+| **A role without write permission** | The editor is read-only, the formatting bar greyed out, the comments panel has no input — because the role arrives together with the initial state. The server checks exactly as before; the client merely stops offering a gesture that would be rejected. Without this, a reader typed locally, saw their own text, and their replica silently diverged from everyone else's. | `openedDocumentCarriesCallersRole` |
+| **Access revoked mid-session** | Works within 5 s (the lifetime of a permission cache entry). Revocation by the owner invalidates the cache immediately on THAT instance; the others wait for expiry. | `revokingAccessTakesEffect` |
 
 ---
 
-## Co zrobiłbym inaczej w produkcji
+## What I would do differently in production
 
-Lista świadomych uproszczeń i znanych granic. Powstawała **w trakcie** pracy, a nie
-z pamięci na końcu — dlatego zawiera też rzeczy, które wyszły dopiero przy implementacji
-i okazały się gorsze, niż zakładałem.
+A list of deliberate simplifications and known limits. It was written **during** the work rather
+than from memory at the end — which is why it also contains things that only emerged during
+implementation and turned out worse than I had assumed.
 
-**Kilka pozycji z tej listy zostało w międzyczasie zrobionych.** Zostawiam je poniżej,
-przekreślone, wraz z tym, co się przy okazji potwierdziło albo nie — sekcja o granicach
-własnego rozwiązania traci sens, jeśli pokazuje tylko granice, które wciąż stoją. Pełny
-rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
+**Several items on this list have since been done.** I leave them below, struck through, along
+with what was confirmed along the way and what was not — a section about the limits of your own
+solution loses its point if it shows only the limits that still stand. Full reckoning:
+[PLAN-v2](docs/PLAN-v2.md), [PLAN-v3](docs/PLAN-v3.md).
 
-**Algorytm**
-- **Fugue zamiast RGA.** RGA ma udokumentowaną anomalię przeplotu: pisanie wstecz przez
-  dwie osoby daje przeplecione litery ([test, który to utrwala](crdt-core/src/test/java/dev/collabedit/crdt/RgaInterleavingTest.java)).
-  Fugue tego nie ma. Odrzucone z powodu budżetu, nie technicznego.
-- **Kotwica formatowania blokuje CAŁY blok run-length**, nie własny tombstone — zmierzone
-  w CP15, [liczby wyżej](#koszt-warstwy-znaczników--i-obawa-która-się-potwierdziła). Przy
-  dokumencie napisanym ciągiem GC nie odzyskuje po dodaniu formatowania **nic**. Ta sama
-  odpowiedź co niżej: porzucać treść węzła, zachowując go w strukturze.
-- **GC odzyskuje mniej, niż zakłada [ADR-0005](docs/adr/0005-tombstone-gc.md).** Tombstone
-  w środku tekstu jest originem następnego bloku, więc nie wolno go usunąć niezależnie od
-  stabilności przyczynowej — kolekcjonowalny jest praktycznie tylko ogon dokumentu. Właściwą
-  odpowiedzią jest porzucanie **treści** skasowanych węzłów przy zachowaniu ich w strukturze
-  (tak robi Yjs); wymaga zmiany reprezentacji bloku i unieważnia format snapshotu.
-- **Dwie implementacje jednego algorytmu** (Java + TypeScript) to dług: każda zmiana kosztuje
-  podwójnie. Korpus wektorów konformancyjnych chroni przed cichym rozjazdem, ale nie przed
-  kosztem. W produkcji: jedna implementacja skompilowana do WebAssembly.
-- **Indeks po stronie klienta jest naiwny (O(n)).** Po stronie serwera treap wszedł po
-  zmierzeniu; odpowiedniego pomiaru w przeglądarce nie zrobiłem, więc nie optymalizowałem
-  w ciemno. Port jest mechaniczny.
+**Algorithm**
+- **Fugue instead of RGA.** RGA has a documented interleaving anomaly: two people typing
+  backwards produce interleaved letters ([the test that pins it
+  down](crdt-core/src/test/java/dev/collabedit/crdt/RgaInterleavingTest.java)). Fugue does not
+  have it. Rejected on budget, not on technical grounds.
+- ~~**A formatting anchor blocks the WHOLE run-length block**, not just its own tombstone.~~
+  **Done (CP18).** Measured at 0% reclamation in CP15, and now 100% — a deleted block drops its
+  content and keeps its identity. [Numbers above](#the-cost-of-the-mark-layer--a-fear-confirmed-in-cp15-removed-in-cp18).
+- ~~**GC reclaims less than [ADR-0005](docs/adr/0005-tombstone-gc.md) assumes.**~~
+  **Done (CP18)**, by the answer this entry itself named: drop the **content** of deleted nodes
+  while keeping them in the structure. A tombstone in the middle of the text is still the next
+  block's origin and still cannot be removed — CP18 makes that cost a fixed handful of bytes
+  instead of the text it used to hold.
+- **Two implementations of one algorithm** (Java + TypeScript) is a debt: every change costs
+  twice. The conformance-vector corpus protects against silent divergence, but not against the
+  cost. In production: one implementation compiled to WebAssembly.
+  CP18 was a counterexample worth recording: the change cost nothing on the client, because the
+  client has neither GC nor snapshot decoding. The debt is proportional to how much of the
+  algorithm the client actually implements, not to the size of the algorithm.
+- **The client-side index is naive (O(n)).** On the server the treap arrived after measurement;
+  I have not made the equivalent measurement in the browser, so I did not optimise blind. The
+  port is mechanical.
 
-**Zakres produktu**
-- **Diagnostyka jest pod `?debug=1`.** Symulator sieci i podgląd stanu CRDT były przez
-  pewien czas widoczne w interfejsie; to była pomyłka co do adresata
-  ([ADR-0007](docs/adr/0007-zakres-ui.md), sekcja o rewizji). Użytkownik ma widzieć produkt,
-  nie stanowisko pomiarowe.
-- ~~**Brak formatowania tekstu.**~~ **Zrobione (CP13).** Diagnoza z tej listy była trafna —
-  rich text w CRDT to rzeczywiście osobny algorytm, nie atrybut znaku. Peritext wszedł jako
-  **druga warstwa obok sekwencji znaków**, która nie zmieniła się przy tym ani o jedno pole
-  ([ADR-0010](docs/adr/0010-rich-text.md)). Pozostała granica: rozstrzyganie sprzecznych
-  wartości tego samego typu znacznika jest O(m²) po liczbie znaczników w dokumencie —
-  wystarczające przy setkach, nie przy dziesiątkach tysięcy.
-- ~~**Brak komentarzy i uprawnień.**~~ **Zrobione (CP12, CP14).** Kotwica komentarza okazała
-  się tym samym mechanizmem co formatowanie i **nie dołożyła ani jednej linijki do warstwy
-  CRDT** ([ADR-0011](docs/adr/0011-komentarze.md)). Uprawnienia egzekwowane w obu warstwach
-  z jednej reguły ([ADR-0009](docs/adr/0009-model-uprawnien.md)). Pozostałe granice: treść
-  komentarzy nie działa offline (bufor obejmuje operacje CRDT, nie REST), panel odświeża się
-  przez odpytywanie zamiast przez zdarzenie, brak powiadomień i wzmianek, a odebranie
-  uprawnień działa w granicy 5 s cache'u.
-- **Cofanie działa tylko w obrębie sesji i nie obejmuje formatowania.** `UndoManager` cofa
-  własne wstawienia i usunięcia, scala ciągłe pisanie w jeden krok — ale stos żyje w pamięci
-  karty i znika po przeładowaniu, a operacje znacznikowe nie trafiają do niego wcale.
-  Ctrl+Z po Ctrl+B cofa więc **poprzednią zmianę tekstu**, a nie pogrubienie. Zachowanie
-  przewidywalne, ale zaskakujące; cofanie świadome znaczników wymaga rozszerzenia stosu
-  o operacje odwrotne do `AddMark`/`RemoveMark`, czyli tego samego, co CRDT-owe undo.
+**Product scope**
+- **Diagnostics live behind `?debug=1`.** The network simulator and the CRDT state view were
+  visible in the interface for a while; that was a mistake about the audience
+  ([ADR-0007](docs/adr/0007-zakres-ui.md), the revision section). A user should see a product,
+  not a measurement rig.
+- ~~**No text formatting.**~~ **Done (CP13).** The diagnosis on this list was right — rich text
+  in a CRDT really is a separate algorithm, not a character attribute. Peritext arrived as a
+  **second layer beside the character sequence**, which did not change by a single field
+  ([ADR-0010](docs/adr/0010-rich-text.md)).
+- ~~**No comments and no permissions.**~~ **Done (CP12, CP14).** The comment anchor turned out to
+  be the same mechanism as formatting and **added not one line to the CRDT layer**
+  ([ADR-0011](docs/adr/0011-komentarze.md)). Permissions enforced in both layers from one rule
+  ([ADR-0009](docs/adr/0009-model-uprawnien.md)). Remaining limits: comment content does not work
+  offline (the buffer covers CRDT operations, not REST), the panel refreshes by polling rather
+  than by an event, there are no notifications or mentions, and revoking permissions takes effect
+  within the 5 s cache window.
+- **Undo works only within a session and does not cover formatting.** `UndoManager` undoes your
+  own insertions and deletions and merges continuous typing into one step — but the stack lives
+  in the tab's memory and disappears on reload, and mark operations never enter it at all.
+  Ctrl+Z after Ctrl+B therefore undoes **the previous text change**, not the bolding. Predictable
+  but surprising; mark-aware undo requires extending the stack with operations inverse to
+  `AddMark`/`RemoveMark`, which is the same problem as CRDT-aware undo.
 
-**Infrastruktura i eksploatacja**
-- **Uwierzytelnianie bez hasła**, token podpisany HMAC, bez unieważniania i rotacji klucza.
-  Token unieważniony w trakcie sesji nie zrywa połączenia, bo sprawdzamy go raz, przy `CONNECT`.
-  ~~Sekret ma wartość domyślną wpisaną w repozytorium.~~ **Naprawione w CP16: wartości domyślnej
-  nie ma.** Sekret w repo znaczył, że wdrożenie, które zapomni ustawić zmiennej, podpisuje tokeny
-  kluczem znanym każdemu czytelnikowi — a ponieważ token niesie identyfikator użytkownika,
-  znajomość klucza wystarcza do wystawienia tokenu **dowolnej osoby**. Serwer z takim kluczem
-  startuje, obsługuje ruch i raportuje zdrowie. Teraz odmawia startu, a komunikat mówi, jak
-  wygenerować sekret. Kosztem jest jedna zmienna środowiskowa przy `spring-boot:run`.
-- **Log operacji rośnie bez ograniczeń.** Potrzebna archiwizacja starych segmentów do storage'u
-  obiektowego i kompakcja.
-- **Presence jest lokalne dla instancji** — klient podłączony do innej instancji nie pojawia
-  się na liście obecnych. Wymaga osobnego kanału i wygasania wpisów.
-- **Klient odtwarza cały log przy otwarciu dokumentu.** Serwer wewnętrznie używa snapshotów;
-  klient powinien dostawać zserializowany snapshot CRDT, a nie komplet operacji.
-- ~~**Brak rate limitingu**~~ **— jest (CP12), i nauczył mnie czegoś, czego nie zakładałem.**
-  Pierwsza wersja odrzucała ramkę po cichu, bo tak działa odmowa z powodu uprawnień.
-  Przy 100 tys. znaków i 50 klientach dało to 115 odrzuceń i dokument, który **przestał
-  się zbiegać** — limit tempa nie jest odmową dostępu, tylko prośbą o zwolnienie, więc cicha
-  odmowa jest po prostu utratą danych. Teraz serwer odsyła `RATE_LIMITED`, a klient ponawia
-  z bufora niepotwierdzonych. Znalazł to pomiar, nie przegląd kodu.
-- **Brak shardingu dokumentów.** Jeden dokument z bardzo wieloma użytkownikami zawsze
-  obciąża tyle instancji, ile trzyma go w pamięci.
-- **Zapisy do jednego dokumentu są serializowane** blokadą wiersza, bo ciągłość `server_seq`
-  jest wymogiem wykrywania luk. To pierwsze miejsce, które ograniczy przepustowość.
-- **Brak SockJS fallback** — klient za proxy blokującym `Upgrade` nie połączy się wcale.
-- **Okno GC (7 dni) to wartość zgadnięta**, nie wyliczona z telemetrii.
+**Infrastructure and operations**
+- **Password-less authentication**, an HMAC-signed token, with no revocation and no key rotation.
+  A token revoked mid-session does not tear down the connection, because we check it once, at
+  `CONNECT`.
+  ~~The secret has a default value written into the repository.~~ **Fixed in CP16: there is no
+  default.** A secret in the repo meant that a deployment forgetting to set the variable signed
+  tokens with a key known to every reader — and since the token carries the user identifier,
+  knowing the key is enough to mint a token for **any person**. A server with such a key starts,
+  serves traffic and reports healthy. It now refuses to start, and the message says how to
+  generate a secret. The cost is one environment variable for `spring-boot:run`.
+- **The operation log grows without bound.** It needs archival of old segments to object storage,
+  and compaction.
+- **Presence is instance-local** — a client connected to another instance does not appear in the
+  list of people present. Requires a separate channel and entry expiry.
+- **The client replays the whole log when opening a document.** The server uses snapshots
+  internally; the client should receive a serialised CRDT snapshot rather than the full set of
+  operations.
+- ~~**No rate limiting**~~ **— there is (CP12), and it taught me something I had not assumed.**
+  The first version refused the frame silently, because that is how a refusal for lack of
+  permission works. At 100 000 characters and 50 clients that produced 115 rejections and a
+  document that **stopped converging** — a rate limit is not a denial of access but a request to
+  slow down, so a silent refusal is simply data loss. The server now sends `RATE_LIMITED`, and
+  the client retries from its unacknowledged buffer. Measurement found this, not code review.
+- **No document sharding.** One document with very many users always loads as many instances as
+  hold it in memory.
+- **Writes to a single document are serialised** by a row lock, because the continuity of
+  `server_seq` is a requirement of gap detection. This is the first place that will limit
+  throughput.
+- **No SockJS fallback** — a client behind a proxy that blocks `Upgrade` will not connect at all.
+- **The GC window (7 days) is a guessed value**, not derived from telemetry.
 
-**Otwarte, nierozstrzygnięte**
-- **Limit porcji resynchronizacji jest liczony w operacjach, a nie w bajtach**
-  (`SYNC_CHUNK = 300`). Zakłada to, że operacja waży ~100 B — co przestaje być prawdą przy
-  wklejeniu dużego fragmentu tekstu, bo to jest **jedna** operacja o dziesiątkach kilobajtów.
-  Ścieżka rozgłoszeń została w CP10 przeniesiona na budżet bajtowy; ścieżka resynchronizacji
-  nie. Znany dług, nie przeoczenie.
-- ~~**Rozstrzyganie znaczników rośnie ponadliniowo po ich liczbie — zmierzone.**~~
-  **Zrobione (CP20): zamiatanie zamiast `O(m²)`.** Przy 6400 znacznikach **62,1 ms → 4,72 ms**,
-  a wzrost przy czterokrotnym zwiększeniu liczby znaczników spadł z ×14,9 do ×3,2. Granica
-  przesunięta z setek na tysiące. Pozostała granica jest w innym miejscu, niż zakładałem:
-  poniżej ~1000 znaczników dominuje **rozwiązywanie kotwic** przez indeks bloków, nie wybór
-  zwycięzcy, więc tam ta poprawka nie daje nic. Drzewo przedziałowe przeliczane przyrostowo
-  nadal by pomogło, ale dopiero po tamtym koszcie.
-- **Rola jest sprawdzana przy otwarciu, nie przy każdej zmianie.** Klient dostaje ją raz,
-  razem ze stanem początkowym; podniesienie uprawnień w trakcie sesji nie odblokuje edytora
-  bez przeładowania. Odebranie działa natychmiast tam, gdzie ma znaczenie — serwer i tak
-  odrzuci operację — więc jest to niewygoda, a nie dziura. Właściwym rozwiązaniem jest
-  zdarzenie o zmianie roli na kanale użytkownika.
-- ~~**Autoryzacja jest per kontroler, więc z definicji niekompletna.**~~
-  **Zrobione (CP16), i wypadło gorzej, niż ten punkt zakładał — bo przy okazji znalazła się
-  TRZECIA dziura tej samej klasy.** `POST /api/documents/recovered` ustawiał właściciela
-  i widoczność `private` tylko wewnątrz `if (caller != null)`, więc **wygasły token** dawał
-  dokument bez właściciela, z domyślną widocznością `link` — czyli edytowalny dla każdego
-  zalogowanego. Dokładna odwrotność intencji. I nie jest to przypadek brzegowy: token żyje
-  12 godzin, a ten endpoint istnieje **wyłącznie** dla klientów offline dłużej niż 7-dniowe
-  okno GC, więc ścieżka bez ważnego tokenu jest tam ścieżką typową.
+**Open, unresolved**
+- **The resynchronisation chunk limit is counted in operations, not bytes**
+  (`SYNC_CHUNK = 300`). That assumes an operation weighs ~100 B — which stops being true when
+  someone pastes a large fragment of text, because that is **one** operation of tens of
+  kilobytes. The broadcast path moved to a byte budget in CP10; the resynchronisation path did
+  not. A known debt, not an oversight.
+- ~~**Mark resolution grows superlinearly with their number — measured.**~~
+  **Done (CP20): a sweep instead of `O(m²)`.** At 6400 marks **62.1 ms → 4.72 ms**, and growth
+  per fourfold increase in marks dropped from ×14.9 to ×3.2. The limit moved from hundreds to
+  thousands. The remaining limit is somewhere other than I assumed: below ~1000 marks the
+  dominant cost is **resolving anchors** through the block index, not picking a winner, so the
+  fix buys nothing there. An interval tree recomputed incrementally would still help, but only
+  after that cost.
+- **The role is checked on open, not on every change.** The client receives it once, together
+  with the initial state; raising permissions mid-session will not unlock the editor without a
+  reload. Revocation takes effect immediately where it matters — the server rejects the operation
+  anyway — so this is an inconvenience rather than a hole. The right solution is a role-change
+  event on the user's channel.
+- ~~**Authorization is per controller, therefore incomplete by construction.**~~
+  **Done (CP16), and it turned out worse than this entry assumed — because a FOURTH hole of the
+  same class showed up along the way.** `POST /api/documents/recovered` set the owner and
+  `private` visibility only inside `if (caller != null)`, so an **expired token** produced a
+  document with no owner and the default `link` visibility — editable by every logged-in user.
+  The exact inverse of the intent. And it is not an edge case: a token lives 12 hours, while that
+  endpoint exists **only** for clients offline longer than the 7-day GC window, so the path
+  without a valid token is the typical one there.
 
-  Każdy endpoint deklaruje teraz `@RequiresDocumentAccess`, `@RequiresAuthentication` albo
-  `@PublicEndpoint`, a `DocumentAccessGuard` **odmawia obsługi endpointu, który nie deklaruje
-  niczego** — 500 z nazwą metody w logu. Nowy kontroler startuje zepsuty i głośny zamiast
-  otwarty i cichy. Do tego test architektury wywala build, a lista endpointów publicznych jest
-  przypięta po nazwach, więc uciszenie strażnika wymaga wpisu widocznego w code review
-  ([ADR-0012](docs/adr/0012-autoryzacja-strukturalna.md)).
+  Every endpoint now declares `@RequiresDocumentAccess`, `@RequiresAuthentication` or
+  `@PublicEndpoint`, and `DocumentAccessGuard` **refuses to serve an endpoint that declares
+  nothing** — a 500 with the method name in the log. A new controller starts broken and loud
+  instead of open and quiet. On top of that an architecture test fails the build, and the list of
+  public endpoints is pinned by name, so silencing the guard requires an entry visible in code
+  review ([ADR-0012](docs/adr/0012-autoryzacja-strukturalna.md)).
 
-  Czego to **nie** daje, i warto to powiedzieć wprost: nic nie sprawdza, czy zadeklarowane
-  uprawnienie jest **właściwe**. System gwarantuje teraz, że decyzja została podjęta — nie,
-  że była trafna.
-- **Autoryzacja zagląda w treść ramki.** Rola `commenter` wymaga odróżnienia znacznika
-  komentarza od formatowania, a to znaczy parsowanie ładunku w interceptorze. Robimy to
-  **tylko** dla tej jednej roli, ale jest to warstwa autoryzacji zależna od formatu danych —
-  zmiana formatu operacji może cicho zmienić uprawnienia. W produkcji: typ operacji
-  w nagłówku STOMP, nie w ciele.
-- **Liczby wydajnościowe nadal pochodzą z jednego procesu.** Klienci, serwer, Postgres
-  i Redis dzielą dziesięć rdzeni, więc harness sam jest poważnym konsumentem procesora,
-  a latencja sieci wynosi zero. Liczby opisują koszt systemu, nie doświadczenie użytkownika
-  przez internet — do tego trzeba by je powiększyć o RTT łącza i rozdzielić stanowisko
-  na osobne maszyny.
+  What it does **not** give, and this is worth stating plainly: nothing checks whether the
+  declared capability is the **right** one. The system now guarantees a decision was made, not
+  that it was correct.
+- **Authorization looks inside the frame body.** The `commenter` role requires telling a comment
+  mark from a formatting mark, and that means parsing the payload in the interceptor. We do it
+  **only** for that one role, but it is an authorization layer coupled to a data format — a
+  change to the operation format could silently change permissions. In production: the operation
+  type in a STOMP header, not in the body.
+- **The performance numbers still come from a single process.** Clients, server, Postgres and
+  Redis share ten cores, so the harness is itself a serious CPU consumer and network latency is
+  zero. The numbers describe the cost of the system, not the experience of a user over the
+  internet — for that they would have to be increased by the link's RTT and the rig split across
+  separate machines.
 
 ---
 
-## Obserwowalność
+## Observability
 
 ```bash
-docker compose --profile observability up -d   # Prometheus, Tempo, Grafana na :3001
+docker compose --profile observability up -d   # Prometheus, Tempo, Grafana on :3001
 ```
 
-Pojedyncze naciśnięcie klawisza tworzy **jeden trace obejmujący dwie usługi**: span
-`edit.submit` powstaje w przeglądarce, a `op.receive`, `crdt.merge` i `op.broadcast.local`
-po stronie serwera. Kontekst wędruje nagłówkiem ramki STOMP, bo uścisk dłoni WebSocketa
-zdarza się raz na sesję i nagłówek HTTP opisywałby całą sesję zamiast jednej edycji.
+A single keystroke produces **one trace spanning two services**: the `edit.submit` span is
+created in the browser, and `op.receive`, `crdt.merge` and `op.broadcast.local` on the server.
+The context travels in a STOMP frame header, because the WebSocket handshake happens once per
+session and an HTTP header would describe the whole session rather than one edit.
 
-Zapis do logu jest powiązany **linkami**, nie zagnieżdżeniem: obejmuje wiele operacji naraz
-i dzieje się na innym wątku, więc zagnieżdżenie pokazywałoby pozostałym trace'om czas cudzego
-zapisu.
+The write to the log is connected by **links**, not by nesting: it covers many operations at once
+and happens on a different thread, so nesting would show the other traces somebody else's write
+time.
 
-[Dashboard](ops/grafana/dashboards/collabedit.json) jest plikiem w repo, nie stanem klikniętym
-w interfejsie. Każdy panel ma opis mówiący, co **zła** wartość oznacza — łącznie z tym, że
-stale zerowa liczba napraw luk w numeracji nie jest dobrą wiadomością, tylko sygnałem, że
-mechanizm naprawczy nigdy się nie uruchomił.
+The [dashboard](ops/grafana/dashboards/collabedit.json) is a file in the repository, not state
+clicked together in a UI. Every panel has a description saying what a **bad** value means —
+including the fact that a permanently zero count of numbering-gap repairs is not good news but a
+signal that the repair mechanism has never run.
 
 ---
 
-## Nagranie demo
+## Recording the demo
 
 ```bash
-./tools/reset-demo-data.sh                          # czyści dokumenty po testach
-cd frontend && npm run demo                         # nagrywa oba scenariusze (Playwright)
-cd .. && ./tools/make-gif.sh core    docs/demo.gif      # rdzeń: współbieżność, offline, historia
-       ./tools/make-gif.sh product docs/demo-v2.gif     # produkt: formatowanie, komentarze, kosz
+./tools/reset-demo-data.sh                          # clears documents left by tests
+cd frontend && npm run demo                         # records both scenarios (Playwright)
+cd .. && ./tools/make-gif.sh core    docs/demo.gif      # core: concurrency, offline, history
+       ./tools/make-gif.sh product docs/demo-v2.gif     # product: formatting, comments, trash
 ```
 
-Scenariusze są **testami**, nie nagraniem ręcznego klikania — jeśli demo przestanie działać,
-przebieg padnie, zamiast wyprodukować mylące nagranie. Dwa osobne pliki, bo jeden byłby albo
-za długi, żeby ktokolwiek obejrzał go do końca, albo za pobieżny, żeby cokolwiek pokazać.
+The scenarios are **tests**, not recordings of manual clicking — if the demo stops working, the
+run fails instead of producing a misleading recording. Two separate files, because one would be
+either too long for anyone to watch to the end or too shallow to show anything.
 
-W scenariuszu produktowym nagrywana jest **tylko jedna z dwóch przeglądarek**. Nie z oszczędności:
-skrypt składający GIF-a wybiera nagranie po rozmiarze pliku, a to kryterium zależy od tego, ile
-się w danym oknie działo — czyli od przypadku. Jeden plik w katalogu usuwa zgadywanie, a widok
-drugiej osoby nic nie traci, bo wszystko, co robi Marek, widać u Anny.
+In the product scenario **only one of the two browsers** is recorded. Not to save space: the
+script that assembles the GIF picks a recording by file size, and that criterion depends on how
+much happened in a given window — that is, on chance. One file in the directory removes the
+guesswork, and the second person's view loses nothing, because everything Marek does is visible
+at Anna's end.
 
 ---
 
-## Struktura repozytorium
+## Repository layout
 
 ```
-crdt-core/     algorytm RGA + property testy + JMH  (zero Springa)
-app/           Spring Boot: WebSocket, persystencja, historia, cluster
+crdt-core/     RGA algorithm + property tests + JMH  (zero Spring)
+app/           Spring Boot: WebSocket, persistence, history, cluster
 frontend/      React + TypeScript + CodeMirror 6
-conformance/   wektory testowe wspólne dla implementacji w Javie i w TypeScripcie
-docs/adr/      decyzje architektoniczne
-docs/design/   mockup wizualny, na którym oparty jest interfejs
-ops/           konfiguracje Prometheus / Tempo / Grafana / OTel Collector
-tools/         skrypty pomocnicze (nagranie demo, czyszczenie danych)
+conformance/   test vectors shared by the Java and TypeScript implementations
+docs/adr/      architecture decisions
+docs/design/   the visual mockup the interface is based on
+ops/           Prometheus / Tempo / Grafana / OTel Collector configuration
+tools/         helper scripts (demo recording, data cleanup)
 ```
 
 ---
 
-## Stan projektu
+## Project status
 
-Zamknięte są wszystkie checkpointy trzech planów: dziewięć z [planu v1](docs/IMPLEMENTATION_PLAN.md)
-(rdzeń CRDT, transport, historia, klaster, obserwowalność), sześć z
-[planu v2](docs/PLAN-v2.md) (wydajność rozgłoszeń, wiele dokumentów, uprawnienia,
-formatowanie, komentarze, ponowny pomiar) i pięć z [planu v3](docs/PLAN-v3.md).
+Every checkpoint of three plans is closed: nine from [plan v1](docs/IMPLEMENTATION_PLAN.md)
+(CRDT core, transport, history, cluster, observability), six from
+[plan v2](docs/PLAN-v2.md) (broadcast performance, multi-document, permissions, formatting,
+comments, re-measurement), and five from [plan v3](docs/PLAN-v3.md).
 
-**v3 nie dodał ani jednej funkcji** i to jest jego teza: wszędzie tam, gdzie system polegał
-na tym, że ktoś pamięta, zauważy albo trafi, wchodzi konstrukcja, która nie pozwala inaczej.
-Endpoint bez zadeklarowanej autoryzacji nie jest obsługiwany; awaria klastra przychodzi
-z ziarnem, które ją odtwarza; blok, którego nie wolno usunąć, oddaje pamięć zamiast ją trzymać;
-bramka CI pilnuje kształtu złożoności, którego liczby w tym README dotyczą.
+**v3 added not a single feature**, and that is its thesis: everywhere the system relied on
+somebody remembering, noticing, or getting lucky, a construction takes over that does not allow
+otherwise. An endpoint with no declared authorization is not served; a cluster failure arrives
+with the seed that reproduces it; a block that must not be removed gives back memory instead of
+holding it; a CI gate watches the shape of the complexity the numbers in this README are about.
 
-README było pisane równolegle z kodem, sekcja po sekcji — nie odtwarzane z pamięci na końcu.
-Ta sama zasada dotyczy sekcji [o granicach](#co-zrobiłbym-inaczej-w-produkcji): pozycje,
-które plan v2 zamknął, są w niej **przekreślone, a nie usunięte** — razem z tym, co się przy
-okazji potwierdziło, i z tym, co okazało się nieprawdą.
+The README was written alongside the code, section by section — not reconstructed from memory at
+the end. The same principle applies to the section [on
+limits](#what-i-would-do-differently-in-production): items the later plans closed are **struck
+through rather than deleted**, together with what was confirmed along the way and what turned out
+to be false.
 
-| Warstwa | Testy |
+| Layer | Tests |
 |---|---:|
-| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, blok bez treści, kształt złożoności | 53 |
-| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra, uprawnienia i test architektury | 108 |
-| `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 51 |
-| end-to-end — dwie prawdziwe przeglądarki | 17 |
-| **razem** | **229** |
-| *osobno:* `app` — **symulacja deterministyczna** klastra | *806* |
+| `crdt-core` — property, invariants, conformance, snapshots, marks, content-dropped blocks, complexity shape | 53 |
+| `app` — integration against a real Postgres and Redis, including cluster chaos, permissions and the architecture test | 108 |
+| `frontend` — agreement with the Java implementation, the bridge to CodeMirror | 51 |
+| end-to-end — two real browsers | 17 |
+| **total** | **229** |
+| *separately:* `app` — **deterministic simulation** of the cluster | *806* |
 
-**Symulacja jest wypisana osobno i poza sumą, bo inaczej ta tabela kłamie.** 806 to liczba
-**ziaren**, nie odrębnych asercji: cztery scenariusze przemnożone przez dwieście uszeregowań
-zdarzeń. Wliczenie tego do sumy zamieniłoby uczciwą liczbę w chwyt marketingowy — tym bardziej,
-że nocny przebieg podnosi ją do 20 000 ziaren na scenariusz i wtedy „liczba testów" przestaje
-znaczyć cokolwiek. Wartość jest w tym, że **awaria przychodzi z ziarnem, które ją odtwarza**,
-a nie w tym, ile ich jest.
+**The simulation is listed separately and outside the total, because otherwise this table lies.**
+806 is a count of **seeds**, not of distinct assertions: four scenarios multiplied by two hundred
+event interleavings. Folding it into the total would turn an honest number into a marketing one —
+all the more so because the nightly run raises it to 20 000 seeds per scenario, at which point
+"number of tests" stops meaning anything. The value is that **a failure arrives with the seed
+that reproduces it**, not in how many there are.
 
-Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
-trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami
-poprawności. Uruchamiane jawnie, polecenia w sekcji [Testy](#testy).
+The load harness, the JMH benchmarks and the fan-out measurement are excluded from the normal
+run — they take minutes and measure the rig's throughput as much as the system's, so they are not
+correctness tests. They are run explicitly; the commands are in the [Tests](#tests) section.
