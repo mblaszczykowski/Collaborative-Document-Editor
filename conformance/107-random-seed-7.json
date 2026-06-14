@@ -1,6 +1,6 @@
 {
   "name" : "107-random-seed-7",
-  "description" : "Losowy scenariusz o ziarnie 7: 3 repliki, niezależne edycje, dostawa w losowej kolejności.",
+  "description" : "Losowy scenariusz o ziarnie 7: 3 replicas, independent edits, delivery in random order.",
   "operations" : [ {
     "r" : 1,
     "l" : 12,

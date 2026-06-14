@@ -1,6 +1,6 @@
 {
   "name" : "108-random-seed-8",
-  "description" : "Losowy scenariusz o ziarnie 8: 3 repliki, niezależne edycje, dostawa w losowej kolejności.",
+  "description" : "Losowy scenariusz o ziarnie 8: 3 replicas, independent edits, delivery in random order.",
   "operations" : [ {
     "r" : 1,
     "l" : 2,

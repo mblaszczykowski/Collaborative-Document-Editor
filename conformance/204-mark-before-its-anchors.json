@@ -1,6 +1,6 @@
 {
   "name" : "204-mark-before-its-anchors",
-  "description" : "Znacznik dociera PRZED tekstem, którego dotyczy. Musi poczekać w buforze i zostać zastosowany po dotarciu kotwic, zamiast trafić w przypadkowe miejsce.",
+  "description" : "A mark arrives BEFORE the text it concerns. It has to wait in the buffer and be applied once its anchors arrive, rather than landing in a random place.",
   "operations" : [ {
     "r" : 1,
     "l" : 6,

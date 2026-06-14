@@ -1,6 +1,6 @@
 {
   "name" : "205-overlapping-marks-of-many-types",
-  "description" : "Zachodzące na siebie zakresy trzech typów znaczników plus zdjęcie części wspólnej. Sprawdza wyliczanie odcinków formatowania i sklejanie sąsiadujących.",
+  "description" : "Overlapping ranges of three mark types plus a removal of their intersection. Checks the computation of formatting segments and the merging of adjacent ones.",
   "operations" : [ {
     "r" : 1,
     "l" : 0,

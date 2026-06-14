@@ -1,6 +1,6 @@
 {
   "name" : "003-delete-before-insert-arrives",
-  "description" : "Usunięcie dociera PRZED wstawieniem, którego dotyczy. Implementacja musi je zbuforować i zastosować później, zamiast zignorować lub rzucić wyjątkiem.",
+  "description" : "A deletion arrives BEFORE the insertion it concerns. The implementation has to buffer it and apply it later, rather than ignoring it or throwing.",
   "operations" : [ {
     "r" : 1,
     "l" : 6,

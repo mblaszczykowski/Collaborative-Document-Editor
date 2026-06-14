@@ -6,20 +6,20 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Zachowanie intencji autora przy współbieżnym pisaniu — czyli to, co odróżnia „algorytm
- * zbieżny" od „algorytm użyteczny".
+ * Preserving author intent under concurrent typing — that is, what separates "a convergent
+ * algorithm" from "a usable algorithm".
  *
- * <p>Zbieżność gwarantuje, że wszyscy zobaczą <b>to samo</b>. Nie gwarantuje, że to coś będzie
- * miało sens. Klasyczna patologia to <b>przeplot</b>: dwie osoby piszą jednocześnie w tym samym
- * miejscu i wynik jest ich tekstami przeplecionymi znak po znaku.
+ * <p>Convergence guarantees everyone will see <b>the same thing</b>. It does not guarantee that
+ * thing will make sense. The classic pathology is <b>interleaving</b>: two people type in the same
+ * place at once and the result is their texts interleaved character by character.
  *
- * <p>Ta klasa zawiera zarówno przypadek, który RGA obsługuje poprawnie, jak i przypadek,
- * którego <b>nie obsługuje</b> — ten drugi jest tu celowo, jako wykonywalna dokumentacja
- * granicy algorytmu (ADR-0001, sekcja „Znane ograniczenie").
+ * <p>This class contains both the case RGA handles correctly and the case it <b>does not</b> — the
+ * latter is here deliberately, as executable documentation of the algorithm's boundary (ADR-0001,
+ * the "Known limitation" section).
  */
 class RgaInterleavingTest {
 
-    /** Dwie repliki zsynchronizowane na wspólnym tekście, gotowe do współbieżnej edycji. */
+    /** Two replicas synchronised on shared text, ready for concurrent editing. */
     private static RgaDocument[] twoReplicasSharing(String base) {
         RgaDocument first = new RgaDocument(1);
         Op.Insert seed = first.insert(0, base);
@@ -29,13 +29,13 @@ class RgaInterleavingTest {
     }
 
     @Test
-    @DisplayName("pisanie w przód: współbieżne słowa zostają zwarte")
+    @DisplayName("forward typing: concurrent words stay contiguous")
     void forwardTypingStaysContiguous() {
         RgaDocument[] replicas = twoReplicasSharing("AB");
         RgaDocument anna = replicas[0];
         RgaDocument marek = replicas[1];
 
-        // Obie osoby wpisują słowo między A i B, znak po znaku — tak, jak pisze człowiek.
+        // Both people type a word between A and B, character by character — as a human types.
         java.util.List<Op> fromAnna = new java.util.ArrayList<>();
         java.util.List<Op> fromMarek = new java.util.ArrayList<>();
         String annaWord = "hello";
@@ -52,18 +52,18 @@ class RgaInterleavingTest {
 
         assertThat(anna.text()).isEqualTo(marek.text());
         assertThat(anna.text())
-            .as("słowo każdego autora musi zostać w jednym kawałku, wynik: %s", anna.text())
+            .as("each author's word must stay in one piece, result: %s", anna.text())
             .contains(annaWord)
             .contains(marekWord);
     }
 
     @Test
-    @DisplayName("ZNANE OGRANICZENIE RGA: pisanie wstecz przeplata teksty autorów")
+    @DisplayName("KNOWN RGA LIMITATION: backward typing interleaves the authors' texts")
     void backwardTypingInterleaves_knownLimitation() {
-        // Scenariusz: obie osoby wielokrotnie wstawiają znak na TĘ SAMĄ pozycję, cofając
-        // kursor — czyli każdy nowy znak ląduje PRZED poprzednim. Wszystkie te znaki są
-        // rodzeństwem o tym samym originie, więc RGA porządkuje je wyłącznie po znaczniku
-        // czasu, mieszając autorów.
+        // The scenario: both people repeatedly insert a character at THE SAME position, moving the
+        // cursor back — so every new character lands BEFORE the previous one. All those characters
+        // are siblings with the same origin, so RGA orders them purely by timestamp, mixing the
+        // authors together.
         RgaDocument anna = new RgaDocument(1);
         RgaDocument marek = new RgaDocument(2);
 
@@ -76,31 +76,31 @@ class RgaInterleavingTest {
             fromMarek.add(marek.insert(0, String.valueOf(c)));
         }
 
-        // Lokalnie każdy widzi swój tekst poprawnie.
+        // Locally each person sees their own text correctly.
         assertThat(anna.text()).isEqualTo("abc");
         assertThat(marek.text()).isEqualTo("xyz");
 
         anna.applyAll(fromMarek);
         marek.applyAll(fromAnna);
 
-        // Zbieżność zachowana — repliki zgadzają się co do wyniku.
+        // Convergence holds — the replicas agree on the result.
         assertThat(anna.text()).isEqualTo(marek.text());
 
         String merged = anna.text();
 
-        // ...ale wynik jest przeplotem, a nie dwoma zwartymi słowami.
-        // Ten warunek asercji jest tu CELOWO odwrócony: dokumentuje wadę, zamiast ją ukrywać.
-        // Gdyby kiedykolwiek przestał być prawdziwy (np. po przejściu na Fugue), test padnie
-        // i będzie to sygnał do aktualizacji ADR-0001, a nie regresja.
+        // ...but the result is an interleaving rather than two contiguous words.
+        // This assertion is DELIBERATELY inverted: it documents the defect instead of hiding it.
+        // If it ever stops being true (for example after a move to Fugue), the test will fail, and
+        // that is a signal to update ADR-0001 rather than a regression.
         assertThat(merged)
-            .as("ADR-0001: RGA nie jest maksymalnie non-interleaving. "
-                + "Rozwiązaniem jest Fugue, świadomie odrzucony ze względu na budżet. "
-                + "Faktyczny wynik scalenia: %s", merged)
+            .as("ADR-0001: RGA is not maximally non-interleaving. "
+                + "The solution is Fugue, deliberately rejected on budget. "
+                + "The actual merge result: %s", merged)
             .doesNotContain("abc")
             .doesNotContain("xyz");
 
-        // Wszystkie znaki obu autorów są obecne — to nie jest utrata danych, tylko
-        // zła kolejność. Rozróżnienie jest istotne: dane są bezpieczne, cierpi czytelność.
+        // Every character from both authors is present — this is not data loss, only the wrong
+        // order. The distinction matters: the data is safe, what suffers is legibility.
         assertThat(merged).hasSize(6);
         for (char c : "abcxyz".toCharArray()) {
             assertThat(merged).contains(String.valueOf(c));
@@ -108,42 +108,42 @@ class RgaInterleavingTest {
     }
 
     @Test
-    @DisplayName("jednoczesna edycja tego samego znaku nie gubi żadnej ze zmian")
+    @DisplayName("editing the same character at once loses neither change")
     void concurrentEditOfSameCharacterKeepsBoth() {
-        RgaDocument[] replicas = twoReplicasSharing("kot");
+        RgaDocument[] replicas = twoReplicasSharing("cat");
         RgaDocument anna = replicas[0];
         RgaDocument marek = replicas[1];
 
-        // Anna zamienia "kot" na "kort", Marek jednocześnie na "koty".
+        // Anna turns "cat" into "cart", Marek turns it into "cats" at the same time.
         Op annaOp = anna.insert(2, "r");
-        Op marekOp = marek.insert(3, "y");
+        Op marekOp = marek.insert(3, "s");
 
         anna.apply(marekOp);
         marek.apply(annaOp);
 
         assertThat(anna.text()).isEqualTo(marek.text());
         assertThat(anna.text())
-            .as("obie zmiany muszą przetrwać — to jest cała teza projektu")
+            .as("both changes must survive — this is the project's entire thesis")
             .contains("r")
-            .contains("y")
+            .contains("s")
             .hasSize(5);
     }
 
     @Test
-    @DisplayName("usunięcie i wstawienie w tym samym miejscu są przemienne")
+    @DisplayName("a deletion and an insertion in the same place commute")
     void deleteCommutesWithConcurrentInsert() {
         RgaDocument[] replicas = twoReplicasSharing("abcdef");
         RgaDocument anna = replicas[0];
         RgaDocument marek = replicas[1];
 
-        Op deletion = anna.delete(2, 2);        // usuwa "cd"
-        Op insertion = marek.insert(3, "XY");   // wstawia między "c" i "d"
+        Op deletion = anna.delete(2, 2);        // deletes "cd"
+        Op insertion = marek.insert(3, "XY");   // inserts between "c" and "d"
 
         anna.apply(insertion);
         marek.apply(deletion);
 
         assertThat(anna.text()).isEqualTo(marek.text());
-        // Wstawiony tekst przeżywa usunięcie sąsiadów — nie znika razem z nimi.
+        // The inserted text survives its neighbours being deleted — it does not vanish with them.
         assertThat(anna.text()).isEqualTo("abXYef");
     }
 }

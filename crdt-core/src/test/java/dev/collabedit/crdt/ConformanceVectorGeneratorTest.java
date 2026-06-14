@@ -14,23 +14,23 @@ import java.util.Random;
 import org.junit.jupiter.api.Test;
 
 /**
- * Generator korpusu wektorów konformancyjnych — mostu między implementacją w Javie
- * a implementacją w TypeScripcie.
+ * The generator of the conformance vector corpus — the bridge between the Java implementation and
+ * the TypeScript one.
  *
- * <p><b>Po co to jest.</b> ADR-0001 przyjmuje świadomy dług: algorytm istnieje w dwóch
- * implementacjach, bo klient musi edytować offline. Dwie implementacje jednej specyfikacji
- * to dwie okazje do błędu i pewność, że prędzej czy później się rozjadą — zwłaszcza że
- * rozjazd objawia się dopiero jako „u mnie wygląda inaczej niż u ciebie", czyli najgorszym
- * możliwym rodzajem błędu.
+ * <p><b>Why this exists.</b> ADR-0001 accepts a deliberate debt: the algorithm exists in two
+ * implementations, because the client has to edit offline. Two implementations of one specification
+ * are two opportunities for a bug and a certainty that sooner or later they will diverge —
+ * especially since the divergence only shows up as "it looks different on mine than on yours",
+ * which is the worst possible kind of bug.
  *
- * <p><b>Jak to działa.</b> Ten test zapisuje do katalogu {@code conformance/} pliki JSON
- * zawierające ciąg operacji i oczekiwany tekst końcowy. Suite w TypeScripcie odtwarza
- * dokładnie te same wektory. CI uruchamia obie strony, więc rozjazd algorytmu nie może
- * przejść niezauważony.
+ * <p><b>How it works.</b> This test writes JSON files into the {@code conformance/} directory
+ * containing a sequence of operations and the expected final text. The TypeScript suite replays
+ * exactly the same vectors. CI runs both sides, so a divergence in the algorithm cannot pass
+ * unnoticed.
  *
- * <p><b>Dlaczego wektory są w repo, a nie generowane w locie.</b> Bo są też dokumentacją
- * formatu przewodowego i zmiana w nich musi być widoczna w diffie pull requesta. Wektor,
- * który zmienia się przy każdym uruchomieniu, nie chroni przed niczym.
+ * <p><b>Why the vectors live in the repository rather than being generated on the fly.</b> Because
+ * they are also documentation of the wire format, and a change in them has to be visible in a pull
+ * request diff. A vector that changes on every run protects against nothing.
  */
 class ConformanceVectorGeneratorTest {
 
@@ -42,69 +42,68 @@ class ConformanceVectorGeneratorTest {
         List<String> written = new ArrayList<>();
 
         written.add(write("001-sequential-typing",
-            "Jedna replika pisze ciągiem. Sprawdza podstawowe wstawianie i kompresję run-length.",
+            "One replica types continuously. Checks basic insertion and run-length compression.",
             sequentialTyping()));
 
         written.add(write("002-concurrent-same-position",
-            "Dwie repliki wstawiają w to samo miejsce. Operacje podane w kolejności odwrotnej "
-                + "do wygenerowania — wynik musi być identyczny.",
+            "Two replicas insert in the same place. The operations are supplied in the reverse "
+                + "order to how they were generated — the result must be identical.",
             concurrentSamePosition()));
 
         written.add(write("003-delete-before-insert-arrives",
-            "Usunięcie dociera PRZED wstawieniem, którego dotyczy. Implementacja musi je "
-                + "zbuforować i zastosować później, zamiast zignorować lub rzucić wyjątkiem.",
+            "A deletion arrives BEFORE the insertion it concerns. The implementation has to "
+                + "buffer it and apply it later, rather than ignoring it or throwing.",
             deleteBeforeInsert()));
 
         written.add(write("004-duplicated-operations",
-            "Każda operacja podana dwukrotnie. Sprawdza idempotencję — bez niej retransmisja "
-                + "po ponownym połączeniu dubluje tekst.",
+            "Every operation supplied twice. Checks idempotence — without it a retransmission "
+                + "after reconnect duplicates text.",
             duplicatedOperations()));
 
         written.add(write("005-backward-typing-interleaving",
             "Pisanie wstecz przez dwie repliki. Utrwala ZNANE OGRANICZENIE RGA (ADR-0001): "
-                + "wynik jest przeplotem. Implementacja w TS musi przeplatać TAK SAMO — "
-                + "zgodność jest ważniejsza niż to, czy wynik się podoba.",
+                + "the result is an interleaving. The TS implementation must interleave THE SAME "
+                + "WAY — agreement matters more than whether the result is pleasing.",
             backwardTyping()));
 
         written.add(write("201-mark-inherited-by-concurrent-insert",
-            "Tekst wpisany w środek pogrubienia przez replikę, która pogrubienia jeszcze nie "
-                + "widziała. MUSI odziedziczyć formatowanie — to jest cały powód, dla którego "
-                + "znacznik jest zakresem między kotwicami, a nie atrybutem znaku (CP13).",
+            "Text typed into the middle of a bold range by a replica that has not seen the bold "
+                + "yet. It MUST inherit the formatting — this is the entire reason a mark is a "
+                + "range between anchors rather than a character attribute (CP13).",
             markInheritedByConcurrentInsert()));
 
         written.add(write("202-mark-expansion-differs-by-type",
-            "Pogrubienie ROŚNIE przy pisaniu na jego końcu, link NIE. Cała różnica to wybór "
-                + "strony kotwicy końcowej — implementacja w TS musi wybrać tak samo.",
+            "Bold GROWS when typing at its end, a link does NOT. The entire difference is which "
+                + "side the end anchor sits on — the TS implementation must choose the same.",
             markExpansionDiffersByType()));
 
         written.add(write("203-concurrent-add-and-remove-mark",
-            "Współbieżne nadanie i zdjęcie tego samego formatowania. Rozstrzyga porządek "
-                + "totalny (lamport, replicaId) — ten sam, którego używa reguła wstawiania RGA.",
+            "Concurrently applying and removing the same formatting. Settled by the total order "
+                + "(lamport, replicaId) — the same one RGA's insertion rule uses.",
             concurrentAddAndRemoveMark()));
 
         written.add(write("204-mark-before-its-anchors",
-            "Znacznik dociera PRZED tekstem, którego dotyczy. Musi poczekać w buforze "
-                + "i zostać zastosowany po dotarciu kotwic, zamiast trafić w przypadkowe miejsce.",
+            "A mark arrives BEFORE the text it concerns. It has to wait in the buffer and be "
+                + "applied once its anchors arrive, rather than landing in a random place.",
             markBeforeItsAnchors()));
 
         written.add(write("205-overlapping-marks-of-many-types",
-            "Zachodzące na siebie zakresy trzech typów znaczników plus zdjęcie części wspólnej. "
-                + "Sprawdza wyliczanie odcinków formatowania i sklejanie sąsiadujących.",
+            "Overlapping ranges of three mark types plus a removal of their intersection. Checks "
+                + "the computation of formatting segments and the merging of adjacent ones.",
             overlappingMarks()));
 
-        // Losowe scenariusze o ustalonych ziarnach: powtarzalne, ale różnorodne.
+        // Random scenarios with fixed seeds: repeatable, but varied.
         for (int seed = 1; seed <= 15; seed++) {
             written.add(write(String.format("1%02d-random-seed-%d", seed, seed),
                 "Losowy scenariusz o ziarnie " + seed
-                    + ": 3 repliki, niezależne edycje, dostawa w losowej kolejności.",
+                    + ": 3 replicas, independent edits, delivery in random order.",
                 randomScenario(seed)));
         }
 
         assertThat(written).hasSize(25);
 
-        // Samosprawdzenie: każdy zapisany wektor musi być odtwarzalny przez tę samą
-        // implementację, która go wygenerowała. Wektor, którego nie przechodzi nawet
-        // Java, nie może być wzorcem dla TypeScriptu.
+        // A self-check: every vector written must be reproducible by the same implementation that
+        // generated it. A vector Java itself does not pass cannot be a reference for TypeScript.
         for (String name : written) {
             verifyVector(OUTPUT.resolve(name));
         }
@@ -133,7 +132,7 @@ class ConformanceVectorGeneratorTest {
         Op fromAnna = anna.insert(1, "hello");
         Op fromMarek = marek.insert(1, "world");
 
-        // Kolejność odwrotna do wygenerowania — to jest sedno testu.
+        // The reverse of the generation order — this is the point of the test.
         return List.of(fromMarek, fromAnna, base);
     }
 
@@ -177,7 +176,7 @@ class ConformanceVectorGeneratorTest {
         bartek.apply(base);
 
         Op bold = ania.addMark(1, 5, MarkTypes.BOLD, null);
-        // Bartek NIE widział jeszcze pogrubienia.
+        // Bartek has NOT seen the bold yet.
         Op inserted = bartek.insert(3, "XY");
 
         return List.of(base, inserted, bold);
@@ -189,7 +188,7 @@ class ConformanceVectorGeneratorTest {
         ops.add(document.insert(0, "abcdef"));
         ops.add(document.addMark(1, 3, MarkTypes.BOLD, null));
         ops.add(document.addMark(4, 6, MarkTypes.LINK, "https://example.test"));
-        // Wstawienia tuż za każdym z zakresów — pogrubienie ma je objąć, link nie.
+        // Insertions immediately after each range — bold should cover them, a link should not.
         ops.add(document.insert(3, "X"));
         ops.add(document.insert(document.visibleLength(), "Y"));
         return ops;
@@ -204,7 +203,7 @@ class ConformanceVectorGeneratorTest {
         Op bold = ania.addMark(1, 6, MarkTypes.BOLD, null);
         Op unbold = bartek.removeMark(3, 8, MarkTypes.BOLD);
 
-        // Kolejność odwrotna do wygenerowania — wynik musi być identyczny.
+        // The reverse of the generation order — the result must be identical.
         return List.of(unbold, bold, base);
     }
 
@@ -268,10 +267,10 @@ class ConformanceVectorGeneratorTest {
         operations.forEach(op -> ops.add(OpCodec.toJson(op)));
         root.put("expectedText", fresh.text());
 
-        // Oczekiwane formatowanie zapisujemy ZAWSZE, również dla wektorów bez znaczników —
-        // wtedy jako pustą tablicę. Pole obecne warunkowo znaczyłoby, że implementacja
-        // w TS musi zgadywać, czy jego brak to „brak formatowania", czy „stary wektor",
-        // a różnicy między tymi dwoma nie da się wtedy wykryć.
+        // The expected formatting is ALWAYS written, including for vectors with no marks — as an
+        // empty array in that case. A conditionally present field would mean the TS implementation
+        // has to guess whether its absence means "no formatting" or "an old vector", and the
+        // difference between those two would then be undetectable.
         ArrayNode formatting = root.putArray("expectedFormatting");
         for (MarkSet.Span span : fresh.formatting()) {
             ObjectNode entry = formatting.addObject();
@@ -293,7 +292,7 @@ class ConformanceVectorGeneratorTest {
         return fileName;
     }
 
-    /** Formatowanie jako tekst JSON — do porównania z zapisanym wzorcem. */
+    /** The formatting as JSON text — for comparison against the stored reference. */
     private static String describeFormatting(RgaDocument document) {
         ArrayNode formatting = OpCodec.mapper().createArrayNode();
         for (MarkSet.Span span : document.formatting()) {
@@ -317,13 +316,13 @@ class ConformanceVectorGeneratorTest {
         List<Op> operations = new ArrayList<>();
         root.get("operations").forEach(node -> operations.add(OpCodec.fromJson(node)));
 
-        // Weryfikujemy na OBU implementacjach BlockList — wektor ma być wzorcem dla
+        // Verified on BOTH BlockList implementations — a vector is meant to be a reference for
         // algorytmu, a nie dla konkretnej struktury danych.
         for (BlockList storage : List.of(new ArrayBlockList(), new TreapBlockList())) {
             RgaDocument document = new RgaDocument(999, storage);
             document.applyAll(operations);
             assertThat(document.text())
-                .as("wektor %s nie odtwarza się na %s", path.getFileName(),
+                .as("vector %s does not reproduce on %s", path.getFileName(),
                     storage.getClass().getSimpleName())
                 .isEqualTo(root.get("expectedText").asText());
 

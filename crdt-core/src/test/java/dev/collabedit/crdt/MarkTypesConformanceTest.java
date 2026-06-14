@@ -12,23 +12,22 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tablica typów znaczników musi być identyczna w Javie i w TypeScripcie.
+ * The mark type table must be identical in Java and in TypeScript.
  *
- * <h2>Czego NIE pilnuje korpus wektorów</h2>
- * Wektory konformancyjne zawierają operacje <b>już utworzone</b> — mają w sobie konkretne
- * strony kotwic, wybrane w chwili generowania. Decyzja „czy pogrubienie rośnie przy pisaniu
- * na jego końcu" jest podejmowana <b>przy tworzeniu</b> operacji, więc zmiana tablicy po
- * jednej stronie nie zmienia ani jednego wektora i cały korpus przechodzi na zielono.
+ * <h2>What the vector corpus does NOT guard</h2>
+ * The conformance vectors contain operations that have <b>already been created</b> — they carry
+ * concrete anchor sides, chosen at generation time. The decision "does bold grow when typing at its
+ * end" is made <b>when creating</b> an operation, so changing the table on one side changes not a
+ * single vector and the whole corpus stays green.
  *
- * <p>Rozjazd objawiłby się dopiero u użytkownika i w najgorszy możliwy sposób: „u mnie
- * pogrubienie rosło przy pisaniu, u ciebie nie" — czyli ten sam gest daje inny dokument
- * zależnie od tego, kto go wykonał.
+ * <p>The divergence would surface only at the user, and in the worst possible way: "bold grew as I
+ * typed, it did not for you" — that is, the same gesture produces a different document depending on
+ * who performed it.
  *
- * <p>ADR-0010 twierdził, że tablicy pilnuje „osobny test jednostkowy po obu stronach".
- * Przy przeglądzie okazało się, że takiego testu <b>nie było po żadnej ze stron</b> —
- * dokumentacja opisywała zabezpieczenie, które nie istniało. Ten plik i jego bliźniak
- * {@code markTypes.test.ts} czytają ten sam plik JSON, więc zmiana jednej strony
- * wywala testy tej strony.
+ * <p>ADR-0010 claimed the table was guarded by "a separate unit test on both sides". A review found
+ * that no such test existed <b>on either side</b> — the documentation described a safeguard that
+ * did not exist. This file and its twin {@code markTypes.test.ts} read the same JSON file, so
+ * changing one side fails that side's tests.
  */
 class MarkTypesConformanceTest {
 
@@ -37,8 +36,8 @@ class MarkTypesConformanceTest {
     private static List<String> stringsAt(JsonNode root, String field) {
         JsonNode array = root.get(field);
         assertThat(array)
-            .as("wspólna tablica typów nie ma pola %s — plik został zmieniony niezgodnie "
-                + "z oczekiwaniem obu implementacji", field)
+            .as("the shared type table has no %s field — the file was changed in a way neither "
+                + "implementation expects", field)
             .isNotNull();
         List<String> values = new ArrayList<>();
         array.forEach(node -> values.add(node.asText()));
@@ -46,7 +45,7 @@ class MarkTypesConformanceTest {
     }
 
     @Test
-    @DisplayName("MarkTypes zgadza się ze wspólną tablicą, z której korzysta też klient")
+    @DisplayName("MarkTypes agrees with the shared table the client also reads")
     void expansionTableMatchesSharedSource() throws IOException {
         JsonNode root = OpCodec.mapper().readTree(Files.readString(TABLE));
 
@@ -54,25 +53,26 @@ class MarkTypesConformanceTest {
         List<String> notExpanding = stringsAt(root, "doesNotExpandAtEnd");
 
         assertThat(expanding)
-            .as("pusta lista typów rozszerzających przepuściłaby każdą regresję")
+            .as("an empty list of expanding types would let any regression through")
             .isNotEmpty();
 
         for (String type : expanding) {
             assertThat(MarkTypes.expandsAtEnd(type))
-                .as("typ %s rośnie przy pisaniu w kliencie, a nie rośnie w Javie", type)
+                .as("type %s expands on typing in the client but not in Java", type)
                 .isTrue();
         }
         for (String type : notExpanding) {
             assertThat(MarkTypes.expandsAtEnd(type))
-                .as("typ %s rośnie przy pisaniu w Javie, a nie rośnie w kliencie", type)
+                .as("type %s expands on typing in Java but not in the client", type)
                 .isFalse();
         }
 
-        // Typ nieznany żadnej ze stron NIE rośnie. Wybór ostrożny: znacznik rozszerzający się
-        // niespodziewanie zmienia wygląd tekstu, którego użytkownik nie formatował, a znacznik,
-        // który się nie rozszerza, wymaga najwyżej powtórzenia gestu.
-        assertThat(MarkTypes.expandsAtEnd("typ-z-przyszłej-wersji"))
-            .as("nieznany typ rozszerza się — nowsza wersja klienta zmieni wygląd cudzego tekstu")
+        // A type unknown to either side does NOT expand. The cautious choice: a mark that expands
+        // unexpectedly changes the appearance of text the user did not format, whereas a mark that
+        // fails to expand costs at most a repeated gesture.
+        assertThat(MarkTypes.expandsAtEnd("type-from-a-future-version"))
+            .as("an unknown type expands — a newer client would change the look of somebody "
+                + "else's text")
             .isFalse();
     }
 }

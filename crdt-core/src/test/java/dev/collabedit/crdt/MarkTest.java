@@ -8,31 +8,30 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Formatowanie tekstu (CP13) — zachowania, które muszą być prawdziwe, żeby rich text
- * w CRDT w ogóle miał sens.
+ * Text formatting (CP13) — the behaviours that have to be true for rich text in a CRDT to make any
+ * sense at all.
  *
  * <table>
  *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code textInsertedIntoMarkedRangeInheritsMark}</td>
- *       <td><b>Klasyczny błąd „formatowanie jako atrybut znaku".</b> Tekst wpisany w środek
- *           pogrubionego zakresu przez osobę, która pogrubienia jeszcze nie widziała,
- *           zostaje niepogrubiony — dziura, której nikt nie zrobił. To jest cały powód,
- *           dla którego znacznik jest zakresem między kotwicami, a nie polem znaku.</td></tr>
+ *       <td><b>The classic "formatting as a character attribute" bug.</b> Text typed into the
+ *           middle of a bold range by somebody who has not seen the bold yet comes out unbolded —
+ *           a hole nobody made. This is the entire reason a mark is a range between anchors rather
+ *           than a field on a character.</td></tr>
  *   <tr><td>{@code expandingMarkGrowsAtEnd} / {@code nonExpandingMarkDoesNot}</td>
- *       <td>Zignorowana strona kotwicy. Wtedy albo pogrubienie nie rośnie przy pisaniu
- *           (irytujące), albo link rośnie (błędny adres w treści).</td></tr>
+ *       <td>The anchor's side being ignored. Then either bold does not grow as you type
+ *           (annoying), or a link grows (a wrong address in the content).</td></tr>
  *   <tr><td>{@code markDoesNotGrowBackwards}</td>
- *       <td>Kotwica początkowa po niewłaściwej stronie — tekst wpisany PRZED pogrubieniem
- *           staje się pogrubiony.</td></tr>
+ *       <td>The start anchor on the wrong side — text typed BEFORE the bold becomes bold.</td></tr>
  *   <tr><td>{@code concurrentAddAndRemoveConverge}</td>
- *       <td>Brak porządku totalnego na znacznikach: dwie repliki widzą różne formatowanie
- *           tego samego tekstu i nigdy się nie uzgodnią.</td></tr>
+ *       <td>No total order on marks: two replicas see different formatting of the same text and
+ *           never agree.</td></tr>
  *   <tr><td>{@code markSurvivesDeletionOfNeighbourhood}</td>
- *       <td>Kotwica na tombstonie traktowana jak nieistniejąca — formatowanie znika
- *           przy skasowaniu sąsiedniego tekstu.</td></tr>
+ *       <td>An anchor on a tombstone treated as non-existent — the formatting disappears when
+ *           neighbouring text is deleted.</td></tr>
  *   <tr><td>{@code markWaitsForItsAnchors}</td>
- *       <td>Znacznik zastosowany przed dotarciem kotwic ląduje w przypadkowym miejscu.</td></tr>
+ *       <td>A mark applied before its anchors arrive lands in a random place.</td></tr>
  * </table>
  */
 class MarkTest {
@@ -41,7 +40,7 @@ class MarkTest {
         return new RgaDocument(replicaId, new TreapBlockList());
     }
 
-    /** Formatowanie znaku na danej pozycji — wygodniejsze w asercjach niż lista odcinków. */
+    /** The formatting of the character at a given position — handier in assertions than a segment list. */
     private static Map<String, String> marksAt(RgaDocument document, int index) {
         for (MarkSet.Span span : document.formatting()) {
             if (index >= span.from() && index < span.to()) {
@@ -52,7 +51,7 @@ class MarkTest {
     }
 
     @Test
-    @DisplayName("tekst wpisany w środek pogrubienia dziedziczy je — również gdy autor go nie widział")
+    @DisplayName("text typed into the middle of a bold range inherits it — even when the author had not seen it")
     void textInsertedIntoMarkedRangeInheritsMark() {
         RgaDocument ania = document(1);
         RgaDocument bartek = document(2);
@@ -63,7 +62,7 @@ class MarkTest {
         // Ania pogrubia „bcde" (pozycje 1..5).
         Op.AddMark bold = ania.addMark(1, 5, MarkTypes.BOLD, null);
 
-        // Bartek — NIE widząc jeszcze pogrubienia — wpisuje „XY" w środek tego zakresu.
+        // Bartek — NOT having seen the bold yet — types "XY" into the middle of that range.
         Op.Insert inserted = bartek.insert(3, "XY");
 
         ania.apply(inserted);
@@ -72,17 +71,17 @@ class MarkTest {
         assertThat(ania.text()).isEqualTo("abcXYdef");
         assertThat(bartek.text()).isEqualTo(ania.text());
 
-        // Wstawiony tekst jest w środku zakresu, więc MUSI być pogrubiony — mimo że
-        // w chwili jego powstania pogrubienia jeszcze nie było.
+        // The inserted text is inside the range, so it MUST be bold — even though the bold did
+        // not exist at the moment it was created.
         assertThat(marksAt(ania, 3))
-            .as("tekst wpisany w środek pogrubienia nie odziedziczył go — dziura w formatowaniu")
+            .as("text typed into the middle of a bold range did not inherit it — a hole in the formatting")
             .containsEntry(MarkTypes.BOLD, null);
         assertThat(marksAt(bartek, 3)).isEqualTo(marksAt(ania, 3));
         assertThat(bartek.formatting()).isEqualTo(ania.formatting());
     }
 
     @Test
-    @DisplayName("pogrubienie rośnie, gdy dopisać tuż za nim")
+    @DisplayName("bold grows when you type immediately after it")
     void expandingMarkGrowsAtEnd() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
@@ -91,16 +90,16 @@ class MarkTest {
         assertThat(marksAt(document, 2)).containsKey(MarkTypes.BOLD);
         assertThat(marksAt(document, 3)).doesNotContainKey(MarkTypes.BOLD);
 
-        document.insert(3, "X");   // tuż za pogrubionym „bc"
+        document.insert(3, "X");   // immediately after the bolded "bc"
 
         assertThat(document.text()).isEqualTo("abcXdef");
         assertThat(marksAt(document, 3))
-            .as("pogrubienie nie objęło tekstu dopisanego na jego końcu")
+            .as("the bold did not cover text appended at its end")
             .containsKey(MarkTypes.BOLD);
     }
 
     @Test
-    @DisplayName("link NIE rośnie, gdy dopisać tuż za nim")
+    @DisplayName("a link does NOT grow when you type immediately after it")
     void nonExpandingMarkDoesNot() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
@@ -110,28 +109,28 @@ class MarkTest {
 
         assertThat(marksAt(document, 2)).containsEntry(MarkTypes.LINK, "https://example.test");
         assertThat(marksAt(document, 3))
-            .as("link objął tekst dopisany za nim — adres linku obejmuje treść, która do niego nie należy")
+            .as("the link covered text appended after it — the link address covers content that is not part of it")
             .doesNotContainKey(MarkTypes.LINK);
     }
 
     @Test
-    @DisplayName("formatowanie nie rośnie wstecz")
+    @DisplayName("formatting does not grow backwards")
     void markDoesNotGrowBackwards() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
         document.addMark(2, 4, MarkTypes.BOLD, null);   // „cd"
 
-        document.insert(2, "X");   // tuż PRZED pogrubieniem
+        document.insert(2, "X");   // immediately BEFORE the bold
 
         assertThat(document.text()).isEqualTo("abXcdef");
         assertThat(marksAt(document, 2))
-            .as("tekst wpisany przed pogrubieniem stał się pogrubiony")
+            .as("text typed before the bold became bold")
             .doesNotContainKey(MarkTypes.BOLD);
         assertThat(marksAt(document, 3)).containsKey(MarkTypes.BOLD);
     }
 
     @Test
-    @DisplayName("współbieżne nadanie i zdjęcie formatowania zbiegają się do tego samego wyniku")
+    @DisplayName("concurrently applying and removing formatting converge on the same result")
     void concurrentAddAndRemoveConverge() {
         RgaDocument ania = document(1);
         RgaDocument bartek = document(2);
@@ -139,7 +138,7 @@ class MarkTest {
         Op.Insert base = ania.insert(0, "abcdef");
         bartek.apply(base);
 
-        // Oboje działają na tym samym zakresie, nie widząc się nawzajem.
+        // Both act on the same range without seeing each other.
         Op.AddMark bold = ania.addMark(1, 4, MarkTypes.BOLD, null);
         Op.RemoveMark unbold = bartek.removeMark(1, 4, MarkTypes.BOLD);
 
@@ -147,11 +146,11 @@ class MarkTest {
         bartek.apply(bold);
 
         assertThat(bartek.formatting())
-            .as("repliki widzą różne formatowanie tego samego tekstu — brak porządku totalnego")
+            .as("the replicas see different formatting of the same text — no total order")
             .isEqualTo(ania.formatting());
 
-        // Kolejność zastosowania nie może mieć znaczenia — to jest ta sama własność,
-        // której property testy dowodzą dla samego tekstu.
+        // The order of application must not matter — this is the same property the property tests
+        // prove for the text itself.
         RgaDocument trzeci = document(3);
         trzeci.apply(base);
         trzeci.apply(unbold);
@@ -160,7 +159,7 @@ class MarkTest {
     }
 
     @Test
-    @DisplayName("formatowanie przeżywa skasowanie sąsiedniego tekstu")
+    @DisplayName("formatting survives the deletion of neighbouring text")
     void markSurvivesDeletionOfNeighbourhood() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
@@ -170,7 +169,7 @@ class MarkTest {
 
         assertThat(document.text()).isEqualTo("cdef");
         assertThat(marksAt(document, 0))
-            .as("formatowanie zniknęło po skasowaniu tekstu OBOK niego")
+            .as("the formatting disappeared after text NEXT TO it was deleted")
             .containsKey(MarkTypes.BOLD);
         assertThat(marksAt(document, 2)).doesNotContainKey(MarkTypes.BOLD);
     }
@@ -184,7 +183,7 @@ class MarkTest {
         Op.Insert base = ania.insert(0, "abcdef");
         Op.AddMark bold = ania.addMark(1, 4, MarkTypes.BOLD, null);
 
-        // Bartek dostaje znacznik ZANIM dostanie tekst, którego dotyczy.
+        // Bartek receives the mark BEFORE he receives the text it concerns.
         assertThat(bartek.apply(bold)).isEqualTo(RgaDocument.ApplyResult.BUFFERED);
         assertThat(bartek.formatting())
             .as("znacznik zastosowany bez kotwic — formatowanie w przypadkowym miejscu")
@@ -193,13 +192,13 @@ class MarkTest {
         bartek.apply(base);
 
         assertThat(bartek.formatting())
-            .as("znacznik nie został ponowiony po dotarciu kotwic")
+            .as("the mark was not retried once its anchors arrived")
             .isEqualTo(ania.formatting());
         assertThat(bartek.pendingCount()).isZero();
     }
 
     @Test
-    @DisplayName("sąsiadujące odcinki o tym samym formatowaniu są sklejane")
+    @DisplayName("adjacent segments with the same formatting are merged")
     void adjacentIdenticalSpansAreMerged() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
@@ -209,14 +208,14 @@ class MarkTest {
         List<MarkSet.Span> spans = document.formatting();
 
         assertThat(spans)
-            .as("dwa stykające się pogrubienia dały dwa odcinki zamiast jednego")
+            .as("two touching bold ranges produced two segments instead of one")
             .hasSize(1);
         assertThat(spans.getFirst().from()).isZero();
         assertThat(spans.getFirst().to()).isEqualTo(6);
     }
 
     @Test
-    @DisplayName("powtórzony znacznik jest rozpoznawany jako duplikat")
+    @DisplayName("a repeated mark is recognised as a duplicate")
     void duplicateMarkIsRecognised() {
         RgaDocument ania = document(1);
         RgaDocument bartek = document(2);
@@ -226,13 +225,13 @@ class MarkTest {
 
         assertThat(bartek.apply(bold)).isEqualTo(RgaDocument.ApplyResult.APPLIED);
         assertThat(bartek.apply(bold))
-            .as("retransmisja znacznika po ponownym połączeniu nie jest rozpoznawana jako duplikat")
+            .as("retransmitting a mark after reconnect is not recognised as a duplicate")
             .isEqualTo(RgaDocument.ApplyResult.DUPLICATE);
         assertThat(bartek.markCount()).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("formatowanie przeżywa snapshot i odtworzenie repliki")
+    @DisplayName("formatting survives a snapshot and a replica rebuild")
     void markSurvivesSnapshotRoundTrip() {
         RgaDocument original = document(1);
         original.insert(0, "abcdef");
@@ -247,12 +246,12 @@ class MarkTest {
 
         assertThat(restored.text()).isEqualTo(original.text());
         assertThat(restored.formatting())
-            .as("restart instancji zgubił formatowanie — tekst wrócił, wygląd nie")
+            .as("an instance restart lost the formatting — the text came back, the appearance did not")
             .isEqualTo(original.formatting());
     }
 
     @Test
-    @DisplayName("replika odtworzona ze snapshotu potrafi rozstrzygnąć konflikt ze znacznikiem, który dopiero nadejdzie")
+    @DisplayName("a replica rebuilt from a snapshot can resolve a conflict with a mark still to arrive")
     void restoredReplicaStillResolvesConflicts() {
         RgaDocument ania = document(1);
         RgaDocument bartek = document(2);
@@ -263,9 +262,9 @@ class MarkTest {
         Op.AddMark bold = ania.addMark(1, 4, MarkTypes.BOLD, null);
         bartek.apply(bold);
 
-        // Bartek zostaje odtworzony ze snapshotu, po czym dostaje ZDJĘCIE formatowania
-        // o wyższym priorytecie. Gdyby snapshot zapisywał rozwiązane odcinki zamiast
-        // operacji, nie miałby czym rozstrzygnąć tego konfliktu.
+        // Bartek is rebuilt from a snapshot and then receives a higher-priority REMOVAL of the
+        // formatting. If the snapshot stored resolved segments rather than operations, he would
+        // have nothing to resolve that conflict with.
         RgaDocument odtworzony = RgaDocument.restore(
             2, new TreapBlockList(), SnapshotCodec.decode(SnapshotCodec.encode(bartek.snapshot())));
 
@@ -274,26 +273,27 @@ class MarkTest {
         bartek.apply(unbold);
 
         assertThat(odtworzony.formatting())
-            .as("replika odtworzona ze snapshotu rozstrzygnęła konflikt inaczej niż nieodtworzona")
+            .as("a replica rebuilt from a snapshot resolved the conflict differently from one that was not")
             .isEqualTo(bartek.formatting());
         assertThat(odtworzony.formatting()).isEqualTo(ania.formatting());
     }
 
     @Test
-    @DisplayName("GC nie kasuje tombstone'u będącego kotwicą znacznika")
+    @DisplayName("GC does not delete a tombstone that is a mark anchor")
     void garbageCollectionSparesMarkAnchors() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
 
         // Kotwica na OSTATNIM znaku dokumentu — i to jest sedno tego testu.
         //
-        // Pierwsza wersja kotwiczyła w środku tekstu i przechodziła nawet po wyłączeniu
-        // ochrony kotwic: znak w środku jest ORIGINEM następnego, więc chroniła go już
-        // reguła z ADR-0005. Test nie sprawdzał wtedy niczego nowego. Ostatni znak nie jest
-        // originem niczego, więc jedyne, co może go uratować, to ochrona dodana w CP13.
+        // The first version anchored in the middle of the text and passed even with anchor
+        // protection switched off: a character in the middle is the ORIGIN of the next one, so the
+        // ADR-0005 rule already protected it. The test was checking nothing new. The last character
+        // is the origin of nothing, so the only thing that can save it is the protection added in
+        // CP13.
         //
-        // Link, nie pogrubienie: link się nie rozszerza, więc jego kotwica końcowa siedzi
-        // ZA ostatnim znakiem, a nie przed następnym (którego nie ma).
+        // A link, not bold: a link does not expand, so its end anchor sits AFTER the last
+        // character rather than before the next one (which does not exist).
         document.addMark(4, 6, MarkTypes.LINK, "https://example.test");
         document.delete(5, 1);
 
@@ -304,8 +304,8 @@ class MarkTest {
 
         assertThat(document.text()).isEqualTo("abcde");
         assertThat(marksAt(document, 4))
-            .as("GC skasował kotwicę znacznika — formatowanie widocznego tekstu przepadło "
-                + "przy sprzątaniu pamięci")
+            .as("GC deleted a mark anchor — the formatting of visible text was lost while "
+                + "tidying up memory")
             .containsEntry(MarkTypes.LINK, "https://example.test");
     }
 
@@ -320,25 +320,26 @@ class MarkTest {
 
         document.insert(1, "XYZ");
 
-        // ZNANE ZACHOWANIE, nie błąd. Wstawienie na pozycji, przed którą stoją tombstone'y,
-        // ląduje PRZED nimi (patrz RgaDocument.insert) — czyli poza zakresem, którego
-        // kotwice są zaczepione w tych tombstone'ach. Edytory oparte na offsetach
-        // zachowują się tu inaczej, bo nie mają czego zachowywać.
+        // KNOWN BEHAVIOUR, not a bug. An insertion at a position preceded by tombstones lands
+        // BEFORE them (see RgaDocument.insert) — that is, outside the range whose anchors are
+        // pinned to those tombstones. Offset-based editors behave differently here, because they
+        // have nothing to preserve.
         //
-        // Test utrwala to zachowanie zamiast udawać, że go nie ma: jest przewidywalne
-        // i wynika wprost z reguły wstawiania RGA, a jego zmiana wymagałaby zmiany tej reguły.
+        // The test pins this behaviour down rather than pretending it is not there: it is
+        // predictable and follows directly from RGA's insertion rule, and changing it would require
+        // changing that rule.
         assertThat(document.text()).isEqualTo("aXYZef");
         assertThat(marksAt(document, 1))
-            .as("zachowanie się zmieniło — sprawdź, czy to była świadoma decyzja")
+            .as("the behaviour changed — check whether that was a deliberate decision")
             .doesNotContainKey(MarkTypes.BOLD);
     }
 
     @Test
-    @DisplayName("GC nadal zbiera tombstone'y, których nic nie kotwiczy")
+    @DisplayName("GC still collects tombstones nothing anchors to")
     void garbageCollectionStillCollectsUnreferenced() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
-        document.delete(4, 2);   // ogon, bez znaczników
+        document.delete(4, 2);   // the tail, with no marks
 
         int before = document.tombstoneCount();
         assertThat(before).isPositive();
@@ -346,7 +347,7 @@ class MarkTest {
         int removed = document.gc(VersionVector.of(Map.of(1, 1000L)));
 
         assertThat(removed)
-            .as("ochrona kotwic zablokowała GC także tam, gdzie żadnych kotwic nie ma")
+            .as("anchor protection blocked GC where there are no anchors at all")
             .isPositive();
         assertThat(document.text()).isEqualTo("abcd");
     }

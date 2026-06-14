@@ -1,6 +1,6 @@
 {
   "name" : "001-sequential-typing",
-  "description" : "Jedna replika pisze ciągiem. Sprawdza podstawowe wstawianie i kompresję run-length.",
+  "description" : "One replica types continuously. Checks basic insertion and run-length compression.",
   "operations" : [ {
     "r" : 1,
     "l" : 0,

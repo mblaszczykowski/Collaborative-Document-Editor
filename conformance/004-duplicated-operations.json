@@ -1,6 +1,6 @@
 {
   "name" : "004-duplicated-operations",
-  "description" : "Każda operacja podana dwukrotnie. Sprawdza idempotencję — bez niej retransmisja po ponownym połączeniu dubluje tekst.",
+  "description" : "Every operation supplied twice. Checks idempotence — without it a retransmission after reconnect duplicates text.",
   "operations" : [ {
     "r" : 1,
     "l" : 0,

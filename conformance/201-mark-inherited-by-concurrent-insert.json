@@ -1,6 +1,6 @@
 {
   "name" : "201-mark-inherited-by-concurrent-insert",
-  "description" : "Tekst wpisany w środek pogrubienia przez replikę, która pogrubienia jeszcze nie widziała. MUSI odziedziczyć formatowanie — to jest cały powód, dla którego znacznik jest zakresem między kotwicami, a nie atrybutem znaku (CP13).",
+  "description" : "Text typed into the middle of a bold range by a replica that has not seen the bold yet. It MUST inherit the formatting — this is the entire reason a mark is a range between anchors rather than a character attribute (CP13).",
   "operations" : [ {
     "r" : 1,
     "l" : 0,

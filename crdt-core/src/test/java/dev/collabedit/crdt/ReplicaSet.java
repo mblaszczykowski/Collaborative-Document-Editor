@@ -9,30 +9,29 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * Symulator zbioru replik edytujących ten sam dokument — narzędzie testowe, nie kod produkcyjny.
+ * A simulator of a set of replicas editing the same document — a test tool, not production code.
  *
- * <p>Modeluje najgorszy możliwy przypadek dla algorytmu: repliki edytują <b>całkowicie
- * niezależnie</b> (maksymalna współbieżność), a dopiero potem wymieniają się operacjami
- * w <b>losowej kolejności</b>. Prawdziwa sieć jest łagodniejsza; jeśli algorytm przechodzi tu,
- * przechodzi wszędzie.
+ * <p>It models the worst possible case for the algorithm: the replicas edit <b>entirely
+ * independently</b> (maximum concurrency) and only then exchange operations in a <b>random
+ * order</b>. A real network is gentler; if the algorithm passes here, it passes everywhere.
  *
- * <p>Świadomie nie ma tu żadnego uporządkowania dostawy ani deduplikacji po stronie
- * transportu — całą pracę ma wykonać {@link RgaDocument}. To jest sens tego testu.
+ * <p>There is deliberately no delivery ordering and no deduplication on the transport side — all
+ * the work is to be done by {@link RgaDocument}. That is the point of this test.
  */
 final class ReplicaSet {
 
     private final List<RgaDocument> replicas = new ArrayList<>();
-    /** Operacje wraz z indeksem repliki, która je wygenerowała. */
+    /** Operations together with the index of the replica that generated them. */
     private final List<Emitted> emitted = new ArrayList<>();
-    /** Indeksy operacji już dostarczonych do danej repliki — żeby nie dublować dostaw. */
+    /** Indices of operations already delivered to a given replica — to avoid duplicate delivery. */
     private final List<Set<Integer>> delivered = new ArrayList<>();
 
     record Emitted(int sourceReplica, Op op) { }
 
     ReplicaSet(int count, Supplier<BlockList> storage) {
         for (int i = 0; i < count; i++) {
-            // Identyfikatory replik od 1: 0 jest łatwe do pomylenia z "brak repliki"
-            // przy debugowaniu logów.
+            // Replica identifiers start at 1: 0 is easy to confuse with "no replica" when reading
+            // logs.
             replicas.add(new RgaDocument(i + 1, storage.get()));
             delivered.add(new HashSet<>());
         }
@@ -46,34 +45,34 @@ final class ReplicaSet {
         return replicas.get(index);
     }
 
-    /** Wstawienie lokalne na replice; operacja trafia do puli do późniejszego rozesłania. */
+    /** A local insertion on a replica; the operation goes into the pool for later delivery. */
     void insert(int replicaIndex, int position, String text) {
         emitted.add(new Emitted(replicaIndex, replicas.get(replicaIndex).insert(position, text)));
     }
 
-    /** Usunięcie lokalne na replice; operacja trafia do puli do późniejszego rozesłania. */
+    /** A local deletion on a replica; the operation goes into the pool for later delivery. */
     void delete(int replicaIndex, int position, int count) {
         emitted.add(new Emitted(replicaIndex, replicas.get(replicaIndex).delete(position, count)));
     }
 
-    /** Nadanie formatowania (CP13); jak wyżej — operacja trafia do puli. */
+    /** Applying formatting (CP13); as above — the operation goes into the pool. */
     void addMark(int replicaIndex, int from, int to, String type) {
         emitted.add(new Emitted(replicaIndex,
             replicas.get(replicaIndex).addMark(from, to, type, null)));
     }
 
-    /** Zdjęcie formatowania (CP13). */
+    /** Removing formatting (CP13). */
     void removeMark(int replicaIndex, int from, int to, String type) {
         emitted.add(new Emitted(replicaIndex,
             replicas.get(replicaIndex).removeMark(from, to, type)));
     }
 
     /**
-     * Formatowanie każdej repliki — odpowiednik {@link #texts()} dla warstwy znaczników.
+     * Each replica's formatting — the equivalent of {@link #texts()} for the mark layer.
      *
-     * <p>Zbieżność samego tekstu NIE dowodzi zbieżności formatowania: znaczniki mają własny
-     * zbiór operacji i własną regułę rozstrzygania, więc mogą się rozjechać przy identycznym
-     * tekście. Test porównujący wyłącznie treść przepuściłby taki błąd w całości.
+     * <p>Convergence of the text alone does NOT prove convergence of the formatting: marks have
+     * their own set of operations and their own resolution rule, so they can diverge on identical
+     * text. A test comparing only the content would let such a bug through entirely.
      */
     List<List<MarkSet.Span>> formattings() {
         return replicas.stream().map(RgaDocument::formatting).toList();
@@ -85,11 +84,11 @@ final class ReplicaSet {
     }
 
     /**
-     * Dostarcza każdej replice wszystkie cudze operacje w losowej kolejności.
+     * Delivers every other replica's operations to each replica in a random order.
      *
-     * <p>Każda replika dostaje <b>inną</b> permutację — gdyby wszystkie dostawały tę samą,
-     * test sprawdzałby dużo słabszą własność (determinizm przy ustalonej kolejności zamiast
-     * przemienności).
+     * <p>Each replica gets a <b>different</b> permutation — if they all got the same one, the test
+     * would be checking a much weaker property (determinism under a fixed order rather than
+     * commutativity).
      */
     void deliverAllShuffled(Random random) {
         for (int target = 0; target < replicas.size(); target++) {
@@ -105,14 +104,14 @@ final class ReplicaSet {
     }
 
     /**
-     * Dostarcza każdej replice losowy <b>podzbiór</b> jeszcze niedostarczonych operacji.
+     * Delivers a random <b>subset</b> of the not-yet-delivered operations to each replica.
      *
-     * <p>Istnieje, bo bez tego cały zestaw testów miał dziurę: przy schemacie „najpierw
-     * wszystkie edycje lokalnie, potem cała wymiana" replika nigdy nie generuje operacji
-     * <i>po</i> odebraniu cudzej. A dokładnie wtedy ma znaczenie reguła podbijania zegara
-     * Lamporta ({@code docs/crdt-design.md} sekcja 1) — bez tej metody usunięcie podbicia
-     * zegara nie powodowało padu żadnego testu. Wykryte przez celowe wprowadzenie mutacji
-     * do kodu produkcyjnego i sprawdzenie, czy testy ją złapią; nie złapały.
+     * <p>It exists because without it the whole test suite had a blind spot: under the "all edits
+     * locally first, then the whole exchange" scheme a replica never generates an operation
+     * <i>after</i> receiving somebody else's. And that is exactly when the Lamport clock bumping
+     * rule matters ({@code docs/crdt-design.md} section 1) — without this method, removing the
+     * clock bump failed no test at all. Found by deliberately introducing a mutation into
+     * production code and checking whether the tests would catch it; they did not.
      */
     void deliverSome(Random random, int maxPerReplica) {
         for (int target = 0; target < replicas.size(); target++) {
@@ -132,7 +131,7 @@ final class ReplicaSet {
         }
     }
 
-    /** Jak {@link #deliverAllShuffled}, ale każda operacja jest dostarczana dwukrotnie. */
+    /** As {@link #deliverAllShuffled}, but every operation is delivered twice. */
     void deliverAllShuffledTwice(Random random) {
         for (int target = 0; target < replicas.size(); target++) {
             List<Op> inbox = new ArrayList<>();
@@ -152,7 +151,7 @@ final class ReplicaSet {
         return List.copyOf(emitted);
     }
 
-    /** Teksty wszystkich replik — do asercji zbieżności. */
+    /** Every replica's text — for convergence assertions. */
     List<String> texts() {
         return replicas.stream().map(RgaDocument::text).toList();
     }
@@ -162,7 +161,7 @@ final class ReplicaSet {
         return texts.stream().allMatch(t -> t.equals(texts.getFirst()));
     }
 
-    /** Czy w którejkolwiek replice zostały operacje niezastosowane — to zawsze jest błąd. */
+    /** Whether any replica has unapplied operations left — always a bug. */
     boolean hasPendingOps() {
         return replicas.stream().anyMatch(r -> r.pendingCount() > 0);
     }

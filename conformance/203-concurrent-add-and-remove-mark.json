@@ -1,6 +1,6 @@
 {
   "name" : "203-concurrent-add-and-remove-mark",
-  "description" : "Współbieżne nadanie i zdjęcie tego samego formatowania. Rozstrzyga porządek totalny (lamport, replicaId) — ten sam, którego używa reguła wstawiania RGA.",
+  "description" : "Concurrently applying and removing the same formatting. Settled by the total order (lamport, replicaId) — the same one RGA's insertion rule uses.",
   "operations" : [ {
     "r" : 2,
     "l" : 8,

@@ -13,15 +13,15 @@ import net.jqwik.api.constraints.IntRange;
 import net.jqwik.api.constraints.LongRange;
 
 /**
- * Dowód, że optymalizacja niczego nie zmieniła.
+ * Proof that the optimisation changed nothing.
  *
- * <p>{@link TreapBlockList} zastępuje skanowanie liniowe drzewem z agregatami — czyli zmienia
- * najbardziej newralgiczną część struktury danych. Zamiast ufać, że przepisanie było wierne,
- * podajemy obu implementacjom <b>tę samą</b> losową sekwencję operacji i porównujemy nie tylko
- * wynikowy tekst, ale też każdą odpowiedź na zapytanie pozycyjne, po każdym kroku.
+ * <p>{@link TreapBlockList} replaces a linear scan with a tree carrying aggregates — that is, it
+ * changes the most delicate part of the data structure. Rather than trusting that the rewrite was
+ * faithful, we feed both implementations <b>the same</b> random sequence of operations and compare
+ * not only the resulting text but every answer to a positional query, after every step.
  *
- * <p>Ta para testów jest tym, co odróżnia „zoptymalizowałem" od „zoptymalizowałem i wiem,
- * że nadal działa".
+ * <p>This pair of tests is what separates "I optimised it" from "I optimised it and I know it still
+ * works".
  */
 class BlockListEquivalenceProperties {
 
@@ -31,12 +31,13 @@ class BlockListEquivalenceProperties {
     }
 
     /**
-     * <b>Równoważność na poziomie dokumentu.</b> Ten sam skrypt i ta sama kolejność dostawy
-     * na obu implementacjach dają identyczny tekst i identyczny ciąg bloków.
+     * <b>Equivalence at the document level.</b> The same script and the same delivery order on
+     * both implementations give identical text and an identical sequence of blocks.
      *
-     * <p><b>Failure mode:</b> błąd w agregatach treapa — najczęściej brak aktualizacji sumy
-     * widocznych znaków po oznaczeniu bloku tombstone'em. Objawia się tym, że wyszukiwanie
-     * po pozycji zwraca zły znak, ale <i>tylko czasem</i> i tylko w dokumentach z tombstone'ami.
+     * <p><b>Failure mode:</b> a bug in the treap's aggregates — most often a missing update to the
+     * visible-character sum after marking a block as a tombstone. It shows up as lookup by position
+     * returning the wrong character, but <i>only sometimes</i> and only in documents with
+     * tombstones.
      */
     @Property
     void naiveAndIndexedProduceIdenticalDocuments(
@@ -56,19 +57,20 @@ class BlockListEquivalenceProperties {
 
         for (int i = 0; i < replicaCount; i++) {
             assertThat(describeBlocks(indexed.get(i)))
-                .as("replika %d ma inną strukturę bloków niż wersja naiwna", i)
+                .as("replica %d has a different block structure than the naive version", i)
                 .isEqualTo(describeBlocks(naive.get(i)));
         }
     }
 
     /**
-     * <b>Równoważność odpowiedzi na zapytania.</b> Po każdym kroku skryptu obie implementacje
-     * muszą zwracać to samo dla <i>każdej</i> pozycji widocznej i <i>każdego</i> identyfikatora
-     * obecnego w dokumencie.
+     * <b>Equivalence of query answers.</b> After every step of the script both implementations
+     * must return the same thing for <i>every</i> visible position and <i>every</i> identifier
+     * present in the document.
      *
-     * <p><b>Failure mode:</b> {@code rankOf} liczące pozycję po wskaźnikach do rodzica pomyliło
-     * się po rotacji. Tekst pozostaje wtedy poprawny (bo wynika z przejścia in-order), więc
-     * poprzedni test tego nie złapie — ale kursor użytkownika ląduje w złym miejscu.
+     * <p><b>Failure mode:</b> {@code rankOf}, which computes a position by climbing parent
+     * pointers, got it wrong after a rotation. The text stays correct (it comes from in-order
+     * traversal), so the previous test will not catch it — but the user's cursor lands in the wrong
+     * place.
      */
     @Property
     void bothImplementationsAnswerQueriesIdentically(
@@ -96,13 +98,13 @@ class BlockListEquivalenceProperties {
 
             for (int position = 0; position < naive.visibleLength(); position++) {
                 assertThat(indexed.idAtVisible(position))
-                    .as("różny identyfikator na pozycji %d", position)
+                    .as("different identifier at position %d", position)
                     .isEqualTo(naive.idAtVisible(position));
             }
 
             for (Id id : allIds(naive)) {
                 assertThat(indexed.blocks().locateId(id) != null)
-                    .as("identyfikator %s znaleziony tylko przez jedną implementację", id)
+                    .as("identifier %s found by only one implementation", id)
                     .isTrue();
             }
         }

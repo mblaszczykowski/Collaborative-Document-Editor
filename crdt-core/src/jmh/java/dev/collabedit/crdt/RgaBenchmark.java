@@ -14,29 +14,30 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.infra.Blackhole;
 
 /**
- * Pomiar różnicy między {@link ArrayBlockList} (O(n)) a {@link TreapBlockList} (O(log n)).
+ * Measuring the difference between {@link ArrayBlockList} (O(n)) and {@link TreapBlockList}
+ * (O(log n)).
  *
- * <p>Ten benchmark istnieje po to, żeby w README stała liczba, a nie przymiotnik. Mierzy
- * trzy operacje, które w prawdziwym użyciu dzieją się na każde naciśnięcie klawisza:
+ * <p>This benchmark exists so that the README carries a number rather than an adjective. It
+ * measures three operations that happen on every keystroke in real use:
  * <ol>
- *   <li>zamianę pozycji kursora na identyfikator znaku (edytor → CRDT),</li>
- *   <li>odnalezienie znaku po identyfikatorze (przychodząca operacja zdalna → CRDT),</li>
- *   <li>samo wstawienie.</li>
+ *   <li>turning a cursor position into a character identifier (editor → CRDT),</li>
+ *   <li>finding a character by identifier (an incoming remote operation → CRDT),</li>
+ *   <li>the insertion itself.</li>
  * </ol>
  *
- * <p><b>Metodyka i jej ograniczenia — czytać przed cytowaniem wyników:</b>
+ * <p><b>The methodology and its limits — read before quoting the results:</b>
  * <ul>
- *   <li>Dokument jest budowany <b>losowymi wstawieniami ośmioznakowych fragmentów</b>, a nie
- *       pisaniem ciągiem. Pisanie ciągiem kompresuje się do jednego bloku (patrz property
- *       {@code sequentialTypingCompressesIntoFewBlocks}) i obie implementacje wypadłyby
- *       identycznie — pomiar nie mówiłby nic. Ten rozkład jest bliższy dokumentowi
- *       redagowanemu przez wiele osób.</li>
- *   <li>Benchmark {@code insertAtRandomPosition} <b>powiększa dokument w trakcie iteracji</b>
- *       (o rzędu kilku procent rozmiaru). Mierzy więc „wstawienie do dokumentu o rozmiarze
- *       około {@code documentSize}", a nie dokładnie tego rozmiaru. Odbudowywanie dokumentu
- *       przed każdym wywołaniem kosztowałoby więcej niż sam pomiar.</li>
- *   <li>Wyniki zależą od maszyny. Specyfikacja sprzętu jest podawana w README razem
- *       z liczbami — liczba bez maszyny jest bezużyteczna.</li>
+ *   <li>The document is built by <b>random insertions of eight-character chunks</b> rather than by
+ *       continuous typing. Continuous typing compresses into a single block (see the property
+ *       {@code sequentialTypingCompressesIntoFewBlocks}) and both implementations would come out
+ *       identical — the measurement would say nothing. This distribution is closer to a document
+ *       edited by several people.</li>
+ *   <li>The {@code insertAtRandomPosition} benchmark <b>grows the document during the
+ *       iteration</b> (by a few percent of its size). It therefore measures "an insertion into a
+ *       document of roughly {@code documentSize}", not exactly that size. Rebuilding the document
+ *       before every invocation would cost more than the measurement itself.</li>
+ *   <li>The results depend on the machine. The hardware specification is given in the README next
+ *       to the numbers — a number without its machine is useless.</li>
  * </ul>
  */
 @BenchmarkMode(Mode.AverageTime)
@@ -60,8 +61,8 @@ public class RgaBenchmark {
 
     @Setup(Level.Trial)
     public void buildDocument() {
-        // Stałe ziarno: dwie implementacje muszą dostać identyczny dokument, inaczej
-        // porównywalibyśmy różne struktury, a nie różne algorytmy.
+        // A fixed seed: both implementations have to receive an identical document, otherwise we
+        // would be comparing different structures rather than different algorithms.
         random = new Random(20260814L);
         document = new RgaDocument(1, newBlockList());
 
@@ -71,33 +72,33 @@ public class RgaBenchmark {
             document.insert(position, chunk);
         }
 
-        // Próbki identyfikatorów rozrzucone po całym dokumencie — żeby pomiar wyszukiwania
-        // po identyfikatorze nie trafiał w kółko w ten sam, gorący fragment drzewa.
+        // Identifier samples scattered across the whole document — so that the lookup-by-
+        // identifier measurement does not keep hitting the same hot fragment of the tree.
         sampleIds = new Id[1024];
         for (int i = 0; i < sampleIds.length; i++) {
             sampleIds[i] = document.idAtVisible(random.nextInt(document.visibleLength()));
         }
     }
 
-    /** Edytor mówi „kursor na pozycji N" — CRDT musi zamienić to na identyfikator znaku. */
+    /** The editor says "cursor at position N" — the CRDT has to turn that into a character identifier. */
     @Benchmark
     public void locateByVisiblePosition(Blackhole blackhole) {
         blackhole.consume(document.idAtVisible(random.nextInt(document.visibleLength())));
     }
 
-    /** Przychodzi operacja zdalna zaczepiona o znak — CRDT musi go odnaleźć. */
+    /** A remote operation arrives anchored to a character — the CRDT has to find it. */
     @Benchmark
     public void locateByIdentifier(Blackhole blackhole) {
         blackhole.consume(document.blocks().locateId(sampleIds[random.nextInt(sampleIds.length)]));
     }
 
-    /** Pełne wstawienie: wyszukanie originu, ewentualny podział bloku, integracja. */
+    /** A full insertion: finding the origin, splitting a block if needed, integrating. */
     @Benchmark
     public void insertAtRandomPosition(Blackhole blackhole) {
         blackhole.consume(document.insert(random.nextInt(document.visibleLength() + 1), "x"));
     }
 
-    /** Odczyt całego tekstu — koszt renderowania dokumentu od zera. */
+    /** Reading the whole text — the cost of rendering the document from scratch. */
     @Benchmark
     public void readFullText(Blackhole blackhole) {
         blackhole.consume(document.text());

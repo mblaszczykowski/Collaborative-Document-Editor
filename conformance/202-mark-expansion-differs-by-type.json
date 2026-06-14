@@ -1,6 +1,6 @@
 {
   "name" : "202-mark-expansion-differs-by-type",
-  "description" : "Pogrubienie ROŚNIE przy pisaniu na jego końcu, link NIE. Cała różnica to wybór strony kotwicy końcowej — implementacja w TS musi wybrać tak samo.",
+  "description" : "Bold GROWS when typing at its end, a link does NOT. The entire difference is which side the end anchor sits on — the TS implementation must choose the same.",
   "operations" : [ {
     "r" : 1,
     "l" : 0,

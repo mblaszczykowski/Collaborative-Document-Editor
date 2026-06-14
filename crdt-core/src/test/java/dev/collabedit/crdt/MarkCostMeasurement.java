@@ -7,27 +7,27 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Ile faktycznie kosztuje warstwa znaczników (CP15).
+ * What the mark layer actually costs (CP15).
  *
- * <p>Plan v2 zakładał w punkcie 5.5, że kotwice mogą zablokować garbage collector: skoro
- * każdy znacznik zaczepia dwa tombstone'y i chroni je przed usunięciem, to dokument
- * z tysiącami komentarzy przestanie oddawać pamięć. To jest obawa <b>sformułowana przed
- * implementacją</b> i CP15 ma ją potwierdzić albo obalić liczbą, a nie przymiotnikiem.
+ * <p>Plan v2, point 5.5, assumed the anchors might block the garbage collector: if every mark pins
+ * two tombstones and protects them from removal, a document with thousands of comments will stop
+ * giving memory back. That is a fear <b>stated before the implementation</b>, and CP15 is to
+ * confirm or refute it with a number rather than an adjective.
  *
- * <p>To nie jest test wydajności i <b>nie mierzy czasu</b>. Czas na współdzielonej maszynie
- * z Postgresem, Redisem i przeglądarką w tle nie znaczy nic; liczba bajtów i liczba
- * odzyskanych tombstone'ów znaczą tyle samo niezależnie od obciążenia. Asercje są luźne
- * z rozmysłem — mają wyłapać zmianę <b>rzędu wielkości</b>, a nie utrwalać dokładną liczbę,
- * która zmieni się przy pierwszej korekcie formatu przewodowego.
+ * <p>This is not a performance test and it <b>does not measure time</b>. Time on a machine shared
+ * with Postgres, Redis and a browser means nothing; a byte count and a count of reclaimed
+ * tombstones mean the same regardless of load. The assertions are deliberately loose — they are
+ * meant to catch a change of <b>an order of magnitude</b>, not to pin down an exact number that
+ * will move with the first correction to the wire format.
  *
- * <p>Wyniki trafiają do README (sekcja „Koszt warstwy znaczników"). Gdy się rozjadą,
- * trzeba poprawić README, a nie asercję.
+ * <p>The results go into the README (the "cost of the mark layer" section). When they diverge, fix
+ * the README, not the assertion.
  */
 class MarkCostMeasurement {
 
     private static final int TEXT_LENGTH = 50_000;
 
-    /** Ile znaczników nakłada dokument „gęsty" — mniej więcej jeden na akapit. */
+    /** How many marks a "dense" document carries — roughly one per paragraph. */
     private static final int DENSE_MARKS = 500;
 
     private static RgaDocument document() {
@@ -39,7 +39,7 @@ class MarkCostMeasurement {
     }
 
     @Test
-    @DisplayName("znaczniki kosztują w snapshocie tyle, ile ważą — nie powielają tekstu")
+    @DisplayName("marks cost what they weigh in a snapshot — they do not duplicate the text")
     void marksCostProportionallyToTheirCount() {
         RgaDocument plain = document();
         plain.insert(0, "x".repeat(TEXT_LENGTH));
@@ -55,18 +55,19 @@ class MarkCostMeasurement {
 
         int perMark = (withMarks - withoutMarks) / DENSE_MARKS;
         System.out.printf(
-            "%nKOSZT ZNACZNIKÓW W SNAPSHOCIE%n"
-                + "  tekst %,d znaków, bez znaczników:  %,d B  (run-length ściska go do JEDNEGO bloku,%n"
-                + "                                             więc długość tekstu prawie nic tu nie waży)%n"
-                + "  ten sam tekst, %d znaczników:      %,d B%n"
-                + "  narzut na znacznik:                %d B%n",
+            "%nMARK COST IN A SNAPSHOT%n"
+                + "  text of %,d characters, no marks: %,d B  (run-length squeezes it into ONE%n"
+                + "                                            block, so the text length weighs%n"
+                + "                                            almost nothing here)%n"
+                + "  the same text, %d marks:          %,d B%n"
+                + "  overhead per mark:                %d B%n",
             TEXT_LENGTH, withoutMarks, DENSE_MARKS, withMarks, perMark);
 
-        // Znacznik to dwie kotwice (replika + lamport + strona) plus typ i wartość.
-        // Setki bajtów oznaczałyby, że koder zapisuje coś więcej — na przykład kopiuje
-        // objęty tekst, co jest dokładnie tym błędem, przed którym broni Peritext.
+        // A mark is two anchors (replica + lamport + side) plus a type and a value. Hundreds of
+        // bytes would mean the encoder is writing something more — for example copying the covered
+        // text, which is exactly the mistake Peritext exists to prevent.
         assertThat(perMark)
-            .as("znacznik waży w snapshocie tyle, co fragment tekstu — koder coś powiela")
+            .as("a mark weighs as much as a fragment of text in the snapshot — the encoder duplicates something")
             .isLessThan(120);
     }
 
@@ -206,7 +207,7 @@ class MarkCostMeasurement {
     private static final int CHARS = 1_000;
     private static final int MARKS = 100;
 
-    /** Dokument napisany JEDNYM ciągiem — cały tekst mieści się w jednym bloku run-length. */
+    /** A document written in ONE run — the whole text fits in a single run-length block. */
     private static RgaDocument writtenInOneRun() {
         RgaDocument document = document();
         document.insert(0, "x".repeat(CHARS));
@@ -214,11 +215,12 @@ class MarkCostMeasurement {
     }
 
     /**
-     * Ten sam tekst wpisany tak, że każdy znak trafia do osobnego bloku.
+     * The same text typed so that every character ends up in a separate block.
      *
-     * <p>Wstawianie na pozycji 0 nie da się skleić run-lengthem: każdy nowy znak zaczepia się
-     * o początek dokumentu, a nie o poprzednik. Skrajność w drugą stronę niż `writtenInOneRun`,
-     * i to jest cały sens tej pary — <b>koszt kotwicy zależy od tego, jak tekst powstał</b>.
+     * <p>Inserting at position 0 cannot be run-length merged: every new character anchors to the
+     * start of the document rather than to its predecessor. The opposite extreme from
+     * `writtenInOneRun`, and that is the entire point of the pair — <b>an anchor's cost depends on
+     * how the text was created</b>.
      */
     private static RgaDocument writtenCharByChar() {
         RgaDocument document = document();
@@ -238,7 +240,7 @@ class MarkCostMeasurement {
     }
 
     @Test
-    @DisplayName("po CP18 kotwica nie blokuje już pamięci — blok oddaje treść, zachowując tożsamość")
+    @DisplayName("after CP18 an anchor no longer blocks memory — the block gives up its content and keeps its identity")
     void anchorsNoLongerBlockReclamation() {
         int oneRunWithout = collectAfterDeletingEverything(writtenInOneRun(), 0);
         int oneRunWith = collectAfterDeletingEverything(writtenInOneRun(), MARKS);
@@ -246,34 +248,34 @@ class MarkCostMeasurement {
         int perCharWith = collectAfterDeletingEverything(writtenCharByChar(), MARKS);
 
         System.out.printf(
-            "%nWPŁYW KOTWIC NA GC (%d znaków, wszystko skasowane, %d znaczników = %d kotwic)%n"
-                + "  jak powstał tekst          bez znaczników   ze znacznikami   odzyskane%n"
-                + "  jednym ciągiem (1 blok)    %10d       %10d       %6.0f%%%n"
-                + "  znak po znaku (%d bloków) %10d       %10d       %6.0f%%%n",
+            "%nEFFECT OF ANCHORS ON GC (%d chars, all deleted, %d marks = %d anchors)%n"
+                + "  how the text was written    without marks     with marks    reclaimed%n"
+                + "  in one run (1 block)        %10d      %10d      %6.0f%%%n"
+                + "  char by char (%d blocks)  %10d      %10d      %6.0f%%%n",
             CHARS, MARKS, 2 * MARKS,
             oneRunWithout, oneRunWith, 100.0 * oneRunWith / oneRunWithout,
             CHARS, perCharWithout, perCharWith, 100.0 * perCharWith / perCharWithout);
 
-        // CP15 ZMIERZYŁ, ŻE TU BYŁO ZERO. Ta asercja jest tamtą asercją odwróconą, i to jest
-        // cała treść CP18.
+        // CP15 MEASURED THIS AS ZERO. This assertion is that assertion inverted, and that is the
+        // entire content of CP18.
         //
-        // Wcześniej kotwica blokowała CAŁY blok run-length: GC działa na blokach, a blok,
-        // w którym choć jeden znak jest kotwicą, zostawał w całości. Tekst napisany ciągiem
-        // to jeden blok, więc jedna kotwica ratowała cały dokument — 0% odzysku.
+        // Previously an anchor blocked the WHOLE run-length block: GC works on blocks, and a block
+        // in which even one character is an anchor stayed whole. Text written in one run is one
+        // block, so a single anchor rescued the entire document — 0% reclaimed.
         //
-        // Teraz blok, którego nie wolno usunąć, ODDAJE TREŚĆ, zachowując tożsamość, długość
-        // i pozycję. Wszystkie trzy powody trzymania tombstone'u (origin, kotwica, stabilność
-        // przyczynowa) potrzebują identyfikatora znaku, nie jego treści — więc nic się nie psuje,
-        // a pamięć wraca.
+        // Now a block that must not be removed GIVES UP ITS CONTENT while keeping its identity,
+        // length and position. All three reasons for keeping a tombstone (origin, anchor, causal
+        // stability) need the character's identifier rather than its content — so nothing breaks
+        // and the memory comes back.
         assertThat(oneRunWith)
-            .as("blok run-length z kotwicą znów blokuje pamięć — regresja CP18")
+            .as("a run-length block with an anchor blocks memory again — a CP18 regression")
             .isEqualTo(oneRunWithout);
 
-        // Drugie skrajne ustawienie musi zostać bez zmian: tam GC i tak potrafił usuwać bloki
-        // w całości, więc CP18 nie miał czego poprawiać. Gdyby ta liczba SPADŁA, znaczyłoby to,
-        // że porzucanie treści weszło w miejsce usuwania bloku, zamiast obok niego.
+        // The other extreme must be unchanged: there GC could already remove whole blocks, so
+        // CP18 had nothing to improve. If this number DROPPED it would mean dropping content had
+        // replaced removing blocks rather than arriving beside it.
         assertThat(perCharWith)
-            .as("odzysk przy drobnych blokach spadł — porzucanie treści wyparło usuwanie bloków")
+            .as("reclamation with small blocks dropped — content dropping displaced block removal")
             .isGreaterThanOrEqualTo(perCharWithout - 2 * MARKS);
     }
 }

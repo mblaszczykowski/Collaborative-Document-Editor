@@ -1,6 +1,6 @@
 {
   "name" : "105-random-seed-5",
-  "description" : "Losowy scenariusz o ziarnie 5: 3 repliki, niezależne edycje, dostawa w losowej kolejności.",
+  "description" : "Losowy scenariusz o ziarnie 5: 3 replicas, independent edits, delivery in random order.",
   "operations" : [ {
     "r" : 1,
     "l" : 6,
