@@ -134,6 +134,11 @@ export class DocumentConnection {
 
       onConnect: () => {
         this.reconnectAttempt = 0
+        // Nowe połączenie zaczyna z czystym licznikiem odmów. Bez tego klient, który
+        // wcześniej zdążył się rozpędzić do maksymalnego odstępu, wracałby po rozłączeniu
+        // z sekundowym opóźnieniem pierwszego ponowienia — karany za sytuację, która
+        // już nie istnieje.
+        this.throttleRounds = 0
         this.onConnected()
       },
       onWebSocketClose: () => this.setState('offline'),
@@ -264,6 +269,17 @@ export class DocumentConnection {
   private throttleRounds = 0
 
   /**
+   * Górna granica wykładnika.
+   *
+   * Nie jest to mikrooptymalizacja: bez niej długa sesja doprowadza {@code throttleRounds}
+   * do wartości, przy której {@code 2 ** rounds} to {@code Infinity}. Samo w sobie jeszcze
+   * nie szkodzi (minimum z {@code THROTTLE_MAX_MS} to naprawia), ale {@code 0 * Infinity}
+   * daje {@code NaN}, a {@code setTimeout(fn, NaN)} odpala NATYCHMIAST — czyli dokładnie
+   * pętlę odpytywania, przed którą to wydłużanie broni.
+   */
+  private static readonly THROTTLE_MAX_ROUNDS = 8
+
+  /**
    * Ponawia operacje niepotwierdzone po odrzuceniu z powodu tempa.
    *
    * Jeden timer na całą serię, nie jeden na operację: przy przekroczeniu limitu odrzuconych
@@ -284,7 +300,10 @@ export class DocumentConnection {
       advertised * 2 ** this.throttleRounds,
       DocumentConnection.THROTTLE_MAX_MS,
     )
-    this.throttleRounds++
+    this.throttleRounds = Math.min(
+      this.throttleRounds + 1,
+      DocumentConnection.THROTTLE_MAX_ROUNDS,
+    )
 
     this.throttleRetryTimer = window.setTimeout(() => {
       this.throttleRetryTimer = null

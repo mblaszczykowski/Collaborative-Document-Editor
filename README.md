@@ -60,14 +60,22 @@ Jeśli masz trzy minuty:
    którą projekt zastosował już przy kursorach — i to jest najlepszy argument, że tamta
    decyzja była trafna.
 
-Osiem błędów w tym projekcie znalazły testy, pomiar albo audyt planu, a nie przegląd kodu: dublowanie
+Dziewięć błędów w tym projekcie znalazły testy, pomiar albo audyt planu, a nie przegląd kodu: dublowanie
 dokumentu przy otwarciu, snapshot niezapisywalny powyżej 64 KB, odpowiedź na resynchronizację
 przekraczająca limit ramki, nazwa użytkownika ze znakiem `|` unieważniająca własny token,
 GC kasujący kotwice formatowania, zaznaczenie od pozycji zero niewidoczne dla panelu
 komentarzy, **operacje odrzucane przez limit tempa i gubione po cichu** oraz — znaleziona
 dopiero przy końcowym audycie planu — **historia jako trzecia, niezabezpieczona droga
-do treści i do zapisu cudzego dokumentu**.
+do treści i do zapisu cudzego dokumentu**, oraz — znaleziona przy pisaniu planu v3 przeciw
+kodowi — **czwarta droga: odzyskany szkic tworzony bez ważnego tokenu lądował jako dokument
+edytowalny dla wszystkich**, dokładnie odwrotnie do intencji poprawki, która miała go uczynić
+prywatnym.
 Wszystkie są opisane w commitach i w komentarzach w miejscu naprawy.
+
+Do tej listy dochodzi jeszcze jedna kategoria, której wcześniej nie było: **twierdzenie
+z tego README, które okazało się nieprawdziwe po zmierzeniu.** Wyjaśnienie grubego ogona p99
+(„to przez tę sekundę oczekiwania") zostało obalone własnym pomiarem — szczegóły
+w sekcji [Wydajność](#wydajność).
 
 ---
 
@@ -124,6 +132,8 @@ nigdy nie jest pusta, oraz — tam, gdzie czegoś jeszcze nie wiem — jawne
 | [0009](docs/adr/0009-model-uprawnien.md) | Role uporządkowane, egzekwowane w obu warstwach z jednej reguły |
 | [0010](docs/adr/0010-rich-text.md) | Formatowanie jako osobna warstwa CRDT (Peritext), nie atrybut znaku |
 | [0011](docs/adr/0011-komentarze.md) | Kotwica komentarza w CRDT, treść rozmowy poza nim |
+| [0012](docs/adr/0012-autoryzacja-strukturalna.md) | Autoryzacja deklarowana przy endpoincie; endpoint bez deklaracji **nie jest obsługiwany** |
+| [0013](docs/adr/0013-symulacja-deterministyczna.md) | Symulacja deterministyczna jako trzeci filar testów — ziarno zamiast uszeregowania wątków |
 
 Diagramy (architektura, droga pojedynczej edycji, stany połączenia):
 [`docs/architektura.md`](docs/architektura.md).
@@ -175,6 +185,12 @@ Na runnerach GitHuba nic z tego nie jest potrzebne — Docker jest tam natywny.
 # Zależności infrastrukturalne
 docker compose up -d postgres redis
 
+# Sekret podpisujący tokeny — WYMAGANY, bez wartości domyślnej (CP16).
+# Serwer odmawia startu bez niego, i to jest celowe: sekret wpisany w repozytorium
+# znaczyłby, że każdy czytelnik może wystawić token dowolnego użytkownika. Docker Compose
+# i CI ustawiają go same; tylko uruchomienie wprost wymaga tej linii.
+export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)
+
 # Backend
 ./mvnw -pl app spring-boot:run
 
@@ -202,6 +218,8 @@ więc wersje są spójne, ale zależność idzie w jedną stronę i dotyczy wył
 ./mvnw -pl crdt-core exec:exec@run-benchmarks                # benchmarki JMH (~7 min)
 ./mvnw -pl app test -Dtest=LoadHarnessIT -Dbenchmark=true    # harness obciążeniowy (~10 min)
 ./mvnw -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true   # ilu klientów zbiega się POWTARZALNIE
+./mvnw -pl app test -Dtest=ClusterSimulationTest              # symulacja deterministyczna (~1 s)
+./mvnw -pl app test -Dtest=ClusterSimulationTest -Dsimulation.seeds=20000   # jak w nocnym CI
 cd frontend && npm test                                      # testy jednostkowe klienta (vitest)
 cd frontend && npm run e2e                                   # dwie przeglądarki (wymaga działającego stacku)
 ```
@@ -236,6 +254,17 @@ Testy są uporządkowane wg tego, jaki failure mode wyłapują, a nie wg pokryci
 | `recoveredDraftIsPrivateToItsOwner` | Ratunkowa kopia niezsynchronizowanej pracy jednej osoby powstaje widoczna dla wszystkich |
 | `dokument, którego nie da się otworzyć` (e2e) | Odmowa dostępu kończy się pustą stroną — objaw nieodróżnialny od awarii |
 | `viewerCannotWriteText` / `commenterCannotChangeText` | Uprawnienia egzekwowane tylko w interfejsie; ramka wysłana z konsoli przechodzi |
+| `everyDocumentScopedEndpointIsCoveredByTheRule` | **Nowy kontroler startuje bez autoryzacji i milczy o tym** — dokładnie tak, jak `HistoryController` przez cały jeden checkpoint. Test architektury wywala build; strażnik odmawia obsługi w czasie działania |
+| `publicEndpointsAreExactlyTheseThree` | Ktoś ucisza strażnika, żeby build był zielony. Lista endpointów bez autoryzacji jest przypięta po nazwach, więc zmiana widać w diffie |
+| `recoveredDraftCannotBeCreatedAnonymously` | **Wygasły token** sprawia, że odzyskany szkic powstaje jako `link` — edytowalny dla każdego zalogowanego. Odwrotność intencji poprawki, która miała go uczynić prywatnym |
+| `undeclaredEndpointFailsClosed` | Endpoint bez deklaracji jest OBSŁUGIWANY zamiast odrzucony — czyli cała konstrukcja z ADR-0012 jest ozdobą |
+| `sameSeedProducesIdenticalHistory` | **Symulacja nie jest deterministyczna.** Wtedy każdy scenariusz na niej zbudowany jest testem chaosu z dodatkowymi krokami, a znaleziona awaria i tak nie jest odtwarzalna |
+| `differentSeedsProduceDifferentHistories` | Ziarno jest ignorowane i wszystkie przebiegi badają jedno uszeregowanie — zestaw, który wygląda na tysiąc scenariuszy, będąc jednym |
+| `totalFastPathFailureStillConverges` | Najmocniejsza forma tezy z ADR-0004: przy Redisie gubiącym **wszystko** sam log musi doprowadzić instancje do zgody. Inaczej „zawodna ścieżka szybka" nie jest prawdziwym opisem systemu |
+| `droppedContentBlockKeepsIdentityAndLength` | Blok, który zapomniał swojej długości, zapomina, gdzie leży każdy znak za nim — tekst czyta się poprawnie, a kursory od tego miejsca są przesunięte |
+| `visibleBlockRefusesToDropItsContent` | Porzucenie treści widocznego bloku kasuje tekst, którego nikt nie kasował, i robi to po cichu — bo długość zostaje |
+| `naiveLookupIsVisiblyLinear` | Bramka kształtu złożoności przechodzi, nic nie mierząc. Kontrola: naiwny indeks MUSI przekroczyć budżet, w którym mieści się treap |
+| `waitingTheAdvertisedTimeIsEnough` | Czas podany przez serwer jest o milisekundę za krótki, więc uczciwy klient dostaje drugą odmowę — mechanizm zwiększa obciążenie, które miał zmniejszyć |
 | `threadSurvivesDeletionOfAnchoredText` | Skasowanie tekstu kasuje rozmowę o nim — utrata kontekstu decyzji, po którą ludzie wracają po miesiącach |
 
 **Czy te testy mają zęby — sprawdzone, nie założone.** Odwrócenie warunku skanu RGA
@@ -324,9 +353,39 @@ indeksu na treap wąskim gardłem przestała być struktura danych.
 
 **Ogony (p99) są tu wyraźnie grubsze niż w poprzednim pomiarze i jest to CENA
 OGRANICZANIA TEMPA**, wprowadzonego w CP12. Harness zasiewa dokument 100 tys. znaków
-dwustoma operacjami wysłanymi bez przerwy, co wyczerpuje zryw limitu; odrzucone operacje
-są ponawiane po sekundzie, i ta sekunda jest tym, co widać w p99. Zachowanie jest poprawne
+dwustoma operacjami wysłanymi bez przerwy, co wyczerpuje zryw limitu. Zachowanie jest poprawne
 — nic nie ginie — ale liczba jest gorsza i zostaje w tabeli taka, jaka jest.
+
+#### Wyjaśnienie tego ogona, które tu stało, było BŁĘDNE — sprawdzone w CP20
+
+Poprzednia wersja tego akapitu kończyła się zdaniem: *„odrzucone operacje są ponawiane
+po sekundzie, i ta sekunda jest tym, co widać w p99"*. Brzmiało sensownie: klient czekał
+na sztywno 1000 ms, a wiadro żetonów napełnia się w tempie 60/s, więc rzeczywisty czas
+do jednego żetonu to ~17 ms. Sześćdziesięciokrotne przeszacowanie wyglądało na oczywistą
+przyczynę grubego ogona.
+
+CP20 kazał serwerowi odsyłać dokładny czas oczekiwania, który wiadro i tak zna. Zmierzone
+trzema przebiegami harnessu jeden po drugim, na tej samej maszynie:
+
+| 100 tys. znaków, 50 klientów | p99 | odrzuceń |
+|---|---:|---:|
+| przed (stała 1 s) | 872 ms | 1523 |
+| sam `retry-after` | **1352 ms** | 1614 |
+| `retry-after` + wydłużanie wykładnicze | 826 ms | 1368 |
+
+**Sam czas z serwera pogorszył ogon o 55 %.** Powód jest pouczający: serwer podaje czas
+do JEDNEGO żetonu, a klient ma w buforze kilkadziesiąt operacji. Ponawianie całego bufora
+co 17 ms to odpytywanie w pętli — żetonów od tego nie przybywa, a odmów przybywa.
+
+Wydłużanie wykładnicze usuwa tę regresję, i **na tym kończy się zysk**: 826 ms wobec 872 ms
+mieści się w rozrzucie tego stanowiska (patrz akapit wyżej — 28 ms kontra 43 ms na tym samym
+kodzie). Prawdziwym ogranicznikiem ogona jest **tempo napełniania wiadra razy rozmiar
+zakolejkowanej paczki**: klient z N operacjami za pustym wiadrem czeka N/60 sekundy niezależnie
+od tego, jak często pyta.
+
+Co ta zmiana daje naprawdę, skoro nie daje latencji: znika zgadnięta stała po stronie klienta,
+serwer podaje wartość, którą jako jedyny zna, a liczba odmów przy 50 klientach spada o ~10 %.
+Zostaje w README, bo teza „to przez tę sekundę" była tu opublikowana i okazała się nieprawdziwa.
 
 ### Profil ruchu — czego poprzednie pomiary NIE obejmowały
 
@@ -342,7 +401,7 @@ Kursor jest najczęstszym zdarzeniem w całym systemie, a harness go nie wysyła
 liczby opisywały więc system lżejszy niż ten, którego używa przeglądarka — w sposób
 niemożliwy do zauważenia, dopóki się tego nie sprawdzi.
 
-### Koszt warstwy znaczników — i obawa, która się potwierdziła
+### Koszt warstwy znaczników — obawa potwierdzona w CP15, usunięta w CP18
 
 Plan v2 zakładał, że kotwice formatowania mogą zablokować garbage collector: każdy znacznik
 zaczepia dwa tombstone'y i chroni je przed usunięciem. CP15 miał to potwierdzić albo obalić
@@ -352,39 +411,61 @@ Pomiar: [`MarkCostMeasurement`](crdt-core/src/test/java/dev/collabedit/crdt/Mark
 1000 znaków, cały tekst skasowany, 100 znaczników (= 200 kotwic), GC z w pełni stabilnym
 wektorem wersji.
 
-| Jak powstał tekst | Bez znaczników | Ze znacznikami | Odzyskane |
+| Jak powstał tekst | Bez znaczników | Ze znacznikami (CP15) | Ze znacznikami (**po CP18**) |
 |---|---:|---:|---:|
-| jednym ciągiem (**1 blok** run-length) | 1000 | **0** | **0 %** |
-| znak po znaku (1000 bloków) | 1000 | 800 | 80 % |
+| jednym ciągiem (**1 blok** run-length) | 1000 | **0** (0 %) | **1000** (**100 %**) |
+| znak po znaku (1000 bloków) | 1000 | 800 (80 %) | **1000** (**100 %**) |
 
-To jest ta sama implementacja, te same znaczniki i ten sam tekst. Różni się **wyłącznie
-sposób, w jaki tekst powstał** — i to zmienia wynik z 80 % na zero.
+Środkowa kolumna to pomiar z CP15 i to on wymusił zmianę. **GC działał na blokach, nie
+na znakach**: blok, w którym choć jeden znak był kotwicą, zostawał w całości. Tekst napisany
+ciągiem to jeden blok, więc jedna kotwica ratowała cały dokument. Plan przewidywał koszt
+„dwa tombstone'y na znacznik"; rzeczywisty koszt wynosił „cały blok na znacznik", a rozmiar
+bloku zależy od historii pisania, nie od formatowania.
 
-Powód: **GC działa na blokach, nie na znakach.** Blok, w którym choć jeden znak jest kotwicą,
-zostaje w całości. Tekst napisany ciągiem to jeden blok, więc jedna kotwica ratuje wszystko.
-Plan przewidywał koszt „dwa tombstone'y na znacznik"; rzeczywisty koszt to „cały blok
-na znacznik", a rozmiar bloku zależy od historii pisania, nie od formatowania.
+**CP18 usunął ten problem, biorąc dosłownie zdanie, które stało w [ADR-0005](docs/adr/0005-tombstone-gc.md)
+od początku.** Wszystkie trzy powody trzymania tombstone'u — bycie originem, bycie kotwicą,
+stabilność przyczynowa — potrzebują **tożsamości** znaku, nigdy jego treści. Blok, którego nie
+wolno usunąć, **porzuca więc treść i zostaje w strukturze**: zachowuje identyfikator, długość
+i pozycję, traci tylko znaki, których nikt nie widzi. Błąd nie leżał w warunkach ochrony —
+leżał w tym, że „muszę zachować tożsamość" i „muszę zachować wszystko" traktowano jako
+to samo wymaganie.
 
-Właściwym rozwiązaniem jest to samo, które [ADR-0005](docs/adr/0005-tombstone-gc.md) wskazuje
-dla poprzedniego ograniczenia GC: porzucanie **treści** skasowanych węzłów przy zachowaniu ich
-w strukturze. Kotwica potrzebuje identyfikatora, nie znaku. Niezrobione — zmienia reprezentację
-bloku i unieważnia format snapshotu.
+Format snapshotu poszedł z 2 na 3 (jeden bit na blok: **107 B → 108 B** przy 50 tys. znaków).
+Migracja była **darmowa**, i to drugi raz, kiedy spłaca się decyzja z ADR-0003: snapshot
+w nieznanej wersji jest ignorowany, a nie migrowany, więc stan odtwarza się z logu.
+
+Czego CP18 **nie** naprawia: same obiekty bloków zostają. Dokument edytowany dostatecznie
+długo nadal zbiera wpisy na liście bloków i to jest teraz dominujący pozostały koszt.
 
 Koszt w snapshocie jest natomiast pomijalny: **8 B na znacznik** (dwie kotwice, typ, wartość).
 Znacznik nie kopiuje objętego tekstu — czyli nie robi dokładnie tego, przed czym broni Peritext.
 
-Trzecia zmierzona rzecz — **koszt wyliczenia wyglądu**, dokument 50 tys. znaków:
+Trzecia zmierzona rzecz — **koszt wyliczenia wyglądu**, dokument 50 tys. znaków. Tabela jest
+przed i po CP20, mierzona jednym przebiegiem na tej samej maszynie (mediana z 11 próbek):
 
-| Znaczników | Czas jednego wyliczenia |
-|---:|---:|
-| 100 | 0,6 ms |
-| 400 | 0,8 ms |
-| 1600 | **5,3 ms** |
+| Znaczników | `O(m²)` — przed | zamiatanie — po | Przyspieszenie |
+|---:|---:|---:|---:|
+| 100 | 0,39 ms | 0,27 ms | 1,5× |
+| 400 | 0,58 ms | 0,49 ms | 1,2× |
+| 1600 | 4,18 ms | 1,49 ms | 2,8× |
+| 6400 | **62,1 ms** | **4,72 ms** | **13×** |
+| **wzrost przy ×4 znaczników** | ×7,2 → ×14,9 | ×3,1 → ×3,2 | |
 
-Wołane jest to **przy każdym naciśnięciu klawisza**, więc ostatni wiersz to już widoczne
-opóźnienie. Granica użyteczności obecnej implementacji to **setki znaczników na dokument** —
-liczba, której przed tym pomiarem nie miałem, i powód, dla którego `MarkSet` czeka
-na drzewo przedziałowe.
+Wołane jest to **przy każdym naciśnięciu klawisza**. Poprzednia wersja przy każdym odcinku
+przeglądała wszystkie znaczniki; teraz odcinki są przechodzone od lewej do prawej, a zbiór
+zakresów aktywnych utrzymywany przyrostowo — każdy zakres wchodzi i wychodzi dokładnie raz.
+Granica użyteczności przesunęła się z **setek** znaczników na **tysiące**.
+
+Dwie rzeczy, które ten pomiar pokazał przy okazji i które są ciekawsze od samego przyspieszenia:
+
+1. **Przy 100 i 400 znacznikach różnicy praktycznie nie ma.** Poniżej mniej więcej tysiąca
+   dominującym kosztem nie jest wcale wybór zwycięzcy, tylko **rozwiązywanie kotwic** przez
+   indeks bloków — dwa wyszukiwania na znacznik. Poprawka złożoności zaczyna się opłacać
+   dokładnie tam, gdzie README wskazywał granicę, i ani trochę wcześniej.
+2. **Poprzedni pomiar był zbyt hałaśliwy, żeby cokolwiek nim porównać.** Mierzył
+   **jedno** wywołanie i dawał przy 400 znacznikach raz 0,8 ms, raz 4,7 ms — pięciokrotny
+   rozrzut na tym samym kodzie. Liczby 0,6 / 0,8 / 5,3 ms z poprzedniej wersji tego README
+   pochodziły z takiego właśnie pojedynczego strzału.
 
 ### Punkt degradacji — rozstrzygnięty, i to nie na korzyść mojego stanowiska
 
@@ -504,6 +585,12 @@ rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
 **Infrastruktura i eksploatacja**
 - **Uwierzytelnianie bez hasła**, token podpisany HMAC, bez unieważniania i rotacji klucza.
   Token unieważniony w trakcie sesji nie zrywa połączenia, bo sprawdzamy go raz, przy `CONNECT`.
+  ~~Sekret ma wartość domyślną wpisaną w repozytorium.~~ **Naprawione w CP16: wartości domyślnej
+  nie ma.** Sekret w repo znaczył, że wdrożenie, które zapomni ustawić zmiennej, podpisuje tokeny
+  kluczem znanym każdemu czytelnikowi — a ponieważ token niesie identyfikator użytkownika,
+  znajomość klucza wystarcza do wystawienia tokenu **dowolnej osoby**. Serwer z takim kluczem
+  startuje, obsługuje ruch i raportuje zdrowie. Teraz odmawia startu, a komunikat mówi, jak
+  wygenerować sekret. Kosztem jest jedna zmienna środowiskowa przy `spring-boot:run`.
 - **Log operacji rośnie bez ograniczeń.** Potrzebna archiwizacja starych segmentów do storage'u
   obiektowego i kompakcja.
 - **Presence jest lokalne dla instancji** — klient podłączony do innej instancji nie pojawia
@@ -529,25 +616,37 @@ rozrachunek: [PLAN-v2](docs/PLAN-v2.md).
   wklejeniu dużego fragmentu tekstu, bo to jest **jedna** operacja o dziesiątkach kilobajtów.
   Ścieżka rozgłoszeń została w CP10 przeniesiona na budżet bajtowy; ścieżka resynchronizacji
   nie. Znany dług, nie przeoczenie.
-- **Rozstrzyganie znaczników rośnie ponadliniowo po ich liczbie — zmierzone.** `MarkSet`
-  przy każdym wyliczeniu przechodzi wszystkie znaczniki i dla każdego odcinka szuka zwycięzcy
-  liniowo: **0,6 ms przy 100 znacznikach, 5,3 ms przy 1600** (dokument 50 tys. znaków).
-  Znaczenie jest większe, niż wygląda, bo `formatting()` woła się **przy każdym naciśnięciu
-  klawisza** — 5 ms na klawisz to już widoczne opóźnienie. Granicą użyteczności obecnej
-  implementacji jest rząd **setek znaczników na dokument**. Właściwe rozwiązanie: drzewo
-  przedziałowe indeksowane pozycją, przeliczane przyrostowo.
+- ~~**Rozstrzyganie znaczników rośnie ponadliniowo po ich liczbie — zmierzone.**~~
+  **Zrobione (CP20): zamiatanie zamiast `O(m²)`.** Przy 6400 znacznikach **62,1 ms → 4,72 ms**,
+  a wzrost przy czterokrotnym zwiększeniu liczby znaczników spadł z ×14,9 do ×3,2. Granica
+  przesunięta z setek na tysiące. Pozostała granica jest w innym miejscu, niż zakładałem:
+  poniżej ~1000 znaczników dominuje **rozwiązywanie kotwic** przez indeks bloków, nie wybór
+  zwycięzcy, więc tam ta poprawka nie daje nic. Drzewo przedziałowe przeliczane przyrostowo
+  nadal by pomogło, ale dopiero po tamtym koszcie.
 - **Rola jest sprawdzana przy otwarciu, nie przy każdej zmianie.** Klient dostaje ją raz,
   razem ze stanem początkowym; podniesienie uprawnień w trakcie sesji nie odblokuje edytora
   bez przeładowania. Odebranie działa natychmiast tam, gdzie ma znaczenie — serwer i tak
   odrzuci operację — więc jest to niewygoda, a nie dziura. Właściwym rozwiązaniem jest
   zdarzenie o zmianie roli na kanale użytkownika.
-- **Autoryzacja jest per kontroler, więc z definicji niekompletna.** Każdy kontroler sprawdza
-  uprawnienia sam i nic nie wymusza, żeby to robił — nowy startuje bez nich i milczy o tym.
-  Tak właśnie przez cały jeden checkpoint stała otworem `HistoryController`: CP12 zamknął
-  WebSocket i `GET /documents/{id}`, a trzecia droga do tych samych danych została.
-  Właściwe rozwiązanie to jedna reguła na wszystkie ścieżki `/api/documents/{id}/**`,
-  wymuszona filtrem albo `@PreAuthorize` — czyli miejsce, w którym **pominięcie sprawdzenia
-  wymaga świadomej decyzji**, a nie przeoczenia.
+- ~~**Autoryzacja jest per kontroler, więc z definicji niekompletna.**~~
+  **Zrobione (CP16), i wypadło gorzej, niż ten punkt zakładał — bo przy okazji znalazła się
+  TRZECIA dziura tej samej klasy.** `POST /api/documents/recovered` ustawiał właściciela
+  i widoczność `private` tylko wewnątrz `if (caller != null)`, więc **wygasły token** dawał
+  dokument bez właściciela, z domyślną widocznością `link` — czyli edytowalny dla każdego
+  zalogowanego. Dokładna odwrotność intencji. I nie jest to przypadek brzegowy: token żyje
+  12 godzin, a ten endpoint istnieje **wyłącznie** dla klientów offline dłużej niż 7-dniowe
+  okno GC, więc ścieżka bez ważnego tokenu jest tam ścieżką typową.
+
+  Każdy endpoint deklaruje teraz `@RequiresDocumentAccess`, `@RequiresAuthentication` albo
+  `@PublicEndpoint`, a `DocumentAccessGuard` **odmawia obsługi endpointu, który nie deklaruje
+  niczego** — 500 z nazwą metody w logu. Nowy kontroler startuje zepsuty i głośny zamiast
+  otwarty i cichy. Do tego test architektury wywala build, a lista endpointów publicznych jest
+  przypięta po nazwach, więc uciszenie strażnika wymaga wpisu widocznego w code review
+  ([ADR-0012](docs/adr/0012-autoryzacja-strukturalna.md)).
+
+  Czego to **nie** daje, i warto to powiedzieć wprost: nic nie sprawdza, czy zadeklarowane
+  uprawnienie jest **właściwe**. System gwarantuje teraz, że decyzja została podjęta — nie,
+  że była trafna.
 - **Autoryzacja zagląda w treść ramki.** Rola `commenter` wymaga odróżnienia znacznika
   komentarza od formatowania, a to znaczy parsowanie ładunku w interceptorze. Robimy to
   **tylko** dla tej jednej roli, ale jest to warstwa autoryzacji zależna od formatu danych —
@@ -620,10 +719,16 @@ tools/         skrypty pomocnicze (nagranie demo, czyszczenie danych)
 
 ## Stan projektu
 
-Zamknięte są wszystkie checkpointy obu planów: dziewięć z [planu v1](docs/IMPLEMENTATION_PLAN.md)
-(rdzeń CRDT, transport, historia, klaster, obserwowalność) i sześć z
+Zamknięte są wszystkie checkpointy trzech planów: dziewięć z [planu v1](docs/IMPLEMENTATION_PLAN.md)
+(rdzeń CRDT, transport, historia, klaster, obserwowalność), sześć z
 [planu v2](docs/PLAN-v2.md) (wydajność rozgłoszeń, wiele dokumentów, uprawnienia,
-formatowanie, komentarze, ponowny pomiar).
+formatowanie, komentarze, ponowny pomiar) i pięć z [planu v3](docs/PLAN-v3.md).
+
+**v3 nie dodał ani jednej funkcji** i to jest jego teza: wszędzie tam, gdzie system polegał
+na tym, że ktoś pamięta, zauważy albo trafi, wchodzi konstrukcja, która nie pozwala inaczej.
+Endpoint bez zadeklarowanej autoryzacji nie jest obsługiwany; awaria klastra przychodzi
+z ziarnem, które ją odtwarza; blok, którego nie wolno usunąć, oddaje pamięć zamiast ją trzymać;
+bramka CI pilnuje kształtu złożoności, którego liczby w tym README dotyczą.
 
 README było pisane równolegle z kodem, sekcja po sekcji — nie odtwarzane z pamięci na końcu.
 Ta sama zasada dotyczy sekcji [o granicach](#co-zrobiłbym-inaczej-w-produkcji): pozycje,
@@ -632,11 +737,19 @@ okazji potwierdziło, i z tym, co okazało się nieprawdą.
 
 | Warstwa | Testy |
 |---|---:|
-| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, pomiar kosztu | 43 |
-| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra i uprawnienia | 86 |
+| `crdt-core` — property, niezmienniki, konformancja, snapshoty, znaczniki, blok bez treści, kształt złożoności | 53 |
+| `app` — integracyjne na prawdziwym Postgresie i Redisie, w tym chaos klastra, uprawnienia i test architektury | 108 |
 | `frontend` — zgodność z implementacją w Javie, most do CodeMirrora | 51 |
 | end-to-end — dwie prawdziwe przeglądarki | 17 |
-| **razem** | **197** |
+| **razem** | **229** |
+| *osobno:* `app` — **symulacja deterministyczna** klastra | *806* |
+
+**Symulacja jest wypisana osobno i poza sumą, bo inaczej ta tabela kłamie.** 806 to liczba
+**ziaren**, nie odrębnych asercji: cztery scenariusze przemnożone przez dwieście uszeregowań
+zdarzeń. Wliczenie tego do sumy zamieniłoby uczciwą liczbę w chwyt marketingowy — tym bardziej,
+że nocny przebieg podnosi ją do 20 000 ziaren na scenariusz i wtedy „liczba testów" przestaje
+znaczyć cokolwiek. Wartość jest w tym, że **awaria przychodzi z ziarnem, które ją odtwarza**,
+a nie w tym, ile ich jest.
 
 Harness obciążeniowy, benchmarki JMH i pomiar fan-outu są wyłączone z normalnego przebiegu —
 trwają minuty i mierzą przepustowość stanowiska tak samo jak systemu, więc nie są testami

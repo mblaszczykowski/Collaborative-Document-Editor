@@ -211,6 +211,15 @@ public final class Block {
     }
 
     public Block append(String more) {
+        // Reachable only through canAppend(), which requires both blocks visible, so a
+        // content-dropped block can never get here. Checked anyway because the failure without
+        // it is silent and permanent: string concatenation would splice the literal "null" into
+        // the document and give the block a length four characters too long, which every index
+        // downstream would then trust.
+        if (text == null) {
+            throw new IllegalStateException("cannot append to a block whose content was dropped: "
+                + this);
+        }
         return new Block(start, text + more, originLeft, deleted);
     }
 
