@@ -16,31 +16,36 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 /**
- * Kto co może zrobić z danym dokumentem (CP12).
+ * Who may do what with a given document (CP12).
  *
- * <h2>Kolejność rozstrzygania — i dlaczego akurat taka</h2>
+ * <h2>The resolution order — and why this one</h2>
  * <ol>
- *   <li><b>Właściciel</b> — zawsze {@link Role#OWNER}. Nie da się właścicielowi odebrać
- *       dostępu wpisem w tabeli, bo to on tymi wpisami zarządza.</li>
- *   <li><b>Wpis wprost dla dokumentu</b> — nadpisuje dziedziczenie. Bez tego nie dałoby się
- *       odebrać komuś dostępu do JEDNEGO dokumentu bez wyrzucania go z całego workspace'u.</li>
- *   <li><b>Członkostwo w workspace</b> — dziedziczone przez wszystkie jego dokumenty.</li>
- *   <li><b>Widoczność {@code link}</b> — {@link Role#EDITOR} dla każdego zalogowanego.</li>
- *   <li>W pozostałych przypadkach — <b>brak dostępu</b>.</li>
+ *   <li><b>The owner</b> — always {@link Role#OWNER}. An owner cannot be denied access by a row in
+ *       a table, because they are the one managing those rows.</li>
+ *   <li><b>An explicit entry for the document</b> — overrides inheritance. Without it, there would
+ *       be no way to remove someone's access to ONE document without ejecting them from the whole
+ *       workspace.</li>
+ *   <li><b>Workspace membership</b> — inherited by all of its documents.</li>
+ *   <li><b>{@code link} visibility</b> — {@link Role#EDITOR} for anyone logged in.</li>
+ *   <li>Otherwise — <b>no access</b>.</li>
  * </ol>
  *
- * <h2>Dlaczego domyślną widocznością jest „link"</h2>
- * Bo dokładnie tak zachowywała się aplikacja przed CP12 i migracja nie ma prawa nikomu
- * odebrać dostępu do dokumentu, który wcześniej otwierał. Mechanizm jest przy tym realny:
- * przełączenie dokumentu na {@code private} natychmiast ogranicza dostęp do właściciela
- * i osób wymienionych wprost. Odpowiednik dokumentu Google z ustawieniem „każdy z linkiem
- * może edytować".
+ * <h2>Why the COLUMN still defaults to "link", and why new documents no longer do</h2>
+ * The column default is a migration decision and stays: CP12 had no business taking away anyone's
+ * access to a document they used to open, and rows written before it exist.
  *
- * <h2>Cache i jego unieważnianie</h2>
- * Sprawdzenie uprawnienia dzieje się przy KAŻDEJ ramce STOMP, więc zapytanie do bazy za
- * każdym razem byłoby zapytaniem na naciśnięcie klawisza. Wynik jest cache'owany na krótko —
- * na tyle krótko, żeby odebranie dostępu działało w czasie, który człowiek uzna za
- * „natychmiast", i na tyle długo, żeby baza nie widziała ruchu proporcjonalnego do pisania.
+ * <p><b>Creation is a different question, and CP21 answered it differently.</b> Until then
+ * {@code POST /api/documents} left the default in place, so every document made through the
+ * interface was editable by anybody who typed a name into the login box — the four roles below
+ * collapsing into the two the product could actually produce. New documents are now {@code private}
+ * and sharing is a gesture: an invitation carrying a role, or a deliberate switch back to
+ * {@code link}. Which is still on offer — it stopped being what happens when nobody chooses.
+ *
+ * <h2>The cache and its invalidation</h2>
+ * A permission check happens on EVERY STOMP frame, so querying the database each time would be a
+ * query per keystroke. The result is cached briefly — briefly enough that revoking access takes
+ * effect within what a person would call "immediately", and long enough that the database does not
+ * see traffic proportional to typing.
  */
 @Service
 public class PermissionService {
@@ -48,12 +53,12 @@ public class PermissionService {
     private static final Logger log = LoggerFactory.getLogger(PermissionService.class);
 
     /**
-     * Jak długo pamiętamy rozstrzygnięcie.
+     * How long a decision is remembered.
      *
-     * <p>Pięć sekund jest kompromisem między dwoma niepożądanymi zjawiskami: zapytaniem
-     * do bazy na każdą operację (przy zerowym TTL) i dostępem żyjącym po odebraniu
-     * uprawnień (przy długim). Górna granica opóźnienia odebrania dostępu to ta wartość
-     * — i jest to <b>jedyna</b> gwarancja, jakiej ten mechanizm udziela.
+     * <p>Five seconds is a compromise between two undesirable phenomena: a database query per
+     * operation (with a zero TTL) and access outliving its revocation (with a long one). The upper
+     * bound on how late a revocation takes effect is this value — and it is the <b>only</b>
+     * guarantee this mechanism gives.
      */
     static final Duration CACHE_TTL = Duration.ofSeconds(5);
 
@@ -85,10 +90,11 @@ public class PermissionService {
     }
 
     /**
-     * Rola użytkownika wobec dokumentu; puste, gdy nie ma żadnego dostępu.
+     * The user's role with respect to a document; empty when they have no access at all.
      *
-     * <p>Zwracany {@code Optional} rozróżnia „nie ma dostępu" od „ma najniższy dostęp",
-     * bo to są dwie różne odpowiedzi: pierwsza znaczy 404/403, druga — widok tylko do odczytu.
+     * <p>The returned {@code Optional} distinguishes "has no access" from "has the lowest access",
+     * because those are two different answers: the first means 404/403, the second a read-only
+     * view.
      */
     public Optional<Role> roleOf(String userId, UUID documentId) {
         if (userId == null || documentId == null) {
@@ -111,15 +117,15 @@ public class PermissionService {
     }
 
     /**
-     * Rola wobec dokumentu <b>usuniętego</b> — do obsługi kosza i przywracania.
+     * The role with respect to a <b>deleted</b> document — for the bin and for restoring.
      *
-     * <p>Osobna metoda, bo {@link #roleOf} celowo traktuje dokument w koszu jak nieistniejący:
-     * to jest właściwe zachowanie dla otwierania i edycji. Ale kosz i przywracanie muszą
-     * z definicji operować na dokumentach usuniętych, a nie wolno im przy tym omijać
-     * uprawnień — inaczej kosz stałby się listą cudzych tytułów.
+     * <p>A separate method, because {@link #roleOf} deliberately treats a document in the bin as
+     * non-existent: that is the right behaviour for opening and editing. But the bin and restoring
+     * must by definition operate on deleted documents, and must not bypass permissions while doing
+     * so — otherwise the bin would become a list of other people's titles.
      *
-     * <p>Nie jest cache'owane: jest wołane przy wyświetlaniu kosza i przywracaniu, czyli
-     * rzadko. Cache dokładałby tu unieważnianie bez zysku.
+     * <p>Not cached: it is called when displaying the bin and when restoring, that is, rarely. A
+     * cache would add invalidation here for no gain.
      */
     public Optional<Role> roleOfDeleted(String userId, UUID documentId) {
         if (userId == null || documentId == null) {
@@ -151,11 +157,11 @@ public class PermissionService {
     }
 
     /**
-     * Jedno zapytanie zamiast czterech.
+     * One query instead of four.
      *
-     * <p>Rozstrzygnięcie wymaga danych z trzech tabel, ale nie ma powodu odpytywać ich
-     * po kolei: przy sprawdzeniu wykonywanym na każdą ramkę trzy dodatkowe obiegi do bazy
-     * są trzykrotnie większym opóźnieniem, a nie trzykrotnie lepszą czytelnością.
+     * <p>The decision needs data from three tables, but there is no reason to query them in
+     * sequence: for a check performed on every frame, three extra round trips to the database are
+     * three times the latency, not three times the readability.
      */
     private Optional<Role> resolve(String userId, UUID documentId) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
@@ -170,14 +176,14 @@ public class PermissionService {
             """, userId, userId, documentId);
 
         if (rows.isEmpty()) {
-            // Dokument nie istnieje albo jest w koszu. Brak dostępu, nie wyjątek —
-            // z punktu widzenia autoryzacji to jest ta sama odpowiedź.
+            // The document does not exist or is in the bin. No access, not an exception — from
+            // authorization's point of view that is the same answer.
             return Optional.empty();
         }
         return roleFrom(userId, rows.getFirst());
     }
 
-    /** Kolejność rozstrzygania z javadoca klasy, w jednym miejscu dla obu ścieżek. */
+    /** The resolution order from the class javadoc, in one place for both paths. */
     private static Optional<Role> roleFrom(String userId, Map<String, Object> row) {
         if (userId.equals(row.get("owner_id"))) {
             return Optional.of(Role.OWNER);
@@ -195,7 +201,7 @@ public class PermissionService {
     }
 
     // ------------------------------------------------------------------
-    // Unieważnianie
+    // Invalidation
     // ------------------------------------------------------------------
 
     /**
@@ -302,7 +308,7 @@ public class PermissionService {
     }
 
     // ------------------------------------------------------------------
-    // Zarządzanie dostępem
+    // Managing access
     // ------------------------------------------------------------------
 
     public void grant(UUID documentId, String userId, Role role) {
@@ -321,7 +327,7 @@ public class PermissionService {
 
     public void setVisibility(UUID documentId, String visibility) {
         if (!"private".equals(visibility) && !"link".equals(visibility)) {
-            throw new IllegalArgumentException("nieznana widoczność: " + visibility);
+            throw new IllegalArgumentException("unknown visibility: " + visibility);
         }
         jdbc.update("UPDATE documents SET visibility = ? WHERE id = ?", visibility, documentId);
         invalidate(documentId);

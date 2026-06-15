@@ -5,40 +5,41 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Protokół komunikatów STOMP.
+ * The STOMP message protocol.
  *
- * <p>Kanały:
+ * <p>Channels:
  * <pre>
- *   klient → serwer   /app/doc/{id}/op         {@link ClientOp}
- *                     /app/doc/{id}/sync       {@link SyncRequest}
- *                     /app/doc/{id}/presence   {@link ClientPresence}
+ *   client -> server   /app/doc/{id}/op         {@link ClientOp}
+ *                      /app/doc/{id}/sync       {@link SyncRequest}
+ *                      /app/doc/{id}/presence   {@link ClientPresence}
  *
- *   serwer → klienci  /topic/doc/{id}/ops      {@link OpBroadcast}
- *                     /topic/doc/{id}/acks     {@link OpAck}
- *                     /topic/doc/{id}/presence {@link PresenceBroadcast}
- *   serwer → klient   /user/queue/sync         {@link SyncResponse}
- *                     /user/queue/errors       {@link ErrorMessage}
+ *   server -> clients  /topic/doc/{id}/ops      {@link OpBroadcast}
+ *                      /topic/doc/{id}/acks     {@link OpAck}
+ *                      /topic/doc/{id}/presence {@link PresenceBroadcast}
+ *                      /topic/doc/{id}/access   {@link AccessChanged}
+ *   server -> client   /user/queue/sync         {@link SyncResponse}
+ *                      /user/queue/errors       {@link ErrorMessage}
  * </pre>
  *
- * <h2>Dlaczego rozgłoszenie i potwierdzenie to DWA komunikaty</h2>
- * Kolejność kroków na serwerze wynika z ADR-0004: scalenie → rozgłoszenie do własnych
- * klientów → zapis → publikacja do Redisa. Rozgłoszenie wyprzedza zapis, bo to ono odpowiada
- * za to, co użytkownik <b>widzi</b> — cudzy tekst ma się pojawić natychmiast, a nie po
- * potwierdzeniu z bazy.
+ * <h2>Why the broadcast and the acknowledgement are TWO messages</h2>
+ * The ordering of steps on the server follows from ADR-0004: merge -> broadcast to our own clients
+ * -> write -> publish to Redis. The broadcast comes before the write, because the broadcast is what
+ * determines what the user <b>sees</b> — someone else's text should appear immediately, not after
+ * the database confirms.
  *
- * <p>Potwierdzenie musi jednak przyjść <b>po</b> zapisie, bo dopiero wtedy wolno klientowi
- * zwolnić operację ze swojego bufora offline. Gdyby zwalniał ją po rozgłoszeniu, pad instancji
- * między rozgłoszeniem a zapisem oznaczałby operację, którą inni już widzą, a której nikt
- * nie potrafi odtworzyć. To jest wprost failure mode opisany w README.
+ * <p>The acknowledgement, however, must come <b>after</b> the write, because only then may a client
+ * release the operation from its offline buffer. If it released it on the broadcast, an instance
+ * crash between the broadcast and the write would mean an operation others already see and nobody
+ * can reproduce. That is exactly the failure mode described in the README.
  *
- * <p>Stąd dwa komunikaty zamiast jednego wzbogaconego. Cena: dodatkowa ramka rzędu 30 bajtów
- * na operację. Zysk: propagacja nie czeka na dysk, a mimo to nic nie ginie.
+ * <p>Hence two messages rather than one enriched one. The price: an extra frame of some 30 bytes
+ * per operation. The gain: propagation does not wait on disk, and nothing is lost regardless.
  *
- * <h2>Dlaczego potwierdzenia idą na temat, a nie do konkretnego klienta</h2>
- * Potwierdzenie niesie {@code serverSeq}, który jest kursorem resynchronizacji. Rozgłaszając
- * je wszystkim, każdy klient wie, dokąd doszedł log — również ten, który akurat nic nie pisał.
- * Dzięki temu po rozłączeniu prosi o brakujące operacje od właściwego miejsca, zamiast
- * pobierać całą historię.
+ * <h2>Why acknowledgements go to a topic rather than to one client</h2>
+ * An acknowledgement carries {@code serverSeq}, which is the resynchronisation cursor. Broadcasting
+ * it to everyone tells every client how far the log has got — including a client that was not
+ * writing anything. After a disconnect it can then ask for the missing operations from the right
+ * place instead of downloading the whole history.
  */
 public final class Messages {
 
@@ -46,29 +47,30 @@ public final class Messages {
     }
 
     // ------------------------------------------------------------------
-    // klient → serwer
+    // client -> server
     // ------------------------------------------------------------------
 
-    /** Operacja CRDT w formacie {@code OpCodec} (ADR-0002: pola jednoliterowe). */
+    /** A CRDT operation in the {@code OpCodec} format (ADR-0002: single-letter fields). */
     public record ClientOp(JsonNode op) {
     }
 
     /**
-     * Prośba o brakujące operacje po ponownym połączeniu.
+     * A request for the missing operations after reconnecting.
      *
-     * @param sinceServerSeq ostatni numer, który klient na pewno ma; 0 oznacza „daj wszystko"
-     * @param version        version vector klienta — służy do wyliczenia stabilności
-     *                       przyczynowej dla GC (ADR-0005), nie do wyboru operacji do wysłania
+     * @param sinceServerSeq the last sequence number the client definitely holds; 0 means "send
+     *                       everything"
+     * @param version        the client's version vector — used to compute causal stability for GC
+     *                       (ADR-0005), not to choose which operations to send
      */
     public record SyncRequest(long sinceServerSeq, Map<Integer, Long> version) {
     }
 
     /**
-     * Pozycja kursora i zaznaczenia.
+     * The cursor and selection position.
      *
-     * <p>Pozycje są <b>identyfikatorami znaków CRDT</b>, nie offsetami (ADR-0006). Offset
-     * rozjeżdża się, gdy ktoś wstawi tekst przed kursorem — identyfikator przesuwa się
-     * razem z tekstem, bo jest przyczepiony do znaku, a nie do miejsca.
+     * <p>The positions are <b>CRDT character identifiers</b>, not offsets (ADR-0006). An offset
+     * drifts when someone inserts text before the cursor — an identifier moves with the text,
+     * because it is attached to a character rather than to a place.
      */
     public record ClientPresence(
         Integer cursorReplicaId, Long cursorLamport,
@@ -78,14 +80,14 @@ public final class Messages {
     }
 
     // ------------------------------------------------------------------
-    // serwer → klienci
+    // server -> clients
     // ------------------------------------------------------------------
 
-    /** Rozgłoszenie operacji. Bez {@code serverSeq} — ten przychodzi w {@link OpAck}. */
+    /** An operation broadcast. No {@code serverSeq} — that arrives in {@link OpAck}. */
     public record OpBroadcast(JsonNode op, String userId) {
     }
 
-    /** Potwierdzenie trwałego zapisu. {@code r}/{@code l} to identyfikator operacji. */
+    /** Confirmation of a durable write. {@code r}/{@code l} is the operation's identifier. */
     public record OpAck(int r, long l, long serverSeq) {
     }
 
@@ -93,12 +95,12 @@ public final class Messages {
     }
 
     /**
-     * Odpowiedź na dołączenie: identyfikator repliki nadany tej sesji.
+     * The response to joining: the replica identifier assigned to this session.
      *
-     * Klient NIE MOŻE go sobie wylosować. Identyfikatory replik muszą być globalnie
-     * unikalne, bo kolizja sprawia, że algorytm uzna dwa różne znaki za ten sam i po cichu
-     * zgubi tekst jednego z autorów — błąd, po którym nie zostaje w strukturze żaden ślad.
-     * Dlatego nadaje je jeden licznik w Redisie.
+     * The client MUST NOT pick one at random. Replica identifiers have to be globally unique,
+     * because a collision makes the algorithm treat two different characters as the same one and
+     * silently lose one author's text — a bug that leaves no trace in the structure. Hence a single
+     * counter in Redis hands them out.
      */
     public record SessionInfo(int replicaId, String userId) {
     }
@@ -116,21 +118,22 @@ public final class Messages {
     }
 
     /**
-     * Zmiana obecności — pełna lista albo pojedynczy wpis.
+     * A presence change — either the full list or a single entry.
      *
-     * <h2>Dlaczego to rozróżnienie w ogóle istnieje</h2>
-     * Ruch kursora jest zdarzeniem <b>najczęstszym w całym systemie</b>: powstaje przy każdym
-     * naciśnięciu klawisza i przy każdym ruchu strzałkami (auto-powtarzanie klawisza to
-     * ~30 zdarzeń na sekundę). Odsyłanie w odpowiedzi PEŁNEJ listy uczestników do WSZYSTKICH
-     * daje ruch rosnący z kwadratem liczby osób, w którym 99% treści nie uległo zmianie.
+     * <h2>Why this distinction exists at all</h2>
+     * Cursor movement is the <b>most frequent event in the whole system</b>: it happens on every
+     * keystroke and on every arrow-key movement (key auto-repeat is ~30 events per second). Sending
+     * the FULL participant list to EVERYONE in response gives traffic growing with the square of
+     * the number of people, 99% of whose content did not change.
      *
-     * <p>Dołączenie i odejście są rzadkie i wymagają pełnej listy, bo odejście trzeba wyrazić
-     * przez <b>nieobecność</b> wpisu — delta nie potrafi powiedzieć „ten człowiek zniknął",
-     * chyba że dołożylibyśmy trzeci rodzaj komunikatu. Przy tej częstotliwości pełna lista
-     * jest tańsza niż dodatkowy typ w protokole.
+     * <p>Joining and leaving are rare and do need the full list, because a leave has to be
+     * expressed by the <b>absence</b> of an entry — a delta cannot say "this person is gone" unless
+     * we added a third message type. At that frequency the full list is cheaper than an extra type
+     * in the protocol.
      *
-     * @param full    {@code true} → zastąp całą listę; {@code false} → scal po {@code replicaId}
-     * @param entries uczestnicy: wszyscy przy {@code full}, jeden przy delcie
+     * @param full    {@code true} -> replace the whole list; {@code false} -> merge by
+     *                {@code replicaId}
+     * @param entries the participants: all of them when {@code full}, one when a delta
      */
     public record PresenceUpdate(boolean full, List<PresenceBroadcast> entries) {
     }
@@ -152,12 +155,13 @@ public final class Messages {
     }
 
     /**
-     * Błąd wymagający reakcji klienta.
+     * An error the client has to react to.
      *
-     * <p>{@code code} {@code RESYNC_REQUIRED} to sytuacja z ADR-0005: klient był offline
-     * dłużej niż okno GC i jego operacje wskazują na tombstone'y, których już nie ma.
-     * Serwer <b>odrzuca je jawnie</b>, zamiast doklejać tekst w przypadkowe miejsce albo
-     * cicho go gubić — obie te alternatywy są gorsze niż uczciwe „nie potrafię tego scalić".
+     * <p>The {@code RESYNC_REQUIRED} {@code code} is the situation from ADR-0005: the client was
+     * offline for longer than the GC window and its operations point at tombstones that no longer
+     * exist. The server <b>rejects them explicitly</b>, rather than gluing the text into a random
+     * place or silently dropping it — both alternatives are worse than an honest "I cannot merge
+     * this".
      *
      * @param retryAfterMillis how long the client should wait before retrying, or 0 when
      *        waiting will not help. Only {@code RATE_LIMITED} sets it: a refusal for lack of

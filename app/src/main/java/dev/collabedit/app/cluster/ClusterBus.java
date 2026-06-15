@@ -18,50 +18,50 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Rozsyłanie operacji między instancjami backendu przez Redis pub/sub.
+ * Distributing operations between backend instances over Redis pub/sub.
  *
- * <p><b>To jest ścieżka szybka i ZAWODNA</b> — świadomie (ADR-0004). Redis pub/sub daje
- * dostarczenie co najwyżej raz: restart Redisa, przepełnienie bufora klienta albo chwilowa
- * partycja gubią wiadomość bez błędu i bez śladu. Konfiguracja w {@code docker-compose.yml}
- * celowo wyłącza persystencję Redisa i ustawia {@code maxmemory-policy noeviction}, żeby
- * ten scenariusz dało się wywołać w teście chaosu (CP8), zamiast udawać, że nie istnieje.
+ * <p><b>This is the fast and UNRELIABLE path</b> — deliberately (ADR-0004). Redis pub/sub gives
+ * at-most-once delivery: a Redis restart, a client buffer overflow or a brief partition lose a
+ * message with no error and no trace. The configuration in {@code docker-compose.yml} deliberately
+ * disables Redis persistence and sets {@code maxmemory-policy noeviction} so that this scenario can
+ * be induced in the chaos test (CP8) rather than pretended away.
  *
- * <p>Bezpieczeństwo nie bierze się stąd, że wiadomości nie giną, tylko stąd, że
- * <b>zgubienie wiadomości nie jest problemem poprawności</b>:
+ * <p>Safety does not come from messages never being lost, but from the fact that <b>losing a
+ * message is not a correctness problem</b>:
  * <ul>
- *   <li>autorytatywną kopią jest log operacji w Postgresie, zapisany <i>przed</i> publikacją,</li>
- *   <li>replika, która wykryje lukę w {@code server_seq}, dociąga brakujący zakres z bazy,</li>
- *   <li>okresowy przegląd łapie przypadek, którego wykrywanie luk złapać nie może:
- *       utratę <i>ostatniej</i> operacji, po której nie przyszła już żadna następna.</li>
+ *   <li>the authoritative copy is the operation log in Postgres, written <i>before</i> publishing,</li>
+ *   <li>a replica that detects a gap in {@code server_seq} pulls the missing range from the database,</li>
+ *   <li>a periodic sweep catches the case gap detection cannot: losing the <i>last</i> operation,
+ *       with no subsequent one to reveal the gap.</li>
  * </ul>
  *
- * <p>Naprawa nie musi być ani szybka, ani uporządkowana — scalanie CRDT jest przemienne
- * i idempotentne, więc operacja dociągnięta 30 sekund po fakcie daje ten sam wynik, co
- * dostarczona natychmiast. To jest dokładnie ta własność, dla której wybrano CRDT
- * w ADR-0001, i tutaj przestaje być teoretyczna.
+ * <p>The repair need be neither fast nor ordered — CRDT merging is commutative and idempotent, so
+ * an operation pulled in 30 seconds after the fact gives the same result as one delivered
+ * immediately. That is exactly the property CRDT was chosen for in ADR-0001, and here it stops
+ * being theoretical.
  */
 @Component
 public class ClusterBus implements MessageListener {
 
     private static final Logger log = LoggerFactory.getLogger(ClusterBus.class);
 
-    /** Wiadomości od samego siebie trzeba odsiać — pub/sub nie robi tego za nas. */
+    /** Messages from ourselves have to be filtered out — pub/sub does not do it for us. */
     private final String instanceId = UUID.randomUUID().toString();
 
     private final StringRedisTemplate redis;
     private volatile Consumer<ClusterMessage> handler = message -> { };
 
     /**
-     * Czy ta instancja w ogóle interesuje się danym dokumentem.
+     * Whether this instance is interested in a given document at all.
      *
-     * <p>Sprawdzane <b>przed</b> odczytaniem treści wiadomości. Subskrypcja jest wzorcowa
-     * (jeden wzorzec na wszystkie dokumenty — patrz {@code RedisConfig}), więc każda instancja
-     * dostaje ruch WSZYSTKICH dokumentów w klastrze. Przy jednym dokumencie nie miało to
-     * znaczenia; przy tysiącu oznacza parsowanie JSON-a całego ruchu klastra na każdej
-     * instancji, żeby w większości przypadków wyrzucić wynik.
+     * <p>Checked <b>before</b> reading the message body. The subscription is pattern-based (one
+     * pattern for all documents — see {@code RedisConfig}), so every instance receives the traffic
+     * of EVERY document in the cluster. With one document that made no difference; with a thousand
+     * it means parsing the JSON of the whole cluster's traffic on every instance, only to discard
+     * the result in most cases.
      *
-     * <p>Identyfikator dokumentu jest już w NAZWIE KANAŁU, więc odsiew nic nie kosztuje —
-     * pod warunkiem, że zrobi się go przed parsowaniem. To jest cała zmiana.
+     * <p>The document identifier is already in the CHANNEL NAME, so the filtering costs nothing —
+     * provided it happens before parsing. That is the entire change.
      */
     private volatile java.util.function.Predicate<UUID> interested = id -> true;
 
@@ -77,16 +77,16 @@ public class ClusterBus implements MessageListener {
         this.handler = handler;
     }
 
-    /** Ustawia filtr dokumentów, którymi ta instancja się interesuje. Patrz {@link #interested}. */
+    /** Sets the filter of documents this instance cares about. See {@link #interested}. */
     public void interestedIn(java.util.function.Predicate<UUID> predicate) {
         this.interested = predicate;
     }
 
     /**
-     * Wyciąga identyfikator dokumentu z nazwy kanału {@code collabedit:doc:{uuid}:ops}.
+     * Extracts the document identifier from the channel name {@code collabedit:doc:{uuid}:ops}.
      *
-     * @return {@code null}, gdy nazwa nie pasuje do wzorca — wtedy wiadomość pomijamy,
-     *         bo nie wiadomo, czego dotyczy
+     * @return {@code null} when the name does not match the pattern — in which case the message is
+     *         skipped, because there is no telling what it refers to
      */
     static UUID documentIdOf(String channel) {
         int start = "collabedit:doc:".length();
@@ -101,7 +101,7 @@ public class ClusterBus implements MessageListener {
         }
     }
 
-    /** Wiadomość klastrowa: operacje jednego dokumentu wraz z nadanymi numerami. */
+    /** A cluster message: one document's operations together with their assigned sequence numbers. */
     public record ClusterMessage(UUID documentId, List<StoredOperation> operations) {
     }
 
@@ -112,12 +112,12 @@ public class ClusterBus implements MessageListener {
     public static final String CHANNEL_PATTERN = "collabedit:doc:*:ops";
 
     /**
-     * Publikuje operacje, które właśnie zostały <b>zapisane</b>.
+     * Publishes operations that have just been <b>written</b>.
      *
-     * <p>Kolejność „zapis przed publikacją" jest istotna: instancja, która odbierze operację
-     * z Redisa, natychmiast zapisuje jej {@code server_seq} jako osiągnięty. Gdyby publikacja
-     * wyprzedzała zapis, a zapis następnie się nie powiódł, inne instancje uznałyby za
-     * osiągnięty numer, którego w bazie nie ma — i przestałyby go kiedykolwiek dociągnąć.
+     * <p>The "write before publish" ordering matters: an instance that receives an operation from
+     * Redis immediately records its {@code server_seq} as reached. If publishing ran ahead of the
+     * write and the write then failed, other instances would treat as reached a number that is not
+     * in the database — and would never pull it in.
      */
     public void publish(UUID documentId, List<StoredOperation> operations) {
         if (operations.isEmpty()) {
@@ -137,20 +137,20 @@ public class ClusterBus implements MessageListener {
         try {
             redis.convertAndSend(channel(documentId), payload.toString());
         } catch (RuntimeException e) {
-            // Świadomie połykamy błąd: publikacja jest ścieżką najlepszego wysiłku.
-            // Niedostępny Redis oznacza wolniejszą propagację między instancjami, a nie
-            // utratę danych — te są już w logu operacji. Naprawi to przegląd anti-entropy.
-            log.warn("Publikacja do Redisa nieudana dla dokumentu {} — naprawi to anti-entropy: {}",
+            // The error is swallowed deliberately: publishing is a best-effort path. An
+            // unavailable Redis means slower propagation between instances, not data loss — the
+            // data is already in the operation log. The anti-entropy sweep will repair it.
+            log.warn("Publishing to Redis failed for document {} — anti-entropy will repair it: {}",
                 documentId, e.toString());
         }
     }
 
     @Override
     public void onMessage(Message message, byte[] pattern) {
-        // Odsiew PRZED parsowaniem treści — identyfikator dokumentu jest w nazwie kanału,
-        // więc nie ma powodu czytać ładunku wiadomości, która i tak zostanie odrzucona.
-        // Przy tysiącu dokumentów w klastrze to jest różnica między parsowaniem całego
-        // ruchu na każdej instancji a parsowaniem własnego.
+        // Filtering BEFORE parsing the body — the document identifier is in the channel name, so
+        // there is no reason to read the payload of a message that will be discarded anyway. With
+        // a thousand documents in the cluster this is the difference between parsing the whole
+        // cluster's traffic on every instance and parsing only one's own.
         UUID channelDocument = documentIdOf(new String(message.getChannel(), StandardCharsets.UTF_8));
         if (channelDocument == null || !interested.test(channelDocument)) {
             return;
@@ -171,7 +171,7 @@ public class ClusterBus implements MessageListener {
             }
             handler.accept(new ClusterMessage(documentId, operations));
         } catch (Exception e) {
-            log.warn("Nieczytelna wiadomość klastrowa — pomijam: {}", e.toString());
+            log.warn("Unreadable cluster message — skipping: {}", e.toString());
         }
     }
 }

@@ -4,41 +4,40 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Ograniczenie tempa ramek przychodzących, osobno dla każdej sesji (CP12).
+ * Rate limiting of inbound frames, separately for each session (CP12).
  *
- * <h2>Przed czym to chroni — i przed czym nie</h2>
- * Klient wysyłający operacje w pętli obciąża replikę w pamięci, log operacji i rozgłoszenie
- * do wszystkich pozostałych uczestników. Jeden taki klient potrafi więc zepsuć dokument
- * wszystkim, i nie musi być złośliwy — wystarczy pętla w kodzie, który ktoś napisał
- * na własnym kliencie.
+ * <h2>What this protects against — and what it does not</h2>
+ * A client sending operations in a loop loads the in-memory replica, the operation log and the
+ * broadcast to every other participant. One such client can therefore ruin a document for
+ * everyone, and it need not be malicious — a loop in code someone wrote on their own client is
+ * enough.
  *
- * <p><b>To nie jest zabezpieczenie przed rozproszonym atakiem.</b> Limit jest per sesja,
- * a sesje da się mnożyć. Chroni przed jedną zepsutą albo złośliwą kartą przeglądarki,
- * czyli przed przypadkiem realnym; przed atakiem z wielu źródeł broni się warstwa przed
- * aplikacją, nie aplikacja.
+ * <p><b>This is not protection against a distributed attack.</b> The limit is per session, and
+ * sessions can be multiplied. It protects against one broken or malicious browser tab, which is the
+ * realistic case; defending against an attack from many sources is the job of the layer in front of
+ * the application, not of the application.
  *
- * <h2>Dlaczego dwa osobne wiadra</h2>
- * Operacje i obecność mają zupełnie inny profil. Operacja powstaje najwyżej tak szybko,
- * jak człowiek pisze (kilkanaście na sekundę w szczycie), a obecność — przy trzymanej
- * strzałce — kilkadziesiąt. Jeden wspólny limit musiałby być na tyle wysoki, żeby zmieścić
- * obecność, przez co przestałby ograniczać operacje, czyli tę ścieżkę, która realnie kosztuje.
+ * <h2>Why two separate buckets</h2>
+ * Operations and presence have completely different profiles. An operation is produced at most as
+ * fast as a person types (a dozen or so per second at peak), whereas presence — with an arrow key
+ * held down — runs to several dozen. One shared limit would have to be high enough to fit presence,
+ * and would thereby stop limiting operations, that is, the path that actually costs something.
  *
- * <h2>Token bucket, nie okno</h2>
- * Okno stałe („N na sekundę") przepuszcza 2N ramek na granicy dwóch okien i odrzuca ruch,
- * który się w nim nie zmieścił, nawet jeśli poprzednia sekunda była pusta. Wiadro żetonów
- * dopuszcza krótkie zrywy (wklejenie tekstu, powrót po rozłączeniu z buforem operacji)
- * i ogranicza dopiero tempo ŚREDNIE — czyli dokładnie to, co chcemy ograniczyć.
+ * <h2>A token bucket, not a window</h2>
+ * A fixed window ("N per second") lets 2N frames through at the boundary between two windows and
+ * rejects traffic that did not fit, even when the previous second was empty. A token bucket allows
+ * short bursts (pasting text, coming back from a disconnect with a buffer of operations) and limits
+ * only the AVERAGE rate — which is exactly what we want to limit.
  */
 public class RateLimiter {
 
     /**
-     * Wiadro żetonów uzupełniane w sposób ciągły.
+     * A token bucket refilled continuously.
      *
-     * <p>Nie jest synchronizowane. Ramki jednej sesji przychodzą kanałem wejściowym,
-     * który może mieć wiele wątków, więc teoretycznie możliwy jest wyścig na dwóch
-     * jednoczesnych ramkach tej samej sesji. Skutkiem byłoby przepuszczenie jednej ramki
-     * ponad limit — a to jest bez znaczenia dla mechanizmu, który ogranicza tempo średnie.
-     * Synchronizacja kosztowałaby tu więcej niż wnosi.
+     * <p>It is not synchronised. One session's frames arrive over an inbound channel that may have
+     * several threads, so a race on two simultaneous frames of the same session is theoretically
+     * possible. The effect would be one frame let through over the limit — which is immaterial to a
+     * mechanism that limits the average rate. Synchronisation would cost more here than it adds.
      */
     private static final class Bucket {
         private final double capacity;
@@ -82,23 +81,23 @@ public class RateLimiter {
     }
 
     /**
-     * Operacje: 60 na sekundę, zryw do 200.
+     * Operations: 60 per second, bursting to 200.
      *
-     * <p>60/s jest wyraźnie powyżej ludzkiego tempa pisania (rekordziści osiągają ~15 znaków
-     * na sekundę, a każdy znak to jedna operacja), więc nie dotknie nikogo piszącego.
-     * Zryw 200 mieści wklejenie akapitu i retransmisję bufora po powrocie z trybu offline —
-     * dwie sytuacje, w których legalny klient wysyła dużo naraz.
+     * <p>60/s is clearly above human typing speed (record holders reach ~15 characters per second,
+     * and each character is one operation), so it will not touch anyone who is writing. A burst of
+     * 200 accommodates pasting a paragraph and retransmitting the buffer after coming back from
+     * offline — two situations in which a legitimate client sends a lot at once.
      */
     private static final double OPS_PER_SECOND = 60;
     private static final double OPS_BURST = 200;
 
     /**
-     * Obecność: 20 na sekundę, zryw do 40.
+     * Presence: 20 per second, bursting to 40.
      *
-     * <p>Klient ogranicza się sam do jednego raportu na 100 ms (patrz {@code Editor.tsx}),
-     * czyli 10/s. Limit dwukrotnie wyższy zostawia zapas na jitter i nie karze klienta
-     * za to, że ramki przyszły nierówno — ale zatrzymuje klienta, który tego ograniczenia
-     * nie ma, bo nie jest naszą przeglądarką.
+     * <p>The client throttles itself to one report per 100 ms (see {@code Editor.tsx}), that is,
+     * 10/s. A limit twice that leaves headroom for jitter and does not punish a client for frames
+     * arriving unevenly — but does stop a client that has no such throttle because it is not our
+     * browser.
      */
     private static final double PRESENCE_PER_SECOND = 20;
     private static final double PRESENCE_BURST = 40;
@@ -133,19 +132,19 @@ public class RateLimiter {
             : new Decision(false, bucket.millisUntilToken());
     }
 
-    /** Sprzątanie po rozłączeniu — bez tego mapy rosną z liczbą sesji od startu procesu. */
+    /** Cleanup on disconnect — without it the maps grow with the number of sessions since process start. */
     public void forget(String sessionId) {
         operations.remove(sessionId);
         presence.remove(sessionId);
     }
 
     /**
-     * Liczba żywych wiader — <b>nie</b> liczba sesji.
+     * The number of live buckets — <b>not</b> the number of sessions.
      *
-     * <p>Jedna sesja ma do dwóch wiader (operacje i obecność), więc te liczby nie są sobie
-     * równe. Nazwa mówi o wiadrach, bo o wiadra tu chodzi: jest to miara pamięci zajętej
-     * przez ten mechanizm, a nie licznik użytkowników. Poprzednia nazwa
-     * ({@code trackedSessions}) zwracała dla jednej sesji dwójkę i była po prostu nieprawdziwa.
+     * <p>One session has up to two buckets (operations and presence), so the two numbers are not
+     * equal. The name says buckets because buckets are what this is about: it measures the memory
+     * this mechanism occupies, not a count of users. The previous name ({@code trackedSessions})
+     * returned two for a single session and was simply untrue.
      */
     public int trackedBuckets() {
         return operations.size() + presence.size();
