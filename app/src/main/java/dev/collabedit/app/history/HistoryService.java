@@ -83,7 +83,7 @@ public class HistoryService {
      * the parsing and paid for the transfer, which is the larger of the two costs.
      *
      * <p>Two changes together fix it. The counts are now columns, written when the operation is
-     * (V5), so nothing needs the payload at all; and the sessionisation runs as a window function,
+     * (V6), so nothing needs the payload at all; and the sessionisation runs as a window function,
      * so what crosses the wire is <b>one row per timeline entry</b> rather than one per keystroke.
      *
      * <h2>The grouping rule is unchanged</h2>

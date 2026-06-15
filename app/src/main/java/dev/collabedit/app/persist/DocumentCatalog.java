@@ -9,20 +9,20 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 /**
- * Metadane dokumentów: tytuł, przynależność do workspace'u, stan usunięcia, podgląd treści.
+ * Document metadata: title, workspace membership, deletion state, content preview.
  *
- * <h2>Co tu NIE trafia</h2>
- * Treść dokumentu. Ta żyje w logu operacji ({@link OperationStore}) i w replikach w pamięci —
- * ten katalog wie wyłącznie to, co potrzebne do <b>wypisania listy</b>. Rozdzielenie jest
- * celowe: lista stu dokumentów ma być jednym zapytaniem, a nie stoma załadowanymi replikami
- * CRDT. Kolumna {@code preview_text} istnieje dokładnie po to i jest cache'em na tych samych
- * zasadach co snapshoty (ADR-0003) — wolno ją skasować w każdej chwili.
+ * <h2>What does NOT go here</h2>
+ * The document's content. That lives in the operation log ({@link OperationStore}) and in the
+ * in-memory replicas — this catalog knows only what is needed to <b>render a list</b>. The split is
+ * deliberate: listing a hundred documents should be one query rather than a hundred loaded CRDT
+ * replicas. The {@code preview_text} column exists for exactly that and is a cache on the same
+ * terms as snapshots (ADR-0003) — it may be discarded at any moment.
  *
- * <h2>Dlaczego usuwanie jest miękkie</h2>
- * {@code operations} ma {@code ON DELETE CASCADE} na {@code doc_id}. Twarde usunięcie
- * dokumentu skasowałoby więc jego log operacji, czyli źródło prawdy — tabelę, która
- * w tym systemie jest wyłącznie dopisywana. „Usuń" w interfejsie znaczy „schowaj",
- * i tylko tego chce użytkownik, który to klika.
+ * <h2>Why deletion is soft</h2>
+ * {@code operations} has {@code ON DELETE CASCADE} on {@code doc_id}. A hard delete of a document
+ * would therefore erase its operation log, that is, the source of truth — a table that in this
+ * system is append-only. "Delete" in the interface means "hide", and that is all the user clicking
+ * it wants.
  */
 @Repository
 public class DocumentCatalog {
@@ -34,7 +34,7 @@ public class DocumentCatalog {
     }
 
     /**
-     * @param preview pierwsze znaki treści; pusty, dopóki nie powstał pierwszy snapshot
+     * @param preview the first characters of the content; empty until the first snapshot exists
      */
     public record DocumentSummary(
         UUID id,
@@ -60,10 +60,10 @@ public class DocumentCatalog {
             rs.getTimestamp("updated_at").toInstant());
 
     // ------------------------------------------------------------------
-    // Odczyt
+    // Reads
     // ------------------------------------------------------------------
 
-    /** Dokumenty widoczne — czyli nieusunięte. Kolejność: ostatnio zmieniane na górze. */
+    /** The visible documents — that is, the ones not deleted. Most recently changed first. */
     public List<DocumentSummary> list(UUID workspaceId, int limit) {
         if (workspaceId == null) {
             return jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM documents "
@@ -74,7 +74,7 @@ public class DocumentCatalog {
             SUMMARY, workspaceId, limit);
     }
 
-    /** Kosz — dokumenty usunięte miękko, do przywrócenia. */
+    /** The bin — soft-deleted documents, available to restore. */
     public List<DocumentSummary> listDeleted(int limit) {
         return jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM documents "
             + "WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT ?", SUMMARY, limit);
@@ -91,16 +91,16 @@ public class DocumentCatalog {
     }
 
     /**
-     * Wyszukiwanie pełnotekstowe po tytule i podglądzie treści.
+     * Full-text search over the title and the content preview.
      *
-     * <p>Konfiguracja {@code simple}, nie {@code polish} — ta druga wymaga słowników ispell,
-     * których standardowy obraz Postgresa nie zawiera, więc migracja padałaby przy starcie.
-     * Brak stemmingu znaczy, że „dokumenty" nie znajdzie się po „dokument”. Znane ograniczenie,
-     * wymienione w README.
+     * <p>The {@code simple} configuration rather than a language-specific one — the latter needs
+     * ispell dictionaries that the stock Postgres image does not carry, so the migration would fail
+     * at startup. No stemming means "documents" will not be found by searching for "document". A
+     * known limitation, listed in the README.
      *
-     * <p>{@code websearch_to_tsquery}, a nie {@code plainto_tsquery}: przyjmuje to, co ludzie
-     * naprawdę wpisują w pole wyszukiwania (cudzysłowy, {@code or}, {@code -}) i nie wywala się
-     * na składni, tylko interpretuje ją najlepiej jak umie.
+     * <p>{@code websearch_to_tsquery} rather than {@code plainto_tsquery}: it accepts what people
+     * actually type into a search box (quotes, {@code or}, {@code -}) and does not blow up on the
+     * syntax, interpreting it as best it can instead.
      */
     public List<DocumentSummary> search(String query, int limit) {
         return jdbc.query(
@@ -113,7 +113,7 @@ public class DocumentCatalog {
     }
 
     // ------------------------------------------------------------------
-    // Zapis
+    // Writes
     // ------------------------------------------------------------------
 
     public void create(UUID documentId, String title, UUID workspaceId) {
@@ -121,17 +121,17 @@ public class DocumentCatalog {
             documentId, title, workspaceId);
     }
 
-    /** @return {@code true}, gdy dokument istniał i nie był usunięty */
+    /** @return {@code true} when the document existed and was not deleted */
     public boolean rename(UUID documentId, String title) {
         return jdbc.update("UPDATE documents SET title = ?, updated_at = now() "
             + "WHERE id = ? AND deleted_at IS NULL", title, documentId) == 1;
     }
 
     /**
-     * Chowa dokument. Log operacji zostaje nietknięty — patrz komentarz nad klasą.
+     * Hides a document. The operation log is left untouched — see the class comment.
      *
-     * <p>Warunek {@code deleted_at IS NULL} sprawia, że powtórzone usunięcie nie przesuwa
-     * daty: „usunięty wczoraj" ma znaczyć wczoraj, również gdy ktoś kliknie ponownie.
+     * <p>The {@code deleted_at IS NULL} condition means a repeated delete does not move the date:
+     * "deleted yesterday" should mean yesterday, even if someone clicks again.
      */
     public boolean softDelete(UUID documentId) {
         return jdbc.update("UPDATE documents SET deleted_at = now() "
@@ -144,11 +144,12 @@ public class DocumentCatalog {
     }
 
     /**
-     * Odświeża podgląd treści. Wołane przy snapshotowaniu, bo wtedy i tak mamy stan w ręku.
+     * Refreshes the content preview. Called while snapshotting, because we have the state in hand
+     * anyway at that point.
      *
-     * <p>Podgląd jest ucinany do {@link #PREVIEW_LENGTH} znaków — lista dokumentów pokazuje
-     * jedną linijkę, a przechowywanie całego dokumentu w kolumnie obok dokumentu byłoby
-     * duplikowaniem treści, nie cache'owaniem jej fragmentu.
+     * <p>The preview is truncated to {@link #PREVIEW_LENGTH} characters — the document list shows
+     * one line, and keeping the whole document in a column next to the document would be
+     * duplicating the content rather than caching a fragment of it.
      */
     public void updatePreview(UUID documentId, String text) {
         String preview = text.length() <= PREVIEW_LENGTH ? text : text.substring(0, PREVIEW_LENGTH);
@@ -158,7 +159,7 @@ public class DocumentCatalog {
     public static final int PREVIEW_LENGTH = 200;
 
     // ------------------------------------------------------------------
-    // Workspace'y
+    // Workspaces
     // ------------------------------------------------------------------
 
     public void createWorkspace(UUID id, String name, String ownerId) {

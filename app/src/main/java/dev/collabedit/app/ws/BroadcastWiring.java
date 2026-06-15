@@ -11,12 +11,12 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Spina warstwę domenową z transportem.
+ * Connects the domain layer to the transport.
  *
- * <p>Istnieje po to, żeby {@link DocumentService} — gdzie zapisana jest kolejność kroków
- * z ADR-0004 — nie zależał od {@code SimpMessagingTemplate}. Dzięki temu ścieżkę zapisu
- * da się przetestować bez podnoszenia całego stosu WebSocketa, a zmiana transportu
- * (gdyby ADR-0002 kiedyś został zrewidowany) dotyka jednego pliku zamiast serca logiki.
+ * <p>It exists so that {@link DocumentService} — where the ordering of steps from ADR-0004 is
+ * written down — does not depend on {@code SimpMessagingTemplate}. That makes the write path
+ * testable without standing up the whole WebSocket stack, and a change of transport (should
+ * ADR-0002 ever be revised) touches one file rather than the heart of the logic.
  */
 @Component
 public class BroadcastWiring {
@@ -30,37 +30,36 @@ public class BroadcastWiring {
     }
 
     /**
-     * Budżet bajtów na jedną ramkę rozgłoszenia.
+     * The byte budget for a single broadcast frame.
      *
-     * <h2>Dlaczego bajty, a nie liczba operacji</h2>
-     * Liczenie operacji jest niepoprawne <b>w zasadzie</b>, a nie tylko przy złej wartości:
-     * operacja niesie tekst o dowolnej długości, więc wklejenie dużego fragmentu to jedna
-     * operacja ważąca dziesiątki kilobajtów. Limit „300 operacji" znaczyłby wtedy ramkę
-     * kilkumegabajtową. Jedyną wielkością, którą naprawdę ograniczamy, jest rozmiar ramki
-     * — więc ograniczamy ją wprost.
+     * <h2>Why bytes rather than a count of operations</h2>
+     * Counting operations is wrong <b>in principle</b>, not merely at the wrong value: an operation
+     * carries text of arbitrary length, so pasting a large fragment is one operation weighing tens
+     * of kilobytes. A limit of "300 operations" would then mean a multi-megabyte frame. The only
+     * quantity we actually care about bounding is the frame size — so we bound it directly.
      *
-     * <h2>Skąd 32 KiB</h2>
-     * ADR-0002 ustala 64 KiB jako limit pojedynczej wiadomości. Połowa tej wartości zostawia
-     * zapas na koperty STOMP i JSON wokół samych operacji, których dokładnego rozmiaru
-     * nie liczymy. Pojedyncza operacja większa niż budżet idzie w ramce sama — nic lepszego
-     * nie da się zrobić, a limit wejściowy serwera i tak nie wpuściłby większej.
+     * <h2>Where 32 KiB comes from</h2>
+     * ADR-0002 sets 64 KiB as the single-message limit. Half of that leaves room for the STOMP and
+     * JSON envelopes around the operations themselves, whose exact size we do not compute. A single
+     * operation larger than the budget goes out in a frame of its own — nothing better can be done,
+     * and the server's inbound limit would not have accepted a larger one anyway.
      *
-     * <h2>Dlaczego dzielenie w ogóle tu jest</h2>
-     * Przy rozgłaszaniu jedna-operacja-jedna-ramka (do CP10) limit był nieosiągalny i dlatego
-     * dzielenia nie było. Sklejanie rozgłoszeń zmieniło to założenie — i przy 50 klientach
-     * piszących naraz wsad potrafi urosnąć dowolnie. Jest to ta sama klasa błędu, którą
-     * CP8 wykrył w odpowiedzi na resynchronizację (ADR-0002): ramka po prostu nie dociera,
-     * bez śladu po stronie serwera.
+     * <h2>Why splitting is here at all</h2>
+     * With one-operation-per-frame broadcasting (up to CP10) the limit was unreachable, which is
+     * why there was no splitting. Coalescing broadcasts changed that assumption — and with 50
+     * clients typing at once a batch can grow arbitrarily. It is the same class of bug CP8 found in
+     * the resynchronisation response (ADR-0002): the frame simply never arrives, with no trace on
+     * the server side.
      */
     private static final int FRAME_BUDGET_BYTES = 32 * 1024;
 
-    /** Zapas na kopertę pojedynczego wpisu: {@code {"op":...,"serverSeq":null},}. */
+    /** Headroom for a single entry's envelope: {@code {"op":...,"serverSeq":null},}. */
     private static final int ENTRY_OVERHEAD_BYTES = 32;
 
     @PostConstruct
     void wire() {
-        // Krok 2 z ADR-0004: rozgłoszenie po scaleniu, PRZED zapisem.
-        // To ono odpowiada za to, co użytkownik widzi.
+        // Step 2 from ADR-0004: broadcast after the merge, BEFORE the write.
+        // This is the step responsible for what the user sees.
         documents.onFastPath((documentId, ops) -> {
             List<Messages.OpBroadcast> frame = new ArrayList<>();
             int bytes = 0;
@@ -81,12 +80,12 @@ public class BroadcastWiring {
             }
         });
 
-        // Krok 4: potwierdzenie PO zapisie. Dopiero ono zwalnia operację z bufora offline
-        // klienta i przesuwa jego kursor resynchronizacji.
+        // Step 4: the acknowledgement AFTER the write. Only this releases an operation from the
+        // client's offline buffer and advances its resynchronisation cursor.
         //
-        // Bez dzielenia: potwierdzenie ma STAŁY rozmiar (trzy liczby), a wsad zapisu jest
-        // ograniczony przez op-batch-max-size. Sto potwierdzeń to ~4 KB, czyli rząd wielkości
-        // poniżej limitu — i w odróżnieniu od operacji nie ma tu wielkości sterowanej treścią.
+        // No splitting here: an acknowledgement has a FIXED size (three numbers), and the write
+        // batch is bounded by op-batch-max-size. A hundred acknowledgements is ~4 KB, an order of
+        // magnitude under the limit — and unlike operations, nothing here is sized by content.
         documents.onAcknowledged((documentId, stored) -> {
             List<Messages.OpAck> payload = stored.stream()
                 .map(entry -> new Messages.OpAck(

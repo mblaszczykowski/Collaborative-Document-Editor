@@ -9,26 +9,26 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Wątki komentarzy (CP14).
+ * Comment threads (CP14).
  *
- * <h2>Co tu NIE ma — i to jest najważniejsze</h2>
- * Kotwicy. Zakres w dokumencie, którego wątek dotyczy, jest <b>znacznikiem CRDT</b> typu
- * {@code comment} z identyfikatorem wątku jako wartością — czyli tą samą maszynerią, którą
- * wprowadził CP13 (ADR-0010). Ten checkpoint jej używa i nie dokłada do niej niczego.
+ * <h2>What is NOT here — and this is the important part</h2>
+ * The anchor. The range in the document a thread refers to is a <b>CRDT mark</b> of type
+ * {@code comment} carrying the thread identifier as its value — that is, the same machinery CP13
+ * introduced (ADR-0010). This checkpoint uses it and adds nothing to it.
  *
- * <p>Kotwica żyje w logu operacji, więc przesuwa się razem z tekstem i przeżywa edycję
- * sąsiedztwa dokładnie tak samo jak pogrubienie. Trzymanie jej w bazie obok wątku byłoby
- * powrotem do offsetów, czyli błędu odrzuconego już dwa razy (ADR-0006 dla kursorów,
- * ADR-0010 dla formatowania).
+ * <p>The anchor lives in the operation log, so it moves with the text and survives edits to its
+ * surroundings in exactly the way bold does. Keeping it in the database next to the thread would be
+ * a return to offsets, a mistake already rejected twice (ADR-0006 for cursors, ADR-0010 for
+ * formatting).
  *
- * <h2>Dlaczego treść wątku NIE jest CRDT</h2>
- * Wiadomość ma jednego autora, powstaje w całości i nie jest współbieżnie edytowana znak
- * po znaku. CRDT rozwiązuje konkretny problem — współbieżną edycję tej samej sekwencji —
- * i stosowanie go tam, gdzie tego problemu nie ma, to koszt bez korzyści: log operacji,
- * scalanie, tombstone'y i GC dla tekstu, którego nikt nigdy nie edytuje równolegle.
+ * <h2>Why a thread's content is NOT a CRDT</h2>
+ * A message has one author, is created whole, and is not concurrently edited character by
+ * character. A CRDT solves a specific problem — concurrent editing of the same sequence — and
+ * applying it where that problem does not exist is a cost with no benefit: an operation log,
+ * merging, tombstones and GC for text nobody ever edits in parallel.
  *
- * <p>Pokusa „skoro mamy CRDT, wszystko będzie CRDT" jest realna. To jest miejsce,
- * w którym świadomie jej nie ulegamy.
+ * <p>The temptation of "we have a CRDT, so everything will be a CRDT" is real. This is the place
+ * where we deliberately do not give in to it.
  */
 @Service
 public class CommentService implements ThreadDocumentResolver {
@@ -44,8 +44,8 @@ public class CommentService implements ThreadDocumentResolver {
     }
 
     /**
-     * @param anchored czy zakotwiczony tekst nadal istnieje w dokumencie; wyliczane
-     *                 z warstwy CRDT, nie z bazy — patrz {@code CommentController}
+     * @param anchored whether the anchored text still exists in the document; computed from the
+     *                 CRDT layer, not from the database — see {@code CommentController}
      */
     public record Thread(UUID id, UUID documentId, String createdBy, Instant createdAt,
                          Instant resolvedAt, String quotedText, boolean anchored,
@@ -53,12 +53,11 @@ public class CommentService implements ThreadDocumentResolver {
     }
 
     /**
-     * Zakłada wątek i zapisuje pierwszą wiadomość — <b>w jednej transakcji</b>.
+     * Opens a thread and stores its first message — <b>in one transaction</b>.
      *
-     * <p>Wątek bez wiadomości jest stanem, którego interfejs nie umie pokazać i którego
-     * użytkownik nie umiał wytworzyć celowo. Powstałby wyłącznie z połowicznego zapisu,
-     * więc odbieramy tę możliwość, zamiast dokładać obsługę przypadku, który nie powinien
-     * istnieć.
+     * <p>A thread with no messages is a state the interface cannot render and the user could not
+     * deliberately produce. It could only arise from a half-completed write, so we remove the
+     * possibility instead of adding handling for a case that should not exist.
      */
     @Transactional
     public UUID openThread(UUID documentId, String authorId, String quotedText, String body) {
@@ -77,11 +76,11 @@ public class CommentService implements ThreadDocumentResolver {
     }
 
     /**
-     * Rozwiązuje wątek. <b>Nie usuwa go.</b>
+     * Resolves a thread. <b>It does not delete it.</b>
      *
-     * <p>Rozmowa zostaje — zmienia się tylko to, czy jest domyślnie widoczna. Usunięcie
-     * byłoby utratą kontekstu decyzji, a to jest zwykle jedyna rzecz, dla której ktoś
-     * wraca do komentarzy po miesiącach.
+     * <p>The conversation stays — all that changes is whether it is visible by default. Deleting
+     * would lose the context behind a decision, and that is usually the only reason anyone comes
+     * back to comments months later.
      */
     public boolean resolve(UUID threadId, String userId) {
         return jdbc.update("UPDATE comment_threads SET resolved_at = now(), resolved_by = ? "
@@ -108,11 +107,11 @@ public class CommentService implements ThreadDocumentResolver {
     }
 
     /**
-     * Wątki dokumentu wraz z wiadomościami.
+     * A document's threads together with their messages.
      *
-     * <p>Dwa zapytania zamiast N+1: jedno po wątki, jedno po wszystkie ich wiadomości.
-     * Dokument z pięćdziesięcioma wątkami po pięć wiadomości to inaczej pięćdziesiąt jeden
-     * zapytań przy każdym otwarciu panelu komentarzy.
+     * <p>Two queries instead of N+1: one for the threads, one for all of their messages. Otherwise
+     * a document with fifty threads of five messages each means fifty-one queries every time the
+     * comment panel is opened.
      */
     public List<Thread> threadsOf(UUID documentId, boolean includeResolved) {
         List<ThreadRow> threads = jdbc.query(
@@ -158,8 +157,8 @@ public class CommentService implements ThreadDocumentResolver {
             .map(thread -> new Thread(
                 thread.id(), thread.documentId(), thread.createdBy(), thread.createdAt(),
                 thread.resolvedAt(), thread.quotedText(),
-                // Zakotwiczenie wylicza warstwa wyżej — tutaj domyślnie true, bo baza
-                // nie wie nic o stanie dokumentu.
+                // Anchoring is computed a layer up — true by default here, because the database
+                // knows nothing about the document's state.
                 true,
                 messages.stream()
                     .filter(row -> row.threadId().equals(thread.id()))

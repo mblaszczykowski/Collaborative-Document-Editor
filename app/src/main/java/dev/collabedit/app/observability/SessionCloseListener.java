@@ -8,33 +8,32 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.messaging.SessionDisconnectEvent;
 
 /**
- * Liczy, <b>dlaczego</b> kończą się sesje WebSocket.
+ * Counts <b>why</b> WebSocket sessions end.
  *
- * <h2>Po co, skoro sesje i tak są liczone</h2>
- * Istniejące {@code ws.sessions.active} i {@code ws.sessions.opened.total} mówią ile,
- * ale nie mówią <b>dlaczego</b> — a przy diagnozie rozjazdu to jest jedyne interesujące
- * pytanie. Sesja zamknięta przez użytkownika i sesja zerwana przez serwer z powodu
- * przepełnienia bufora wysyłkowego wyglądają w liczniku identycznie, a znaczą coś
- * zupełnie innego.
+ * <h2>Why, given that sessions are already counted</h2>
+ * The existing {@code ws.sessions.active} and {@code ws.sessions.opened.total} say how many but not
+ * <b>why</b> — and when diagnosing divergence that is the only interesting question. A session
+ * closed by the user and a session torn down by the server because its send buffer overflowed look
+ * identical in a counter, and mean something entirely different.
  *
- * <h2>Otwarte pytanie, na które ta metryka ma odpowiedzieć</h2>
- * README (sekcja „Punkt degradacji") opisuje niezamknięty wątek: powyżej ~10 klientów
- * w jednym dokumencie zbieżność przestaje być powtarzalna, serwer ma komplet operacji,
- * a część klientów zostaje trwale w tyle — <b>bez żadnego błędu w logu</b>.
+ * <h2>The open question this metric is meant to answer</h2>
+ * The README (the "Degradation point" section) describes an unresolved thread: above ~10 clients in
+ * one document convergence stops being repeatable, the server holds the complete set of operations,
+ * and some clients fall permanently behind — <b>with no error in the log at all</b>.
  *
- * <p>Hipoteza jest taka, że to jest {@link CloseStatus#SESSION_NOT_RELIABLE}: przy N klientach
- * każda operacja rozchodzi się w N ramkach, kolejka wysyłkowa wolnego klienta przekracza
- * {@code send-buffer-size-bytes} i Spring zamyka mu sesję. Klient wraca ścieżką ponownego
- * połączenia, więc z zewnątrz wygląda to na „chwilowy przestój", a nie na utratę dostaw.
+ * <p>The hypothesis is that this is {@link CloseStatus#SESSION_NOT_RELIABLE}: with N clients every
+ * operation goes out in N frames, a slow client's send queue exceeds
+ * {@code send-buffer-size-bytes} and Spring closes its session. The client comes back through the
+ * reconnect path, so from the outside it looks like "a brief hiccup" rather than lost deliveries.
  *
- * <p>Ta metryka rozstrzyga to liczbą zamiast domysłem. Zapala się przy 25 klientach
- * i milczy przy 10 → hipoteza potwierdzona. Milczy w obu → przyczyna jest gdzie indziej
- * i trzeba szukać dalej. <b>Oba wyniki są wynikami</b> i oba są lepsze niż obecne „nie wiem".
+ * <p>This metric settles it with a number instead of a guess. It fires at 25 clients and stays
+ * silent at 10 -> hypothesis confirmed. Silent in both -> the cause is elsewhere and the search
+ * continues. <b>Both outcomes are results</b>, and both beat the current "I do not know".
  *
- * <p>Powód, dla którego jest to <i>tag</i>, a nie osobny licznik: rozkład powodów zamknięcia
- * jest sam w sobie informacją. Nagły wzrost {@code reason="server_error"} przy niezmienionym
- * {@code reason="normal"} to inny problem niż odwrotnie, a dwa niezależne liczniki nie
- * pozwoliłyby zobaczyć proporcji.
+ * <p>The reason this is a <i>tag</i> rather than a separate counter: the distribution of close
+ * reasons is itself information. A sudden rise in {@code reason="server_error"} with
+ * {@code reason="normal"} unchanged is a different problem from the reverse, and two independent
+ * counters would not show the proportion.
  */
 @Component
 public class SessionCloseListener {
@@ -54,25 +53,25 @@ public class SessionCloseListener {
 
         metrics.recordSessionClose(reason);
 
-        // Głośno, bo to jest jedyny objaw problemu, który dziś jest w README opisany jako
-        // nierozstrzygnięty. Cicha degradacja jest tu gorsza od hałasu w logu.
+        // Loudly, because this is the only symptom of a problem the README currently records as
+        // unresolved. Silent degradation is worse here than noise in the log.
         if (SLOW_CLIENT.equals(reason)) {
-            log.warn("Sesja {} zerwana: klient nie nadążał z odbiorem i przepełnił bufor "
-                    + "wysyłkowy (send-buffer-size-bytes, ADR-0002). Klient wróci ścieżką "
-                    + "reconnect + resync, ale do tego czasu NIE DOSTAJE rozgłoszeń.",
+            log.warn("Session {} torn down: the client could not keep up with delivery and "
+                    + "overflowed the send buffer (send-buffer-size-bytes, ADR-0002). It will come "
+                    + "back through reconnect + resync, but until then it RECEIVES NO broadcasts.",
                 event.getSessionId());
         }
     }
 
-    /** Klient nie odbierał dość szybko i przepełnił bufor wysyłkowy — {@code CloseStatus(4500)}. */
+    /** The client did not receive fast enough and overflowed the send buffer — {@code CloseStatus(4500)}. */
     static final String SLOW_CLIENT = "slow_client_buffer_overflow";
 
     /**
-     * Powód zamknięcia jako wartość taga.
+     * The close reason as a tag value.
      *
-     * <p>Zbiór wartości jest <b>domknięty</b> i to jest celowe: tag o nieograniczonej
-     * liczbie wartości (np. surowy kod zamknięcia albo tekst od klienta) wysadza kardynalność
-     * metryki w Prometheusie. Kody spoza tej listy lądują w jednym koszu {@code other}.
+     * <p>The set of values is <b>closed</b>, and that is deliberate: a tag with an unbounded number
+     * of values (the raw close code, say, or text from the client) blows up the metric's
+     * cardinality in Prometheus. Codes outside this list land in a single {@code other} bucket.
      */
     static String reasonOf(CloseStatus status) {
         if (status == null) {
@@ -83,8 +82,8 @@ public class SessionCloseListener {
             case 1001 -> "going_away";
             case 1006 -> "abnormal";
             case 1011 -> "server_error";
-            // 4500 — Spring zamyka tak sesję, której bufor wysyłkowy przekroczył limit
-            // albo która przekroczyła send-time-limit. Oba znaczą to samo: klient nie nadąża.
+            // 4500 — Spring closes a session this way when its send buffer exceeded the limit or
+            // it exceeded send-time-limit. Both mean the same thing: the client cannot keep up.
             case 4500 -> SLOW_CLIENT;
             default -> "other";
         };

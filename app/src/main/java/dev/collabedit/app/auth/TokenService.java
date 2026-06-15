@@ -12,22 +12,22 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
- * Uwierzytelnianie — <b>świadomie uproszczone</b> i tak opisane w README.
+ * Authentication — <b>deliberately simplified</b>, and described that way in the README.
  *
- * <p>Token to podpisany HMAC-SHA256 ładunek {@code userId|displayName|color|wygaśnięcie}.
- * Nie ma tu rejestracji, haseł, odświeżania ani unieważniania. Zakresem tego projektu jest
- * spójność danych rozproszonych, nie zarządzanie tożsamością, a rozbudowany moduł auth
- * zabrałby czas problemowi rdzeniowemu, nic nie demonstrując.
+ * <p>A token is an HMAC-SHA256-signed payload of {@code userId|displayName|color|expiry}. There is
+ * no registration, no passwords, no refresh and no revocation. This project's scope is distributed
+ * data consistency, not identity management, and an elaborate auth module would take time away from
+ * the core problem while demonstrating nothing.
  *
- * <p>Napisane ręcznie na JDK zamiast biblioteki JWT z dwóch powodów: to jest kilkadziesiąt
- * linii bez zależności, a jawny kod podpisu lepiej pokazuje, gdzie dokładnie w uścisku dłoni
- * WebSocketa wpina się uwierzytelnienie (ramka {@code CONNECT}, nie każda wiadomość).
+ * <p>Written by hand on the JDK instead of pulling in a JWT library for two reasons: it is a few
+ * dozen lines with no dependencies, and explicit signing code shows better where exactly
+ * authentication hooks into the WebSocket handshake (the {@code CONNECT} frame, not every message).
  *
- * <p><b>Czego tu brakuje na produkcję</b> — wprost, żeby nikt nie wziął tego za wzorzec:
- * rotacji klucza, unieważniania tokenów, powiązania tokenu z sesją i ochrony przed odtworzeniem.
+ * <p><b>What is missing here for production</b> — stated plainly, so nobody takes this as a model:
+ * key rotation, token revocation, binding a token to a session, and replay protection.
  *
- * <p>Sekret <b>przestał</b> być na tej liście w CP16: nie ma już wartości domyślnej, więc
- * artefakt nie niesie w sobie znanego klucza — szczegóły przy konstruktorze.
+ * <p>The secret <b>left</b> that list in CP16: it no longer has a default, so the artifact does not
+ * carry a known key inside it — details at the constructor.
  */
 @Service
 public class TokenService {
@@ -105,16 +105,16 @@ public class TokenService {
     }
 
     /**
-     * Koduje pojedyncze pole ładunku.
+     * Encodes a single payload field.
      *
-     * <p>Separatorem pól jest {@code |}, a {@code displayName} pochodzi wprost od użytkownika
-     * — bez tego kodowania nazwa zawierająca {@code |} rozbijała ładunek na więcej części
-     * i {@code verify} odrzucał <b>własny, poprawnie podpisany token</b>. Objawem było
-     * logowanie, które „działa" (REST zwraca token), po którym ramka {@code CONNECT} jest
-     * odrzucana bez zrozumiałego powodu.
+     * <p>The field separator is {@code |}, and {@code displayName} comes straight from the user —
+     * without this encoding, a name containing {@code |} split the payload into more parts and
+     * {@code verify} rejected <b>its own, correctly signed token</b>. The symptom was a login that
+     * "works" (REST returns a token) followed by a {@code CONNECT} frame rejected for no
+     * comprehensible reason.
      *
-     * <p>Base64url jest tu wystarczający i darmowy: jego alfabet ({@code A-Z a-z 0-9 - _})
-     * z definicji nie zawiera separatora, więc podział jest jednoznaczny niezależnie od treści.
+     * <p>Base64url is sufficient here and free: its alphabet ({@code A-Z a-z 0-9 - _}) by
+     * definition excludes the separator, so the split is unambiguous whatever the content.
      */
     private static String field(String value) {
         return ENCODER.encodeToString(value.getBytes(StandardCharsets.UTF_8));
@@ -135,14 +135,14 @@ public class TokenService {
         } catch (IllegalArgumentException e) {
             return Optional.empty();
         }
-        // Porównanie stałoczasowe — zwykłe equals na tablicach bajtów przecieka informację
-        // o tym, ile początkowych bajtów podpisu się zgadza.
+        // A constant-time comparison — a plain equals on byte arrays leaks how many leading
+        // bytes of the signature match.
         if (!MessageDigest.isEqual(presented, sign(encoded))) {
             return Optional.empty();
         }
 
-        // limit -1: bez niego puste pole na końcu zostałoby po cichu odrzucone i ładunek
-        // o poprawnej strukturze wyglądałby jak uszkodzony.
+        // limit -1: without it, an empty trailing field would be silently dropped and a
+        // structurally valid payload would look corrupt.
         String[] parts = new String(DECODER.decode(encoded), StandardCharsets.UTF_8).split("\\|", -1);
         if (parts.length != 4) {
             return Optional.empty();
@@ -156,11 +156,11 @@ public class TokenService {
                 new String(DECODER.decode(parts[1]), StandardCharsets.UTF_8),
                 new String(DECODER.decode(parts[2]), StandardCharsets.UTF_8)));
         } catch (IllegalArgumentException e) {
-            // Ładunek przeszedł weryfikację podpisu, ale nie da się go odczytać — czyli
-            // token wystawiła starsza wersja o innym formacie ładunku. Odrzucamy jak każdy
-            // nieważny token: użytkownik zaloguje się ponownie i dostanie token w nowym
-            // formacie. Wersjonowanie formatu byłoby tu kosztem bez korzyści przy 12-godzinnym
-            // czasie życia tokenu.
+            // The payload passed signature verification but cannot be read — meaning the token
+            // was issued by an older version with a different payload format. We reject it like
+            // any invalid token: the user logs in again and gets a token in the new format.
+            // Versioning the format would be a cost with no benefit given the token's 12-hour
+            // lifetime.
             return Optional.empty();
         }
     }
@@ -171,7 +171,7 @@ public class TokenService {
             mac.init(key);
             return mac.doFinal(encodedPayload.getBytes(StandardCharsets.UTF_8));
         } catch (java.security.GeneralSecurityException e) {
-            throw new IllegalStateException("nie da się podpisać tokenu", e);
+            throw new IllegalStateException("cannot sign the token", e);
         }
     }
 }

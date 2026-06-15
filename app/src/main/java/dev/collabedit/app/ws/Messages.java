@@ -136,6 +136,22 @@ public final class Messages {
     }
 
     /**
+     * Somebody's access to this document changed (CP21).
+     *
+     * <p>Sent on {@code /topic/doc/{id}/access} after a grant, a revocation or a visibility
+     * change. The client does not trust the contents — it re-asks the server what its role is
+     * now. That is not caution for its own sake: the frame reaches every subscriber, so treating
+     * it as an authority would mean one client's role arriving over a channel anybody in the
+     * document can hear.
+     *
+     * @param userId the person affected, or {@code null} for "everybody re-check", which is what
+     *               a visibility change is
+     * @param role   the new role, or {@code null} when access was taken away
+     */
+    public record AccessChanged(String userId, String role) {
+    }
+
+    /**
      * Błąd wymagający reakcji klienta.
      *
      * <p>{@code code} {@code RESYNC_REQUIRED} to sytuacja z ADR-0005: klient był offline

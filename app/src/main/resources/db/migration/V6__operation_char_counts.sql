@@ -52,6 +52,6 @@ UPDATE operations
 -- (doc_id, server_seq) does, and now covers this query entirely — the planner can answer it
 -- from the index plus a heap fetch of four narrow columns instead of the JSONB.
 COMMENT ON COLUMN operations.chars_inserted IS
-    'Characters this operation added. Recorded at write time; see V5 for why not derived.';
+    'Characters this operation added. Recorded at write time; see V6 for why not derived.';
 COMMENT ON COLUMN operations.chars_deleted IS
-    'Characters this operation removed. Recorded at write time; see V5 for why not derived.';
+    'Characters this operation removed. Recorded at write time; see V6 for why not derived.';

@@ -17,28 +17,28 @@ import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
 import org.springframework.stereotype.Component;
 
 /**
- * Śledzenie pojedynczej operacji edycji przez cały system (CP7).
+ * Tracing a single edit operation through the whole system (CP7).
  *
- * <p>Cel z {@code CLAUDE.md} §4: jeden trace obejmujący drogę
- * <b>klawisz w przeglądarce → WebSocket → scalenie CRDT → zapis → rozesłanie</b>.
+ * <p>The goal from {@code CLAUDE.md} §4: one trace covering the path
+ * <b>keystroke in the browser -> WebSocket -> CRDT merge -> write -> broadcast</b>.
  *
- * <h2>Dlaczego nagłówek ramki STOMP, a nie nagłówek HTTP</h2>
- * Uścisk dłoni WebSocketa to pojedyncze żądanie HTTP na początku połączenia, które potem
- * żyje godzinami. Kontekst śledzenia w nagłówku HTTP dotyczyłby więc <b>całej sesji</b>,
- * a nie pojedynczej edycji — czyli byłby bezużyteczny. Nagłówki na poziomie ramki STOMP
- * są jedynym miejscem, gdzie da się przenieść kontekst per operacja, i to jest konkretny,
- * praktyczny powód wyboru z ADR-0002.
+ * <h2>Why a STOMP frame header rather than an HTTP header</h2>
+ * The WebSocket handshake is a single HTTP request at the start of a connection that then lives for
+ * hours. A trace context in an HTTP header would therefore cover <b>the whole session</b> rather
+ * than a single edit — that is, it would be useless. STOMP frame headers are the only place a
+ * per-operation context can be carried, and that is the concrete, practical reason behind the
+ * choice in ADR-0002.
  *
- * <h2>Dlaczego rozesłanie jest powiązane linkiem, a nie zagnieżdżeniem</h2>
- * Operacja przychodzi jedna, a wychodzi do N klientów. Relacja rodzic-dziecko sugerowałaby,
- * że rozesłanie do każdego klienta jest częścią obsługi tego jednego żądania i że jego czas
- * się sumuje. Semantycznie poprawny jest <b>link</b>: „to zdarzenie ma związek z tamtym",
- * bez implikowania zawierania. Przy dwustu odbiorcach różnica przestaje być akademicka.
+ * <h2>Why the broadcast is joined by a link rather than by nesting</h2>
+ * One operation comes in, and goes out to N clients. A parent-child relationship would suggest that
+ * broadcasting to each client is part of handling that one request and that its duration adds up.
+ * The semantically correct construct is a <b>link</b>: "this event is related to that one", without
+ * implying containment. At two hundred recipients the difference stops being academic.
  */
 @Component
 public class EditTracer {
 
-    /** Nazwa nagłówka ramki STOMP z kontekstem śledzenia (W3C Trace Context). */
+    /** The name of the STOMP frame header carrying the trace context (W3C Trace Context). */
     public static final String TRACEPARENT = "traceparent";
 
     private final OpenTelemetry openTelemetry;
@@ -50,11 +50,11 @@ public class EditTracer {
     }
 
     /**
-     * Wyciąga kontekst śledzenia z nagłówków ramki STOMP.
+     * Extracts the trace context from the STOMP frame headers.
      *
-     * <p>Brak nagłówka nie jest błędem — klient bez włączonego śledzenia po prostu nie
-     * dołoży kontekstu, a serwer utworzy nowy trace. Wymaganie kontekstu byłoby uzależnieniem
-     * poprawności działania od obserwowalności, czyli odwróceniem zależności.
+     * <p>A missing header is not an error — a client without tracing enabled simply adds no
+     * context, and the server starts a new trace. Requiring the context would make correct
+     * operation depend on observability, which inverts the dependency.
      */
     private Context extractContext(SimpMessageHeaderAccessor headers) {
         return openTelemetry.getPropagators().getTextMapPropagator()
@@ -80,17 +80,18 @@ public class EditTracer {
         };
 
     /**
-     * Otwiera span obejmujący obsługę operacji po stronie serwera.
+     * Opens a span covering the server-side handling of an operation.
      *
-     * <p>Zwracany obiekt trzeba zamknąć — {@code try-with-resources} w miejscu wywołania.
+     * <p>The returned object has to be closed — {@code try-with-resources} at the call site.
      */
     public EditSpan startReceive(SimpMessageHeaderAccessor headers, UUID documentId,
                                  int replicaId, String operationType) {
         Context parent = extractContext(headers);
         Span span = tracer.spanBuilder("op.receive")
             .setParent(parent)
-            // CONSUMER, bo operacja przychodzi z kolejki komunikatów, a nie jako żądanie
-            // synchroniczne. Zła wartość tutaj psuje wykresy zależności usług w Grafanie.
+            // CONSUMER, because the operation arrives from a message queue rather than as a
+            // synchronous request. The wrong value here corrupts the service dependency graphs in
+            // Grafana.
             .setSpanKind(SpanKind.CONSUMER)
             .setAttribute("collabedit.document", documentId.toString())
             .setAttribute("collabedit.replica", replicaId)
@@ -99,24 +100,24 @@ public class EditTracer {
         return new EditSpan(span, span.makeCurrent());
     }
 
-    /** Span potomny dla wyodrębnionego etapu (scalenie, rozesłanie). */
+    /** A child span for a distinct stage (merge, broadcast). */
     public EditSpan startStage(String name) {
         Span span = tracer.spanBuilder(name).startSpan();
         return new EditSpan(span, span.makeCurrent());
     }
 
     /**
-     * Span dla operacji wsadowej, POWIĄZANY z trace'ami operacji wchodzących w skład wsadu.
+     * A span for a batched operation, LINKED to the traces of the operations making up the batch.
      *
-     * <p>Zapis do logu obejmuje wiele operacji naraz i dzieje się na innym wątku, w innym
-     * momencie niż ich przyjęcie (wsadowanie co 50 ms — ADR-0003). Zagnieżdżenie go pod
-     * którymkolwiek z tych trace'ów byłoby fałszywe: sugerowałoby, że zapis jest częścią
-     * obsługi tej jednej operacji i że jej czas trwania go obejmuje. Przy wsadzie stu
-     * operacji dziewięćdziesiąt dziewięć trace'ów pokazywałoby wtedy czas cudzego zapisu.
+     * <p>A write to the log covers many operations at once and happens on a different thread, at a
+     * different moment from their arrival (batching every 50 ms — ADR-0003). Nesting it under any
+     * one of those traces would be false: it would suggest the write is part of handling that one
+     * operation and that its duration contains it. In a batch of a hundred operations,
+     * ninety-nine traces would then show someone else's write time.
      *
-     * <p><b>Link</b> wyraża dokładnie to, co zachodzi: „to zdarzenie ma związek z tamtymi",
-     * bez implikowania zawierania. Jest to jedna z niewielu sytuacji, w których link jest
-     * właściwy, a nie tylko wygodny — i dlatego warto ją nazwać.
+     * <p>A <b>link</b> expresses exactly what happens: "this event is related to those ones",
+     * without implying containment. This is one of the few situations where a link is correct
+     * rather than merely convenient — which is why it is worth naming.
      */
     public EditSpan startBatch(String name, List<String> originatingTraceparents) {
         var builder = tracer.spanBuilder(name).setSpanKind(SpanKind.INTERNAL).setNoParent();
@@ -134,11 +135,11 @@ public class EditTracer {
     }
 
     /**
-     * Odczyt nagłówka W3C {@code traceparent} do kontekstu spanu.
+     * Parses a W3C {@code traceparent} header into a span context.
      *
-     * <p>Zwraca {@code null} przy każdej nieprawidłowości zamiast rzucać: kontekst śledzenia
-     * przychodzi od klienta i nie wolno, żeby jego uszkodzenie przewracało zapis operacji.
-     * Obserwowalność nie może być warunkiem poprawności działania.
+     * <p>Returns {@code null} on any malformation rather than throwing: the trace context comes
+     * from the client, and corrupting it must never bring down an operation's write. Observability
+     * cannot be a precondition for correct operation.
      */
     private static SpanContext parseTraceparent(String traceparent) {
         if (traceparent == null) {
@@ -156,7 +157,7 @@ public class EditTracer {
         }
     }
 
-    /** Span z bieżącym kontekstem — do zapisania w nagłówku wiadomości klastrowej. */
+    /** The current context as a span header value — to be put on a cluster message. */
     public String currentTraceparent() {
         Span current = Span.current();
         if (!current.getSpanContext().isValid()) {
@@ -166,7 +167,7 @@ public class EditTracer {
             + "-" + current.getSpanContext().getSpanId() + "-01";
     }
 
-    /** Para span + zakres, zamykana razem. */
+    /** A span + scope pair, closed together. */
     public record EditSpan(Span span, Scope scope) implements AutoCloseable {
 
         public void fail(Throwable error) {

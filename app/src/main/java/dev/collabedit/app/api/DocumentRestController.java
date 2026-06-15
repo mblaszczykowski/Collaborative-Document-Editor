@@ -224,6 +224,19 @@ public class DocumentRestController {
         // is what makes the unconditional call correct: the guard has already refused the
         // request if there is no caller.
         permissions.setOwner(id, callerId(request));
+
+        // PRIVATE, not the schema default (CP21).
+        //
+        // The column defaults to `link`, and `link` resolves to EDITOR for every logged-in user
+        // (PermissionService.roleFrom). So until this line, every document created through the
+        // interface was editable by anybody who typed a name into the login box — which made the
+        // four roles the repository documents into two the product could produce: owner, and
+        // everyone.
+        //
+        // On a laptop that reads as convenience. On a public instance it is the whole access
+        // story being false in the one place a visitor can check it. Sharing is now a gesture —
+        // an invite link or a visibility switch — rather than the absence of one.
+        permissions.setVisibility(id, "private");
         return catalog.find(id).orElseThrow();
     }
 

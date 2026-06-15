@@ -2,6 +2,7 @@ package dev.collabedit.app.auth;
 
 import dev.collabedit.app.cluster.ClusterBus;
 import dev.collabedit.app.cluster.PermissionInvalidationBus;
+import dev.collabedit.app.config.SchedulingConfig;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -11,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 /**
@@ -244,6 +246,61 @@ public class PermissionService {
         cache.clear();
     }
 
+    /**
+     * Upper bound on the number of cached decisions.
+     *
+     * <p>Expiry alone does not bound anything, and that is the whole reason this exists.
+     * {@link #roleOf} checks the timestamp when it <b>reads</b> an entry and replaces it — but an
+     * entry nobody reads again is never touched, so the map kept one row per
+     * {@code (user, document)} pair ever seen, for the lifetime of the process.
+     *
+     * <p>{@code application.yml} already makes this argument, about a different cache:
+     * <i>"the idle threshold does not bound anything with many documents — a hundred people
+     * opening a hundred different documents in a minute gives a hundred replicas, none of them
+     * idle. A time limit is not a memory limit."</i> The identical argument applies here and had
+     * not been made.
+     *
+     * <p>20 000 entries is roughly a megabyte of small records, and it is a <b>backstop</b> rather
+     * than an operating point: the sweep below keeps the real size at "distinct pairs seen in the
+     * last minute", which normal traffic keeps far below this. Reaching it means something is
+     * enumerating documents, and dropping the cache is the correct response to that — the cost is
+     * one database query per subsequent check, not an error.
+     */
+    private static final int MAX_ENTRIES = 20_000;
+
+    /**
+     * Removes entries whose TTL has passed.
+     *
+     * <p>On the maintenance pool, not the flow pool: this walks the whole map, and the flow pool
+     * is the one that must broadcast every 10 ms ({@link SchedulingConfig}).
+     *
+     * <p>Every minute rather than every five seconds. The sweep is not what makes expiry correct
+     * — {@link #roleOf} already refuses to serve a stale entry — so its only job is to stop dead
+     * entries accumulating. Running it at the TTL would walk the map twelve times more often to
+     * reclaim the same memory a few seconds sooner.
+     */
+    @Scheduled(
+        fixedDelayString = "${collabedit.auth.permission-cache-sweep-ms:60000}",
+        scheduler = SchedulingConfig.MAINTENANCE)
+    void sweepExpiredRoles() {
+        long now = System.currentTimeMillis();
+        int before = cache.size();
+        cache.values().removeIf(cached -> cached.expiresAtMillis() <= now);
+
+        if (cache.size() > MAX_ENTRIES) {
+            // Everything left is unexpired, so there is nothing cheaper to drop. Clearing costs a
+            // database query per subsequent check and nothing else — the cache is an
+            // optimisation, and correctness never depended on a hit.
+            log.warn("Permission cache holds {} live entries, above the {} bound — clearing. "
+                    + "Something is touching an unusual number of documents.",
+                cache.size(), MAX_ENTRIES);
+            cache.clear();
+        } else if (before != cache.size()) {
+            log.debug("Permission cache: dropped {} expired entries, {} remain",
+                before - cache.size(), cache.size());
+        }
+    }
+
     // ------------------------------------------------------------------
     // Zarządzanie dostępem
     // ------------------------------------------------------------------
@@ -273,6 +330,25 @@ public class PermissionService {
     public void setOwner(UUID documentId, String ownerId) {
         jdbc.update("UPDATE documents SET owner_id = ? WHERE id = ?", ownerId, documentId);
         invalidate(documentId);
+    }
+
+    /**
+     * A document's access settings, as opposed to one user's role in it (CP21).
+     *
+     * <p>Separate from {@link #roleOf} because it answers the owner's question ("who can get in
+     * here") rather than the request path's question ("may this caller do this"). The first is
+     * asked once, when a share panel opens; the second on every operation, which is why one is
+     * cached and the other deliberately is not.
+     */
+    public record Settings(String ownerId, String visibility) {
+    }
+
+    public Optional<Settings> settingsOf(UUID documentId) {
+        return jdbc.query("""
+            SELECT owner_id, visibility FROM documents WHERE id = ? AND deleted_at IS NULL
+            """,
+            (rs, rowNum) -> new Settings(rs.getString("owner_id"), rs.getString("visibility")),
+            documentId).stream().findFirst();
     }
 
     public record Member(String userId, String displayName, Role role) {
