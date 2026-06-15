@@ -1,17 +1,17 @@
 package dev.collabedit.app.auth;
 
 /**
- * Rola użytkownika wobec dokumentu (CP12).
+ * A user's role with respect to a document (CP12).
  *
- * <p>Role są <b>uporządkowane</b> i to uporządkowanie jest częścią modelu, a nie wygodą
- * implementacji: każda kolejna może wszystko to, co poprzednia. Dzięki temu sprawdzenie
- * uprawnienia jest porównaniem, a nie tablicą wyjątków — a tablica wyjątków jest miejscem,
- * w którym powstają dziury.
+ * <p>The roles are <b>ordered</b>, and that ordering is part of the model rather than an
+ * implementation convenience: each one can do everything the previous one can. That makes checking
+ * a permission a comparison rather than a table of exceptions — and a table of exceptions is where
+ * holes appear.
  *
- * <p><b>Czego celowo NIE ma:</b> roli „administrator" obejmującej wszystkie dokumenty.
- * Nie ma tu żadnego uprawnienia, które nie wynikałoby z relacji użytkownika do konkretnego
- * dokumentu albo workspace'u — dzięki temu odpowiedź na pytanie „kto ma dostęp do tego
- * dokumentu" jest zawsze pełna i lokalna.
+ * <p><b>What is deliberately absent:</b> an "administrator" role spanning every document. There is
+ * no permission here that does not follow from a user's relationship to a specific document or
+ * workspace — which is what makes the answer to "who has access to this document" always complete
+ * and local.
  */
 public enum Role {
 
@@ -19,19 +19,19 @@ public enum Role {
     VIEWER,
 
     /**
-     * Jw. plus komentarze (CP14).
+     * As above plus comments (CP14).
      *
-     * <p>Ta rola jest powodem, dla którego autoryzacja musi patrzeć na <b>typ operacji</b>,
-     * a nie tylko na dokument: komentujący wysyła operacje CRDT tym samym kanałem co edytor,
-     * więc rozróżnienie „wolno pisać" od „wolno komentować" nie istnieje na poziomie
-     * destynacji STOMP.
+     * <p>This role is the reason authorization has to look at the <b>operation type</b> and not
+     * only at the document: a commenter sends CRDT operations over the same channel as an editor,
+     * so the distinction between "may write" and "may comment" does not exist at the level of a
+     * STOMP destination.
      */
     COMMENTER,
 
-    /** Zmienia treść i formatowanie. */
+    /** Changes the content and the formatting. */
     EDITOR,
 
-    /** Jw. plus zarządzanie dostępem i widocznością dokumentu. */
+    /** As above plus managing the document's access and visibility. */
     OWNER;
 
     public boolean atLeast(Role required) {
@@ -55,12 +55,12 @@ public enum Role {
     }
 
     /**
-     * Odczyt roli z bazy.
+     * Reading a role from the database.
      *
-     * <p>Nieznana wartość daje {@link #VIEWER}, czyli <b>najmniejsze</b> uprawnienie —
-     * a nie wyjątek i nie największe. Rola dopisana w przyszłej migracji, o której ta wersja
-     * kodu nie wie, ma w najgorszym razie ograniczyć użytkownika, a nie wpuścić go dalej,
-     * niż powinien.
+     * <p>An unknown value gives {@link #VIEWER}, that is, the <b>smallest</b> permission — not an
+     * exception and not the largest. A role added by a future migration this version of the code
+     * knows nothing about should at worst restrict a user rather than let them further than they
+     * should go.
      */
     public static Role parse(String value) {
         if (value == null) {

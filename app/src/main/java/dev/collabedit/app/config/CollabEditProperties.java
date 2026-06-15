@@ -3,13 +3,13 @@ package dev.collabedit.app.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Parametry strojenia systemu. Każdy z nich ma uzasadnienie w konkretnym ADR-ze —
- * komentarze przy wartościach domyślnych są w {@code application.yml}, a nie tutaj,
- * żeby osoba zmieniająca konfigurację widziała powód w miejscu zmiany.
+ * The system's tuning parameters. Every one of them is justified in a specific ADR — the comments
+ * next to the default values live in {@code application.yml} rather than here, so that whoever
+ * changes the configuration sees the reason at the point of change.
  *
- * <p>Wartości domyślne w konstruktorach są celowo takie same jak w {@code application.yml}:
- * uruchomienie z pustą konfiguracją ma dać system, który działa, a nie taki, który
- * rzuca wyjątkiem przy starcie.
+ * <p>The defaults in the constructors deliberately match those in {@code application.yml}: starting
+ * with an empty configuration should give a system that works rather than one that throws at
+ * startup.
  */
 @ConfigurationProperties("collabedit")
 public record CollabEditProperties(
@@ -61,7 +61,7 @@ public record CollabEditProperties(
             return new WebSocket(10_000, 2.5, 65_536, 524_288, 20_000, 10, null);
         }
 
-        /** Po jakim czasie bez heartbeatu uznajemy sesję za martwą. */
+        /** How long without a heartbeat before we treat a session as dead. */
         public long heartbeatTimeoutMs() {
             return Math.round(heartbeatIntervalMs * heartbeatToleranceFactor);
         }

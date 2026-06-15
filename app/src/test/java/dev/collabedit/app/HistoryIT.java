@@ -203,6 +203,9 @@ class HistoryIT extends IntegrationTestBase {
         try (TestStompClient bartek = new TestStompClient(
             port, tokens.issue(new TokenService.Principal(bartekId, "Bartek", "#2E6FC1")),
             document, 242)) {
+            // The test client does not synchronise on connect — it only subscribes. Bartek
+            // has to ask for the existing log before he can insert at a meaningful position.
+            bartek.requestSync(0);
             bartek.awaitCondition(() -> bartek.text().length() == 6, PATIENCE, "synchronizacja");
             bartek.insert(bartek.text().length(), "XY");
             bartek.awaitCondition(() -> bartek.lastAckSeq() >= 4, PATIENCE, "wstawienie Bartka");

@@ -10,34 +10,38 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Uwierzytelnienie żądań REST (CP12).
+ * Authentication of REST requests (CP12).
  *
- * <h2>Dlaczego dopiero teraz</h2>
- * Do CP11 REST wystawiał listę dokumentów, tworzenie i odczyt treści — <b>bez żadnej
- * kontroli dostępu</b>. Przy jednym wspólnym dokumencie było to spójne z całą resztą:
- * model brzmiał „każdy może wszystko". Od CP11 {@code GET /api/documents/{id}} zwraca treść
- * DOWOLNEGO dokumentu każdemu, kto zna identyfikator — czyli ta sama podatność, którą
- * {@link dev.collabedit.app.ws.DocumentAccessInterceptor} zamyka po stronie WebSocketa,
- * tylko inną drogą.
+ * <h2>Why only now</h2>
+ * Up to CP11 REST exposed the document list, document creation and content reads — <b>with no
+ * access control at all</b>. With one shared document that was consistent with everything else: the
+ * model read "anyone may do anything". Since CP11 {@code GET /api/documents/{id}} returns the
+ * content of ANY document to anyone who knows the identifier — the same vulnerability
+ * {@link dev.collabedit.app.ws.DocumentAccessInterceptor} closes on the WebSocket side, only by a
+ * different route.
  *
- * <p>Zamykanie jednej z dwóch dróg do tych samych danych jest gorsze niż niezamykanie żadnej,
- * bo daje fałszywe poczucie, że problem został rozwiązany.
+ * <p>Closing one of two routes to the same data is worse than closing neither, because it gives a
+ * false sense that the problem has been solved.
  *
- * <h2>Dlaczego własny filtr, a nie Spring Security</h2>
- * Ten sam powód, dla którego {@link TokenService} jest napisany ręcznie (patrz tamtejszy
- * javadoc): cały mechanizm to kilkadziesiąt linii, a jawny kod pokazuje, gdzie dokładnie
- * wpina się sprawdzenie. Spring Security wniósłby łańcuch filtrów, konfigurację i własne
- * pojęcia — dla trzech reguł dostępu jest to koszt bez korzyści. W produkcji: Spring Security,
- * bo tam reguł jest kilkadziesiąt i to one, a nie mechanizm, są trudne.
+ * <h2>Why a custom filter rather than Spring Security</h2>
+ * The same reason {@link TokenService} is written by hand (see its javadoc): the whole mechanism is
+ * a few dozen lines, and explicit code shows exactly where the check is wired in. Spring Security
+ * would bring a filter chain, configuration and its own vocabulary — for three access rules that is
+ * a cost with no benefit. In production: Spring Security, because there the rules number in the
+ * dozens and it is the rules, not the mechanism, that are hard.
  *
- * <p>Filtr <b>nie odrzuca</b> żądań bez tokenu — ustala jedynie tożsamość. Decyzję o odmowie
- * podejmuje kontroler, bo tylko on wie, czy dana ścieżka wymaga dostępu do konkretnego
- * dokumentu, czy jest publiczna (jak {@code /api/login}).
+ * <p>The filter <b>does not reject</b> requests without a token — it only establishes identity. The
+ * decision to refuse belongs to the endpoint, because only it knows whether a given path needs
+ * access to a specific document or is public (like {@code /api/login}).
+ *
+ * <p>Since CP16 that decision is no longer left to each controller to remember: every endpoint
+ * declares what it needs and {@link DocumentAccessGuard} refuses to serve one that declares nothing
+ * (ADR-0012).
  */
 @Component
 public class TokenAuthFilter extends OncePerRequestFilter {
 
-    /** Atrybut żądania z tożsamością; {@code null}, gdy token nieobecny albo nieważny. */
+    /** The request attribute holding the identity; {@code null} when the token is absent or invalid. */
     public static final String PRINCIPAL = "collabedit.principal";
 
     private final TokenService tokens;
@@ -64,7 +68,7 @@ public class TokenAuthFilter extends OncePerRequestFilter {
         return token.isEmpty() ? Optional.empty() : Optional.of(token);
     }
 
-    /** Tożsamość z żądania albo puste, gdy żądanie jest nieuwierzytelnione. */
+    /** The identity from the request, or empty when the request is unauthenticated. */
     public static Optional<TokenService.Principal> principalOf(HttpServletRequest request) {
         Object attribute = request.getAttribute(PRINCIPAL);
         return attribute instanceof TokenService.Principal principal

@@ -7,17 +7,16 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Przydział globalnie unikalnych identyfikatorów replik.
+ * Allocating globally unique replica identifiers.
  *
- * <p>Unikalność jest wymogiem poprawności, nie wygody: dwie repliki o tym samym numerze
- * generowałyby kolidujące identyfikatory znaków, a algorytm z ADR-0001 uznałby je za ten
- * sam znak. Skutkiem byłoby ciche zgubienie tekstu jednego z autorów — błąd niewykrywalny
- * po fakcie, bo w strukturze nie zostaje po nim ślad.
+ * <p>Uniqueness is a correctness requirement, not a convenience: two replicas with the same number
+ * would generate colliding character identifiers, and the algorithm from ADR-0001 would treat them
+ * as the same character. The effect would be silently losing one author's text — a bug undetectable
+ * after the fact, because it leaves no trace in the structure.
  *
- * <p>Stąd jedno źródło numerów dla całego klastra: licznik w Redisie. Jest to jedyne miejsce,
- * w którym Redis pełni rolę <b>autorytatywną</b>, a nie ścieżki najlepszego wysiłku
- * (ADR-0004) — i dlatego jego niedostępność jest tu traktowana inaczej niż przy publikacji
- * operacji.
+ * <p>Hence one source of numbers for the whole cluster: a counter in Redis. This is the only place
+ * where Redis plays an <b>authoritative</b> role rather than being a best-effort path (ADR-0004) —
+ * and that is why its unavailability is treated differently here than when publishing operations.
  */
 @Service
 public class ReplicaIdAllocator {
@@ -28,13 +27,13 @@ public class ReplicaIdAllocator {
     private final StringRedisTemplate redis;
 
     /**
-     * Zapas awaryjny na wypadek niedostępności Redisa.
+     * A fallback for when Redis is unavailable.
      *
-     * <p>Punkt startowy jest losowy z bardzo dużego zakresu, więc kolizja z numerami
-     * z Redisa albo z innej instancji jest skrajnie mało prawdopodobna — ale
-     * <b>nie jest niemożliwa</b>. To jest świadomie gorsza gwarancja przyjęta po to, żeby
-     * awaria Redisa oznaczała degradację, a nie odmowę obsługi. Zapisane wprost, bo różnica
-     * między „unikalne" a „prawie na pewno unikalne" jest tu istotna.
+     * <p>The starting point is random from a very large range, so a collision with numbers from
+     * Redis or from another instance is extremely unlikely — but <b>not impossible</b>. This is a
+     * deliberately weaker guarantee, accepted so that a Redis outage means degradation rather than
+     * refusal of service. Written down explicitly, because the difference between "unique" and
+     * "almost certainly unique" matters here.
      */
     private final AtomicInteger fallback =
         new AtomicInteger(new java.security.SecureRandom().nextInt(1, Integer.MAX_VALUE / 2));
@@ -47,12 +46,12 @@ public class ReplicaIdAllocator {
         try {
             Long value = redis.opsForValue().increment(KEY);
             if (value != null) {
-                // Identyfikatory replik są dodatnie; instancje backendu używają ujemnych
-                // (DocumentRegistry), więc przestrzenie nie mogą się przeciąć.
+                // Replica identifiers are positive; backend instances use negative ones
+                // (DocumentRegistry), so the two spaces cannot intersect.
                 return (int) (value % (Integer.MAX_VALUE / 2)) + 1;
             }
         } catch (RuntimeException e) {
-            log.warn("Redis niedostępny przy przydziale identyfikatora repliki — używam zapasu: {}",
+            log.warn("Redis unavailable while allocating a replica identifier — using the fallback: {}",
                 e.toString());
         }
         return fallback.incrementAndGet();
