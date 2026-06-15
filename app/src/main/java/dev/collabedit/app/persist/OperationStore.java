@@ -16,12 +16,11 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Log operacji — <b>źródło prawdy</b> całego systemu (ADR-0003).
+ * The operation log — the <b>source of truth</b> of the whole system (ADR-0003).
  *
- * <p>Tabela jest wyłącznie dopisywana. Nie ma tu metody aktualizującej ani usuwającej,
- * i to nie jest przeoczenie: przywrócenie starej wersji dokumentu zapisujemy jako nowe
- * operacje, bo obcięcie logu zniszczyłoby audytowalność i rozspójniło klientów, którzy
- * są właśnie podłączeni.
+ * <p>The table is append-only. There is no update or delete method here, and that is not an
+ * oversight: restoring an old version of a document is recorded as new operations, because
+ * truncating the log would destroy auditability and diverge the clients currently connected.
  */
 @Repository
 public class OperationStore {
@@ -33,38 +32,36 @@ public class OperationStore {
     }
 
     /**
-     * Dopisuje wsad operacji, nadając im kolejne wartości {@code server_seq}.
+     * Appends a batch of operations, assigning them consecutive {@code server_seq} values.
      *
-     * <h2>Dlaczego blokada wiersza dokumentu</h2>
-     * ADR-0004 opiera wykrywanie zgubionych wiadomości Redisa na <b>ciągłości</b>
-     * {@code server_seq} — dziura w numeracji oznacza „brakuje mi operacji". Sekwencja
-     * Postgresa tej własności nie daje (zostawia dziury przy wycofanej transakcji), więc
-     * licznik żyje w kolumnie {@code documents.next_server_seq} i jest przydzielany pod
-     * blokadą wiersza.
+     * <h2>Why a row lock on the document</h2>
+     * ADR-0004 bases detection of lost Redis messages on the <b>continuity</b> of
+     * {@code server_seq} — a gap in the numbering means "I am missing operations". A Postgres
+     * sequence does not give that property (it leaves gaps when a transaction rolls back), so the
+     * counter lives in the {@code documents.next_server_seq} column and is allocated under a row
+     * lock.
      *
-     * <h2>Dlaczego duplikaty są odsiewane PRZED przydziałem numerów</h2>
-     * Gdyby polegać na {@code ON CONFLICT DO NOTHING}, część wsadu zostałaby odrzucona
-     * <i>po</i> zarezerwowaniu dla niej numerów — i zostawiłaby dokładnie taką dziurę,
-     * jakiej ADR-0004 zabrania. Odsiew działa poprawnie mimo współbieżności, bo blokada
-     * wiersza dokumentu serializuje wszystkich piszących do tego dokumentu, również
-     * z innych instancji.
+     * <h2>Why duplicates are filtered out BEFORE numbers are assigned</h2>
+     * Relying on {@code ON CONFLICT DO NOTHING} would reject part of the batch <i>after</i> numbers
+     * had been reserved for it — leaving exactly the kind of gap ADR-0004 forbids. The filtering is
+     * correct despite concurrency, because the document's row lock serialises every writer to that
+     * document, including writers on other instances.
      *
-     * <p>Kosztem jest serializacja zapisów <b>w obrębie jednego dokumentu</b>. Jest ona
-     * akceptowalna, bo zapisy i tak są wsadowane co 50 ms — pod blokadę wchodzi się raz
-     * na wsad, a nie raz na naciśnięcie klawisza.
+     * <p>The cost is serialised writes <b>within a single document</b>. That is acceptable, because
+     * writes are batched every 50 ms anyway — the lock is taken once per batch, not once per
+     * keystroke.
      *
-     * <p><b>Zweryfikowane w CP10:</b> przy 50 klientach piszących jednocześnie w jeden
-     * dokument blokada nie jest wąskim gardłem — przepustowość przyjmowania operacji sięga
-     * 116 tys./s, a zbieżność osiągana jest w 239 ms przy dokumencie 100 tys. znaków.
-     * Od CP10 wsad ma też górną granicę rozmiaru ({@code op-batch-max-size}), więc czas
-     * trzymania blokady jest ograniczony niezależnie od tempa pisania.
+     * <p><b>Verified in CP10:</b> with 50 clients typing simultaneously into one document the lock
+     * is not the bottleneck — operation intake throughput reaches 116k/s, and convergence is
+     * achieved in 239 ms on a 100k-character document. Since CP10 the batch also has an upper size
+     * bound ({@code op-batch-max-size}), so the lock hold time is bounded regardless of typing rate.
      *
-     * <p>Czego pomiar NIE obejmuje: klienci i serwer działają w jednym procesie, więc
-     * przy realnym RTT łącza wsady byłyby większe, a blokada trzymana dłużej. Granica
-     * jest więc <b>nie niższa</b> niż zmierzona, ale niekoniecznie równa.
+     * <p>What the measurement does NOT cover: the clients and the server run in one process, so
+     * with a real network RTT the batches would be larger and the lock held longer. The bound is
+     * therefore <b>no lower</b> than measured, but not necessarily equal to it.
      *
-     * @return operacje faktycznie dopisane, wraz z nadanymi im numerami; pusta lista gdy
-     *         cały wsad okazał się duplikatem
+     * @return the operations actually appended, with their assigned sequence numbers; an empty list
+     *         when the whole batch turned out to be a duplicate
      */
     @Transactional
     public List<StoredOperation> append(UUID documentId, List<PendingOperation> operations) {
@@ -72,7 +69,7 @@ public class OperationStore {
             "SELECT next_server_seq FROM documents WHERE id = ? FOR UPDATE",
             Long.class, documentId);
         if (nextSeq == null) {
-            throw new IllegalArgumentException("nie ma dokumentu " + documentId);
+            throw new IllegalArgumentException("no such document " + documentId);
         }
 
         Set<String> alreadyStored = existingKeys(documentId, operations);
@@ -118,32 +115,32 @@ public class OperationStore {
     }
 
     /**
-     * Zapytanie o <b>stałej treści</b> — identyfikatory z wsadu wjeżdżają jako dwie tablice.
+     * A query with <b>fixed text</b> — the batch's identifiers arrive as two arrays.
      *
-     * <p>Poprzednia wersja skleja­ła listę krotek {@code IN ((?,?),(?,?),…)} StringBuilderem.
-     * Działała i była bezpieczna (do tekstu trafiały wyłącznie znaki zapytania, wartości szły
-     * parametrami), ale miała trzy wady, z których dwie są mierzalne:
+     * <p>The previous version assembled a list of tuples {@code IN ((?,?),(?,?),…)} with a
+     * StringBuilder. It worked and was safe (only question marks reached the text; the values went
+     * as parameters), but it had three flaws, two of them measurable:
      *
      * <ol>
-     *   <li><b>Inne zapytanie na każdy rozmiar wsadu.</b> Wsad ma od jednej do stu operacji,
-     *       więc powstawało do stu różnych tekstów SQL — każdy planowany od nowa, bez szansy
-     *       na ponowne użycie planu.</li>
-     *   <li><b>Gorszy plan.</b> Postgres budował {@code BitmapOr} z osobną gałęzią na każdą
-     *       krotkę. Wersja z {@code unnest} dostaje {@code Index Only Scan} po kluczu głównym:
-     *       jedno wyszukanie na parę, bez sięgania do sterty.</li>
-     *   <li><b>Sklejany SQL jako wzorzec.</b> To było jedyne miejsce w projekcie, gdzie
-     *       zapytanie powstawało przez konkatenację — a taki wzorzec kopiuje się później
-     *       tam, gdzie bezpieczny już nie jest.</li>
+     *   <li><b>A different query for every batch size.</b> A batch holds one to a hundred
+     *       operations, so up to a hundred distinct SQL texts were produced — each planned afresh,
+     *       with no chance of plan reuse.</li>
+     *   <li><b>A worse plan.</b> Postgres built a {@code BitmapOr} with a separate branch per
+     *       tuple. The {@code unnest} version gets an {@code Index Only Scan} on the primary key:
+     *       one lookup per pair, with no heap access.</li>
+     *   <li><b>Concatenated SQL as a pattern.</b> This was the only place in the project where a
+     *       query was built by concatenation — and a pattern like that gets copied later to
+     *       somewhere it is no longer safe.</li>
      * </ol>
      *
-     * <p>Zmierzone na dokumencie z 50 tys. operacji, przy wsadzie 100 operacji:
-     * planowanie <b>3,27 ms → 1,03 ms</b>, wykonanie <b>1,54 ms → 0,30 ms</b>.
+     * <p>Measured on a document with 50k operations, at a batch of 100 operations:
+     * planning <b>3.27 ms -> 1.03 ms</b>, execution <b>1.54 ms -> 0.30 ms</b>.
      */
     private static final String EXISTING_KEYS_SQL =
         "SELECT replica_id, lamport FROM operations "
             + "WHERE doc_id = ? AND (replica_id, lamport) IN (SELECT * FROM unnest(?, ?))";
 
-    /** Klucze operacji z wsadu, które są już w bazie — odsiew duplikatów jednym zapytaniem. */
+    /** The batch's operation keys already in the database — duplicate filtering in one query. */
     private Set<String> existingKeys(UUID documentId, List<PendingOperation> operations) {
         if (operations.isEmpty()) {
             return new HashSet<>();
@@ -169,17 +166,17 @@ public class OperationStore {
     }
 
     /**
-     * Jednoznakowy kod typu operacji w kolumnie {@code operations.op_type}.
+     * The single-character operation type code in the {@code operations.op_type} column.
      *
-     * <p><b>Wyczerpujący {@code switch}, nie ternarne {@code instanceof}.</b> Poprzednia
-     * wersja brzmiała {@code op instanceof Op.Insert ? "i" : "d"} i była poprawna dokładnie
-     * tak długo, jak długo {@link Op} miał dwa warianty. {@code Op} jest interfejsem
-     * zapieczętowanym, więc kompilator wskaże wszystkie wyczerpujące {@code switch}-e
-     * przy dodaniu wariantu — ale ternarnego {@code instanceof} nie wskaże, bo ten
-     * kompiluje się dalej i po cichu zapisuje nowy typ operacji JAKO USUNIĘCIE.
+     * <p><b>An exhaustive {@code switch}, not a ternary {@code instanceof}.</b> The previous
+     * version read {@code op instanceof Op.Insert ? "i" : "d"} and was correct exactly as long as
+     * {@link Op} had two variants. {@code Op} is a sealed interface, so the compiler points at
+     * every exhaustive {@code switch} when a variant is added — but it will not point at a ternary
+     * {@code instanceof}, because that keeps compiling and silently records the new operation type
+     * AS A DELETE.
      *
-     * <p>Byłaby to korupcja źródła prawdy widoczna dopiero przy odtwarzaniu stanu z logu,
-     * czyli po awarii — w najgorszym możliwym momencie.
+     * <p>That would be corruption of the source of truth, visible only when rebuilding state from
+     * the log — that is, after a failure, at the worst possible moment.
      */
     private static String opTypeCode(Op op) {
         return switch (op) {
@@ -222,9 +219,9 @@ public class OperationStore {
     }
 
     /**
-     * Operacje o {@code server_seq} większym niż podany — kursor resynchronizacji klienta
-     * po ponownym połączeniu (CP6) oraz naprawy repliki po zgubionej wiadomości Redisa
-     * (ADR-0004).
+     * The operations with a {@code server_seq} greater than the one given — the client's
+     * resynchronisation cursor after reconnecting (CP6), and the repair of a replica after a lost
+     * Redis message (ADR-0004).
      */
     public List<StoredOperation> loadAfter(UUID documentId, long afterServerSeq) {
         return jdbc.query(
@@ -239,8 +236,8 @@ public class OperationStore {
     }
 
     /**
-     * Operacje z przedziału {@code (from, to]} — potrzebne przy odtwarzaniu stanu
-     * „na moment T" ponad snapshotem (ADR-0003, CP5).
+     * The operations in the range {@code (from, to]} — needed when rebuilding the state "at moment
+     * T" on top of a snapshot (ADR-0003, CP5).
      */
     public List<StoredOperation> loadRange(UUID documentId, long afterServerSeq, long throughServerSeq) {
         return jdbc.query(
@@ -254,7 +251,7 @@ public class OperationStore {
             documentId, afterServerSeq, throughServerSeq);
     }
 
-    /** Najwyższy zapisany {@code server_seq}; 0 gdy dokument nie ma jeszcze operacji. */
+    /** The highest stored {@code server_seq}; 0 when the document has no operations yet. */
     public long maxServerSeq(UUID documentId) {
         Long value = jdbc.queryForObject(
             "SELECT COALESCE(MAX(server_seq), 0) FROM operations WHERE doc_id = ?",
@@ -262,7 +259,7 @@ public class OperationStore {
         return value == null ? 0L : value;
     }
 
-    /** Najwyższy {@code server_seq} zapisany nie później niż w podanym momencie (CP5). */
+    /** The highest {@code server_seq} stored no later than the given moment (CP5). */
     public long maxServerSeqAt(UUID documentId, java.time.Instant moment) {
         Long value = jdbc.queryForObject(
             "SELECT COALESCE(MAX(server_seq), 0) FROM operations WHERE doc_id = ? AND created_at <= ?",

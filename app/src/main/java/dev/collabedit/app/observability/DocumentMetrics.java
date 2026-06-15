@@ -9,50 +9,50 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.stereotype.Component;
 
 /**
- * Metryki systemu (CP7).
+ * The system's metrics (CP7).
  *
- * <p>Dobór metryk wynika z pytań, na które trzeba umieć odpowiedzieć o <b>tym konkretnym</b>
- * systemie, a nie z listy „co zwykle się mierzy":
+ * <p>The choice of metrics follows from the questions one has to be able to answer about <b>this
+ * particular</b> system, not from a list of "what people usually measure":
  *
  * <table>
- *   <caption>Metryka → pytanie, na które odpowiada</caption>
- *   <tr><th>Metryka</th><th>Pytanie</th></tr>
+ *   <caption>Metric -> the question it answers</caption>
+ *   <tr><th>Metric</th><th>Question</th></tr>
  *   <tr><td>{@code crdt_merge_duration}</td>
- *       <td>Czy scalanie zaczyna być wąskim gardłem przy rosnącym dokumencie?
- *           To jest miejsce, w którym różnica O(n) vs O(log n) staje się widoczna.</td></tr>
+ *       <td>Is merging becoming a bottleneck as the document grows? This is where the difference
+ *           between O(n) and O(log n) becomes visible.</td></tr>
  *   <tr><td>{@code op_server_latency}</td>
- *       <td>Ile czasu operacja spędza po stronie serwera: przyjęcie → rozesłanie.
- *           Jedyna latencja mierzona jednym zegarem, więc jedyna, której liczbę
- *           można podać bez zastrzeżeń.</td></tr>
+ *       <td>How long an operation spends on the server: intake -> broadcast. The only latency
+ *           measured on a single clock, hence the only one whose number can be quoted without
+ *           caveats.</td></tr>
  *   <tr><td>{@code doc_tombstone_ratio}</td>
- *       <td>Czy GC w ogóle działa. Wartość rosnąca monotonicznie oznacza,
- *           że stabilność przyczynowa stoi — np. przez jednego zawieszonego klienta
- *           (ADR-0005).</td></tr>
+ *       <td>Whether GC works at all. A monotonically rising value means causal stability is
+ *           stalled — for instance by one hung client (ADR-0005).</td></tr>
  *   <tr><td>{@code cluster_gap_repairs}</td>
- *       <td>Jak często Redis gubi wiadomości. Wartość zero przez długi czas znaczy,
- *           że mechanizm naprawczy z ADR-0004 nie jest testowany w praktyce —
- *           czyli że nie wiadomo, czy działa.</td></tr>
+ *       <td>How often Redis loses messages. A value of zero for a long time means the repair
+ *           mechanism from ADR-0004 is not exercised in practice — that is, there is no telling
+ *           whether it works.</td></tr>
  *   <tr><td>{@code ws_sessions_closed_total{reason}}</td>
- *       <td>Dlaczego kończą się sesje. Wartość {@code slow_client_buffer_overflow} rosnąca
- *           wraz z liczbą klientów jest wprost odpowiedzią na otwarte pytanie z README
- *           („Punkt degradacji"): klient nie nadąża z odbiorem, serwer zrywa mu sesję,
- *           a on wraca reconnectem — więc z zewnątrz nie widać nic poza rozjazdem.</td></tr>
+ *       <td>Why sessions end. A {@code slow_client_buffer_overflow} value rising with the number of
+ *           clients is a direct answer to the open question in the README ("Degradation point"):
+ *           the client cannot keep up with delivery, the server tears its session down, and it
+ *           comes back by reconnecting — so from the outside nothing is visible but the
+ *           divergence.</td></tr>
  *   <tr><td>{@code crdt_pending_operations}</td>
- *       <td>Ile operacji czeka na swoją przyczynę. Wartość utrzymująca się powyżej zera
- *           oznacza trwale brakującą operację, czyli uszkodzenie — a nie przejściowy
- *           efekt kolejności w sieci.</td></tr>
+ *       <td>How many operations are waiting for their cause. A value that stays above zero means a
+ *           permanently missing operation, that is, corruption — not a transient effect of network
+ *           ordering.</td></tr>
  * </table>
  *
- * <p><b>Czego tu świadomie NIE ma:</b> metryki „latencja propagacji end-to-end". Wymagałaby
- * porównania czasu z dwóch różnych zegarów (przeglądarka nadawcy i przeglądarka odbiorcy),
- * a różnica ich ustawień bywa większa niż mierzona wielkość. Ta liczba jest mierzona
- * wyłącznie w harnessie benchmarkowym (CP8), gdzie obie strony dzielą jeden zegar
- * monotoniczny — i tylko tam jest podawana.
+ * <p><b>What is deliberately NOT here:</b> an "end-to-end propagation latency" metric. It would
+ * require comparing times from two different clocks (the sender's browser and the receiver's), and
+ * the difference between their settings can exceed the quantity being measured. That number is
+ * measured only in the benchmark harness (CP8), where both sides share one monotonic clock — and
+ * it is quoted only there.
  */
 @Component
 public class DocumentMetrics {
 
-    /** Trzymany, bo liczniki z tagiem powstają na żądanie — patrz {@link #recordSessionClose}. */
+    /** Kept because tagged counters are created on demand — see {@link #recordSessionClose}. */
     private final MeterRegistry registry;
 
     private final Timer mergeDuration;
@@ -69,71 +69,70 @@ public class DocumentMetrics {
     public DocumentMetrics(MeterRegistry registry, DocumentRegistry documents) {
         this.registry = registry;
         this.mergeDuration = Timer.builder("crdt.merge.duration")
-            .description("Czas scalenia jednej operacji do repliki w pamięci")
-            // Percentyle liczone po stronie aplikacji, a nie z histogramu w Prometheusie.
-            // Powód: chcemy móc podać p99 dla pojedynczej instancji bez sumowania kubełków,
-            // a przy okazji zachować histogram do agregacji między instancjami.
+            .description("Time to merge one operation into the in-memory replica")
+            // Percentiles computed in the application rather than from a histogram in Prometheus.
+            // The reason: we want to be able to quote p99 for a single instance without summing
+            // buckets, while still keeping the histogram for aggregation across instances.
             .publishPercentiles(0.5, 0.95, 0.99)
             .publishPercentileHistogram()
             .register(registry);
 
         this.serverLatency = Timer.builder("op.server.latency")
-            .description("Przyjęcie operacji → rozesłanie do klientów tej instancji")
+            .description("Operation intake -> broadcast to this instance's clients")
             .publishPercentiles(0.5, 0.95, 0.99)
             .publishPercentileHistogram()
             .register(registry);
 
         this.persistDuration = Timer.builder("op.persist.duration")
-            .description("Czas zapisu wsadu operacji do logu")
+            .description("Time to write a batch of operations to the log")
             .publishPercentiles(0.5, 0.95, 0.99)
             .register(registry);
 
         this.concurrentMerges = Counter.builder("crdt.merges.total")
-            .description("Operacje scalone do replik tej instancji")
+            .description("Operations merged into this instance's replicas")
             .register(registry);
 
         this.gapRepairs = Counter.builder("cluster.gap.repairs.total")
-            .description("Naprawy luk w numeracji — czyli wiadomości zgubione przez Redis (ADR-0004)")
+            .description("Repairs of gaps in the numbering — that is, messages lost by Redis (ADR-0004)")
             .register(registry);
 
-        // Nazwa zmieniona w CP18 z ".removed." na ".reclaimed.", bo licznik przestał znaczyć
-        // to, co znaczył. GC nie tylko USUWA bloki — od CP18 blok, którego usunąć nie wolno
-        // (origin, kotwica znacznika), PORZUCA TREŚĆ i zostaje w strukturze. Pamięć wraca
-        // w obu przypadkach, ale „usunięte" opisuje już tylko jeden z nich.
+        // Renamed in CP18 from ".removed." to ".reclaimed.", because the counter stopped meaning
+        // what it used to. GC does not only REMOVE blocks — since CP18 a block that must not be
+        // removed (an origin, a mark anchor) DROPS ITS CONTENT and stays in the structure. Memory
+        // comes back in both cases, but "removed" now describes only one of them.
         //
-        // Zmiana nazwy metryki zrywa ciągłość szeregu historycznego i wymaga poprawki
-        // w dashboardzie (ops/grafana/dashboards/collabedit.json). Świadomie: licznik, którego
-        // nazwa mówi co innego niż wartość, jest gorszy niż przerwa w wykresie.
+        // Renaming a metric breaks the continuity of the historical series and requires a fix in
+        // the dashboard (ops/grafana/dashboards/collabedit.json). Deliberately: a counter whose
+        // name says something other than its value is worse than a gap in a graph.
         this.gcReclaimedCharacters = Counter.builder("crdt.gc.reclaimed.characters.total")
-            .description("Znaki, których pamięć odzyskał GC — przez usunięcie bloku albo "
-                + "porzucenie jego treści (ADR-0005, CP18)")
+            .description("Characters whose memory GC reclaimed — by removing a block or by "
+                + "dropping its content (ADR-0005, CP18)")
             .register(registry);
 
         this.rejectedStaleOperations = Counter.builder("op.rejected.stale.total")
-            .description("Operacje odrzucone, bo GC usunął ich punkt zaczepienia (ADR-0005)")
+            .description("Operations rejected because GC removed their anchor point (ADR-0005)")
             .register(registry);
 
         this.reconnects = Counter.builder("ws.sessions.opened.total")
-            .description("Nawiązane sesje WebSocket")
+            .description("WebSocket sessions established")
             .register(registry);
 
         Gauge.builder("ws.sessions.active", activeSessions, AtomicInteger::get)
-            .description("Aktywne sesje WebSocket na tej instancji")
+            .description("Active WebSocket sessions on this instance")
             .register(registry);
 
         Gauge.builder("doc.loaded.count", documents, registry2 -> registry2.loaded().size())
-            .description("Dokumenty trzymane w pamięci tej instancji")
+            .description("Documents held in this instance's memory")
             .register(registry);
 
-        // Udział tombstone'ów liczony po wszystkich dokumentach w pamięci. Wysoka wartość
-        // utrzymująca się w czasie to sygnał, że GC nie działa — a nie że użytkownicy
-        // dużo kasują.
+        // The tombstone share computed across all in-memory documents. A high value sustained
+        // over time signals that GC is not working — not that users delete a lot.
         Gauge.builder("doc.tombstone.ratio", documents, DocumentMetrics::tombstoneRatio)
-            .description("Tombstone'y / wszystkie znaki, po dokumentach w pamięci")
+            .description("Tombstones / all characters, across in-memory documents")
             .register(registry);
 
         Gauge.builder("crdt.pending.operations", documents, DocumentMetrics::pendingOperations)
-            .description("Operacje czekające na swoją przyczynę — utrzymująca się wartość > 0 to uszkodzenie")
+            .description("Operations waiting for their cause — a sustained value > 0 means corruption")
             .register(registry);
     }
 
@@ -198,17 +197,17 @@ public class DocumentMetrics {
     }
 
     /**
-     * Odnotowuje POWÓD zamknięcia sesji. Nie rusza licznika aktywnych sesji — ten schodzi
-     * w {@link #sessionClosed()}, wołanym ze ścieżki presence. Dwa zdarzenia opisują to samo
-     * rozłączenie i zdublowane odejmowanie zjechałoby z licznikiem poniżej zera.
+     * Records the REASON a session closed. It does not touch the active-session gauge — that comes
+     * down in {@link #sessionClosed()}, called from the presence path. The two events describe the
+     * same disconnect, and decrementing twice would take the gauge below zero.
      *
-     * <p>Licznik jest tworzony na żądanie, bo tag {@code reason} jest częścią jego tożsamości.
-     * Micrometer zwraca ten sam obiekt dla tej samej pary nazwa+tagi, więc nie powstaje
-     * nowy licznik na każde rozłączenie.
+     * <p>The counter is created on demand, because the {@code reason} tag is part of its identity.
+     * Micrometer returns the same object for the same name+tags pair, so no new counter is created
+     * per disconnect.
      */
     public void recordSessionClose(String reason) {
         Counter.builder("ws.sessions.closed.total")
-            .description("Zakończone sesje WebSocket wg powodu zamknięcia")
+            .description("WebSocket sessions ended, by close reason")
             .tag("reason", reason)
             .register(registry)
             .increment();
