@@ -67,7 +67,7 @@ public record CollabEditProperties(
         }
     }
 
-    /** ADR-0003 — log operacji i snapshoty. */
+    /** ADR-0003 — operation log and snapshots. */
     public record Persistence(
         long opBatchWindowMs,
         int opBatchMaxSize,
@@ -89,7 +89,7 @@ public record CollabEditProperties(
         }
     }
 
-    /** ADR-0004 — skalowanie poziome. */
+    /** ADR-0004 — horizontal scaling. */
     public record Cluster(
         long antiEntropyIntervalMs,
         long idleDocumentEvictionMs,
@@ -100,7 +100,7 @@ public record CollabEditProperties(
         }
     }
 
-    /** ADR-0005 — garbage collection tombstone'ów. */
+    /** ADR-0005 — tombstone garbage collection. */
     public record Gc(
         int windowDays,
         long unresponsiveReplicaTimeoutMs

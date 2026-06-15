@@ -20,23 +20,23 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Oś czasu, podgląd stanu z przeszłości i przywracanie (ADR-0003).
+ * The timeline, previewing a past state and restoring it (ADR-0003).
  *
  * <h2>The hole that lived here for a whole checkpoint</h2>
  * <b>Authorization matters here as much as in {@code DocumentRestController}, and for one
- * checkpoint there was none.</b> CP12 zamknął dwie drogi do treści dokumentu — WebSocket i
- * {@code GET /api/documents/{id}} — i przeoczył trzecią, mimo że plan v2 wskazywał ją wprost
- * („autoryzacja wyłącznie w transporcie jest autoryzacją jednej ścieżki"). Ten kontroler
- * oddawał:
+ * checkpoint there was none.</b> CP12 closed two routes to a document's content — the WebSocket
+ * and {@code GET /api/documents/{id}} — and missed a third, even though the v2 plan pointed at it
+ * explicitly ("authorization only in the transport is authorization of one path"). This controller
+ * handed out:
  * <ul>
- *   <li>{@code GET /history} — oś czasu dowolnego dokumentu,</li>
- *   <li>{@code GET /history/at} — <b>pełną treść</b> dowolnego dokumentu w dowolnej chwili,</li>
- *   <li>{@code POST /history/restore} — <b>nadpisanie</b> dowolnego dokumentu.</li>
+ *   <li>{@code GET /history} — the timeline of any document,</li>
+ *   <li>{@code GET /history/at} — the <b>full content</b> of any document at any moment,</li>
+ *   <li>{@code POST /history/restore} — <b>overwriting</b> any document.</li>
  * </ul>
  *
- * <p>Ostatni punkt jest najgorszy: to jedyna w projekcie ścieżka, którą <b>czytelnik mógł
- * zmienić treść</b>, i to nie o znak, tylko cofając cały dokument. Przywracanie wymaga więc
- * prawa ZAPISU, a nie odczytu — mimo że czyta z historii.
+ * <p>The last one is the worst: it is the only path in the project by which a <b>reader could
+ * change the content</b> — and not by one character, but by rewinding the whole document. Restoring
+ * therefore requires WRITE, not read — even though it reads from history.
  *
  * <p>The conclusion worth writing down: per-controller authorization is incomplete by
  * construction, because a new controller starts without it and says nothing about that.
@@ -93,18 +93,17 @@ public class HistoryController {
     }
 
     /**
-     * Przywraca stan z przeszłości.
+     * Restores a past state.
      *
-     * <p>Nie jest to cofnięcie logu, tylko <b>nowa zmiana</b> sprowadzająca dokument do
-     * dawnego stanu (ADR-0003 pkt 6). Dla wszystkich podłączonych klientów wygląda to jak
-     * zwykła edycja i scala się normalnie — nikt nie musi odświeżać strony ani resetować
-     * swojej repliki.
+     * <p>This is not an undo of the log but a <b>new change</b> bringing the document back to its
+     * former state (ADR-0003, point 6). To every connected client it looks like an ordinary edit
+     * and merges normally — nobody has to reload the page or reset their replica.
      *
-     * <p>Autorem operacji jest replika serwera, nie użytkownik. To świadome uproszczenie:
-     * przypisanie ich osobie klikającej wymagałoby generowania operacji w imieniu cudzej
-     * repliki, czyli dokładnie tej sytuacji, przed którą chroni unikalność identyfikatorów.
-     * W audycie widać więc „przywrócono wersję", a kto kliknął — trafia do osobnego wpisu.
-     * Do sekcji „co zrobiłbym inaczej w produkcji".
+     * <p>The operations' author is the server replica, not the user. A deliberate simplification:
+     * attributing them to the person clicking would mean generating operations on behalf of
+     * someone else's replica, which is precisely the situation identifier uniqueness protects
+     * against. So the audit trail shows "a version was restored", and who clicked goes into a
+     * separate entry. One for the "what I would do differently in production" section.
      */
     // WRITE, not read. Restoring reads from history, but its EFFECT is a change to the text —
     // the largest change possible. A reader could once undo somebody else's whole document
@@ -120,13 +119,13 @@ public class HistoryController {
             document -> history.restoreOperations(document, target));
 
         for (Op op : generated) {
-            // Operacje przeszły już przez replikę serwera (powstały na niej), więc tutaj
-            // trafiają wyłącznie do zapisu i rozgłoszenia. Ponowne scalanie byłoby
-            // nieszkodliwe (idempotencja), ale mylące przy czytaniu kodu.
+            // The operations have already been through the server replica (they were created
+            // there), so here they only go to storage and broadcast. Merging them again would be
+            // harmless (idempotence) but misleading to read.
             documents.submitAlreadyMerged(documentId, op, null);
         }
 
-        log.info("Przywrócono dokument {} do stanu na server_seq={} ({} operacji)",
+        log.info("Restored document {} to its state at server_seq={} ({} operations)",
             documentId, body.throughServerSeq(), generated.size());
 
         return ResponseEntity.ok(new RestoreResult(generated.size(), target));

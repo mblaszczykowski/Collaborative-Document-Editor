@@ -22,17 +22,18 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Wątki komentarzy przez REST (CP14).
+ * Comment threads over REST (CP14).
  *
- * <h2>Dlaczego REST, a nie WebSocket</h2>
- * Ten sam podział, co przy stanie początkowym dokumentu (patrz {@code DocumentRestController}):
- * kanałem WebSocket idą <b>zmiany przyrostowe wymagające niskiej latencji</b>. Komentarz nie
- * jest taką zmianą — powstaje raz, w całości, i nikt nie oczekuje, że pojawi się u innych
- * w tej samej klatce co naciśnięcie klawisza.
+ * <h2>Why REST rather than WebSocket</h2>
+ * The same split as for a document's initial state (see {@code DocumentRestController}): the
+ * WebSocket channel carries <b>incremental changes that need low latency</b>. A comment is not such
+ * a change — it is created once, whole, and nobody expects it to appear for others in the same
+ * frame as a keystroke.
  *
- * <p>KOTWICA natomiast idzie WebSocketem, bo jest zwykłym znacznikiem CRDT. Wątek i jego
- * kotwica powstają więc dwiema drogami i jest to celowe: kotwica musi scalać się jak każda
- * inna operacja, a treść rozmowy nie ma czego scalać.
+ * <p>The ANCHOR, on the other hand, goes over the WebSocket, because it is an ordinary CRDT mark.
+ * A thread and its anchor are therefore created by two different routes, and that is deliberate:
+ * the anchor has to merge like any other operation, while the conversation's text has nothing to
+ * merge.
  */
 @RestController
 @RequestMapping("/api")
@@ -58,11 +59,12 @@ public class CommentController {
     }
 
     /**
-     * Wątki dokumentu.
+     * A document's threads.
      *
-     * <p>Pole {@code anchored} jest wyliczane z <b>warstwy CRDT</b>, nie z bazy: baza nie wie,
-     * czy zakotwiczony tekst nadal istnieje. Wątek, którego kotwica przestała cokolwiek
-     * obejmować, jest „odłączony" — pokazujemy go z zacytowanym fragmentem zamiast kasować.
+     * <p>The {@code anchored} field is computed from the <b>CRDT layer</b>, not from the database:
+     * the database does not know whether the anchored text still exists. A thread whose anchor has
+     * stopped covering anything is "detached" — we show it with the quoted fragment instead of
+     * deleting it.
      */
     @GetMapping("/documents/{documentId}/comments")
     @RequiresDocumentAccess(value = Capability.READ, param = "documentId")
@@ -82,12 +84,12 @@ public class CommentController {
     }
 
     /**
-     * Identyfikatory wątków, których kotwica nadal coś obejmuje.
+     * The identifiers of threads whose anchor still covers something.
      *
-     * <p>Odczytane z bieżącego stanu repliki: znacznik typu {@code comment} niesie
-     * identyfikator wątku jako wartość, a {@code formatting()} zwraca wyłącznie zakresy,
-     * które faktycznie coś pokrywają. Wątek, którego kotwice zostały skasowane razem
-     * z tekstem, po prostu się tu nie pojawi.
+     * <p>Read from the replica's current state: a mark of type {@code comment} carries the thread
+     * identifier as its value, and {@code formatting()} returns only the ranges that actually cover
+     * something. A thread whose anchors were deleted along with the text simply does not appear
+     * here.
      */
     private Set<String> anchoredThreadIds(UUID documentId) {
         return registry.get(documentId).withLock(replica -> replica.formatting().stream()

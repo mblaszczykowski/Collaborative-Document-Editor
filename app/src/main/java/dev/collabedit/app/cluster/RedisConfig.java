@@ -3,6 +3,7 @@ package dev.collabedit.app.cluster;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.PatternTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 
@@ -29,11 +30,19 @@ public class RedisConfig {
 
     @Bean
     public RedisMessageListenerContainer clusterListenerContainer(
-        RedisConnectionFactory connectionFactory, ClusterBus bus) {
+        RedisConnectionFactory connectionFactory, ClusterBus bus,
+        PermissionInvalidationBus permissions) {
 
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
         container.addMessageListener(bus, new PatternTopic(ClusterBus.CHANNEL_PATTERN));
+
+        // A plain channel, not a pattern: there is one of these for the whole cluster, and unlike
+        // operations it must NOT be filtered by which documents this instance holds in memory —
+        // an instance can hold a cached role for a document it has no replica of. See
+        // PermissionInvalidationBus for why this is a separate channel rather than a message type
+        // on the existing one.
+        container.addMessageListener(permissions, new ChannelTopic(PermissionInvalidationBus.CHANNEL));
         return container;
     }
 }

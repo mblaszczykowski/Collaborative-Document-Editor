@@ -16,19 +16,18 @@ import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
 
 /**
- * Uwierzytelnienie i przydział identyfikatora repliki — jednorazowo, przy ramce
- * {@code CONNECT}.
+ * Authentication and replica-identifier allocation — once, on the {@code CONNECT} frame.
  *
- * <p>To jest miejsce, w którym uwierzytelnienie wpina się w WebSocket. Warto je nazwać,
- * bo jest źródłem częstego nieporozumienia: uścisk dłoni WebSocketa to zwykłe żądanie HTTP,
- * ale <b>przeglądarka nie pozwala ustawić na nim nagłówków</b>. Dlatego token wędruje
- * w nagłówku ramki STOMP {@code CONNECT}, a nie w nagłówku HTTP — i dlatego interceptor
- * kanału, a nie filtr HTTP.
+ * <p>This is where authentication hooks into the WebSocket. It is worth naming, because it is the
+ * source of a common misunderstanding: the WebSocket handshake is an ordinary HTTP request, but
+ * <b>the browser does not allow setting headers on it</b>. That is why the token travels in a
+ * header of the STOMP {@code CONNECT} frame rather than in an HTTP header — and why this is a
+ * channel interceptor rather than an HTTP filter.
  *
- * <p>Identyfikator repliki przydzielamy tutaj, a nie po stronie klienta, bo musi być
- * globalnie unikalny — dwie repliki o tym samym identyfikatorze generowałyby kolidujące
- * identyfikatory znaków i cicho rozspójniły dokument. To jest ten rodzaj błędu, którego
- * nie da się wykryć po fakcie, więc źródłem numeru jest jeden licznik w Redisie.
+ * <p>The replica identifier is allocated here rather than on the client, because it has to be
+ * globally unique — two replicas with the same identifier would generate colliding character
+ * identifiers and silently diverge the document. That is the kind of bug that cannot be detected
+ * after the fact, so the number comes from a single counter in Redis.
  */
 @Configuration
 public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer {
@@ -37,14 +36,13 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
     private final ReplicaIdAllocator replicaIds;
 
     /**
-     * {@link PresenceService} wstrzykiwany <b>leniwie</b>, bo inaczej powstaje cykl:
-     * ten konfigurator jest potrzebny do zbudowania infrastruktury WebSocketa, a
-     * {@code PresenceService} potrzebuje {@code SimpMessagingTemplate}, który z tej
-     * infrastruktury pochodzi. Spring wykrywa to jako
-     * {@code BeanCurrentlyInCreationException} przy starcie.
+     * {@link PresenceService} is injected <b>lazily</b>, because otherwise a cycle appears: this
+     * configurer is needed to build the WebSocket infrastructure, and {@code PresenceService} needs
+     * {@code SimpMessagingTemplate}, which comes from that infrastructure. Spring detects it as a
+     * {@code BeanCurrentlyInCreationException} at startup.
      *
-     * <p>{@code ObjectProvider} zamiast {@code @Lazy}: jest jawny w sygnaturze, więc
-     * następna osoba widzi, że to jest przerwanie cyklu, a nie przeoczenie.
+     * <p>{@code ObjectProvider} rather than {@code @Lazy}: it is explicit in the signature, so the
+     * next person can see this is a cycle being broken and not an oversight.
      */
     private final ObjectProvider<PresenceService> presence;
     private final DocumentAccessInterceptor access;
@@ -59,12 +57,12 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
     }
 
     /**
-     * Kolejność interceptorów jest istotna: <b>najpierw uwierzytelnienie, potem autoryzacja</b>.
+     * The order of the interceptors matters: <b>authentication first, then authorization</b>.
      *
-     * <p>{@link DocumentAccessInterceptor} odczytuje tożsamość z atrybutów sesji, które
-     * powstają dopiero przy obsłudze ramki {@code CONNECT} poniżej. Odwrotna kolejność
-     * dawałaby autoryzację widzącą pustą tożsamość — czyli odmowę dla wszystkich
-     * albo, przy nieostrożnym kodzie, przepustkę dla wszystkich.
+     * <p>{@link DocumentAccessInterceptor} reads the identity from the session attributes, which
+     * are only created while handling the {@code CONNECT} frame below. The reverse order would give
+     * an authorization step seeing an empty identity — that is, denial for everyone or, with
+     * careless code, a free pass for everyone.
      */
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
@@ -96,11 +94,11 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
 
         TokenService.Principal principal = tokens.verify(token)
             .orElseThrow(() -> new IllegalArgumentException(
-                "brak ważnego tokenu w ramce CONNECT"));
+                "no valid token in the CONNECT frame"));
 
         Map<String, Object> attributes = accessor.getSessionAttributes();
         if (attributes == null) {
-            throw new IllegalStateException("sesja bez atrybutów");
+            throw new IllegalStateException("session without attributes");
         }
         attributes.put(SessionAttributes.USER_ID, principal.userId());
         attributes.put(SessionAttributes.DISPLAY_NAME, principal.displayName());

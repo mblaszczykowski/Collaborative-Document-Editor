@@ -15,27 +15,28 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Historia zmian i cofanie się w czasie (ADR-0003).
+ * Change history and travelling back in time (ADR-0003).
  *
- * <p>Cała ta funkcja jest darmowym produktem ubocznym decyzji z ADR-0003: skoro log operacji
- * jest źródłem prawdy i jest wyłącznie dopisywany, to <b>historia już istnieje</b> — trzeba ją
- * tylko odczytać. Nie ma tu osobnego mechanizmu wersjonowania, osobnej tabeli ani osobnego
- * zapisu przy każdej zmianie.
+ * <p>This whole feature is a free by-product of the decision in ADR-0003: if the operation log is
+ * the source of truth and is append-only, then <b>the history already exists</b> — it only has to
+ * be read. There is no separate versioning mechanism here, no separate table and no extra write on
+ * every change.
  *
- * <p>Cena jest po stronie odczytu: „stan na moment T" wymaga snapshotu plus odtworzenia ogona
- * operacji. Przy przewijaniu osi czasu krok po kroku ten koszt mnoży się przez liczbę kroków —
- * do zmierzenia w CP8.
+ * <p>The price is on the read side: "the state at moment T" needs a snapshot plus a replay of the
+ * operation tail. Stepping through the timeline one entry at a time multiplies that cost by the
+ * number of steps — to be measured in CP8.
  */
 @Service
 public class HistoryService {
 
     /**
-     * Okno grupowania operacji w jeden wpis historii.
+     * The window over which operations are grouped into one history entry.
      *
-     * <p>Log ma ziarnistość pojedynczej operacji, czyli w praktyce kilku znaków. Oś czasu
-     * z wpisem na każde naciśnięcie klawisza byłaby bezużyteczna, więc kolejne operacje tego
-     * samego autora sklejamy w jeden wpis. Dwie minuty to typowa długość jednej „myśli" przy
-     * pisaniu — wartość dobrana z intuicji, nie z danych, i tak jest opisana w README.
+     * <p>The log has the granularity of a single operation, which in practice means a few
+     * characters. A timeline with an entry per keystroke would be useless, so consecutive
+     * operations by the same author are glued into one entry. Two minutes is the typical length of
+     * one "thought" while writing — a value chosen from intuition rather than data, and described
+     * that way in the README.
      */
     private static final Duration GROUPING_WINDOW = Duration.ofMinutes(2);
 
@@ -50,9 +51,10 @@ public class HistoryService {
     }
 
     /**
-     * Wpis osi czasu: ciąg operacji jednego autora w jednym oknie czasowym.
+     * A timeline entry: a run of operations by one author within one time window.
      *
-     * @param throughServerSeq numer, do którego trzeba odtworzyć log, żeby zobaczyć ten stan
+     * @param throughServerSeq the sequence number the log has to be replayed up to in order to see
+     *                         this state
      */
     public record Version(
         long throughServerSeq,
@@ -130,7 +132,7 @@ public class HistoryService {
             )
             SELECT s.through_server_seq,
                    s.user_id,
-                   COALESCE(u.display_name, 'Nieznany') AS display_name,
+                   COALESCE(u.display_name, 'Unknown') AS display_name,
                    COALESCE(u.color, '#999999')         AS color,
                    s.started_at,
                    s.operation_count,
@@ -154,11 +156,11 @@ public class HistoryService {
     }
 
     /**
-     * Tekst dokumentu w chwili, gdy log sięgał podanego numeru.
+     * The document's text at the moment the log reached the given sequence number.
      *
-     * <p>Snapshot jest tu wyłącznie skrótem: gdyby go nie było, odtworzenie z całego logu
-     * dałoby ten sam wynik. Ta równoważność jest testowana wprost, bo bez testu cache
-     * po cichu stałby się źródłem prawdy.
+     * <p>The snapshot is purely a shortcut here: without it, replaying the whole log would give the
+     * same result. That equivalence is tested explicitly, because without a test the cache would
+     * quietly become the source of truth.
      */
     public String textAt(UUID documentId, long throughServerSeq) {
         var snapshot = snapshots.findLatestUpTo(documentId, throughServerSeq);
@@ -180,17 +182,18 @@ public class HistoryService {
     }
 
     /**
-     * Operacje potrzebne do przywrócenia stanu z podanego momentu.
+     * The operations needed to restore the state from a given moment.
      *
-     * <p><b>Przywrócenie jest NOWĄ ZMIANĄ, nie cofnięciem logu</b> (ADR-0003 pkt 6).
-     * Obcięcie logu zniszczyłoby trzy rzeczy naraz: audytowalność (kto i kiedy przywrócił),
-     * spójność podłączonych klientów (ich repliki nadal miałyby usunięte operacje) oraz
-     * niezmiennik „tabela wyłącznie dopisywana", na którym opiera się idempotencja zapisu.
+     * <p><b>A restore is a NEW CHANGE, not an undo of the log</b> (ADR-0003, point 6). Truncating
+     * the log would destroy three things at once: auditability (who restored, and when), the
+     * consistency of connected clients (their replicas would still hold the removed operations) and
+     * the "append-only table" invariant that write idempotence rests on.
      *
-     * <p>Operacje są generowane na replice, która ma <b>aktualny</b> stan dokumentu, i sprowadzają
-     * ją do stanu docelowego. Dla podłączonych klientów wygląda to jak zwykła edycja — bo nią jest.
+     * <p>The operations are generated on a replica holding the <b>current</b> state of the document
+     * and bring it to the target state. To connected clients it looks like an ordinary edit —
+     * because it is one.
      *
-     * @param replica replika o aktualnym stanie, na której generujemy zmianę
+     * @param replica a replica with the current state, on which we generate the change
      */
     public List<Op> restoreOperations(RgaDocument replica, String targetText) {
         String current = replica.text();
@@ -212,10 +215,10 @@ public class HistoryService {
             suffix++;
         }
 
-        // Wspólny przedrostek i przyrostek zamiast pełnego diffa: przywrócenie zwykle cofa
-        // jeden spójny fragment, a operacja obejmująca zbyt szeroki zakres jest poprawna,
-        // tylko mniej oszczędna. Pełny diff (Myers) dałby mniejsze operacje kosztem
-        // złożoności, której tu nie widać w wyniku.
+        // A common prefix and suffix instead of a full diff: a restore usually rolls back one
+        // contiguous fragment, and an operation covering too wide a range is correct, merely less
+        // economical. A full diff (Myers) would give smaller operations at the cost of complexity
+        // that does not show in the result here.
         List<Op> generated = new ArrayList<>();
         int removeFrom = prefix;
         int removeTo = current.length() - suffix;

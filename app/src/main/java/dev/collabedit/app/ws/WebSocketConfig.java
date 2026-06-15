@@ -12,9 +12,9 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
 
 /**
- * Konfiguracja transportu — każda wartość liczbowa pochodzi z ADR-0002 i jest tam uzasadniona.
- * Zmiana którejkolwiek z nich bez aktualizacji tamtego dokumentu sprawia, że uzasadnienie
- * przestaje odpowiadać rzeczywistości, co jest gorsze niż jego brak.
+ * Transport configuration — every numeric value comes from ADR-0002 and is justified there.
+ * Changing any of them without updating that document makes the justification stop matching
+ * reality, which is worse than having none.
  */
 @Configuration
 @EnableWebSocketMessageBroker
@@ -27,13 +27,13 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     }
 
     /**
-     * Osobny scheduler dla heartbeatów STOMP.
+     * A dedicated scheduler for STOMP heartbeats.
      *
-     * <p>Bez własnego schedulera broker w pamięci <b>po cichu nie wysyła heartbeatów</b> —
-     * konfiguracja jest przyjmowana, ale nie działa. Efektem byłoby zrywanie połączeń przez
-     * pośredniki po ich własnym idle timeout, czyli dokładnie to, przed czym heartbeat ma
-     * chronić (ADR-0002). Jeden z tych przypadków, gdzie brak konfiguracji nie powoduje
-     * błędu, tylko cichą utratę funkcji.
+     * <p>Without its own scheduler the in-memory broker <b>silently sends no heartbeats</b> — the
+     * configuration is accepted but does not work. The effect would be intermediaries tearing
+     * connections down after their own idle timeout, which is exactly what the heartbeat exists to
+     * prevent (ADR-0002). One of those cases where missing configuration causes no error, only the
+     * silent loss of a feature.
      *
      * <p><b>This bean also used to run every {@code @Scheduled} method in the application, and
      * nothing said so.</b> Declaring any {@code TaskScheduler} makes Spring Boot's
@@ -60,9 +60,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws")
-            // Bez SockJS — świadomie (ADR-0002). Fallbacki (xhr-streaming, jsonp) to ścieżki
-            // transportowe, których nie testujemy, czyli nieprzetestowany kod w miejscu
-            // krytycznym. Ceną jest brak połączenia zza proxy blokującego Upgrade.
+            // No SockJS — deliberately (ADR-0002). The fallbacks (xhr-streaming, jsonp) are
+            // transport paths we do not test, that is, untested code in a critical place. The price
+            // is no connection from behind a proxy that blocks Upgrade.
             //
             // The patterns come from configuration and default to localhost only. Pinning them
             // here is what made a hosted deployment fail at the handshake: the browser sends
@@ -85,9 +85,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     public void configureWebSocketTransport(WebSocketTransportRegistration registration) {
         registration
             .setMessageSizeLimit(properties.websocket().maxMessageSizeBytes())
-            // Po przepełnieniu bufora sesja jest zamykana, a klient przechodzi ścieżką
-            // ponownego połączenia i resynchronizacji. Kontrolowana degradacja jednego
-            // wolnego klienta zamiast zatoru na całym dokumencie (ADR-0002).
+            // Once the buffer overflows the session is closed and the client takes the reconnect
+            // and resynchronisation path. Controlled degradation of one slow client instead of a
+            // jam across the whole document (ADR-0002).
             .setSendBufferSizeLimit(properties.websocket().sendBufferSizeBytes())
             .setSendTimeLimit((int) properties.websocket().sendTimeLimitMs());
     }

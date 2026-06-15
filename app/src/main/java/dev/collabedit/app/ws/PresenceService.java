@@ -11,26 +11,27 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Kto jest w dokumencie, gdzie ma kursor i czy właśnie pisze.
+ * Who is in a document, where their cursor is, and whether they are typing right now.
  *
- * <p>Presence jest stanem <b>ulotnym</b> i celowo nie trafia do bazy: po restarcie instancji
- * klienci połączą się ponownie i zgłoszą swoją obecność sami. Zapisywanie go byłoby
- * przechowywaniem informacji, która dezaktualizuje się szybciej, niż zdąży zostać odczytana.
+ * <p>Presence is <b>ephemeral</b> state and deliberately never reaches the database: after an
+ * instance restarts, clients reconnect and announce their presence themselves. Storing it would be
+ * keeping information that goes stale faster than it can be read.
  *
- * <p>Pozycje kursorów są <b>identyfikatorami znaków CRDT</b>, nie offsetami (ADR-0006).
- * Gdyby kursor Bartka był „kolumną 42", wstawienie znaku przez Anię przed tą pozycją
- * przesunęłoby tekst, ale nie kursor — i Bartek pokazywałby cudzy znak. Identyfikator
- * przesuwa się razem z tekstem, bo jest przyczepiony do znaku, a nie do miejsca.
+ * <p>Cursor positions are <b>CRDT character identifiers</b>, not offsets (ADR-0006). If Bartek's
+ * cursor were "column 42", Ania inserting a character before that position would move the text but
+ * not the cursor — and Bartek would be pointing at someone else's character. An identifier moves
+ * with the text, because it is attached to a character rather than to a place.
  *
- * <p>Ograniczenie wynikające z ADR-0004: ta mapa jest <b>lokalna dla instancji</b>. Klient
- * podłączony do innej instancji nie pojawi się na liście obecnych. Świadome uproszczenie —
- * pełne presence w klastrze wymagałoby osobnego kanału i wygasania wpisów, a lista obecnych
- * jest ozdobą, nie mechanizmem poprawności. Trafia do „co zrobiłbym inaczej w produkcji".
+ * <p>A limitation that follows from ADR-0004: this map is <b>local to the instance</b>. A client
+ * connected to a different instance will not appear in the participant list. A deliberate
+ * simplification — full cluster-wide presence would need its own channel and entry expiry, and the
+ * participant list is decoration, not a correctness mechanism. It goes into "what I would do
+ * differently in production".
  */
 @Service
 public class PresenceService {
 
-    /** sessionId → obecność. */
+    /** sessionId -> presence. */
     private final Map<String, Participant> bySession = new ConcurrentHashMap<>();
 
     private final SimpMessagingTemplate messaging;
@@ -67,13 +68,13 @@ public class PresenceService {
     }
 
     /**
-     * Nowa pozycja kursora jednego uczestnika.
+     * One participant's new cursor position.
      *
-     * <p>Rozgłaszana jako <b>delta</b>, nie jako pełna lista. Ruch kursora jest zdarzeniem
-     * najczęstszym w systemie — powstaje przy każdym klawiszu i przy auto-powtarzaniu strzałki
-     * (~30/s) — więc odsyłanie w odpowiedzi wszystkich uczestników wszystkim daje ruch rosnący
-     * z kwadratem liczby osób, w którym prawie nic się nie zmieniło. Uzasadnienie rozróżnienia
-     * przy {@link Messages.PresenceUpdate}.
+     * <p>Broadcast as a <b>delta</b>, not as a full list. Cursor movement is the most frequent
+     * event in the system — it happens on every keystroke and on arrow-key auto-repeat (~30/s) — so
+     * replying with every participant to everyone gives traffic growing with the square of the
+     * number of people, almost none of which changed. The distinction is justified at
+     * {@link Messages.PresenceUpdate}.
      */
     public void updateCursor(String sessionId, Messages.ClientPresence update) {
         Participant current = bySession.get(sessionId);
@@ -97,9 +98,9 @@ public class PresenceService {
             return;
         }
         metrics.sessionClosed();
-        // Replika, która się rozłączyła, przestaje blokować wyliczenie stabilności
-        // przyczynowej dla GC (ADR-0005). Bez tego jedna zamknięta karta przeglądarki
-        // wstrzymywałaby kompakcję tombstone'ów do końca życia procesu.
+        // A replica that has disconnected stops holding back the causal-stability computation
+        // for GC (ADR-0005). Without this, one closed browser tab would stall tombstone
+        // compaction for the rest of the process's life.
         if (registry.isLoaded(gone.documentId())) {
             registry.get(gone.documentId()).forgetReplica(gone.replicaId());
         }
@@ -117,11 +118,11 @@ public class PresenceService {
     }
 
     /**
-     * Rozgłasza PEŁNĄ listę uczestników — używane przy dołączeniu i odejściu.
+     * Broadcasts the FULL participant list — used on join and on leave.
      *
-     * <p>Odejścia nie da się wyrazić deltą: znaczy ono „tego wpisu już nie ma", a delta potrafi
-     * powiedzieć wyłącznie „ten wpis wygląda teraz tak". Trzeci rodzaj komunikatu byłby przy
-     * tej częstotliwości droższy w utrzymaniu niż wysłanie całej listy.
+     * <p>A leave cannot be expressed as a delta: it means "this entry is gone", and a delta can
+     * only say "this entry now looks like this". At this frequency a third message type would cost
+     * more to maintain than sending the whole list.
      */
     private void broadcast(UUID documentId) {
         send(documentId, new Messages.PresenceUpdate(true,
