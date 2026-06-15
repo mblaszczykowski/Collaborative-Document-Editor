@@ -118,6 +118,20 @@ collabedit:
     # sweep only DECIDES whether to snapshot, which is two integer comparisons per loaded
     # replica. A longer interval would make the op-count threshold fire late and save nothing.
     snapshot-sweep-interval-ms: 1000
+    # How many snapshots to keep per document; older rows are deleted when a new one is written.
+    #
+    # Until this existed NOTHING ever removed a snapshot. One is written every 500 operations or
+    # after 30 s of quiet, each holding a full compressed copy of the document, so the table grew
+    # without bound for the lifetime of the deployment. ADR-0003 calls the snapshot a DISPOSABLE
+    # cache — the code had implemented the "cache" half and skipped "disposable". Tombstone GC in
+    # memory has its own ADR and its own checkpoint; the cache on disk had no policy at all.
+    #
+    # 3 rather than 1, because the newest snapshot is not the only one that gets read.
+    # HistoryService.textAt asks for the newest snapshot NOT LATER than some past server_seq, so
+    # keeping only the head would make every history lookup replay the log from zero. Three keeps
+    # recent history cheap and still bounds the table at three copies per document rather than
+    # unboundedly many.
+    snapshots-kept-per-document: 3
 
   cluster:
     # Sweep anti-entropy (ADR-0004). Górna granica czasu życia niewykrytego rozjazdu

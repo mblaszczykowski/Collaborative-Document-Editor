@@ -14,24 +14,24 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Replika dokumentu żyjąca w pamięci tej instancji backendu.
+ * A document replica living in this backend instance's memory.
  *
- * <p>Nazwa jest dosłowna i wynika z ADR-0004: <b>instancja backendu jest zwykłą repliką
- * CRDT</b>, równorzędną wobec innych instancji i wobec przeglądarek. Nie ma tu właściciela
- * dokumentu, wyboru lidera ani rozproszonej blokady — bo algorytm z ADR-0001 ich nie
- * potrzebuje, a każdy z tych mechanizmów wprowadzałby całą klasę błędów, których w ten
- * sposób w ogóle nie ma.
+ * <p>The name is literal and follows from ADR-0004: <b>a backend instance is an ordinary CRDT
+ * replica</b>, a peer of the other instances and of the browsers. There is no document owner, no
+ * leader election and no distributed lock — because the algorithm from ADR-0001 needs none of them,
+ * and every one of those mechanisms would introduce a whole class of bugs that simply does not
+ * exist this way.
  *
- * <p>Struktura danych to {@link TreapBlockList}, czyli wariant O(log n). Wersja naiwna
- * została użyta do zbudowania i przetestowania algorytmu (i nadal przechodzi ten sam zestaw
- * property testów), ale na ścieżce produkcyjnej jej złożoność byłaby widoczna jako opóźnienie
- * na każde naciśnięcie klawisza — patrz benchmark JMH w README.
+ * <p>The data structure is {@link TreapBlockList}, the O(log n) variant. The naive version was used
+ * to build and test the algorithm (and still passes the same property test suite), but on the
+ * production path its complexity would show up as a delay on every keystroke — see the JMH
+ * benchmark in the README.
  *
- * <p><b>Synchronizacja:</b> {@link RgaDocument} nie jest bezpieczny wątkowo i celowo taki
- * pozostaje — rdzeń algorytmu nie ma się zajmować współbieżnością. Serializacją dostępu
- * zajmuje się ta klasa, jedną blokadą na dokument. Ziarnistość „jedna blokada na dokument"
- * jest właściwa, bo operacje na różnych dokumentach są całkowicie niezależne, a operacje
- * na tym samym i tak muszą być uszeregowane.
+ * <p><b>Synchronisation:</b> {@link RgaDocument} is not thread-safe and deliberately stays that way
+ * — the core of the algorithm is not meant to deal with concurrency. Serialising access is this
+ * class's job, with one lock per document. The "one lock per document" granularity is the right
+ * one, because operations on different documents are entirely independent, while operations on the
+ * same one have to be ordered anyway.
  */
 public class DocumentReplica {
 
@@ -39,40 +39,41 @@ public class DocumentReplica {
     private final RgaDocument document;
     private final ReentrantLock lock = new ReentrantLock();
 
-    /** Najwyższy {@code server_seq} zastosowany do tej repliki — kursor dla anti-entropy. */
+    /** The highest {@code server_seq} applied to this replica — the cursor for anti-entropy. */
     private volatile long appliedServerSeq;
 
-    /** Operacje przyjęte, ale jeszcze niezapisane. Wsad opróżniany co {@code opBatchWindowMs}. */
+    /** Operations accepted but not yet written. The batch is drained every {@code opBatchWindowMs}. */
     private final List<PendingOperation> unwritten = new ArrayList<>();
 
     /**
-     * Operacje scalone, ale jeszcze nierozgłoszone. Opróżniane co {@code broadcastWindowMs}.
+     * Operations merged but not yet broadcast. Drained every {@code broadcastWindowMs}.
      *
-     * <p>Osobna lista od {@link #unwritten}, bo <b>oba wsady mają inne rytmy i inne cele</b>:
-     * rozgłoszenie odpowiada za to, co użytkownik widzi (szybko, 10 ms), a zapis za trwałość
-     * (rzadziej, 50 ms, bo dotyka dysku i blokady wiersza). Jedna wspólna lista wymusiłaby
-     * wspólne tempo, czyli albo wolniejsze rozgłaszanie, albo częstsze transakcje.
+     * <p>A separate list from {@link #unwritten}, because <b>the two batches have different rhythms
+     * and different purposes</b>: the broadcast is responsible for what the user sees (fast, 10 ms),
+     * and the write for durability (less often, 50 ms, because it touches the disk and a row lock).
+     * One shared list would force a shared cadence, that is, either slower broadcasting or more
+     * frequent transactions.
      */
     private final List<PendingOperation> pendingBroadcast = new ArrayList<>();
 
-    /** Ile operacji przybyło od ostatniego snapshotu — próg z ADR-0003. */
+    /** How many operations have arrived since the last snapshot — the threshold from ADR-0003. */
     private int operationsSinceSnapshot;
 
     private volatile long lastActivityMillis;
 
     /**
-     * Granica, poniżej której tombstone'y zostały już fizycznie usunięte.
+     * The boundary below which tombstones have already been physically removed.
      *
-     * <p>Bez zapamiętania tej wartości nie da się odróżnić dwóch sytuacji, które z zewnątrz
-     * wyglądają identycznie: operacja przyszła przed swoją przyczyną (poczeka w buforze,
-     * normalne) od operacji, której przyczyna została skasowana przez GC (nie doczeka się
-     * nigdy — ADR-0005). Pierwsza wymaga cierpliwości, druga jawnej odmowy.
+     * <p>Without remembering this value there is no way to distinguish two situations that look
+     * identical from outside: an operation that arrived before its cause (it will wait in the
+     * buffer, normal) from one whose cause was removed by GC (it will never arrive — ADR-0005). The
+     * first calls for patience, the second for an explicit refusal.
      */
     private volatile VersionVector gcWatermark = VersionVector.empty();
 
     /**
-     * Version vectory podłączonych klientów — podstawa wyliczenia stabilności przyczynowej
-     * dla GC (ADR-0005). Klucz to identyfikator repliki klienta.
+     * The version vectors of connected clients — the basis for computing causal stability for GC
+     * (ADR-0005). The key is the client replica's identifier.
      */
     private final Map<Integer, ReplicaProgress> replicaProgress = new ConcurrentHashMap<>();
 
@@ -99,10 +100,11 @@ public class DocumentReplica {
     }
 
     /**
-     * Wykonuje operację pod blokadą dokumentu.
+     * Runs an action under the document's lock.
      *
-     * <p>Wszystkie ścieżki dotykające {@link RgaDocument} przechodzą tędy — również odczyt
-     * tekstu, bo odczyt w trakcie modyfikacji struktury dałby wynik z rozjechanym stanem.
+     * <p>Every path that touches {@link RgaDocument} goes through here — including reading the
+     * text, because a read while the structure is being modified would give a result from an
+     * inconsistent state.
      */
     public <T> T withLock(java.util.function.Function<RgaDocument, T> action) {
         lock.lock();
@@ -114,10 +116,10 @@ public class DocumentReplica {
     }
 
     /**
-     * Scala operację i zapamiętuje ją do zapisu.
+     * Merges an operation and records it for writing.
      *
-     * @return {@code true} gdy operacja wniosła coś nowego; {@code false} gdy była duplikatem
-     *         i nie ma czego zapisywać ani rozsyłać
+     * @return {@code true} when the operation contributed something new; {@code false} when it was
+     *         a duplicate and there is nothing to write or broadcast
      */
     public boolean merge(Op op, String userId, String traceparent, long nowMillis) {
         lock.lock();
@@ -125,10 +127,10 @@ public class DocumentReplica {
             RgaDocument.ApplyResult result = document.apply(op);
             lastActivityMillis = nowMillis;
             if (result.isNews()) {
-                // Do zapisu trafiają również operacje zbuforowane (BUFFERED). Są kompletne
-                // i poprawne — brakuje im tylko przyczyny, która dotrze później. Odkładanie
-                // ich zapisu do czasu integracji oznaczałoby, że pad instancji gubi operację,
-                // którą już przyjęliśmy od klienta.
+                // Buffered operations (BUFFERED) are written too. They are complete and correct —
+                // all they lack is a cause that will arrive later. Deferring their write until
+                // integration would mean an instance dying loses an operation we have already
+                // accepted from a client.
                 PendingOperation pending = new PendingOperation(op, userId, traceparent);
                 unwritten.add(pending);
                 pendingBroadcast.add(pending);
@@ -141,8 +143,8 @@ public class DocumentReplica {
     }
 
     /**
-     * Dopisuje do wsadu operację, która została już scalona (przywracanie wersji, CP5).
-     * Pomija scalanie, bo operacja powstała na tej właśnie replice.
+     * Adds to the batch an operation that has already been merged (version restore, CP5). It skips
+     * merging, because the operation was created on this very replica.
      */
     public void enqueueForWrite(Op op, String userId, long nowMillis) {
         lock.lock();
@@ -158,11 +160,11 @@ public class DocumentReplica {
     }
 
     /**
-     * Dopisuje do rozgłoszenia operację, której NIE zapisujemy — bo jest już w logu.
+     * Adds to the broadcast an operation we do NOT write — because it is already in the log.
      *
-     * <p>Ścieżka operacji przyjętych z klastra i dociągniętych przy naprawie luki (ADR-0004).
-     * Trafiły do bazy na innej instancji, więc ponowny zapis byłby duplikatem, ale klienci
-     * podłączeni tutaj muszą je zobaczyć.
+     * <p>The path for operations received from the cluster and pulled during gap repair (ADR-0004).
+     * They reached the database on another instance, so writing them again would be a duplicate,
+     * but the clients connected here have to see them.
      */
     public void enqueueForBroadcast(Op op, long nowMillis) {
         lock.lock();
@@ -175,17 +177,17 @@ public class DocumentReplica {
     }
 
     /**
-     * Wyjmuje wsad do zapisu, najwyżej {@code limit} operacji.
+     * Takes the write batch, at most {@code limit} operations.
      *
-     * <p>Górna granica nie jest ozdobna. Bez niej jedna transakcja może objąć dowolnie wiele
-     * operacji — a {@link dev.collabedit.app.persist.OperationStore#append} trzyma przy tym
-     * blokadę wiersza dokumentu, czyli blokuje <b>wszystkich piszących do tego dokumentu,
-     * również z innych instancji</b>. Wsad ograniczony to ograniczony czas trzymania blokady.
+     * <p>The upper bound is not decorative. Without it one transaction can cover arbitrarily many
+     * operations — and {@link dev.collabedit.app.persist.OperationStore#append} holds the document's
+     * row lock while it does, that is, it blocks <b>every writer to that document, including ones
+     * on other instances</b>. A bounded batch means a bounded time holding the lock.
      *
-     * <p>Reszta zostaje w buforze i wyjdzie w następnym oknie, czyli za
-     * {@code op-batch-window-ms}. Opóźnienie jest tu właściwym zachowaniem: przy nagłym
-     * zalewie operacji wolimy stały, przewidywalny rytm zapisu niż jedną wielką transakcję,
-     * która na czas swojego trwania zatrzymuje dokument.
+     * <p>The rest stays in the buffer and goes out in the next window, that is, in
+     * {@code op-batch-window-ms}. The delay is the right behaviour here: under a sudden flood of
+     * operations we prefer a steady, predictable write rhythm to one huge transaction that stops
+     * the document for as long as it lasts.
      */
     public List<PendingOperation> drainUnwritten(int limit) {
         lock.lock();
@@ -206,7 +208,7 @@ public class DocumentReplica {
         }
     }
 
-    /** Wyjmuje wszystko, co czeka na rozgłoszenie. Bez limitu — patrz {@link OutboundBatch}. */
+    /** Takes everything waiting to be broadcast. No limit — see {@link OutboundBatch}. */
     public List<PendingOperation> drainBroadcast() {
         lock.lock();
         try {
@@ -222,27 +224,28 @@ public class DocumentReplica {
     }
 
     /**
-     * Wsad wychodzący: co rozgłosić i co zapisać, wyjęte <b>jednym zajęciem blokady</b>.
+     * The outbound batch: what to broadcast and what to write, taken <b>under a single acquisition
+     * of the lock</b>.
      *
-     * <p>Atomowość nie jest tu ozdobą, tylko warunkiem poprawności. Klient wykrywa zgubione
-     * rozgłoszenia po tym, że dostał POTWIERDZENIE operacji, której u siebie nie ma
-     * (patrz {@code connection.ts}). Gdyby oba bufory opróżniać osobno, operacja mogła
-     * wejść między jedno a drugie: trafiłaby do wsadu zapisu, dostała potwierdzenie —
-     * a rozgłoszenie czekałoby jeszcze jedno okno. Klient uznałby to za lukę i poprosił
-     * o pełną resynchronizację. Mechanizm ratunkowy odpalałby się wtedy regularnie
-     * przy całkowicie zdrowym systemie.
+     * <p>The atomicity is not decorative but a correctness requirement. The client detects lost
+     * broadcasts by receiving an ACKNOWLEDGEMENT for an operation it does not have (see
+     * {@code connection.ts}). If the two buffers were drained separately, an operation could slip
+     * in between: it would land in the write batch and get acknowledged — while its broadcast
+     * waited another window. The client would treat that as a gap and ask for a full
+     * resynchronisation. The recovery mechanism would then fire regularly on a perfectly healthy
+     * system.
      *
-     * <p>Rozgłoszenie nie ma limitu rozmiaru, a zapis ma. To celowe: limit zapisu chroni
-     * czas trzymania blokady wiersza w bazie, a rozgłoszenie żadnej blokady nie trzyma.
-     * Ograniczenie go oznaczałoby tylko odsunięcie w czasie tego, co użytkownik ma zobaczyć.
+     * <p>The broadcast has no size limit and the write does. That is deliberate: the write limit
+     * protects how long a database row lock is held, and a broadcast holds no lock at all. Limiting
+     * it would only delay what the user is meant to see.
      *
-     * @param writeLimit górna granica liczby operacji w wsadzie zapisu
+     * @param writeLimit the upper bound on the number of operations in the write batch
      */
     public OutboundBatch drainForFlush(int writeLimit) {
         lock.lock();
         try {
-            // Blokada jest reentrantna, a trzymanie jej z zewnątrz gwarantuje, że między
-            // tymi dwoma wyjęciami nikt nie dołoży operacji.
+            // The lock is reentrant, and holding it from outside guarantees nobody adds an
+            // operation between these two drains.
             return new OutboundBatch(drainBroadcast(), drainUnwritten(writeLimit));
         } finally {
             lock.unlock();
@@ -250,43 +253,42 @@ public class DocumentReplica {
     }
 
     /**
-     * @param broadcast operacje do rozesłania klientom tej instancji
-     * @param writes    operacje do dopisania do logu operacji
+     * @param broadcast operations to send to this instance's clients
+     * @param writes    operations to append to the operation log
      */
     public record OutboundBatch(List<PendingOperation> broadcast, List<PendingOperation> writes) {
     }
 
     /**
-     * Czy replika ma cokolwiek do wysłania albo zapisania — sprawdzane <b>bez blokady</b>.
+     * Whether the replica has anything to send or write — checked <b>without the lock</b>.
      *
-     * <p>Pętla {@code flushAll} chodzi co 50 ms po wszystkich załadowanych dokumentach.
-     * Przy jednym dokumencie zajęcie blokady było niezauważalne; przy pięciuset to dziesięć
-     * tysięcy zajęć blokady na sekundę, z czego w normalnym ruchu prawie wszystkie
-     * na pustych buforach.
+     * <p>The {@code flushAll} loop runs every 50 ms over every loaded document. With one document
+     * taking the lock was unnoticeable; with five hundred it is ten thousand lock acquisitions per
+     * second, and in normal traffic almost all of them on empty buffers.
      *
-     * <p>Odczyt bez blokady jest tu <b>bezpieczny mimo wyścigu</b>, a nie dlatego, że wyścigu
-     * nie ma. Możliwe pomyłki są dwie i obie są nieszkodliwe:
+     * <p>Reading without the lock is <b>safe despite the race</b>, not because there is no race.
+     * There are two possible mistakes and both are harmless:
      * <ul>
-     *   <li>fałszywie POZYTYWNA — wejdziemy pod blokadę i zastaniemy pusto; kosztuje jedno
-     *       niepotrzebne zajęcie blokady,</li>
-     *   <li>fałszywie NEGATYWNA — operacja dodana dokładnie w trakcie sprawdzania poczeka
-     *       do następnego okna, czyli 50 ms. Nie ginie: bufory są opróżniane w całości,
-     *       a nie przyrostowo.</li>
+     *   <li>a FALSE POSITIVE — we take the lock and find nothing; it costs one unnecessary
+     *       acquisition,</li>
+     *   <li>a FALSE NEGATIVE — an operation added exactly during the check waits for the next
+     *       window, that is, 50 ms. It is not lost: the buffers are drained whole rather than
+     *       incrementally.</li>
      * </ul>
-     * Rozmiary są odczytywane z {@code ArrayList} bez synchronizacji — w najgorszym razie
-     * zobaczymy nieaktualną wartość, a nie uszkodzoną, bo {@code size} to zwykły {@code int}.
+     * The sizes are read from an {@code ArrayList} without synchronisation — at worst we see a
+     * stale value rather than a corrupted one, because {@code size} is a plain {@code int}.
      */
     public boolean hasPendingWork() {
         return !unwritten.isEmpty() || !pendingBroadcast.isEmpty();
     }
 
     /**
-     * Czy jest cokolwiek do rozgłoszenia — sprawdzenie bez blokady, jw.
+     * Whether there is anything to broadcast — a lock-free check, as above.
      *
-     * <p>Osobno od {@link #hasPendingWork()}, bo pętla rozgłaszania chodzi <b>pięć razy
-     * częściej</b> niż zapisująca (10 ms wobec 50 ms) i interesuje ją wyłącznie jeden
-     * z dwóch buforów. Użycie szerszego warunku zajmowałoby blokadę dokumentu, który ma
-     * coś do zapisania, ale nic do rozesłania — czyli w większości przebiegów.
+     * <p>Separate from {@link #hasPendingWork()}, because the broadcast loop runs <b>five times
+     * more often</b> than the write loop (10 ms against 50 ms) and cares about only one of the two
+     * buffers. Using the wider condition would take the lock of a document that has something to
+     * write but nothing to send — which is most passes.
      */
     public boolean hasPendingBroadcast() {
         return !pendingBroadcast.isEmpty();
@@ -333,17 +335,18 @@ public class DocumentReplica {
     }
 
     /**
-     * Czy operacja jest trwale nieosadzalna, bo jej punkt zaczepienia został usunięty przez GC.
+     * Whether an operation is permanently unanchorable because its anchor point was removed by GC.
      *
-     * <p>To jest sytuacja z ADR-0005: klient był offline dłużej niż okno GC i wraca
-     * z operacją wskazującą na tombstone, którego już nie ma. Informacja o pozycji tych
-     * znaków została bezpowrotnie utracona — <b>nie da się tego uczciwie scalić</b>.
+     * <p>This is the situation from ADR-0005: a client was offline longer than the GC window and
+     * comes back with an operation pointing at a tombstone that no longer exists. The information
+     * about where those characters belong has been irretrievably lost — <b>there is no honest way
+     * to merge it</b>.
      *
-     * <p>Warunek jest celowo wąski: origin musi być JEDNOCZEŚNIE nieobecny i poniżej granicy
-     * GC. Sama nieobecność nic nie znaczy (operacja mogła wyprzedzić swoją przyczynę),
-     * a sama pozycja poniżej granicy też nie (znak mógł nadal żyć, bo GC usuwa wyłącznie
-     * tombstone'y). Zbyt szeroki warunek odrzucałby poprawne operacje — czyli gubiłby
-     * pracę użytkownika w imię ochrony przed jej gubieniem.
+     * <p>The condition is deliberately narrow: the origin must be BOTH absent and below the GC
+     * boundary. Absence alone means nothing (the operation may have outrun its cause), and being
+     * below the boundary alone means nothing either (the character may still be alive, because GC
+     * removes only tombstones). Too wide a condition would reject valid operations — that is, it
+     * would lose the user's work in the name of protecting it from being lost.
      */
     public boolean isPermanentlyUnanchored(Op op) {
         if (!(op instanceof Op.Insert insert) || insert.originLeft() == null) {
@@ -359,7 +362,7 @@ public class DocumentReplica {
     }
 
     // ------------------------------------------------------------------
-    // Stabilność przyczynowa dla GC (ADR-0005)
+    // Causal stability for GC (ADR-0005)
     // ------------------------------------------------------------------
 
     public void reportProgress(int replicaId, VersionVector version, long nowMillis) {
@@ -375,12 +378,12 @@ public class DocumentReplica {
     }
 
     /**
-     * Granica, poniżej której tombstone'y można fizycznie usunąć.
+     * The boundary below which tombstones may be physically removed.
      *
-     * <p>Jest to element wspólny version vectorów wszystkich <b>reagujących</b> replik.
-     * Replika, która nie zgłosiła postępu przez {@code unresponsiveTimeoutMs} mimo aktywnego
-     * połączenia, jest z tego rachunku wykluczana — inaczej jeden zawieszony klient
-     * blokowałby GC całemu dokumentowi (ADR-0005, sekcja konsekwencji negatywnych).
+     * <p>It is the meet of the version vectors of every <b>responsive</b> replica. A replica that
+     * has not reported progress for {@code unresponsiveTimeoutMs} despite an active connection is
+     * excluded from the calculation — otherwise one hung client would block GC for the whole
+     * document (ADR-0005, the negative consequences section).
      */
     public VersionVector stableVersion(long nowMillis, long unresponsiveTimeoutMs) {
         List<VersionVector> responsive = new ArrayList<>();
@@ -392,8 +395,8 @@ public class DocumentReplica {
         if (responsive.isEmpty()) {
             return VersionVector.empty();
         }
-        // Stan trwały też jest repliką: nie wolno skasować tombstone'u, którego nie widział
-        // jeszcze zapis do bazy.
+        // The durable state is a replica too: a tombstone the database write has not yet seen must
+        // not be removed.
         responsive.add(withLock(RgaDocument::version));
         return VersionVector.meet(responsive);
     }

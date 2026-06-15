@@ -73,10 +73,19 @@ public record CollabEditProperties(
         int opBatchMaxSize,
         int snapshotEveryNOps,
         long snapshotAfterIdleMs,
-        long snapshotSweepIntervalMs
+        long snapshotSweepIntervalMs,
+        int snapshotsKeptPerDocument
     ) {
+        public Persistence {
+            // A retention of zero would delete the snapshot being written, which is worse than
+            // having no retention at all: every document open would replay its whole log.
+            if (snapshotsKeptPerDocument < 1) {
+                snapshotsKeptPerDocument = 3;
+            }
+        }
+
         static Persistence defaults() {
-            return new Persistence(50, 100, 500, 30_000, 1_000);
+            return new Persistence(50, 100, 500, 30_000, 1_000, 3);
         }
     }
 
