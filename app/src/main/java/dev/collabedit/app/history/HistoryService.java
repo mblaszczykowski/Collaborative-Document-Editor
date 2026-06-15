@@ -66,45 +66,91 @@ public class HistoryService {
     ) {
     }
 
-    /** Oś czasu dokumentu, od najnowszych. */
+    /**
+     * The document's timeline, newest first.
+     *
+     * <h2>The grouping happens in the database, and it did not use to</h2>
+     * This method used to read <b>every operation row of the document, payload included</b>, with
+     * no limit and no pagination, and group them in Java. The payload is the largest column in
+     * the table, so opening the history panel on a document with 100 000 operations sent the
+     * entire operation log across the wire in order to produce a few dozen summary lines.
+     *
+     * <p>The previous version half-saw this: it read the character counts out of the JSON lazily
+     * rather than deserialising an operation per row, with a comment explaining that building
+     * thousands of objects "would be wasteful on a path that only needs lengths". It optimised
+     * the parsing and paid for the transfer, which is the larger of the two costs.
+     *
+     * <p>Two changes together fix it. The counts are now columns, written when the operation is
+     * (V5), so nothing needs the payload at all; and the sessionisation runs as a window function,
+     * so what crosses the wire is <b>one row per timeline entry</b> rather than one per keystroke.
+     *
+     * <h2>The grouping rule is unchanged</h2>
+     * A new entry starts when the author changes <b>or</b> when more than {@link #GROUPING_WINDOW}
+     * passes since the <i>previous operation</i> — not since the start of the group. That is what
+     * the Java version did, and {@code LAG} over {@code server_seq} expresses exactly the same
+     * thing, which is why this could move without changing any test.
+     */
     public List<Version> timeline(UUID documentId) {
-        List<Row> rows = jdbc.query(
+        return jdbc.query(
             """
-            SELECT o.server_seq, o.op_type, o.payload, o.created_at,
-                   COALESCE(o.user_id, '?') AS user_id,
+            WITH ops AS (
+                SELECT o.server_seq,
+                       o.created_at,
+                       COALESCE(o.user_id, '?') AS user_id,
+                       o.chars_inserted,
+                       o.chars_deleted
+                  FROM operations o
+                 WHERE o.doc_id = ?
+            ),
+            boundaries AS (
+                SELECT *,
+                       CASE
+                         WHEN LAG(user_id) OVER ordered IS DISTINCT FROM user_id
+                           OR created_at - LAG(created_at) OVER ordered > ?::interval
+                         THEN 1 ELSE 0
+                       END AS starts_group
+                  FROM ops
+                WINDOW ordered AS (ORDER BY server_seq)
+            ),
+            grouped AS (
+                SELECT *,
+                       SUM(starts_group) OVER (ORDER BY server_seq) AS group_id
+                  FROM boundaries
+            ),
+            sessions AS (
+                SELECT group_id,
+                       user_id,
+                       MAX(server_seq)   AS through_server_seq,
+                       MIN(created_at)   AS started_at,
+                       COUNT(*)          AS operation_count,
+                       SUM(chars_inserted) AS inserted,
+                       SUM(chars_deleted)  AS deleted
+                  FROM grouped
+                 GROUP BY group_id, user_id
+            )
+            SELECT s.through_server_seq,
+                   s.user_id,
                    COALESCE(u.display_name, 'Nieznany') AS display_name,
-                   COALESCE(u.color, '#999999') AS color
-            FROM operations o
-            LEFT JOIN users u ON u.id = o.user_id
-            WHERE o.doc_id = ?
-            ORDER BY o.server_seq
+                   COALESCE(u.color, '#999999')         AS color,
+                   s.started_at,
+                   s.operation_count,
+                   s.inserted,
+                   s.deleted
+              FROM sessions s
+              LEFT JOIN users u ON u.id = s.user_id
+             ORDER BY s.through_server_seq DESC
             """,
-            (rs, rowNum) -> new Row(
-                rs.getLong("server_seq"),
-                rs.getString("op_type"),
-                rs.getString("payload"),
-                rs.getTimestamp("created_at").toInstant(),
+            (rs, rowNum) -> new Version(
+                rs.getLong("through_server_seq"),
                 rs.getString("user_id"),
                 rs.getString("display_name"),
-                rs.getString("color")),
-            documentId);
-
-        List<Version> timeline = new ArrayList<>();
-        Group group = null;
-        for (Row row : rows) {
-            if (group == null || !group.belongsTogether(row)) {
-                if (group != null) {
-                    timeline.add(group.toVersion());
-                }
-                group = new Group(row);
-            }
-            group.absorb(row);
-        }
-        if (group != null) {
-            timeline.add(group.toVersion());
-        }
-
-        return timeline.reversed();
+                rs.getString("color"),
+                rs.getTimestamp("started_at").toInstant(),
+                rs.getInt("operation_count"),
+                rs.getInt("inserted"),
+                rs.getInt("deleted")),
+            documentId,
+            GROUPING_WINDOW.toSeconds() + " seconds");
     }
 
     /**
@@ -183,89 +229,4 @@ public class HistoryService {
         return generated;
     }
 
-    // ------------------------------------------------------------------
-
-    private record Row(long serverSeq, String opType, String payload, Instant at,
-                       String userId, String displayName, String color) {
-    }
-
-    private static final class Group {
-        private final String userId;
-        private final String displayName;
-        private final String color;
-        private final Instant startedAt;
-        private Instant lastAt;
-        private long throughServerSeq;
-        private int operationCount;
-        private int inserted;
-        private int deleted;
-
-        Group(Row first) {
-            this.userId = first.userId();
-            this.displayName = first.displayName();
-            this.color = first.color();
-            this.startedAt = first.at();
-            this.lastAt = first.at();
-        }
-
-        boolean belongsTogether(Row row) {
-            return userId.equals(row.userId())
-                && Duration.between(lastAt, row.at()).compareTo(GROUPING_WINDOW) <= 0;
-        }
-
-        void absorb(Row row) {
-            lastAt = row.at();
-            throughServerSeq = row.serverSeq();
-            operationCount++;
-            // Jawny switch po kodzie typu, nie „wszystko poza 'i' jest usunięciem".
-            // Po dołożeniu operacji znacznikowych w CP13 tamten warunek liczyłby zmianę
-            // formatowania jako usunięcie i szukał w jej ładunku zakresów, których tam nie ma.
-            switch (row.opType()) {
-                case "i" -> inserted += textLengthOf(row.payload());
-                case "d" -> deleted += deletedLengthOf(row.payload());
-                // Znaczniki nie zmieniają liczby znaków. Wchodzą do operationCount, bo są
-                // zmianą dokumentu i mają być widoczne na osi czasu — ale opis „+0 −0"
-                // byłby mylący, więc liczniki zostają nietknięte.
-                case "m", "x" -> { }
-                default -> { }
-            }
-        }
-
-        Version toVersion() {
-            return new Version(throughServerSeq, userId, displayName, color, startedAt,
-                operationCount, inserted, deleted);
-        }
-
-        /**
-         * Liczba znaków w operacji odczytana wprost z JSON-a, bez pełnej deserializacji.
-         *
-         * <p>Oś czasu dokumentu z długą historią czyta tysiące wierszy tylko po to, żeby
-         * policzyć znaki. Budowanie z każdego z nich obiektu operacji byłoby marnotrawstwem
-         * na ścieżce, która i tak nie potrzebuje struktury — a jedynie długości.
-         */
-        private static int textLengthOf(String payload) {
-            try {
-                var node = dev.collabedit.crdt.OpCodec.mapper().readTree(payload).get("s");
-                return node == null ? 0 : node.asText().length();
-            } catch (Exception e) {
-                return 0;
-            }
-        }
-
-        private static int deletedLengthOf(String payload) {
-            try {
-                var ranges = dev.collabedit.crdt.OpCodec.mapper().readTree(payload).get("g");
-                if (ranges == null) {
-                    return 0;
-                }
-                int total = 0;
-                for (var range : ranges) {
-                    total += range.get(2).asInt();
-                }
-                return total;
-            } catch (Exception e) {
-                return 0;
-            }
-        }
-    }
 }

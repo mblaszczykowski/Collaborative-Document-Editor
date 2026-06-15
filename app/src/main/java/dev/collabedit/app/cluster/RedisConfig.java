@@ -7,23 +7,22 @@ import org.springframework.data.redis.listener.PatternTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 
 /**
- * Nasłuch operacji z pozostałych instancji (ADR-0004).
+ * Listening for operations from the other instances (ADR-0004).
  *
- * <p>Subskrypcja jest wzorcowa (jeden wzorzec na wszystkie dokumenty), a nie po jednym
- * kanale na dokument. Powód: subskrybowanie i odsubskrybowanie kanału przy każdym otwarciu
- * i zamknięciu dokumentu generowałoby ruch sterujący proporcjonalny do aktywności
- * użytkowników, a odsiew wiadomości dotyczących dokumentów, których ta instancja nie trzyma
- * w pamięci, jest tani.
+ * <p>The subscription is a pattern subscription (one pattern for all documents) rather than one
+ * channel per document. The reason: subscribing and unsubscribing on every document open and close
+ * would generate control traffic proportional to user activity, whereas filtering out messages
+ * about documents this instance does not hold in memory is cheap.
  *
- * <p><b>Ale tylko dlatego, że dzieje się po nazwie kanału.</b> Do CP11 uzasadnienie brzmiało
- * „odsiew jest trywialny" i było prawdziwe wyłącznie w połowie: samo sprawdzenie owszem,
- * ale poprzedzało je sparsowanie CAŁEGO ładunku JSON, bo identyfikator dokumentu czytano
- * z treści wiadomości. Przy jednym dokumencie nie miało to znaczenia. Przy wielu oznaczałoby,
- * że każda instancja parsuje ruch całego klastra, żeby w większości przypadków wyrzucić wynik.
+ * <p><b>But only because the filtering happens on the channel name.</b> Up to CP11 the
+ * justification read "the filtering is trivial", and it was true only by half: the check itself
+ * was, but it was preceded by parsing the ENTIRE JSON payload, because the document identifier was
+ * read from the message body. With one document that did not matter. With many it would mean every
+ * instance parsing the whole cluster's traffic in order to discard the result most of the time.
  *
- * <p>Identyfikator dokumentu jest w nazwie kanału ({@code collabedit:doc:{uuid}:ops}), więc
- * odsiew da się zrobić przed odczytaniem choćby bajtu treści — i tak robi to {@link ClusterBus}.
- * Dopiero teraz to uzasadnienie jest prawdziwe w całości.
+ * <p>The document identifier is in the channel name ({@code collabedit:doc:{uuid}:ops}), so the
+ * filtering can happen before a single byte of the body is read — and that is what
+ * {@link ClusterBus} does. Only now is that justification true in full.
  */
 @Configuration
 public class RedisConfig {

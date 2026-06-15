@@ -155,6 +155,85 @@ class HistoryIT extends IntegrationTestBase {
         assertThat(timeline.getFirst().charactersInserted()).isEqualTo(12);
     }
 
+    /**
+     * The parts of the timeline the SQL rewrite touched and the existing test did not reach.
+     *
+     * <p>Grouping and character counting moved from Java into a window function so that the
+     * timeline stops fetching every {@code payload} in the document (V5). The insert path was
+     * already covered by {@link #timelineGroupsOperations()}; these three were not, and each of
+     * them is a place where the old Java version had an explicit branch that the SQL expresses
+     * differently:
+     *
+     * <ul>
+     *   <li><b>deletions</b> — summed from ranges in the payload before, from a column now;</li>
+     *   <li><b>marks</b> — counted as operations but contributing no characters, which the old
+     *       code did with a {@code case "m", "x" -> { }} and the new one does by defaulting the
+     *       columns to zero. A mark reported as "−0" is right; a mark reported as a deletion of
+     *       the anchored range would not be, and that is the bug the old branch existed to
+     *       prevent;</li>
+     *   <li><b>two authors</b> — the group boundary, which is now {@code LAG(user_id) IS DISTINCT
+     *       FROM user_id}. {@code IS DISTINCT FROM} rather than {@code <>} on purpose: the first
+     *       row's {@code LAG} is null, and {@code <>} would yield null there and start no group.
+     *   </li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("oś czasu liczy usunięcia, nie liczy znaczników jako znaków i dzieli po autorze")
+    void timelineCountsDeletionsAndSeparatesAuthors() throws Exception {
+        UUID document = newDocument("Oś czasu — usunięcia");
+
+        String annaId = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
+            annaId, "Anna", "#C1592E");
+        String bartekId = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
+            bartekId, "Bartek", "#2E6FC1");
+
+        try (TestStompClient anna = new TestStompClient(
+            port, tokens.issue(new TokenService.Principal(annaId, "Anna", "#C1592E")),
+            document, 241)) {
+            anna.insert(0, "abcdefghij");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 1, PATIENCE, "wstawienie");
+            anna.delete(2, 4);
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 2, PATIENCE, "usunięcie");
+            anna.markReturningOp(0, 3, "bold", null);
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 3, PATIENCE, "znacznik");
+        }
+
+        try (TestStompClient bartek = new TestStompClient(
+            port, tokens.issue(new TokenService.Principal(bartekId, "Bartek", "#2E6FC1")),
+            document, 242)) {
+            bartek.awaitCondition(() -> bartek.text().length() == 6, PATIENCE, "synchronizacja");
+            bartek.insert(bartek.text().length(), "XY");
+            bartek.awaitCondition(() -> bartek.lastAckSeq() >= 4, PATIENCE, "wstawienie Bartka");
+        }
+
+        var timeline = history.timeline(document);
+
+        assertThat(timeline)
+            .as("dwóch autorów to dwa wpisy — granica grupy biegnie po autorze")
+            .hasSize(2);
+
+        // Newest first, so Bartek's entry leads.
+        var bartekEntry = timeline.getFirst();
+        var annaEntry = timeline.getLast();
+
+        assertThat(bartekEntry.displayName()).isEqualTo("Bartek");
+        assertThat(bartekEntry.charactersInserted()).isEqualTo(2);
+
+        assertThat(annaEntry.displayName()).isEqualTo("Anna");
+        assertThat(annaEntry.charactersInserted())
+            .as("wstawienie dziesięciu znaków")
+            .isEqualTo(10);
+        assertThat(annaEntry.charactersDeleted())
+            .as("usunięcie czterech znaków — liczone z kolumny, nie z ładunku")
+            .isEqualTo(4);
+        assertThat(annaEntry.operationCount())
+            .as("wstawienie, usunięcie i znacznik to trzy operacje; znacznik JEST zmianą "
+                + "dokumentu i ma być widoczny na osi czasu")
+            .isEqualTo(3);
+    }
+
     @Test
     @DisplayName("przywrócenie wersji dopisuje operacje, nie obcina logu")
     void restoreIsAppendOnly() throws Exception {

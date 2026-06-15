@@ -20,27 +20,27 @@ import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.stereotype.Component;
 
 /**
- * Autoryzacja <b>każdej ramki</b> STOMP wchodzącej do systemu (CP12).
+ * Authorization of <b>every</b> STOMP frame entering the system (CP12).
  *
- * <h2>Dlaczego to jest najważniejszy plik tego checkpointu</h2>
- * Do CP12 autoryzacji nie było w ogóle: {@link StompConnectInterceptor} sprawdzał token
- * przy {@code CONNECT} i na tym kończyła się kontrola dostępu. Przy jednym wspólnym
- * dokumencie było to spójne uproszczenie — model brzmiał „każdy zalogowany może wszystko"
- * i tak też się zachowywał.
+ * <h2>Why this is the most important file of that checkpoint</h2>
+ * Up to CP12 there was no authorization at all: {@link StompConnectInterceptor} checked the token
+ * at {@code CONNECT} and that was the end of access control. With one shared document that was a
+ * coherent simplification — the model read "any logged-in user may do anything", and it behaved
+ * that way.
  *
- * <p>Od CP11 dokumentów jest wiele, a identyfikator dokumentu jest częścią destynacji
- * podawanej przez klienta. Bez tego interceptora dowolny zalogowany użytkownik mógłby
- * zasubskrybować {@code /topic/doc/{cudze-id}/ops} i czytać cudzy dokument na żywo albo
- * wysłać własną operację na {@code /app/doc/{cudze-id}/op}. Uwierzytelnienie bez
- * autoryzacji nie chroni przed niczym poza anonimowością.
+ * <p>Since CP11 there are many documents, and the document identifier is part of the destination
+ * supplied by the client. Without this interceptor any logged-in user could subscribe to
+ * {@code /topic/doc/{somebody-elses-id}/ops} and read their document live, or send their own
+ * operation to {@code /app/doc/{somebody-elses-id}/op}. Authentication without authorization
+ * protects nothing but anonymity.
  *
- * <h2>Dlaczego to nie może być tylko sprawdzenie dokumentu</h2>
- * Rola {@link Role#COMMENTER} wolno czytać i komentować, ale nie zmieniać tekstu.
- * Komentarze (CP14) idą tym samym kanałem operacji co edycja, więc rozróżnienie „wolno
- * pisać" od „wolno komentować" <b>nie istnieje na poziomie destynacji</b> — musi zejść
- * do typu operacji. Mapowanie roli na dozwolone typy jest tu, w jednym miejscu, właśnie
- * po to, żeby dołożenie typu operacji w CP13 i CP14 było wpisem w tablicy, a nie
- * polowaniem na rozsiane po kodzie warunki.
+ * <h2>Why this cannot be only a document check</h2>
+ * The {@link Role#COMMENTER} role may read and comment but not change the text. Comments (CP14)
+ * travel the same operation channel as editing, so the distinction between "may write" and "may
+ * comment" <b>does not exist at the destination level</b> — it has to descend to the operation
+ * type. The role-to-allowed-types mapping is here, in one place, precisely so that adding an
+ * operation type in CP13 and CP14 is an entry in a table rather than a hunt for conditions
+ * scattered across the code.
  */
 @Component
 public class DocumentAccessInterceptor implements ChannelInterceptor {
@@ -51,9 +51,9 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
     private final RateLimiter rateLimiter = new RateLimiter();
 
     /**
-     * Wstrzykiwany leniwie z tego samego powodu co {@code PresenceService}
-     * w {@link StompConnectInterceptor}: ten interceptor jest częścią infrastruktury
-     * WebSocketa, z której pochodzi {@code SimpMessagingTemplate}.
+     * Injected lazily for the same reason as {@code PresenceService} in
+     * {@link StompConnectInterceptor}: this interceptor is part of the WebSocket infrastructure
+     * that {@code SimpMessagingTemplate} itself comes from.
      */
     private final ObjectProvider<SimpMessagingTemplate> messaging;
 
@@ -63,7 +63,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         this.messaging = messaging;
     }
 
-    /** Wyłącznie do diagnostyki i testów — dostęp do liczników wiader żetonów. */
+    /** Diagnostics and tests only — access to the token bucket counters. */
     public RateLimiter rateLimiter() {
         return rateLimiter;
     }
@@ -78,7 +78,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
 
         StompCommand command = accessor.getCommand();
         if (command == StompCommand.DISCONNECT) {
-            // Bez tego mapy wiader rosną z liczbą sesji od startu procesu.
+            // Without this the bucket maps grow with every session since process start.
             rateLimiter.forget(accessor.getSessionId());
             return message;
         }
@@ -89,9 +89,9 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         String destination = accessor.getDestination();
         UUID documentId = documentIdOf(destination);
         if (documentId == null) {
-            // Destynacje niezwiązane z dokumentem — kolejki własne użytkownika
-            // (/user/queue/**). Są z definicji prywatne: broker rozsyła je wyłącznie
-            // do sesji, która je zasubskrybowała.
+            // Destinations unrelated to a document — the user's own queues (/user/queue/**). They
+            // are private by definition: the broker delivers them only to the session that
+            // subscribed.
             return message;
         }
 
@@ -99,37 +99,37 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         Role role = permissions.roleOf(userId, documentId).orElse(null);
 
         if (role == null) {
-            return deny(command, destination, userId, "brak jakiegokolwiek dostępu");
+            return deny(command, destination, userId, "no access at all");
         }
         if (command == StompCommand.SEND && !allowedToSend(role, destination, message)) {
-            return deny(command, destination, userId, "rola " + role.wire() + " nie pozwala na tę operację");
+            return deny(command, destination, userId, "role " + role.wire() + " does not permit this operation");
         }
         RateLimiter.Decision pace = command == StompCommand.SEND
             ? withinRateLimit(accessor.getSessionId(), destination)
             : new RateLimiter.Decision(true, 0);
         if (!pace.allowed()) {
-            // Odmowa z powodu tempa musi być SŁYSZALNA, w odróżnieniu od odmowy z powodu
-            // uprawnień. Powód jest asymetryczny i wart zapisania:
+            // A refusal for pace has to be AUDIBLE, unlike a refusal for permission. The reason is
+            // asymmetric and worth writing down:
             //
-            //   brak uprawnień  → klient ma się nie dowiedzieć, że dokument istnieje,
-            //   przekroczone tempo → klient MUSI się dowiedzieć, bo jego operacja czeka
-            //                        w buforze i bez sygnału nikt jej nigdy nie ponowi.
+            //   no permission  → the client must not learn the document exists,
+            //   pace exceeded  → the client MUST learn, because its operation is waiting in the
+            //                    buffer and without a signal nobody will ever retry it.
             //
-            // Cicha odmowa z powodu tempa jest UTRATĄ DANYCH — wykryte harnessem w CP15:
-            // zasianie dużego dokumentu wyczerpywało zryw, 115 operacji przepadło,
-            // a dokument po prostu wychodził krótszy, bez śladu w interfejsie.
+            // A silent refusal for pace is DATA LOSS — found by the CP15 harness: seeding a large
+            // document exhausted the burst, 115 operations were lost, and the document simply came
+            // out shorter, with no trace in the interface.
             notifyRateLimited(accessor, destination, pace.retryAfterMillis());
-            return deny(command, destination, userId, "przekroczone tempo wysyłania");
+            return deny(command, destination, userId, "send rate exceeded");
         }
         return message;
     }
 
     /**
-     * Czy sesja mieści się w limicie tempa.
+     * Whether the session is within its rate limit.
      *
-     * <p>Sprawdzane PO autoryzacji, nie przed: klient bez uprawnień ma dostać odmowę
-     * z powodu braku dostępu, a nie z powodu tempa — inaczej komunikat w logu mówiłby
-     * o niewłaściwej przyczynie przy diagnozie.
+     * <p>Checked AFTER authorization, not before: a client without permission should be refused for
+     * lack of access rather than for pace — otherwise the log message would state the wrong reason
+     * when diagnosing.
      */
     private RateLimiter.Decision withinRateLimit(String sessionId, String destination) {
         long now = System.currentTimeMillis();
@@ -139,49 +139,49 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
     }
 
     /**
-     * Czy rola pozwala na wysłanie na tę destynację.
+     * Whether the role permits sending to this destination.
      *
-     * <p>Odczyt (SUBSCRIBE) wystarczy mieć jakąkolwiek rolę — najniższa z nich, {@code viewer},
-     * z definicji czyta. Wysyłanie rozstrzyga się per destynacja.
+     * <p>For reading (SUBSCRIBE) any role at all is enough — the lowest of them, {@code viewer},
+     * reads by definition. Sending is decided per destination.
      */
     private static boolean allowedToSend(Role role, String destination, Message<?> message) {
         if (destination.endsWith("/op")) {
-            // Redagujący może wszystko — i sprawdzamy to PIERWSZE, żeby nie płacić
-            // za rozbieranie treści operacji w ścieżce, którą chodzi większość ruchu.
+            // An editor may do anything — and we check that FIRST, so as not to pay for parsing
+            // the operation body on the path most of the traffic takes.
             if (role.canWriteText()) {
                 return true;
             }
-            // Komentujący może wysłać WYŁĄCZNIE znacznik komentarza. To jest miejsce,
-            // w którym autoryzacja musi zejść do TYPU OPERACJI: komentarze idą tym samym
-            // kanałem co edycja, więc na poziomie destynacji nie da się ich rozróżnić
-            // (ADR-0009). Bez tego rola „komentujący" znaczyłaby „redagujący".
+            // A commenter may send ONLY a comment mark. This is the point where authorization has
+            // to descend to the OPERATION TYPE: comments travel the same channel as editing, so
+            // they cannot be distinguished at the destination level (ADR-0009). Without this the
+            // "commenter" role would mean "editor".
             return role.canComment() && isCommentMark(message);
         }
         if (destination.endsWith("/presence")
             || destination.endsWith("/sync")
             || destination.endsWith("/progress")
             || destination.endsWith("/join")) {
-            // Obecność, resynchronizacja i raport postępu to czynności CZYTAJĄCEGO.
-            // Kursor obserwatora ma być widoczny dla pozostałych — inaczej „ktoś tu jest"
-            // działa wyłącznie dla osób z prawem zapisu, co jest mylące.
+            // Presence, resynchronisation and progress reports are a READER's actions. An
+            // observer's cursor should be visible to everyone else — otherwise "somebody is here"
+            // works only for people with write permission, which is misleading.
             return true;
         }
-        // Nieznana destynacja pod /app/doc/** — odmawiamy. Domyślną odpowiedzią przy
-        // rozszerzaniu protokołu ma być „nie wolno", żeby nowy kanał trzeba było
-        // świadomie dopuścić, zamiast odkrywać, że był dopuszczony od początku.
+        // An unknown destination under /app/doc/** — refused. The default answer when extending
+        // the protocol should be "not allowed", so a new channel has to be permitted deliberately
+        // rather than discovered to have been permitted all along.
         return false;
     }
 
     /**
-     * Czy ładunek ramki to nadanie znacznika typu {@code comment}.
+     * Whether the frame's payload is the application of a mark of type {@code comment}.
      *
-     * <p>Rozbieranie treści operacji w interceptorze jest kosztem, więc dzieje się WYŁĄCZNIE
-     * dla roli komentującego — redagujący nie przechodzi tędy. Sprawdzamy dokładnie dwa pola,
-     * bez pełnej deserializacji: typ operacji i rodzaj znacznika.
+     * <p>Parsing the operation body inside the interceptor is a cost, so it happens ONLY for the
+     * commenter role — an editor never comes through here. We check exactly two fields, without
+     * full deserialisation: the operation type and the mark type.
      *
-     * <p>Zdejmowanie znacznika komentarza celowo NIE jest tu dozwolone: usunięcie cudzej
-     * kotwicy to usunięcie cudzej rozmowy z dokumentu, a to jest uprawnienie redagującego.
-     * Komentujący rozwiązuje wątek, co jest odwracalne i zostawia ślad.
+     * <p>Removing a comment mark is deliberately NOT permitted here: removing somebody else's
+     * anchor removes their conversation from the document, and that is an editor's privilege. A
+     * commenter resolves a thread instead, which is reversible and leaves a trace.
      */
     private static boolean isCommentMark(Message<?> message) {
         Object payload = message.getPayload();
@@ -194,23 +194,26 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             return "m".equals(op.path("t").asText())
                 && MarkTypes.COMMENT.equals(op.path("k").asText());
         } catch (IOException e) {
-            // Nieczytelny ładunek to nie jest znacznik komentarza. Odmowa, a nie wyjątek:
-            // interceptor nie może przewrócić obsługi kanału z powodu jednej złej ramki.
+            // An unreadable payload is not a comment mark. A refusal rather than an exception: the
+            // interceptor must not bring down the channel over one bad frame.
             return false;
         }
     }
 
     /**
-     * Mówi klientowi, że jego operacja została odrzucona z powodu tempa.
+     * Tells the client its operation was refused because of the rate limit.
      *
-     * <p>Klient trzyma operacje niepotwierdzone w buforze do czasu potwierdzenia ZAPISU
-     * (ADR-0003), więc ma co ponowić — brakuje mu wyłącznie sygnału, że warto.
+     * <p>The client holds unacknowledged operations in a buffer until the WRITE is confirmed
+     * (ADR-0003), so it has something to retry — all it lacks is a signal that retrying is worth it.
      *
-     * <p><b>Od CP20 sygnał niesie też CZAS oczekiwania.</b> Wiadro żetonów zna go dokładnie
-     * ({@code (1 - tokens) / refillPerMs}), a klient wcześniej go zgadywał — na sztywno jedną
-     * sekundę. Ta sekunda jest tym, co widać w p99 w README: przy 50 klientach i dokumencie
-     * 100 tys. znaków ogon wynosi 1299 ms, a limit tempa jest wprost wskazany jako jego
-     * przyczyna. Odesłanie liczby, którą serwer i tak ma, zamienia zgadywanie na pomiar.
+     * <p><b>Since CP20 the signal also carries the WAIT.</b> The token bucket knows it exactly
+     * ({@code (1 - tokens) / refillPerMs}), and the client used to guess it — a hardcoded one
+     * second. Sending back a number the server has anyway replaces a guess with a measurement.
+     *
+     * <p>What that did NOT do is improve the p99, and the README records the measurement: the
+     * server-supplied wait alone made the tail worse, because the client then resent its whole
+     * buffer every 17 ms. Exponential backoff on the client fixes that; the tail itself is bounded
+     * by the refill rate, not by the retry delay.
      */
     private void notifyRateLimited(StompHeaderAccessor accessor, String destination,
                                    long retryAfterMillis) {
@@ -218,27 +221,27 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             messaging.getObject().convertAndSendToUser(
                 accessor.getSessionId(), "/queue/errors",
                 new Messages.ErrorMessage("RATE_LIMITED",
-                    "za dużo operacji na sekundę — zwolnij i ponów", retryAfterMillis),
+                    "too many operations per second — slow down and retry", retryAfterMillis),
                 SessionAttributes.forUser(accessor));
         } catch (RuntimeException e) {
-            log.warn("Nie udało się powiadomić o przekroczeniu tempa: {}", e.toString());
+            log.warn("Failed to notify about the rate limit: {}", e.toString());
         }
     }
 
     private Message<?> deny(StompCommand command, String destination, String userId, String reason) {
-        log.warn("Odmowa: {} {} dla użytkownika {} — {}", command, destination, userId, reason);
-        // Zwrócenie null zatrzymuje wiadomość na kanale. Klient nie dostaje potwierdzenia
-        // subskrypcji ani rozgłoszeń, czyli z jego punktu widzenia dokument nie istnieje.
-        // Świadomie NIE odsyłamy szczegółów: informacja „ten dokument istnieje, ale nie masz
-        // do niego dostępu" jest sama w sobie wyciekiem.
+        log.warn("Refused: {} {} for user {} — {}", command, destination, userId, reason);
+        // Returning null stops the message on the channel. The client receives neither a
+        // subscription confirmation nor any broadcasts, so from its point of view the document does
+        // not exist. We deliberately send NO details: "this document exists but you have no access
+        // to it" is itself a leak.
         return null;
     }
 
     /**
-     * Wyciąga identyfikator dokumentu z destynacji {@code /topic/doc/{uuid}/…}
-     * albo {@code /app/doc/{uuid}/…}.
+     * Extracts the document identifier from a destination {@code /topic/doc/{uuid}/…} or
+     * {@code /app/doc/{uuid}/…}.
      *
-     * @return {@code null}, gdy destynacja nie dotyczy dokumentu
+     * @return {@code null} when the destination does not concern a document
      */
     // Public because EndpointAuthorizationArchitectureTest asks this parser directly whether
     // it can resolve a document from every registered @MessageMapping destination. Asserting

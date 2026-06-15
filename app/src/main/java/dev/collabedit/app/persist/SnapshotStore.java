@@ -11,17 +11,17 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Snapshoty — <b>cache</b> nad logiem operacji (ADR-0003).
+ * Snapshots — a <b>cache</b> over the operation log (ADR-0003).
  *
- * <p>Cały ten magazyn wolno w każdej chwili wyczyścić. System odtworzy stan z logu:
- * wolniej, ale identycznie. Test w CP5 kasuje wszystkie snapshoty i sprawdza, że żaden
- * wynik się nie zmienia — bez takiego testu cache po cichu stałby się źródłem prawdy,
- * co jest jednym z tych błędów, które ujawniają się dopiero przy awarii.
+ * <p>This entire store may be wiped at any moment. The system will rebuild the state from the log:
+ * more slowly, but identically. A test in CP5 deletes every snapshot and checks that no result
+ * changes — without such a test the cache would quietly become the source of truth, which is one of
+ * those bugs that only surface during an outage.
  */
 @Repository
 public class SnapshotStore {
 
-    /** Snapshot z niezgodną wersją formatu jest ignorowany, a nie migrowany (ADR-0003). */
+    /** A snapshot with an incompatible format version is ignored rather than migrated (ADR-0003). */
     private record Row(byte[] state, long upToServerSeq) {
     }
 
@@ -88,11 +88,11 @@ public class SnapshotStore {
     }
 
     /**
-     * Najnowszy czytelny snapshot nie późniejszy niż podany {@code server_seq}.
+     * The newest readable snapshot no later than the given {@code server_seq}.
      *
-     * <p>Zwraca puste, gdy snapshotu nie ma <b>albo</b> gdy jest zapisany w nieobsługiwanym
-     * formacie. Wywołujący nie musi tych przypadków rozróżniać — w obu odpowiedzią jest
-     * odtworzenie z logu od zera.
+     * <p>Returns empty when there is no snapshot <b>or</b> when it is stored in an unsupported
+     * format. The caller does not need to tell those cases apart — in both, the answer is to
+     * rebuild from the log from scratch.
      */
     public Optional<LoadedSnapshot> findLatestUpTo(UUID documentId, long throughServerSeq) {
         try {
@@ -114,7 +114,7 @@ public class SnapshotStore {
         }
     }
 
-    /** Ile snapshotów ma dokument — do diagnostyki i do testu „skasuj cache, wyniki bez zmian". */
+    /** How many snapshots a document has — for diagnostics and for the "delete the cache, results unchanged" test. */
     public int count(UUID documentId) {
         Integer value = jdbc.queryForObject(
             "SELECT COUNT(*) FROM snapshots WHERE doc_id = ?", Integer.class, documentId);

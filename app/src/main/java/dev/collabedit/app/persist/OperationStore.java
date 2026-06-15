@@ -93,7 +93,9 @@ public class OperationStore {
                 seq,
                 opTypeCode(op),
                 OpCodec.encode(op),
-                pending.userId()
+                pending.userId(),
+                charsInserted(op),
+                charsDeleted(op)
             });
             appended.add(new StoredOperation(op, seq, pending.userId(), now));
             seq++;
@@ -104,8 +106,10 @@ public class OperationStore {
         }
 
         jdbc.batchUpdate(
-            "INSERT INTO operations (doc_id, replica_id, lamport, server_seq, op_type, payload, user_id) "
-                + "VALUES (?, ?, ?, ?, ?, ?::jsonb, ?)",
+            "INSERT INTO operations "
+                + "(doc_id, replica_id, lamport, server_seq, op_type, payload, user_id, "
+                + " chars_inserted, chars_deleted) "
+                + "VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)",
             rows);
         jdbc.update("UPDATE documents SET next_server_seq = ?, updated_at = now() WHERE id = ?",
             seq, documentId);
@@ -188,6 +192,33 @@ public class OperationStore {
 
     private static String key(Op op) {
         return op.id().replicaId() + ":" + op.id().lamport();
+    }
+
+    /**
+     * How many characters this operation adds.
+     *
+     * <p>Recorded at write time rather than derived on read. The timeline used to fetch every
+     * {@code payload} in the document to compute exactly this, which meant sending the whole
+     * operation log — the largest column in the table — across the wire to produce two integers
+     * per group. The write path already has the number in hand.
+     *
+     * <p>Not a cache and cannot drift: the log is append-only, so a row's counts are as immutable
+     * as its payload.
+     */
+    private static int charsInserted(Op op) {
+        return op instanceof Op.Insert insert ? insert.text().length() : 0;
+    }
+
+    /** How many characters this operation removes; see {@link #charsInserted}. */
+    private static int charsDeleted(Op op) {
+        if (!(op instanceof Op.Delete delete)) {
+            return 0;
+        }
+        int total = 0;
+        for (Op.Range range : delete.targets()) {
+            total += range.length();
+        }
+        return total;
     }
 
     /**

@@ -7,12 +7,12 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
- * Instancja backendu.
+ * A backend instance.
  *
- * <p>Zgodnie z ADR-0004 jest to <b>zwykła replika CRDT</b>, równorzędna wobec pozostałych
- * instancji i wobec przeglądarek. Nie ma tu roli szczególnej: żadna instancja nie jest
- * właścicielem dokumentu, nie ma wyboru lidera i nie ma rozproszonej blokady. Uruchomienie
- * trzech kopii tego procesu za zwykłym load balancerem round-robin jest poprawną konfiguracją.
+ * <p>Per ADR-0004 this is <b>an ordinary CRDT replica</b>, a peer of the other instances and of the
+ * browsers. There is no special role here: no instance owns a document, there is no leader
+ * election and no distributed lock. Running three copies of this process behind a plain
+ * round-robin load balancer is a valid configuration.
  */
 @SpringBootApplication
 @EnableConfigurationProperties(CollabEditProperties.class)

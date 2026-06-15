@@ -3,12 +3,12 @@ package dev.collabedit.app.persist;
 import dev.collabedit.crdt.Op;
 
 /**
- * Operacja czekająca na zapis we wsadzie.
+ * An operation waiting to be written as part of a batch.
  *
- * <p>{@code traceparent} jest tu, bo zapis dzieje się wsadowo, na innym wątku i w innej
- * chwili niż przyjęcie operacji (ADR-0003). Bez przeniesienia kontekstu span zapisu byłby
- * osieroconym trace'em, niepowiązanym z niczym — a najczęstsze pytanie przy diagnozowaniu
- * wolnej edycji brzmi właśnie „ile z tego to zapis".
+ * <p>{@code traceparent} is here because the write happens in a batch, on a different thread and at
+ * a different moment from accepting the operation (ADR-0003). Without carrying the context across,
+ * the write span would be an orphaned trace, connected to nothing — and the most common question
+ * when diagnosing slow editing is precisely "how much of this is the write".
  */
 public record PendingOperation(Op op, String userId, String traceparent) {
 }

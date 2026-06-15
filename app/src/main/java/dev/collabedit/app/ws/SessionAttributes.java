@@ -6,13 +6,13 @@ import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
 import org.springframework.messaging.simp.SimpMessageType;
 
 /**
- * Dane przypięte do sesji WebSocket przy nawiązaniu połączenia.
+ * Data attached to a WebSocket session when the connection is established.
  *
- * <p>Uwierzytelnienie odbywa się <b>raz</b>, przy ramce {@code CONNECT}, a nie przy każdej
- * wiadomości. To jest istotna różnica wobec zwykłego HTTP: połączenie WebSocket żyje
- * godzinami, więc token sprawdzany przy każdej ramce byłby narzutem na najgorętszej ścieżce
- * w systemie. Ceną jest to, że <b>token unieważniony w trakcie sesji nie zrywa połączenia</b> —
- * świadome uproszczenie, opisane w README w sekcji „co zrobiłbym inaczej w produkcji".
+ * <p>Authentication happens <b>once</b>, at the {@code CONNECT} frame, rather than on every
+ * message. That is a meaningful difference from ordinary HTTP: a WebSocket connection lives for
+ * hours, so checking the token on every frame would be overhead on the hottest path in the system.
+ * The price is that <b>a token revoked mid-session does not tear the connection down</b> — a
+ * deliberate simplification, described in the README's "what I would do differently in production".
  */
 public final class SessionAttributes {
 
@@ -49,11 +49,11 @@ public final class SessionAttributes {
     }
 
     /**
-     * Nagłówki potrzebne, żeby {@code convertAndSendToUser} trafiło do konkretnej sesji.
+     * The headers needed for {@code convertAndSendToUser} to reach one specific session.
      *
-     * <p>Bez ustawienia {@code sessionId} wiadomość poszłaby do <i>wszystkich</i> sesji
-     * tego użytkownika — a użytkownik z dwiema otwartymi kartami dostałby odpowiedź
-     * na resynchronizację również w tej karcie, która o nic nie prosiła.
+     * <p>Without setting {@code sessionId} the message would go to <i>every</i> session belonging
+     * to that user — and a user with two tabs open would receive a resynchronisation response in
+     * the tab that asked for nothing.
      */
     public static MessageHeaders forUser(SimpMessageHeaderAccessor source) {
         SimpMessageHeaderAccessor accessor = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
