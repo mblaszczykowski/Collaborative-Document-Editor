@@ -29,13 +29,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * REST do rzeczy, które nie muszą być w czasie rzeczywistym: lista dokumentów, utworzenie
- * nowego, początkowy odczyt stanu przy otwarciu.
+ * REST for the things that need not be real time: the document list, creating a new document, the
+ * initial state read on open.
  *
- * <p>Podział jest celowy. Kanałem WebSocket idą wyłącznie <b>zmiany przyrostowe</b>;
- * pobranie stanu początkowego przez REST pozwala wykorzystać zwykłe mechanizmy HTTP
- * (kompresja, cache, obsługa dużych odpowiedzi) i nie obciąża ramkami po kilkaset kilobajtów
- * kanału zoptymalizowanego pod małe komunikaty (ADR-0002, limit 64 KiB na wiadomość).
+ * <p>The split is deliberate. The WebSocket channel carries only <b>incremental changes</b>;
+ * fetching the initial state over REST lets us use the ordinary HTTP machinery (compression,
+ * caching, handling large responses) and keeps frames of several hundred kilobytes off a channel
+ * optimised for small messages (ADR-0002, a 64 KiB limit per message).
  */
 @RestController
 @RequestMapping("/api")
@@ -61,17 +61,17 @@ public class DocumentRestController {
     }
 
     /**
-     * Stan początkowy dokumentu wraz z <b>rolą pytającego</b>.
+     * A document's initial state together with the <b>caller's role</b>.
      *
-     * <p>Rola jest tu z tego samego powodu, dla którego odmowa z powodu tempa jest głośna
-     * (zob. {@code DocumentAccessInterceptor}): egzekwowanie po stronie serwera bez
-     * powiedzenia o tym klientowi zamienia odmowę w <b>cichy rozjazd</b>. Czytelnik, który
-     * nie wie, że jest czytelnikiem, pisze u siebie, widzi swój tekst, a serwer go odrzuca —
-     * i lokalna replika już nigdy nie zgadza się z resztą, bez jednego komunikatu.
+     * <p>The role is here for the same reason a rate-limit refusal is loud (see
+     * {@code DocumentAccessInterceptor}): enforcing on the server without telling the client turns
+     * a refusal into <b>silent divergence</b>. A reader who does not know they are a reader types,
+     * sees their own text, and the server rejects it — and their local replica never agrees with
+     * the rest again, without a single message.
      *
-     * <p>Nie jest to przeniesienie autoryzacji na klienta. Serwer sprawdza tak samo jak
-     * poprzednio; klient dostaje tę informację wyłącznie po to, żeby nie pozwolić
-     * użytkownikowi wykonać gestu, który i tak zostanie odrzucony.
+     * <p>This is not moving authorization to the client. The server checks exactly as before; the
+     * client is given this information solely so it does not let the user make a gesture that will
+     * be refused anyway.
      */
     public record DocumentState(UUID id, String title, String text, long headServerSeq,
                                 String role) {
@@ -84,28 +84,28 @@ public class DocumentRestController {
     }
 
     /**
-     * Górna granica długości nazwy widocznej dla innych.
+     * The upper bound on the length of a name visible to others.
      *
-     * <p>Nazwa trafia do tokenu, do bazy i — co najistotniejsze — do <b>każdego rozgłoszenia
-     * presence</b>, czyli do wiadomości wysyłanej wielokrotnie na sekundę do wszystkich
-     * uczestników dokumentu. Bez limitu jeden użytkownik z nazwą o długości megabajta
-     * obciąża łącze wszystkich pozostałych. 64 znaki mieszczą każde realne imię i nazwisko.
+     * <p>The name goes into the token, into the database and — most importantly — into <b>every
+     * presence broadcast</b>, that is, a message sent many times a second to every participant in
+     * the document. Without a limit, one user with a megabyte-long name loads everyone else's
+     * connection. 64 characters accommodate any real name.
      */
     private static final int MAX_DISPLAY_NAME_LENGTH = 64;
 
     /**
-     * Logowanie — <b>bez hasła</b>. Podajesz nazwę, dostajesz tożsamość.
+     * Login — <b>with no password</b>. You give a name, you get an identity.
      *
-     * <p>Świadome uproszczenie opisane w README: zakresem projektu jest spójność danych
-     * rozproszonych, nie zarządzanie tożsamością. Pełny mechanizm kont zabrałby czas
-     * problemowi rdzeniowemu, nie demonstrując niczego, czego ten projekt ma dowodzić.
+     * <p>A deliberate simplification described in the README: the project's scope is distributed
+     * data consistency, not identity management. A full account mechanism would take time away from
+     * the core problem while demonstrating nothing this project sets out to prove.
      */
     @PostMapping("/login")
     @PublicEndpoint("Issues identity. There is nothing to authorize against yet — this is the "
         + "endpoint that produces the token every other endpoint checks.")
     public LoginResponse login(@RequestBody LoginRequest request) {
         String displayName = request.displayName() == null || request.displayName().isBlank()
-            ? "Gość" : request.displayName().trim();
+            ? "Guest" : request.displayName().trim();
         if (displayName.length() > MAX_DISPLAY_NAME_LENGTH) {
             displayName = displayName.substring(0, MAX_DISPLAY_NAME_LENGTH);
         }
@@ -122,41 +122,41 @@ public class DocumentRestController {
 
 
     // ------------------------------------------------------------------
-    // Autoryzacja (CP12)
+    // Authorization (CP12)
     // ------------------------------------------------------------------
 
     /**
-     * Identyfikator zalogowanego użytkownika albo {@code null}.
+     * The logged-in user's identifier, or {@code null}.
      *
-     * <p>Filtr {@link TokenAuthFilter} wyłącznie USTALA tożsamość; decyzja o odmowie należy
-     * do kontrolera, bo tylko on wie, czy dana ścieżka wymaga dostępu do konkretnego
-     * dokumentu, czy jest publiczna.
+     * <p>{@link TokenAuthFilter} only ESTABLISHES the identity; the decision to refuse belongs to
+     * the endpoint, because only it knows whether a given path needs access to a specific document
+     * or is public.
      */
     private String callerId(HttpServletRequest request) {
         return TokenAuthFilter.principalOf(request).map(p -> p.userId()).orElse(null);
     }
 
     /**
-     * 404 zamiast 403 przy braku dostępu — <b>świadomie</b>.
+     * 404 rather than 403 when access is denied — <b>deliberately</b>.
      *
-     * <p>Odpowiedź „ten dokument istnieje, ale nie możesz go zobaczyć" jest sama w sobie
-     * wyciekiem: pozwala sprawdzać, które identyfikatory są prawdziwe. Z punktu widzenia
-     * kogoś bez uprawnień dokument ma po prostu nie istnieć — tak samo, jak dla ścieżki
-     * WebSocket, gdzie subskrypcja po prostu nie działa.
+     * <p>The answer "this document exists, but you may not see it" is itself a leak: it lets
+     * someone probe which identifiers are real. From the point of view of someone without
+     * permission the document should simply not exist — the same as on the WebSocket path, where
+     * the subscription simply does not work.
      */
     private static final org.springframework.http.HttpStatus DENIED =
         org.springframework.http.HttpStatus.NOT_FOUND;
 
-    /** Paleta z mockupu (docs/design/mockup-inkline.html) — kolory autorów w tekście. */
+    /** The palette from the mockup (docs/design/mockup-inkline.html) — author colours in the text. */
     private static final String[] PALETTE = {"#C1592E", "#4C5FD5", "#2E8B6B", "#8A5CB8", "#B8862E"};
 
     /**
-     * Lista dokumentów albo wynik wyszukiwania — jedno wejście, bo z punktu widzenia
-     * interfejsu to jest ta sama rzecz: „pokaż mi dokumenty, opcjonalnie zawężone".
+     * The document list or a search result — one entry point, because from the interface's point of
+     * view they are the same thing: "show me documents, optionally narrowed".
      *
-     * <p>Odpowiedź NIE zawiera treści dokumentów, tylko podgląd materializowany przy
-     * snapshotowaniu. Bez tego wypisanie stu pozycji ładowałoby sto replik CRDT do pamięci
-     * (CP11) — czyli lista dokumentów byłaby najdroższą operacją w całym systemie.
+     * <p>The response does NOT contain document content, only the preview materialised at snapshot
+     * time. Without that, listing a hundred entries would load a hundred CRDT replicas into memory
+     * (CP11) — making the document list the most expensive operation in the whole system.
      */
     @GetMapping("/documents")
     @RequiresAuthentication("Returns only what the caller may read; the filter is per row, "
@@ -170,23 +170,23 @@ public class DocumentRestController {
             ? catalog.search(query.trim(), LIST_LIMIT)
             : catalog.list(workspaceId, LIST_LIMIT);
 
-        // Odsiew po uprawnieniach PO stronie aplikacji, a nie w zapytaniu.
+        // Permission filtering in the application, not in the query.
         //
-        // Zapytanie z wbudowaną regułą dostępu byłoby szybsze, ale rozdzieliłoby tę regułę
-        // na dwa miejsca: SQL tutaj i PermissionService gdzie indziej. Dwie kopie reguły
-        // dostępu rozjeżdżają się i wtedy jedna z nich przepuszcza za dużo. Przy limicie
-        // 200 pozycji koszt odsiewu jest pomijalny, a reguła zostaje w jednym miejscu.
+        // A query with the access rule built in would be faster, but it would split that rule
+        // across two places: the SQL here and PermissionService elsewhere. Two copies of an access
+        // rule drift apart, and then one of them lets too much through. At a limit of 200 entries
+        // the filtering cost is negligible, and the rule stays in one place.
         String caller = callerId(request);
         return found.stream().filter(doc -> permissions.canRead(caller, doc.id())).toList();
     }
 
     /**
-     * Górna granica długości listy.
+     * The upper bound on the list's length.
      *
-     * <p>Nie ma tu stronicowania i to jest świadome uproszczenie: interfejs pokazuje listę
-     * ostatnio zmienianych dokumentów, a nie archiwum. Limit istnieje po to, żeby zapytanie
-     * miało ograniczony koszt niezależnie od tego, ile dokumentów jest w bazie — bez niego
-     * konto z dziesiątkami tysięcy dokumentów wysyłałoby je wszystkie przy każdym otwarciu.
+     * <p>There is no pagination here, and that is a deliberate simplification: the interface shows
+     * a list of recently changed documents, not an archive. The limit exists so that the query has
+     * a bounded cost regardless of how many documents are in the database — without it an account
+     * with tens of thousands of documents would send all of them on every open.
      */
     private static final int LIST_LIMIT = 200;
 
@@ -195,8 +195,8 @@ public class DocumentRestController {
         + "document is being authorized here.")
     public List<DocumentCatalog.DocumentSummary> trash(HttpServletRequest request) {
         String caller = callerId(request);
-        // Kosz pokazuje wyłącznie dokumenty, które wołający mógłby otworzyć, gdyby nie były
-        // usunięte. Bez tego kosz byłby obejściem uprawnień — listą cudzych tytułów.
+        // The bin shows only documents the caller could open if they were not deleted. Without
+        // that the bin would be a way around permissions — a list of other people's titles.
         return catalog.listDeleted(LIST_LIMIT).stream()
             .filter(doc -> permissions.roleOfDeleted(caller, doc.id()).isPresent())
             .toList();
@@ -212,7 +212,7 @@ public class DocumentRestController {
                                                   HttpServletRequest request) {
         UUID id = UUID.randomUUID();
         String title = body.title() == null || body.title().isBlank()
-            ? "Dokument bez tytułu" : body.title().trim();
+            ? "Untitled document" : body.title().trim();
         catalog.create(id, title, body.workspaceId());
 
         // The creator becomes the owner. Without that nobody could change the document's
@@ -255,12 +255,12 @@ public class DocumentRestController {
     }
 
     /**
-     * Chowa dokument. <b>Nie kasuje niczego.</b>
+     * Hides a document. <b>It deletes nothing.</b>
      *
-     * <p>Tabela {@code operations} ma {@code ON DELETE CASCADE} na {@code doc_id}, więc
-     * twarde usunięcie skasowałoby log operacji — źródło prawdy z ADR-0003, wyłącznie
-     * dopisywane. Użytkownik klikający „usuń" chce, żeby dokument zniknął mu z listy,
-     * a nie żeby przestał istnieć.
+     * <p>The {@code operations} table has {@code ON DELETE CASCADE} on {@code doc_id}, so a hard
+     * delete would erase the operation log — the source of truth from ADR-0003, which is
+     * append-only. A user clicking "delete" wants the document gone from their list, not gone from
+     * existence.
      */
     // Deleting needs WRITE, not ownership: a document a team shares should be hideable by
     // anyone who edits it. The operation being reversible (trash) is what makes that safe.
@@ -284,20 +284,20 @@ public class DocumentRestController {
     }
 
     // ------------------------------------------------------------------
-    // Workspace'y
+    // Workspaces
     // ------------------------------------------------------------------
 
     public record CreateWorkspaceRequest(String name) {
     }
 
     /**
-     * Workspace'y <b>pytającego</b> — nie te, o które poprosi w parametrze.
+     * The <b>caller's</b> workspaces — not the ones they ask for in a parameter.
      *
-     * <p>Pierwotnie właściciel przyjeżdżał jako {@code ?owner=...} z żądania, co znaczyło,
-     * że dowolny użytkownik mógł wylistować cudze workspace'y, znając czyjś identyfikator —
-     * a identyfikator innej osoby widać w ramkach obecności każdego wspólnego dokumentu.
-     * Ta sama klasa błędu co IDOR zamknięty w CP12, tylko na innej encji: <b>tożsamość
-     * pochodząca z żądania zamiast z tokenu</b>.
+     * <p>Originally the owner arrived as {@code ?owner=...} on the request, which meant any user
+     * could list somebody else's workspaces given their identifier — and another person's
+     * identifier is visible in the presence frames of every shared document. The same class of bug
+     * as the IDOR closed in CP12, on a different entity: <b>identity taken from the request instead
+     * of from the token</b>.
      */
     @GetMapping("/workspaces")
     @RequiresAuthentication("Scoped to the caller's own workspaces; identity comes from the "
@@ -316,7 +316,7 @@ public class DocumentRestController {
         String caller = callerId(request);
         UUID id = UUID.randomUUID();
         String name = body.name() == null || body.name().isBlank()
-            ? "Bez nazwy" : body.name().trim();
+            ? "Untitled" : body.name().trim();
         catalog.createWorkspace(id, name, caller);
         return catalog.workspacesOf(caller).stream()
             .filter(w -> w.id().equals(id))
@@ -329,23 +329,23 @@ public class DocumentRestController {
     }
 
     /**
-     * Tworzy dokument z odzyskaną treścią.
+     * Creates a document from recovered content.
      *
-     * <p>Ścieżka ratunkowa z ADR-0005: klient był offline dłużej niż okno GC, jego operacje
-     * wskazują na tombstone'y, których już nie ma, i <b>nie da się ich uczciwie scalić</b>.
-     * Zamiast doklejać tekst w przypadkowe miejsce albo go zgubić, zapisujemy lokalną wersję
-     * jako osobny dokument i mówimy o tym użytkownikowi wprost.
+     * <p>The rescue path from ADR-0005: the client was offline for longer than the GC window, its
+     * operations point at tombstones that no longer exist, and <b>there is no honest way to merge
+     * them</b>. Rather than gluing the text into a random place or losing it, we save the local
+     * version as a separate document and tell the user so plainly.
      *
-     * <p>Treść jest wstawiana jako zwykłe operacje repliki serwera — nowy dokument nie jest
-     * więc niczym szczególnym i od pierwszej chwili ma pełną historię, jak każdy inny.
+     * <p>The content is inserted as ordinary operations of the server replica — so the new document
+     * is nothing special and has a full history from the first moment, like any other.
      *
-     * <p><b>Właściciel i widoczność są tu ustawiane inaczej niż przy zwykłym tworzeniu</b>,
-     * i jest to celowe. Zwykły dokument powstaje domyślnie jako {@code link} — bo powstaje
-     * po to, żeby go komuś pokazać. Odzyskany szkic powstaje z <b>niezsynchronizowanej pracy
-     * jednej osoby</b>, której nikt inny nigdy nie widział; oddanie go wszystkim zalogowanym
-     * byłoby ujawnieniem treści dokładnie w tym momencie, w którym użytkownik martwi się
-     * o jej utratę. Do CP12 nie miało to znaczenia (nie było widoczności), po CP12 miało —
-     * i było przeoczeniem.
+     * <p><b>The owner and the visibility are set differently here than on ordinary creation</b>,
+     * and that is deliberate. An ordinary document was created as {@code link} by default — because
+     * it is created in order to show it to someone. A recovered draft is created from <b>one
+     * person's unsynchronised work</b> that nobody else has ever seen; handing it to every logged-in
+     * user would be disclosing the content at exactly the moment the user is worried about losing
+     * it. Before CP12 this did not matter (there was no visibility); after CP12 it did — and it was
+     * an oversight.
      */
     @PostMapping("/documents/recovered")
     @RequiresAuthentication("Creates a document from work that was never synchronised, so "
@@ -355,7 +355,7 @@ public class DocumentRestController {
                                                            HttpServletRequest httpRequest) {
         UUID id = UUID.randomUUID();
         String title = request.title() == null || request.title().isBlank()
-            ? "Odzyskany szkic" : request.title();
+            ? "Recovered draft" : request.title();
         catalog.create(id, title, null);
 
         // Unconditional, and that is the fix. Both calls used to sit inside
@@ -380,11 +380,11 @@ public class DocumentRestController {
     }
 
     /**
-     * Stan początkowy dokumentu.
+     * A document's initial state.
      *
-     * <p>{@code headServerSeq} jest tu istotny: klient zapamiętuje go jako punkt, od którego
-     * prosi o zmiany przy ponownym połączeniu. Bez niego po każdym rozłączeniu musiałby
-     * pobierać całą historię od zera.
+     * <p>{@code headServerSeq} matters here: the client remembers it as the point it asks for
+     * changes from when reconnecting. Without it, every disconnect would mean downloading the whole
+     * history from scratch.
      */
     // The most important check in this controller: this endpoint returns the FULL TEXT of the
     // document. Without it the whole WebSocket authorization is decoration, because the same

@@ -27,7 +27,7 @@ test('nowy dokument pojawia się na liście i daje się otworzyć', async ({ bro
 
   await page.getByRole('button', { name: '+ Nowy dokument' }).click()
 
-  await expect(page.locator('.sb-item.active')).toContainText('Dokument bez tytułu', {
+  await expect(page.locator('.sb-item.active')).toContainText('Untitled document', {
     timeout: 10_000,
   })
   // Adres musi odpowiadać temu, co jest otwarte — inaczej odświeżenie strony

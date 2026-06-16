@@ -178,7 +178,7 @@ function Workspace({ session }: { session: Session }) {
   }, [])
 
   async function createDocument() {
-    const created = await api.createDocument('Dokument bez tytułu')
+    const created = await api.createDocument('Untitled document')
     setDocuments((current) => [created, ...current])
     select(created.id)
   }
@@ -340,7 +340,7 @@ function DocumentWorkspace(props: {
   const recoverAfterRejection = useCallback(
     async (model: RgaDocument, link: DocumentConnection) => {
       const rescued = await api.createRecovered(
-        `Odzyskany szkic — ${new Date().toLocaleString('pl-PL')}`,
+        `Recovered draft — ${new Date().toLocaleString('en-GB')}`,
         model.text,
       )
       await link.abandonBuffer()
