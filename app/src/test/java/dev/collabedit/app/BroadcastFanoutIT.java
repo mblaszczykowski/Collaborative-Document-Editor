@@ -14,15 +14,15 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Narzędzie diagnostyczne do porównania „przed / po" dla sklejania rozgłoszeń (CP10).
+ * A diagnostic tool for the "before / after" comparison of broadcast coalescing (CP10).
  *
- * <p>Odpowiada na jedno pytanie: <b>ilu klientów w jednym dokumencie system obsługuje,
- * zanim przestaje zbiegać</b> — powtarzalnie, w kilkudziesięciu sekundach zamiast
- * w dziesięciu minutach pełnego harnessu.
+ * <p>It answers one question: <b>how many clients in one document the system handles before it
+ * stops converging</b> — repeatably, in tens of seconds rather than the ten minutes of the full
+ * harness.
  *
- * <p>Świadomie NIE jest testem poprawności i nie chodzi w normalnym przebiegu: mierzy
- * przepustowość stanowiska tak samo jak systemu, więc jego wynik zależy od obciążenia
- * maszyny. Uruchamiane jawnie:
+ * <p>Deliberately NOT a correctness test, and it does not run in a normal build: it measures the
+ * machine's throughput as much as the system's, so its result depends on how loaded the machine is.
+ * Run it explicitly:
  * <pre>./mvnw -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true</pre>
  */
 @EnabledIfSystemProperty(named = "fanout", matches = "true")
@@ -44,11 +44,11 @@ class BroadcastFanoutIT extends IntegrationTestBase {
     dev.collabedit.app.domain.DocumentService documents;
 
     @Test
-    @DisplayName("ilu klientów zbiega się powtarzalnie")
+    @DisplayName("how many clients converge repeatably")
     void convergenceByClientCount() throws Exception {
         System.out.println();
-        System.out.println("=== FAN-OUT: zbieżność wg liczby klientów ===");
-        System.out.printf("%-10s %-12s %-12s %s%n", "klienci", "zbiegło", "czas ms", "min.klient/serwer");
+        System.out.println("=== FAN-OUT: convergence by client count ===");
+        System.out.printf("%-10s %-12s %-12s %s%n", "clients", "converged", "time ms", "min.client/server");
 
         for (int clients : CLIENT_COUNTS) {
             int converged = 0;
@@ -107,7 +107,7 @@ class BroadcastFanoutIT extends IntegrationTestBase {
             int minClient = clients.stream().mapToInt(c -> c.text().length()).min().orElse(0);
             int server = documents.textOf(document).length();
             return new Result(converged,
-                (converged ? "OK/" + elapsed + "ms" : "NIE/" + minClient + "z" + server)
+                (converged ? "OK/" + elapsed + "ms" : "NO/" + minClient + "of" + server)
                     + "(s=" + server + ")");
         } finally {
             for (TestStompClient client : clients) {

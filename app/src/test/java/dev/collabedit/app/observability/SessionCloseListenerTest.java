@@ -7,40 +7,40 @@ import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.CloseStatus;
 
 /**
- * Mapowanie kodu zamknięcia sesji na wartość taga metryki.
+ * Mapping a session close code onto a metric tag value.
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code bufferOverflowIsRecognised}</td>
- *       <td>Kod 4500 wpada do kosza {@code other}. Metryka istnieje, panel jest,
- *           wykres płaski — i wygląda to jak dowód, że problemu nie ma, podczas gdy
- *           znaczy tylko, że go nie mierzymy. To jest najgorszy możliwy tryb awarii
- *           metryki diagnostycznej.</td></tr>
+ *       <td>Code 4500 falling into the {@code other} bucket. The metric exists, the panel is
+ *           there, the graph is flat — and it looks like proof the problem is absent, when it
+ *           only means we are not measuring it. That is the worst possible failure mode for a
+ *           diagnostic metric.</td></tr>
  *   <tr><td>{@code unknownCodesCollapseIntoOneBucket}</td>
- *       <td>Kod zamknięcia trafia do taga wprost. Klient może zamknąć połączenie dowolnym
- *           kodem z zakresu 4000–4999, więc byłaby to kardynalność sterowana z zewnątrz —
- *           czyli sposób na wysadzenie Prometheusa jednym złośliwym klientem.</td></tr>
+ *       <td>The close code going into the tag verbatim. A client may close a connection with any
+ *           code in the 4000–4999 range, so this would be externally driven cardinality — that is,
+ *           a way to blow up Prometheus with one malicious client.</td></tr>
  *   <tr><td>{@code missingStatusDoesNotThrow}</td>
- *       <td>Zdarzenie bez statusu wywala listener. Wyjątek w obsłudze zdarzenia Springa
- *           przewraca całe rozłączanie sesji, a nie tylko metrykę.</td></tr>
+ *       <td>An event with no status crashing the listener. An exception while handling a Spring
+ *           event brings down the whole session teardown, not just the metric.</td></tr>
  * </table>
  */
 class SessionCloseListenerTest {
 
     @Test
-    @DisplayName("przepełnienie bufora wysyłkowego ma własną wartość taga, nie wpada do 'other'")
+    @DisplayName("send buffer overflow gets its own tag value rather than falling into 'other'")
     void bufferOverflowIsRecognised() {
         assertThat(SessionCloseListener.reasonOf(CloseStatus.SESSION_NOT_RELIABLE))
             .isEqualTo(SessionCloseListener.SLOW_CLIENT);
 
-        // Ten sam kod zapisany wprost — gdyby Spring zmienił stałą, chcemy o tym wiedzieć
-        // od testu, a nie od płaskiego wykresu.
+        // The same code spelled out — if Spring ever changed the constant, we want to hear it
+        // from a test rather than from a flat graph.
         assertThat(CloseStatus.SESSION_NOT_RELIABLE.getCode()).isEqualTo(4500);
     }
 
     @Test
-    @DisplayName("zamknięcia rozpoznane mają rozłączne wartości taga")
+    @DisplayName("recognised closes have disjoint tag values")
     void knownCodesAreDistinct() {
         assertThat(SessionCloseListener.reasonOf(CloseStatus.NORMAL)).isEqualTo("normal");
         assertThat(SessionCloseListener.reasonOf(CloseStatus.GOING_AWAY)).isEqualTo("going_away");
@@ -49,7 +49,7 @@ class SessionCloseListenerTest {
     }
 
     @Test
-    @DisplayName("nieznane kody lądują w jednym koszu — kardynalność nie może zależeć od klienta")
+    @DisplayName("unknown codes land in one bucket — cardinality must not depend on the client")
     void unknownCodesCollapseIntoOneBucket() {
         assertThat(SessionCloseListener.reasonOf(new CloseStatus(4001))).isEqualTo("other");
         assertThat(SessionCloseListener.reasonOf(new CloseStatus(4999))).isEqualTo("other");
@@ -57,7 +57,7 @@ class SessionCloseListenerTest {
     }
 
     @Test
-    @DisplayName("brak statusu daje wartość zastępczą zamiast wyjątku")
+    @DisplayName("a missing status gives a fallback value rather than an exception")
     void missingStatusDoesNotThrow() {
         assertThat(SessionCloseListener.reasonOf(null)).isEqualTo("unknown");
     }

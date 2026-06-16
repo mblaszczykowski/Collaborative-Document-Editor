@@ -16,12 +16,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Zapis wsadowy do logu operacji (ADR-0003, ADR-0004).
+ * Batched writes to the operation log (ADR-0003, ADR-0004).
  *
- * <p>Testy celują w dwie własności, na których stoi reszta systemu i których nie da się
- * sprawdzić bez prawdziwej bazy: <b>idempotencję zapisu</b> (wynikającą z klucza głównego)
- * oraz <b>ciągłość {@code server_seq}</b> (na której opiera się wykrywanie zgubionych
- * wiadomości Redisa).
+ * <p>The tests target two properties the rest of the system rests on and that cannot be checked
+ * without a real database: <b>write idempotence</b> (which follows from the primary key) and the
+ * <b>continuity of {@code server_seq}</b> (which detection of lost Redis messages is based on).
  */
 class OperationStoreIT extends IntegrationTestBase {
 
@@ -45,7 +44,7 @@ class OperationStoreIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("wsad z wymieszanymi duplikatami zapisuje wyłącznie nowe operacje")
+    @DisplayName("a batch with duplicates mixed in stores only the new operations")
     void batchWithMixedDuplicates() {
         UUID document = newDocument();
         RgaDocument client = new RgaDocument(1);
@@ -61,9 +60,9 @@ class OperationStoreIT extends IntegrationTestBase {
             second.add(client.insert(client.visibleLength(), "b"));
         }
 
-        // Wsad, w którym STARE i NOWE operacje są przemieszane — dokładnie to, co przysyła
-        // klient retransmitujący bufor po ponownym połączeniu. Odsiew musi zadziałać
-        // wybiórczo: zapisać nowe, pominąć znane, i nie zostawić dziury w numeracji.
+        // A batch with OLD and NEW operations interleaved — exactly what a client retransmitting
+        // its buffer after reconnecting sends. The filtering has to be selective: store the new
+        // ones, skip the known ones, and leave no gap in the numbering.
         List<Op> mixed = new ArrayList<>();
         for (int i = 0; i < 30; i++) {
             mixed.add(first.get(i));
@@ -73,7 +72,7 @@ class OperationStoreIT extends IntegrationTestBase {
         List<StoredOperation> appended = operations.append(document, pending(mixed));
 
         assertThat(appended)
-            .as("zapisano nie te operacje, co trzeba — odsiew duplikatów zadziałał źle")
+            .as("the wrong operations were stored — duplicate filtering misbehaved")
             .hasSize(30);
         assertThat(appended.stream().map(stored -> stored.op().id()).toList())
             .containsExactlyElementsOf(second.stream().map(Op::id).toList());
@@ -86,7 +85,7 @@ class OperationStoreIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("powtórzenie CAŁEGO wsadu nie zapisuje niczego i nie zużywa numerów")
+    @DisplayName("repeating a WHOLE batch stores nothing and consumes no sequence numbers")
     void fullyDuplicateBatchConsumesNoSequenceNumbers() {
         UUID document = newDocument();
         RgaDocument client = new RgaDocument(2);
@@ -98,11 +97,11 @@ class OperationStoreIT extends IntegrationTestBase {
         operations.append(document, pending(batch));
 
         assertThat(operations.append(document, pending(batch)))
-            .as("powtórzony wsad został zapisany drugi raz")
+            .as("the repeated batch was stored a second time")
             .isEmpty();
 
-        // Numery muszą zostać nietknięte: zużycie ich na odrzucony wsad zrobiłoby dokładnie
-        // tę dziurę w numeracji, przed którą broni odsiew przed przydziałem (ADR-0004).
+        // The numbers must be untouched: spending them on a rejected batch would create exactly
+        // the gap in the numbering that filtering-before-allocation guards against (ADR-0004).
         Long nextSeq = jdbc.queryForObject(
             "SELECT next_server_seq FROM documents WHERE id = ?", Long.class, document);
         assertThat(nextSeq).isEqualTo(11L);
@@ -110,14 +109,14 @@ class OperationStoreIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("duży wsad — zapytanie odsiewające ma stałą treść niezależnie od rozmiaru")
+    @DisplayName("a large batch — the filtering query has fixed text regardless of size")
     void largeBatch() {
         UUID document = newDocument();
         RgaDocument client = new RgaDocument(3);
 
-        // 500 operacji, czyli pięciokrotność produkcyjnego op-batch-max-size. Poprzednia
-        // implementacja budowała tu SQL z pięciuset krotkami; obecna przesyła dwie tablice,
-        // a tekst zapytania jest ten sam co przy jednej operacji.
+        // 500 operations, five times the production op-batch-max-size. The previous
+        // implementation built SQL with five hundred tuples here; the current one sends two
+        // arrays, and the query text is the same as for a single operation.
         List<Op> batch = new ArrayList<>();
         for (int i = 0; i < 500; i++) {
             batch.add(client.insert(i, "y"));
@@ -134,7 +133,7 @@ class OperationStoreIT extends IntegrationTestBase {
             "SELECT MAX(server_seq) FROM operations WHERE doc_id = ?", Long.class, document);
         assertThat(count).isEqualTo(expectedCount);
         assertThat(max)
-            .as("numeracja server_seq ma dziurę: %d operacji, najwyższy numer %d", count, max)
+            .as("the server_seq numbering has a gap: %d operations, highest number %d", count, max)
             .isEqualTo(Long.valueOf(expectedCount));
     }
 }

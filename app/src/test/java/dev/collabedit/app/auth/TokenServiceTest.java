@@ -10,24 +10,25 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Testy tokenu. Bez Springa i bez Dockera — {@link TokenService} to czysta funkcja
- * podpisu, więc podnoszenie kontekstu byłoby kosztem bez korzyści.
+ * Token tests. No Spring and no Docker — {@link TokenService} is a pure signing function, so
+ * standing up a context would be a cost with no benefit.
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code displayNameWithSeparatorSurvivesRoundTrip}</td>
- *       <td>Separator pól w nazwie użytkownika rozbija ładunek. Objaw jest mylący:
- *           logowanie zwraca token, po czym CONNECT odrzuca go jako nieważny —
- *           czyli „zalogowany, ale aplikacja nie działa".</td></tr>
+ *       <td>The field separator inside a user's name splitting the payload. The symptom is
+ *           misleading: login returns a token, and then CONNECT rejects it as invalid — that is,
+ *           "logged in, but the application does not work".</td></tr>
  *   <tr><td>{@code tamperedPayloadIsRejected}</td>
- *       <td>Podpis nie jest sprawdzany albo jest sprawdzany po odczycie pól —
- *           podmiana tożsamości przez edycję ładunku.</td></tr>
+ *       <td>The signature not being checked, or being checked after the fields are read —
+ *           identity substitution by editing the payload.</td></tr>
  *   <tr><td>{@code tokenFromAnotherSecretIsRejected}</td>
- *       <td>Klucz nie wchodzi do podpisu; token z obcej instancji byłby akceptowany.</td></tr>
+ *       <td>The key not entering the signature; a token from a foreign instance would be
+ *           accepted.</td></tr>
  *   <tr><td>{@code malformedTokenIsRejectedWithoutThrowing}</td>
- *       <td>Śmieci w nagłówku CONNECT wywalają interceptor zamiast dać odmowę.
- *           Wyjątek w tym miejscu to zerwane połączenie zamiast czytelnego błędu.</td></tr>
+ *       <td>Garbage in the CONNECT header crashing the interceptor instead of producing a
+ *           refusal. An exception here means a dropped connection rather than a legible error.</td></tr>
  * </table>
  */
 class TokenServiceTest {
@@ -39,12 +40,14 @@ class TokenServiceTest {
         "Anna|Nowak",
         "|",
         "a|b|c|9999999999",
+        // Deliberately not translated: these are test DATA, not prose. Polish diacritics and
+        // Japanese cover two- and three-byte UTF-8 sequences, which is the point.
         "Zażółć gęślą jaźń",
         "名前",
         "emoji 🙂",
-        "  spacje  ",
+        "  spaces  ",
     })
-    @DisplayName("nazwa użytkownika przechodzi w obie strony niezależnie od znaków")
+    @DisplayName("a display name round-trips regardless of its characters")
     void displayNameWithSeparatorSurvivesRoundTrip(String displayName) {
         var principal = new TokenService.Principal("user-1", displayName, "#4C5FD5");
 
@@ -54,7 +57,7 @@ class TokenServiceTest {
     }
 
     @Test
-    @DisplayName("token ze zmienionym ładunkiem jest odrzucony")
+    @DisplayName("a token with a modified payload is rejected")
     void tamperedPayloadIsRejected() {
         String token = tokens.issue(new TokenService.Principal("user-1", "Anna", "#4C5FD5"));
         String tampered = "X" + token.substring(1);
@@ -63,7 +66,7 @@ class TokenServiceTest {
     }
 
     @Test
-    @DisplayName("token podpisany innym kluczem jest odrzucony")
+    @DisplayName("a token signed with a different key is rejected")
     void tokenFromAnotherSecretIsRejected() {
         String foreign = new TokenService("a-different-secret-long-enough-to-pass")
             .issue(new TokenService.Principal("user-1", "Anna", "#4C5FD5"));
@@ -72,14 +75,14 @@ class TokenServiceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"", ".", "bezkropki", "a.b", "....", "%%%.%%%"})
-    @DisplayName("token niepoprawny składniowo daje odmowę, a nie wyjątek")
+    @ValueSource(strings = {"", ".", "nodots", "a.b", "....", "%%%.%%%"})
+    @DisplayName("a syntactically invalid token gives a refusal, not an exception")
     void malformedTokenIsRejectedWithoutThrowing(String token) {
         assertThat(tokens.verify(token)).isEmpty();
     }
 
     @Test
-    @DisplayName("brak tokenu daje odmowę")
+    @DisplayName("a missing token gives a refusal")
     void nullTokenIsRejected() {
         assertThat(tokens.verify(null)).isEmpty();
     }

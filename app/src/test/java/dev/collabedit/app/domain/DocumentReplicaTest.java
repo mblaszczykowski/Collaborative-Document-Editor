@@ -11,23 +11,23 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Bufor zapisu repliki. Bez Springa i bez bazy — to jest zachowanie struktury danych,
- * a nie współpracy warstw.
+ * A replica's write buffer. No Spring and no database — this is the behaviour of a data structure,
+ * not of layers cooperating.
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code drainRespectsLimit}</td>
- *       <td>Limit rozmiaru wsadu nie działa. Objaw nie jest widoczny funkcjonalnie:
- *           zapis nadal jest poprawny, tylko jedna transakcja trzyma blokadę wiersza
- *           dokumentu dowolnie długo, blokując wszystkich innych piszących.</td></tr>
+ *       <td>The batch size limit not working. The symptom is functionally invisible: the write is
+ *           still correct, it is just that one transaction holds the document's row lock for
+ *           arbitrarily long, blocking every other writer.</td></tr>
  *   <tr><td>{@code drainPreservesOrderAcrossBatches}</td>
- *       <td>Podział na wsady miesza kolejność. {@code server_seq} nadawany jest w kolejności
- *           wyjmowania z bufora, a ADR-0004 opiera na jego CIĄGŁOŚCI wykrywanie zgubionych
- *           wiadomości — przestawienie operacji psuje kursor resynchronizacji.</td></tr>
+ *       <td>Splitting into batches scrambling the order. {@code server_seq} is assigned in drain
+ *           order, and ADR-0004 bases detection of lost messages on its CONTINUITY — reordering
+ *           operations breaks the resynchronisation cursor.</td></tr>
  *   <tr><td>{@code drainLeavesNothingBehind}</td>
- *       <td>Operacja zostaje w buforze na zawsze i nigdy nie trafia do logu.
- *           Klient nie dostaje potwierdzenia, więc retransmituje ją w nieskończoność.</td></tr>
+ *       <td>An operation staying in the buffer forever and never reaching the log. The client gets
+ *           no acknowledgement, so it retransmits it indefinitely.</td></tr>
  * </table>
  */
 class DocumentReplicaTest {
@@ -35,13 +35,13 @@ class DocumentReplicaTest {
     private static final int LIMIT = 3;
 
     /**
-     * Replika serwera z {@code count} operacjami czekającymi na zapis.
+     * A server replica with {@code count} operations waiting to be written.
      *
-     * <p>Operacje powstają na OSOBNEJ replice („przeglądarka") i dopiero są scalane do repliki
-     * serwera. To nie jest ozdobnik: gdyby generować je przez {@code replica.withLock(insert)},
-     * byłyby już zastosowane, więc {@code merge} rozpoznałby je jako duplikaty, zwrócił
-     * {@code false} i <b>nie dopisał niczego do bufora</b> — test mierzyłby pusty bufor
-     * i przechodził niezależnie od tego, co robi limit.
+     * <p>The operations are created on a SEPARATE replica (the "browser") and only then merged into
+     * the server replica. That is not decoration: generating them via
+     * {@code replica.withLock(insert)} would leave them already applied, so {@code merge} would
+     * recognise them as duplicates, return {@code false} and <b>add nothing to the buffer</b> — the
+     * test would measure an empty buffer and pass regardless of what the limit does.
      */
     private DocumentReplica replicaWithPendingOperations(int count) {
         DocumentReplica replica = new DocumentReplica(
@@ -50,7 +50,7 @@ class DocumentReplicaTest {
         for (int i = 0; i < count; i++) {
             Op op = browser.insert(i, String.valueOf((char) ('a' + i)));
             assertThat(replica.merge(op, "tester", null, 0))
-                .as("operacja %d powinna być nowością dla repliki serwera", i)
+                .as("operation %d should be new to the server replica", i)
                 .isTrue();
         }
         assertThat(replica.unwrittenCount()).isEqualTo(count);
@@ -58,7 +58,7 @@ class DocumentReplicaTest {
     }
 
     @Test
-    @DisplayName("wsad nie przekracza zadanego limitu, a reszta zostaje na następne okno")
+    @DisplayName("a batch does not exceed the given limit, and the rest waits for the next window")
     void drainRespectsLimit() {
         DocumentReplica replica = replicaWithPendingOperations(10);
 
@@ -66,12 +66,12 @@ class DocumentReplicaTest {
 
         assertThat(first).hasSize(LIMIT);
         assertThat(replica.unwrittenCount())
-            .as("reszta musi zostać w buforze, a nie zniknąć")
+            .as("the rest has to stay in the buffer rather than disappear")
             .isEqualTo(7);
     }
 
     @Test
-    @DisplayName("kolejność operacji przeżywa podział na wsady")
+    @DisplayName("operation order survives being split across batches")
     void drainPreservesOrderAcrossBatches() {
         DocumentReplica replica = replicaWithPendingOperations(10);
 
@@ -85,12 +85,12 @@ class DocumentReplicaTest {
         }
 
         assertThat(drained.toString())
-            .as("server_seq nadawany jest w kolejności wyjmowania — przestawienie psuje ADR-0004")
+            .as("server_seq is assigned in drain order — reordering breaks ADR-0004")
             .isEqualTo("abcdefghij");
     }
 
     @Test
-    @DisplayName("wielokrotne opróżnianie zabiera wszystko, nic nie zostaje w buforze")
+    @DisplayName("draining repeatedly takes everything, leaving nothing in the buffer")
     void drainLeavesNothingBehind() {
         DocumentReplica replica = replicaWithPendingOperations(10);
 
@@ -105,7 +105,7 @@ class DocumentReplicaTest {
     }
 
     @Test
-    @DisplayName("wsad mniejszy od limitu wychodzi w całości")
+    @DisplayName("a batch smaller than the limit comes out whole")
     void drainReturnsEverythingBelowLimit() {
         DocumentReplica replica = replicaWithPendingOperations(2);
 

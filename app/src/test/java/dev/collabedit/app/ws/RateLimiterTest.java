@@ -6,30 +6,31 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Wiadro żetonów ograniczające tempo ramek (CP12).
+ * The token bucket that limits frame rate (CP12).
  *
- * <p>Czas jest podawany z zewnątrz, więc test nie śpi i nie zależy od zegara maszyny —
- * inaczej sprawdzałby, czy {@code Thread.sleep} jest punktualny, a nie czy limit działa.
+ * <p>Time is supplied from outside, so the test does not sleep and does not depend on the machine's
+ * clock — otherwise it would be checking whether {@code Thread.sleep} is punctual rather than
+ * whether the limit works.
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code burstIsAllowedThenThrottled}</td>
- *       <td>Limit bez zrywu. Wklejenie akapitu i retransmisja bufora po powrocie z trybu
- *           offline to legalne sytuacje, w których klient wysyła dużo naraz — limit,
- *           który je odrzuca, psuje działającą funkcję.</td></tr>
+ *       <td>A limit with no burst. Pasting a paragraph and retransmitting the buffer after coming
+ *           back from offline are legitimate situations in which a client sends a lot at once — a
+ *           limit that refuses them breaks a working feature.</td></tr>
  *   <tr><td>{@code tokensRefillOverTime}</td>
- *       <td>Wiadro, które się nie napełnia. Sesja raz ograniczona zostaje ograniczona
- *           na zawsze, więc użytkownik musi odświeżyć stronę, żeby pisać dalej.</td></tr>
+ *       <td>A bucket that never refills. A session limited once stays limited forever, so the user
+ *           has to reload the page to keep typing.</td></tr>
  *   <tr><td>{@code sessionsDoNotShareBudget}</td>
- *       <td>Wspólne wiadro dla wszystkich. Jeden aktywny klient wycisza pozostałych —
- *           czyli limit chroniący serwer staje się sposobem na atak na innych.</td></tr>
+ *       <td>One shared bucket for everyone. A single active client silences the rest — that is, a
+ *           limit meant to protect the server becomes a way to attack other users.</td></tr>
  *   <tr><td>{@code presenceAndOperationsHaveSeparateBudgets}</td>
- *       <td>Jedno wiadro na oba rodzaje ruchu. Obecność jest kilkukrotnie częstsza,
- *           więc zjadałaby budżet operacji — i pisanie przestawałoby działać przy
- *           samym poruszaniu kursorem.</td></tr>
+ *       <td>One bucket for both kinds of traffic. Presence is several times more frequent, so it
+ *           would eat the operation budget — and typing would stop working from moving the cursor
+ *           alone.</td></tr>
  *   <tr><td>{@code forgottenSessionStartsFresh}</td>
- *       <td>Wyciek pamięci: mapy wiader rosną z liczbą sesji od startu procesu.</td></tr>
+ *       <td>A memory leak: the bucket maps grow with the number of sessions since process start.</td></tr>
  * </table>
  */
 class RateLimiterTest {
@@ -37,7 +38,7 @@ class RateLimiterTest {
     private final RateLimiter limiter = new RateLimiter();
 
     @Test
-    @DisplayName("zryw jest przepuszczany, dopiero potem wchodzi ograniczenie")
+    @DisplayName("a burst is let through, and only then does throttling begin")
     void burstIsAllowedThenThrottled() {
         int allowed = 0;
         for (int i = 0; i < 500; i++) {
@@ -46,53 +47,53 @@ class RateLimiterTest {
             }
         }
         assertThat(allowed)
-            .as("zryw musi zmieścić wklejenie akapitu i retransmisję bufora offline")
+            .as("the burst has to fit pasting a paragraph and retransmitting the offline buffer")
             .isGreaterThanOrEqualTo(200)
             .isLessThan(500);
     }
 
     @Test
-    @DisplayName("żetony wracają wraz z upływem czasu")
+    @DisplayName("tokens come back as time passes")
     void tokensRefillOverTime() {
         while (limiter.allowOperation("s1", 1000).allowed()) {
-            // opróżniamy wiadro
+            // drain the bucket
         }
         assertThat(limiter.allowOperation("s1", 1000).allowed()).isFalse();
 
         assertThat(limiter.allowOperation("s1", 1100).allowed())
-            .as("po 100 ms wiadro nie odzyskało ani jednego żetonu — sesja jest zablokowana na stałe")
+            .as("after 100 ms the bucket recovered no tokens — the session is blocked for good")
             .isTrue();
     }
 
     @Test
-    @DisplayName("sesje nie dzielą budżetu")
+    @DisplayName("sessions do not share a budget")
     void sessionsDoNotShareBudget() {
-        while (limiter.allowOperation("hałaśliwa", 1000).allowed()) {
-            // wyczerpujemy budżet jednej sesji
+        while (limiter.allowOperation("noisy", 1000).allowed()) {
+            // exhaust one session's budget
         }
 
-        assertThat(limiter.allowOperation("spokojna", 1000).allowed())
-            .as("jedna aktywna sesja wyciszyła pozostałe — limit stał się narzędziem ataku")
+        assertThat(limiter.allowOperation("quiet", 1000).allowed())
+            .as("one active session silenced the others — the limit became an attack tool")
             .isTrue();
     }
 
     @Test
-    @DisplayName("obecność i operacje mają osobne budżety")
+    @DisplayName("presence and operations have separate budgets")
     void presenceAndOperationsHaveSeparateBudgets() {
         while (limiter.allowPresence("s1", 1000).allowed()) {
-            // wyczerpujemy budżet obecności
+            // exhaust the presence budget
         }
 
         assertThat(limiter.allowOperation("s1", 1000).allowed())
-            .as("ruch kursora zjadł budżet pisania — poruszanie kursorem blokuje edycję")
+            .as("cursor movement ate the typing budget — moving the cursor blocks editing")
             .isTrue();
     }
 
     @Test
-    @DisplayName("zapomniana sesja zaczyna od pełnego wiadra")
+    @DisplayName("a forgotten session starts from a full bucket")
     void forgottenSessionStartsFresh() {
         while (limiter.allowOperation("s1", 1000).allowed()) {
-            // opróżniamy
+            // drain it
         }
         limiter.forget("s1");
 
@@ -100,7 +101,7 @@ class RateLimiterTest {
     }
 
     @Test
-    @DisplayName("zapominanie sesji zwalnia pamięć")
+    @DisplayName("forgetting a session releases memory")
     void forgettingReleasesMemory() {
         limiter.allowOperation("s1", 1000).allowed();
         limiter.allowPresence("s1", 1000).allowed();
@@ -109,7 +110,7 @@ class RateLimiterTest {
         limiter.forget("s1");
 
         assertThat(limiter.trackedBuckets())
-            .as("mapy wiader rosną z liczbą sesji od startu procesu")
+            .as("the bucket maps grow with the number of sessions since process start")
             .isZero();
     }
 

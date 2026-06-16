@@ -9,24 +9,24 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * Baza testów integracyjnych — <b>prawdziwy Postgres i prawdziwy Redis</b>, nie atrapy
+ * The base for integration tests — <b>a real Postgres and a real Redis</b>, not stubs
  * (CLAUDE.md §3.2).
  *
- * <p>Powód jest konkretny, nie ideologiczny. Najważniejsze zachowania warstwy persystencji
- * w tym projekcie są <b>własnościami bazy</b>, których żadna atrapa nie odtworzy:
+ * <p>The reason is concrete, not ideological. The most important behaviours of this project's
+ * persistence layer are <b>properties of the database</b> that no stub reproduces:
  * <ul>
- *   <li>idempotencja zapisu wynika z klucza głównego {@code (doc_id, replica_id, lamport)} —
- *       mock po prostu nie odrzuci duplikatu,</li>
- *   <li>ciągłość {@code server_seq} zależy od blokady wiersza {@code FOR UPDATE}
- *       i zachowania transakcji,</li>
- *   <li>{@code JSONB}, {@code BYTEA} i sortowanie po {@code created_at} to zachowania
- *       sterownika i silnika, nie interfejsu.</li>
+ *   <li>write idempotence follows from the {@code (doc_id, replica_id, lamport)} primary key — a
+ *       mock simply will not reject a duplicate,</li>
+ *   <li>the continuity of {@code server_seq} depends on the {@code FOR UPDATE} row lock and on
+ *       transaction behaviour,</li>
+ *   <li>{@code JSONB}, {@code BYTEA} and ordering by {@code created_at} are behaviours of the
+ *       driver and the engine, not of an interface.</li>
  * </ul>
- * Test tych rzeczy na atrapie sprawdzałby, czy atrapa zgadza się sama ze sobą.
+ * Testing those things against a stub would check whether the stub agrees with itself.
  *
- * <p>Kontenery są <b>statyczne</b>, więc wstają raz na całą klasę zamiast raz na test.
- * Start Postgresa to kilka sekund; przy teście na metodę czas testów rósłby liniowo,
- * a jedynym zyskiem byłaby izolacja, którą i tak zapewnia osobny dokument w każdym teście.
+ * <p>The containers are <b>static</b>, so they come up once per class rather than once per test.
+ * Starting Postgres takes a few seconds; per-method containers would grow the test time linearly,
+ * and the only gain would be isolation that a separate document per test already provides.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Tag("integration")
@@ -69,20 +69,21 @@ public abstract class IntegrationTestBase {
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
 
-        // Krótsze okno wsadowania niż produkcyjne 50 ms: testy czekają na potwierdzenie
-        // zapisu, a każde 50 ms mnożone przez liczbę asercji to sekundy w przebiegu CI.
+        // A shorter batching window than the production 50 ms: the tests wait for a write
+        // acknowledgement, and every 50 ms multiplied by the number of assertions is seconds in a
+        // CI run.
         registry.add("collabedit.persistence.op-batch-window-ms", () -> 20);
-        // Snapshot co 20 operacji zamiast co 500 — chcemy, żeby testy DOTYKAŁY ścieżki
-        // snapshotowania i GC, a nie omijały jej dlatego, że nie generują dość operacji.
+        // A snapshot every 20 operations rather than every 500 — we want the tests to EXERCISE
+        // the snapshot and GC path, not skip it because they do not generate enough operations.
         registry.add("collabedit.persistence.snapshot-every-n-ops", () -> 20);
-        // Cisza rozpoznawana po 500 ms zamiast po 30 s. Wartość produkcyjna oznaczałaby
-        // test trwający pół minuty na samym czekaniu; skrócenie nie zmienia sprawdzanego
-        // zachowania, bo próg jest porównaniem, a nie zależnością czasową.
+        // Idleness recognised after 500 ms rather than 30 s. The production value would mean a
+        // test spending half a minute purely waiting; shortening it does not change the behaviour
+        // under test, because the threshold is a comparison rather than a timing dependency.
         registry.add("collabedit.persistence.snapshot-after-idle-ms", () -> 500);
 
-        // Bez tego każdy test próbuje wysyłać trace'y do nieistniejącego kolektora
-        // i zaśmieca wyjście ostrzeżeniami o nieudanym eksporcie. Obserwowalność nie
-        // jest przedmiotem tych testów, a jej hałas utrudnia czytanie tych, które są.
+        // Without this, every test tries to send traces to a non-existent collector and litters
+        // the output with export failure warnings. Observability is not what these tests are
+        // about, and its noise makes the ones that are harder to read.
         registry.add("otel.sdk.disabled", () -> "true");
 
         registry.add("collabedit.auth.secret", () -> TEST_SECRET);

@@ -9,36 +9,36 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Odczyt identyfikatora dokumentu z nazwy kanału Redisa.
+ * Reading a document identifier out of a Redis channel name.
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code channelRoundTrip}</td>
- *       <td>Rozjazd między budowaniem nazwy kanału a jej czytaniem. Skutek jest cichy
- *           i katastrofalny: instancja odrzuca WSZYSTKIE wiadomości klastrowe, bo żadnej
- *           nie potrafi przypisać do dokumentu. Nic się nie psuje natychmiast — operacje
- *           dociąga anti-entropy — ale propagacja między instancjami spada z milisekund
- *           do trzydziestu sekund i nie widać tego w żadnym logu.</td></tr>
+ *       <td>Drift between building a channel name and parsing it. The effect is silent and
+ *           catastrophic: the instance discards EVERY cluster message, because it cannot assign
+ *           any of them to a document. Nothing breaks immediately — anti-entropy pulls the
+ *           operations in — but propagation between instances drops from milliseconds to thirty
+ *           seconds, and no log shows it.</td></tr>
  *   <tr><td>{@code malformedChannelIsRejected}</td>
- *       <td>Nazwa niepasująca do wzorca daje wyjątek na wątku nasłuchu Redisa albo —
- *           gorzej — losowy UUID, przez który wiadomość trafia do niewłaściwego dokumentu.</td></tr>
+ *       <td>A name not matching the pattern throws on the Redis listener thread or — worse —
+ *           yields a random UUID that sends the message to the wrong document.</td></tr>
  * </table>
  */
 class ClusterBusTest {
 
     @Test
-    @DisplayName("nazwa kanału i jej odczyt są wzajemnie odwrotne")
+    @DisplayName("building a channel name and parsing it are mutually inverse")
     void channelRoundTrip() {
         UUID document = UUID.fromString("d7ccfdba-c8a1-44ea-9a7b-7f72910d88d8");
 
         assertThat(ClusterBus.documentIdOf(ClusterBus.channel(document)))
-            .as("odczyt nie odtworzył identyfikatora, którym zbudowano nazwę kanału")
+            .as("parsing did not recover the identifier the channel name was built from")
             .isEqualTo(document);
     }
 
     @Test
-    @DisplayName("odczyt działa dla dowolnego identyfikatora, nie tylko dla przykładowego")
+    @DisplayName("parsing works for any identifier, not just the sample one")
     void channelRoundTripForRandomIds() {
         for (int i = 0; i < 100; i++) {
             UUID document = UUID.randomUUID();
@@ -50,24 +50,24 @@ class ClusterBusTest {
     @ValueSource(strings = {
         "",
         "collabedit:doc::ops",
-        "collabedit:doc:nie-uuid:ops",
+        "collabedit:doc:not-a-uuid:ops",
         "collabedit:doc:d7ccfdba-c8a1-44ea-9a7b-7f72910d88d8",
-        "inny:kanal:d7ccfdba-c8a1-44ea-9a7b-7f72910d88d8:ops",
+        "other:channel:d7ccfdba-c8a1-44ea-9a7b-7f72910d88d8:ops",
         "collabedit:doc:d7ccfdba-c8a1-44ea-9a7b-7f72910d88d8:presence",
     })
-    @DisplayName("nazwa spoza wzorca daje null, a nie wyjątek ani przypadkowy identyfikator")
+    @DisplayName("a name outside the pattern gives null, not an exception or a random identifier")
     void malformedChannelIsRejected(String channel) {
         assertThat(ClusterBus.documentIdOf(channel)).isNull();
     }
 
     @Test
-    @DisplayName("wzorzec subskrypcji pasuje do nazw, które sami budujemy")
+    @DisplayName("the subscription pattern matches the names we build ourselves")
     void subscriptionPatternMatchesOwnChannels() {
         String channel = ClusterBus.channel(UUID.randomUUID());
         String regex = ClusterBus.CHANNEL_PATTERN.replace("*", "[^:]+");
 
         assertThat(channel)
-            .as("subskrybujemy wzorzec, pod który nasze własne kanały nie podpadają")
+            .as("we subscribe to a pattern our own channels do not match")
             .matches(regex);
     }
 }
