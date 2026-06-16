@@ -61,7 +61,7 @@ class ConformanceVectorGeneratorTest {
             duplicatedOperations()));
 
         written.add(write("005-backward-typing-interleaving",
-            "Pisanie wstecz przez dwie repliki. Utrwala ZNANE OGRANICZENIE RGA (ADR-0001): "
+            "Backward typing by two replicas. Pins the KNOWN RGA LIMITATION (ADR-0001): "
                 + "the result is an interleaving. The TS implementation must interleave THE SAME "
                 + "WAY — agreement matters more than whether the result is pleasing.",
             backwardTyping()));
@@ -95,12 +95,31 @@ class ConformanceVectorGeneratorTest {
         // Random scenarios with fixed seeds: repeatable, but varied.
         for (int seed = 1; seed <= 15; seed++) {
             written.add(write(String.format("1%02d-random-seed-%d", seed, seed),
-                "Losowy scenariusz o ziarnie " + seed
+                "Random scenario, seed " + seed
                     + ": 3 replicas, independent edits, delivery in random order.",
                 randomScenario(seed)));
         }
 
-        assertThat(written).hasSize(25);
+        // Random scenarios INCLUDING MARK OPERATIONS.
+        //
+        // Added because the corpus had a hole shaped exactly like the newest layer of the
+        // algorithm: randomScenario above emits only inserts and deletes, so every random vector
+        // in the corpus exercised the character sequence and nothing else. The whole mark layer —
+        // anchor resolution, the (lamport, replicaId) winner rule, segment merging — was checked
+        // on the TypeScript side by five hand-written vectors and by nothing that varies.
+        //
+        // Hand-written vectors catch the cases somebody thought of. These catch the ones nobody
+        // did, which is the entire reason the plain-text family exists and the reason its absence
+        // here was worth closing.
+        for (int seed = 1; seed <= 15; seed++) {
+            written.add(write(String.format("3%02d-random-marks-seed-%d", seed, seed),
+                "Random scenario with formatting, seed " + seed
+                    + ": 3 replicas, inserts, deletes, marks and mark removals, "
+                    + "delivery in random order.",
+                randomRichTextScenario(seed)));
+        }
+
+        assertThat(written).hasSize(40);
 
         // A self-check: every vector written must be reproducible by the same implementation that
         // generated it. A vector Java itself does not pass cannot be a reference for TypeScript.
@@ -249,8 +268,57 @@ class ConformanceVectorGeneratorTest {
         return ops;
     }
 
+    /**
+     * A random scenario that also formats.
+     *
+     * <p>Kept separate from {@link #randomScenario} rather than folded into it, so the existing
+     * fifteen vectors do not churn: a vector that changes for a reason unrelated to the algorithm
+     * makes the CI check "the corpus is up to date" noisy, and a noisy check gets ignored.
+     *
+     * <p>Ranges are chosen defensively (a mark needs at least two visible characters and a
+     * non-empty range) because the generator is not what is under test here — an
+     * {@code IndexOutOfBoundsException} while BUILDING a vector would say nothing about either
+     * implementation.
+     */
+    private static List<Op> randomRichTextScenario(long seed) {
+        Random random = new Random(seed);
+        ReplicaSet replicas = new ReplicaSet(3, ArrayBlockList::new);
+        String[] types = {MarkTypes.BOLD, MarkTypes.ITALIC, MarkTypes.LINK};
+
+        for (int step = 0; step < 30; step++) {
+            int replica = random.nextInt(3);
+            int length = replicas.get(replica).visibleLength();
+
+            int choice = random.nextInt(10);
+            if (length < 2 || choice < 5) {
+                replicas.insert(replica, random.nextInt(length + 1),
+                    String.valueOf((char) ('a' + random.nextInt(6))));
+            } else if (choice < 7) {
+                int position = random.nextInt(length);
+                replicas.delete(replica, position, Math.min(1 + random.nextInt(2), length - position));
+            } else {
+                int from = random.nextInt(length - 1);
+                int to = from + 1 + random.nextInt(length - from - 1 + 1);
+                String type = types[random.nextInt(types.length)];
+                if (choice < 9) {
+                    replicas.addMark(replica, from, to, type);
+                } else {
+                    replicas.removeMark(replica, from, to, type);
+                }
+            }
+
+            if (step % 5 == 4) {
+                replicas.deliverSome(random, 3);
+            }
+        }
+
+        List<Op> ops = new ArrayList<>(replicas.emitted().stream().map(ReplicaSet.Emitted::op).toList());
+        Collections.shuffle(ops, random);
+        return ops;
+    }
+
     // ------------------------------------------------------------------
-    // Zapis i weryfikacja
+    // Writing and verification
     // ------------------------------------------------------------------
 
     private static String write(String name, String description, List<Op> operations) throws IOException {

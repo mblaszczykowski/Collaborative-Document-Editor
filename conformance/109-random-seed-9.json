@@ -1,6 +1,6 @@
 {
   "name" : "109-random-seed-9",
-  "description" : "Losowy scenariusz o ziarnie 9: 3 replicas, independent edits, delivery in random order.",
+  "description" : "Random scenario, seed 9: 3 replicas, independent edits, delivery in random order.",
   "operations" : [ {
     "r" : 1,
     "l" : 11,
