@@ -16,20 +16,19 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Test chaosu dla klastra (CP8) — weryfikacja najmocniejszej tezy z ADR-0004.
+ * The cluster chaos test (CP8) — verification of the strongest claim in ADR-0004.
  *
- * <p>Teza brzmi: <b>zgubiona wiadomość Redisa nie jest problemem poprawności, tylko latencji
- * naprawy.</b> To jest ładne zdanie i dopóki nie zostanie sprawdzone, pozostaje ładnym zdaniem.
+ * <p>The claim is: <b>a lost Redis message is not a correctness problem, only a repair-latency
+ * one.</b> That is a nice sentence, and until it is checked it remains a nice sentence.
  *
- * <p>Test uruchamia <b>dwie prawdziwe instancje backendu</b> w jednym procesie, dzielące
- * tego samego Postgresa i tego samego Redisa. Klienci są podłączeni do różnych instancji,
- * więc jedyną drogą propagacji między nimi jest ścieżka klastrowa. Potem Redis jest
- * <b>zatrzymywany w trakcie edycji</b>.
+ * <p>The test starts <b>two real backend instances</b> in one process, sharing the same Postgres
+ * and the same Redis. The clients are connected to different instances, so the only route of
+ * propagation between them is the cluster path. Then Redis is <b>stopped mid-edit</b>.
  *
- * <p>Dwie instancje w jednym procesie zamiast dwóch kontenerów: kontenery wymagałyby zbudowania
- * obrazu przy każdej zmianie kodu, co zamieniłoby test trwający kilkanaście sekund w test
- * trwający minuty. Współdzielona maszyna wirtualna nie zmienia tego, co jest sprawdzane, bo
- * instancje i tak komunikują się wyłącznie przez Redisa i Postgresa.
+ * <p>Two instances in one process rather than two containers: containers would require building an
+ * image on every code change, turning a test of a dozen or so seconds into one of minutes. Sharing
+ * a JVM does not change what is being checked, because the instances communicate only through Redis
+ * and Postgres anyway.
  */
 class ClusterChaosIT extends IntegrationTestBase {
 
@@ -52,10 +51,10 @@ class ClusterChaosIT extends IntegrationTestBase {
         if (secondInstance != null) {
             return;
         }
-        // ARGUMENTY uruchomienia, nie `.properties()`. To nie jest kosmetyka: `.properties()`
-        // trafia do źródła o niższym priorytecie niż `application.yml`, więc `server.port=0`
-        // byłby po cichu przykryty przez `server.port: 8080` z konfiguracji — a druga
-        // instancja próbowałaby wstać na zajętym porcie.
+        // Startup ARGUMENTS, not `.properties()`. That is not cosmetic: `.properties()` lands in
+        // a source with lower precedence than `application.yml`, so `server.port=0` would be
+        // silently overridden by `server.port: 8080` from the configuration — and the second
+        // instance would try to come up on a port already in use.
         secondInstance = new SpringApplicationBuilder(CollabEditApplication.class)
             .run(
                 "--server.port=0",
@@ -64,13 +63,13 @@ class ClusterChaosIT extends IntegrationTestBase {
                 "--spring.datasource.password=" + POSTGRES.getPassword(),
                 "--spring.data.redis.host=" + REDIS.getHost(),
                 "--spring.data.redis.port=" + REDIS.getMappedPort(6379),
-                // Migracje wykonała już pierwsza instancja. Druga tylko sprawdza, czy schemat
-                // się zgadza — dokładnie tak, jak zachowuje się druga instancja na produkcji.
+                // The first instance already ran the migrations. The second only checks the
+                // schema matches — exactly how a second instance behaves in production.
                 "--spring.flyway.enabled=true",
                 "--collabedit.persistence.op-batch-window-ms=20",
-                // Przegląd anti-entropy co sekundę zamiast co 30 s. To jest jedyna rzecz
-                // przyspieszona na potrzeby testu: mechanizm jest ten sam, tylko nie czekamy
-                // pół minuty na jego uruchomienie.
+                // The anti-entropy sweep every second instead of every 30 s. This is the only
+                // thing sped up for the test: the mechanism is the same, we just do not wait half
+                // a minute for it to fire.
                 "--collabedit.cluster.anti-entropy-interval-ms=1000",
                 "--otel.sdk.disabled=true",
                 // Not optional since CP16: TokenService has no default secret and a context
@@ -100,74 +99,76 @@ class ClusterChaosIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("klienci podłączeni do RÓŻNYCH instancji widzą swoje zmiany")
+    @DisplayName("clients connected to DIFFERENT instances see each other's changes")
     void editsPropagateAcrossInstances() throws Exception {
         startSecondInstance();
-        UUID document = newDocument("Klaster");
+        UUID document = newDocument("Cluster");
 
         try (TestStompClient onFirst = new TestStompClient(
                 firstInstancePort, tokenFor("Anna"), document, 401);
              TestStompClient onSecond = new TestStompClient(
                  secondInstancePort, tokenFor("Marek"), document, 402)) {
 
-            onFirst.insert(0, "z instancji pierwszej");
-            onSecond.awaitCondition(() -> onSecond.text().contains("pierwszej"),
-                PATIENCE, "druga instancja dostaje zmianę");
+            onFirst.insert(0, "from the first instance");
+            onSecond.awaitCondition(() -> onSecond.text().contains("first"),
+                PATIENCE, "the second instance receives the change");
 
-            onSecond.insert(onSecond.text().length(), " i drugiej");
-            onFirst.awaitCondition(() -> onFirst.text().contains("drugiej"),
-                PATIENCE, "pierwsza instancja dostaje zmianę");
+            onSecond.insert(onSecond.text().length(), " and the second");
+            onFirst.awaitCondition(() -> onFirst.text().contains("second"),
+                PATIENCE, "the first instance receives the change");
 
             assertThat(onFirst.text()).isEqualTo(onSecond.text());
         }
     }
 
     @Test
-    @DisplayName("zatrzymanie Redisa w trakcie edycji nie gubi zmian — naprawia je anti-entropy")
+    @DisplayName("stopping Redis mid-edit loses no changes — anti-entropy repairs them")
     void redisOutageIsRepairedByAntiEntropy() throws Exception {
         startSecondInstance();
-        UUID document = newDocument("Awaria Redisa");
+        UUID document = newDocument("Redis outage");
 
         try (TestStompClient onFirst = new TestStompClient(
                 firstInstancePort, tokenFor("Anna"), document, 411);
              TestStompClient onSecond = new TestStompClient(
                  secondInstancePort, tokenFor("Marek"), document, 412)) {
 
-            onFirst.insert(0, "przed awaria. ");
-            onSecond.awaitCondition(() -> onSecond.text().contains("przed awaria"),
-                PATIENCE, "propagacja przed awarią");
+            onFirst.insert(0, "before the outage. ");
+            onSecond.awaitCondition(() -> onSecond.text().contains("before the outage"),
+                PATIENCE, "propagation before the outage");
 
-            // Punkt odniesienia SPRZED awarii. Bez niego warunek „lastAckSeq > 0" byłby
-            // spełniony już przez poprzednią operację i test przechodziłby, nie czekając
-            // na nic — czyli sprawdzałby, że potrafi nie czekać.
+            // A reference point from BEFORE the outage. Without it the condition "lastAckSeq > 0"
+            // would already be satisfied by the previous operation and the test would pass without
+            // waiting for anything — that is, it would check that it can not wait.
             long acknowledgedBeforeOutage = onFirst.lastAckSeq();
 
-            // AWARIA: Redis znika w trakcie pracy. Ścieżka szybka przestaje istnieć.
+            // THE OUTAGE: Redis disappears mid-work. The fast path ceases to exist.
             REDIS.getDockerClient().pauseContainerCmd(REDIS.getContainerId()).exec();
             try {
-                // Edycja MUSI działać dalej — Redis nie jest na ścieżce krytycznej zapisu.
-                onFirst.insert(onFirst.text().length(), "w trakcie awarii. ");
+                // Editing MUST keep working — Redis is not on the critical write path.
+                onFirst.insert(onFirst.text().length(), "during the outage. ");
 
-                // Zapis do logu operacji, czyli do ŹRÓDŁA PRAWDY, nie zależy od Redisa.
+                // Writing to the operation log, that is, to the SOURCE OF TRUTH, does not depend
+                // on Redis.
                 onFirst.awaitCondition(() -> onFirst.lastAckSeq() > acknowledgedBeforeOutage,
-                    PATIENCE, "zapis mimo braku Redisa");
+                    PATIENCE, "the write succeeds without Redis");
 
                 assertThat(documents.textOf(document))
-                    .as("edycja przestała działać, gdy padła ŚCIEŻKA SZYBKA — to znaczy, "
-                        + "że nie była szybka, tylko krytyczna")
-                    .contains("w trakcie awarii");
+                    .as("editing stopped working when the FAST PATH went down — meaning it was "
+                        + "not fast but critical")
+                    .contains("during the outage");
             } finally {
                 REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
             }
 
-            // Po powrocie Redisa druga instancja nie dostanie zgubionych wiadomości — one
-            // przepadły bezpowrotnie. Naprawić ma je PRZEGLĄD ANTI-ENTROPY, dociągając
-            // brakujące operacje z logu (ADR-0004). To jest cała teza tej architektury.
-            onSecond.awaitCondition(() -> onSecond.text().contains("w trakcie awarii"),
-                PATIENCE, "anti-entropy naprawia rozjazd po awarii Redisa");
+            // Once Redis is back, the second instance will not receive the lost messages — those
+            // are gone for good. The ANTI-ENTROPY SWEEP is what has to repair it, pulling the
+            // missing operations from the log (ADR-0004). That is the whole thesis of this
+            // architecture.
+            onSecond.awaitCondition(() -> onSecond.text().contains("during the outage"),
+                PATIENCE, "anti-entropy repairs the divergence after the Redis outage");
 
             assertThat(onSecond.text())
-                .as("instancje nie zbiegły się po awarii ścieżki szybkiej")
+                .as("the instances did not converge after the fast path failed")
                 .isEqualTo(onFirst.text());
         }
     }

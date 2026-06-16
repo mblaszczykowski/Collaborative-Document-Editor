@@ -14,14 +14,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Garbage collection tombstone'ów i jego konsekwencja dla bardzo spóźnionych klientów
- * (ADR-0005).
+ * Tombstone garbage collection and its consequence for very late clients (ADR-0005).
  *
- * <p>Ten test sprawdza najbardziej niewygodną obietnicę całego projektu: że gdy scalenia
- * <b>nie da się</b> wykonać uczciwie, system <b>odmawia jawnie</b>. Dwie alternatywy —
- * doklejenie tekstu w przypadkowe miejsce i ciche zignorowanie operacji — są łatwiejsze
- * do zaimplementowania i obie są gorsze, bo użytkownik dowiaduje się o utracie pracy
- * za późno albo wcale.
+ * <p>This test checks the most uncomfortable promise in the whole project: that when a merge
+ * <b>cannot</b> be performed honestly, the system <b>refuses explicitly</b>. The two alternatives —
+ * gluing the text into a random place and silently ignoring the operation — are easier to implement
+ * and both are worse, because the user learns their work was lost too late or never.
  */
 class GarbageCollectionIT extends IntegrationTestBase {
 
@@ -39,36 +37,36 @@ class GarbageCollectionIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("operacja spóźnionego klienta, zaczepiona o skasowany tombstone, jest odrzucana jawnie")
+    @DisplayName("a late client's operation anchored to a collected tombstone is refused explicitly")
     void staleOperationIsRejectedExplicitly() throws Exception {
         UUID document = newDocument("GC");
 
-        // Replika 301 pisze tekst i wysyła go do serwera.
+        // Replica 301 writes some text and sends it to the server.
         RgaDocument active = new RgaDocument(301);
         documents.submit(document, active.insert(0, "abcdef"), "u1");
 
-        // Replika 302 widziała ten sam tekst i — będąc offline — dopisuje coś NA KOŃCU,
-        // czyli zaczepia swoją operację o ostatni znak „f”.
+        // Replica 302 saw the same text and — being offline — appends something AT THE END,
+        // that is, anchors its operation to the last character "f".
         //
-        // Zaczepienie o koniec, a nie o środek tekstu, jest tu istotne i wynika z realnego
-        // ograniczenia GC: tombstone leżący w środku dokumentu jest ORIGINEM następnego
-        // bloku, więc nie wolno go fizycznie usunąć niezależnie od stabilności przyczynowej.
-        // Kolekcjonowalne są wyłącznie tombstone'y, do których nic nie referuje — w praktyce
-        // ogon dokumentu. Patrz ADR-0005, sekcja o faktycznym zasięgu GC.
+        // Anchoring to the end rather than the middle of the text matters here and follows from a
+        // real limitation of GC: a tombstone in the middle of a document is the ORIGIN of the next
+        // block, so it must not be physically removed regardless of causal stability. Only
+        // tombstones nothing references are collectable — in practice, the document's tail. See
+        // ADR-0005, the section on GC's actual reach.
         RgaDocument late = new RgaDocument(302);
         late.applyAll(java.util.List.of(lastOperationOf(document)));
         Op staleOperation = late.insert(6, "XYZ");
 
-        // W tym czasie „f” zostaje usunięte przez kogoś innego.
+        // Meanwhile "f" is deleted by somebody else.
         documents.submit(document, active.delete(5, 1), "u1");
 
-        // Replika 301 melduje postęp — bez tego stabilność przyczynowa nie ma z czego
-        // powstać i GC nigdy się nie odbędzie.
+        // Replica 301 reports progress — without it causal stability has nothing to be computed
+        // from and GC never happens.
         var replica = registry.get(document);
         replica.reportProgress(301, active.version(), System.currentTimeMillis());
 
-        // Dosyć operacji, żeby przekroczyć próg snapshotowania (w testach 20) — GC dzieje się
-        // przy snapshotowaniu, bo ono i tak przepisuje całą strukturę.
+        // Enough operations to cross the snapshot threshold (20 in tests) — GC happens at
+        // snapshot time, because that rewrites the whole structure anyway.
         for (int i = 0; i < 25; i++) {
             documents.submit(document, active.insert(active.visibleLength(), "z"), "u1");
             replica.reportProgress(301, active.version(), System.currentTimeMillis());
@@ -76,21 +74,21 @@ class GarbageCollectionIT extends IntegrationTestBase {
         awaitGc(document);
 
         assertThat(replica.gcWatermark().isEmpty())
-            .as("GC się nie odbył, więc test nie sprawdza tego, co miał")
+            .as("GC did not run, so the test is not checking what it was meant to")
             .isFalse();
 
-        // I dopiero teraz spóźniona replika wraca ze swoją operacją.
+        // And only now does the late replica come back with its operation.
         assertThatThrownBy(() -> documents.submit(document, staleOperation, "u2"))
-            .as("operacja bez punktu zaczepienia została przyjęta — tekst wylądowałby "
-                + "w przypadkowym miejscu albo zniknął bez śladu")
+            .as("an operation with no anchor point was accepted — the text would land in a "
+                + "random place or vanish without a trace")
             .isInstanceOf(DocumentService.ResyncRequiredException.class)
             .hasMessageContaining("garbage collection");
     }
 
     @Test
-    @DisplayName("operacja, która tylko WYPRZEDZIŁA swoją przyczynę, NIE jest odrzucana")
+    @DisplayName("an operation that merely ARRIVED BEFORE its cause is NOT rejected")
     void operationAheadOfItsCauseIsNotRejected() {
-        UUID document = newDocument("Wyprzedzenie");
+        UUID document = newDocument("Out of order");
 
         RgaDocument first = new RgaDocument(311);
         Op insert = first.insert(0, "abcdef");
@@ -99,23 +97,23 @@ class GarbageCollectionIT extends IntegrationTestBase {
         second.apply(insert);
         Op dependent = second.insert(3, "XYZ");
 
-        // Operacja zależna dociera PRZED swoją przyczyną. To jest normalna kolej rzeczy
-        // w sieci i musi zostać zbuforowana, a nie odrzucona — warunek odmowy jest celowo
-        // wąski (brak originu ORAZ pozycja poniżej granicy GC), bo zbyt szeroki gubiłby
-        // poprawne operacje w imię ochrony przed ich gubieniem.
+        // A dependent operation arrives BEFORE its cause. That is the normal course of events on
+        // a network and has to be buffered, not rejected — the refusal condition is deliberately
+        // narrow (no origin AND a position below the GC boundary), because too broad a condition
+        // would lose correct operations in the name of protecting against losing them.
         documents.submit(document, dependent, "u2");
         assertThat(documents.textOf(document))
-            .as("operacja bez przyczyny nie powinna jeszcze nic zmienić")
+            .as("an operation without its cause should not change anything yet")
             .isEmpty();
 
         documents.submit(document, insert, "u1");
 
         assertThat(documents.textOf(document))
-            .as("po dotarciu przyczyny zbuforowana operacja musi zostać zastosowana")
+            .as("once the cause arrives, the buffered operation has to be applied")
             .isEqualTo("abcXYZdef");
     }
 
-    /** Pierwsza operacja dokumentu — potrzebna, żeby druga replika zobaczyła ten sam stan. */
+    /** The document's first operation — needed so the second replica sees the same state. */
     private Op lastOperationOf(UUID document) throws InterruptedException {
         for (int attempt = 0; attempt < 100; attempt++) {
             var stored = documents.operationsSince(document, 0);
@@ -124,7 +122,7 @@ class GarbageCollectionIT extends IntegrationTestBase {
             }
             Thread.sleep(20);
         }
-        throw new AssertionError("operacja nie została zapisana");
+        throw new AssertionError("the operation was never stored");
     }
 
     private void awaitGc(UUID document) throws InterruptedException {

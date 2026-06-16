@@ -16,23 +16,23 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * Górna granica liczby replik trzymanych w pamięci (CP11).
+ * The upper bound on how many replicas are held in memory (CP11).
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code limitIsEnforcedOnLoad}</td>
- *       <td>Brak granicy POJEMNOŚCI. Sam próg bezczynności nie ogranicza niczego, gdy
- *           dokumenty są otwierane szybciej, niż wygasają — pamięć rośnie do OutOfMemory,
- *           a każda replika z osobna wygląda na potrzebną.</td></tr>
+ *       <td>No CAPACITY bound. An idle threshold alone bounds nothing when documents are opened
+ *           faster than they expire — memory grows to OutOfMemory, and every replica taken
+ *           individually looks necessary.</td></tr>
  *   <tr><td>{@code replicaWithUnwrittenOperationsIsNeverEvicted}</td>
- *       <td><b>Utrata danych.</b> Zwolnienie repliki z niepustym buforem kasuje operacje
- *           przyjęte od klienta i jeszcze niezapisane. Klient dostał już potwierdzenie
- *           scalenia, więc nie retransmituje — zmiana znika bez śladu.</td></tr>
+ *       <td><b>Data loss.</b> Releasing a replica with a non-empty buffer discards operations
+ *           accepted from a client and not yet written. The client has already had its merge
+ *           acknowledged, so it does not retransmit — the change disappears without a trace.</td></tr>
  *   <tr><td>{@code leastRecentlyUsedGoesFirst}</td>
- *       <td>Zwalnianie w przypadkowej kolejności. Poprawność cała, ale dokument właśnie
- *           edytowany bywa wyrzucany przed takim, którego nikt nie tknął — czyli koszt
- *           ponownego ładowania płaci się dokładnie tam, gdzie boli najbardziej.</td></tr>
+ *       <td>Eviction in arbitrary order. Correctness is intact, but the document being edited
+ *           right now can be thrown out ahead of one nobody has touched — so the cost of reloading
+ *           is paid exactly where it hurts most.</td></tr>
  * </table>
  */
 @SpringBootTest
@@ -41,16 +41,16 @@ class DocumentRegistryMemoryIT {
     private static final int LIMIT = 3;
 
     /**
-     * Własny zestaw właściwości zamiast dziedziczenia po {@code IntegrationTestBase}.
+     * Its own property set rather than inheriting from {@code IntegrationTestBase}.
      *
-     * <p>Powód jest konkretny i kosztował jeden fałszywy alarm: {@code @DynamicPropertySource}
-     * ma <b>wyższy priorytet</b> niż {@code @TestPropertySource}, więc nadpisanie okna
-     * wsadowania w klasie potomnej było po cichu ignorowane. Bufor niezapisanych operacji
-     * był opróżniany co 20 ms i test „repliki z pracą w toku nie wolno zwolnić" mierzył
-     * wyścig z harmonogramem zamiast reguły, którą sprawdza — padał, mimo że reguła działa.
+     * <p>The reason is concrete and cost one false alarm: {@code @DynamicPropertySource} has
+     * <b>higher precedence</b> than {@code @TestPropertySource}, so overriding the batching window
+     * in a subclass was silently ignored. The unwritten-operation buffer drained every 20 ms, and
+     * the test "a replica with work in flight must not be evicted" measured a race with the
+     * scheduler instead of the rule it checks — it failed even though the rule works.
      *
-     * <p>Kontenery są współdzielone z klasą bazową (są statyczne), więc osobny kontekst
-     * kosztuje sekundy, a nie kolejnego Postgresa.
+     * <p>The containers are shared with the base class (they are static), so a separate context
+     * costs seconds rather than another Postgres.
      */
     @DynamicPropertySource
     static void configure(DynamicPropertyRegistry registry) {
@@ -63,7 +63,7 @@ class DocumentRegistryMemoryIT {
         registry.add("collabedit.auth.secret", () -> IntegrationTestBase.TEST_SECRET);
 
         registry.add("collabedit.cluster.max-loaded-documents", () -> LIMIT);
-        // Okno wsadowania praktycznie wyłączone — patrz komentarz powyżej.
+        // The batching window is effectively disabled — see the comment above.
         registry.add("collabedit.persistence.op-batch-window-ms", () -> 600_000);
     }
 
@@ -79,63 +79,62 @@ class DocumentRegistryMemoryIT {
     }
 
     @Test
-    @DisplayName("liczba replik w pamięci nie przekracza limitu")
+    @DisplayName("the number of in-memory replicas does not exceed the limit")
     void limitIsEnforcedOnLoad() {
         for (int i = 0; i < LIMIT * 4; i++) {
-            registry.get(newDocument("pamiec-" + i));
+            registry.get(newDocument("memory-" + i));
         }
 
         assertThat(registry.loaded())
-            .as("rejestr rośnie bez ograniczeń — próg bezczynności nie jest granicą pamięci")
+            .as("the registry grows without bound — an idle threshold is not a memory bound")
             .hasSizeLessThanOrEqualTo(LIMIT);
     }
 
     @Test
-    @DisplayName("replika z niezapisanymi operacjami nie jest zwalniana nawet ponad limitem")
+    @DisplayName("a replica with unwritten operations is never evicted, even over the limit")
     void replicaWithUnwrittenOperationsIsNeverEvicted() {
-        UUID busy = newDocument("zajety");
+        UUID busy = newDocument("busy");
         var replica = registry.get(busy);
 
-        // Operacja przyjęta, ale jeszcze niezapisana — dokładnie ten stan, w którym
-        // zwolnienie repliki oznacza cichą utratę pracy użytkownika.
+        // An operation accepted but not yet written — exactly the state in which evicting the
+        // replica means silently losing the user's work.
         RgaDocument browser = new RgaDocument(4242);
-        replica.merge(browser.insert(0, "praca w toku"), "tester", null, System.currentTimeMillis());
+        replica.merge(browser.insert(0, "work in flight"), "tester", null, System.currentTimeMillis());
         assertThat(replica.unwrittenCount()).isPositive();
 
         for (int i = 0; i < LIMIT * 4; i++) {
-            registry.get(newDocument("napor-" + i));
+            registry.get(newDocument("pressure-" + i));
         }
 
         assertThat(registry.isLoaded(busy))
-            .as("zwolniono replikę z niezapisanymi operacjami — to jest utrata danych")
+            .as("a replica with unwritten operations was evicted — that is data loss")
             .isTrue();
     }
 
     @Test
-    @DisplayName("zwalniane są najdawniej używane, nie przypadkowe")
+    @DisplayName("the least recently used are evicted, not arbitrary ones")
     void leastRecentlyUsedGoesFirst() throws Exception {
         List<UUID> documents = new ArrayList<>();
         for (int i = 0; i < LIMIT; i++) {
-            UUID id = newDocument("kolejnosc-" + i);
+            UUID id = newDocument("order-" + i);
             documents.add(id);
             registry.get(id);
-            // Odstęp, żeby znaczniki czasu aktywności były rozróżnialne — bez tego
-            // porządkowanie po lastActivityMillis testuje rozdzielczość zegara,
-            // a nie logikę wyboru.
+            // A gap so the activity timestamps are distinguishable — without it, ordering by
+            // lastActivityMillis tests the clock's resolution rather than the selection logic.
             Thread.sleep(5);
         }
 
-        // Dotknięcie NAJSTARSZEGO odświeża jego aktywność, więc ofiarą powinien paść drugi.
+        // Touching the OLDEST refreshes its activity, so the second one should be the victim.
         UUID refreshed = documents.getFirst();
         registry.get(refreshed).merge(
             new RgaDocument(777).insert(0, "x"), "tester", null, System.currentTimeMillis());
         registry.get(refreshed).drainUnwritten(100);
         Thread.sleep(5);
 
-        registry.get(newDocument("nowy"));
+        registry.get(newDocument("new"));
 
         assertThat(registry.isLoaded(refreshed))
-            .as("zwolniono dokument, którego użyto ostatnio — porządek LRU nie działa")
+            .as("the most recently used document was evicted — the LRU ordering does not work")
             .isTrue();
     }
 }

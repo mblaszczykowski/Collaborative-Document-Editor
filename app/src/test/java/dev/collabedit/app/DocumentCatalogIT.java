@@ -12,29 +12,28 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Katalog dokumentów (CP11) — lista, wyszukiwanie, miękkie usuwanie, podgląd.
+ * The document catalog (CP11) — listing, search, soft delete, preview.
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code softDeleteKeepsOperationLog}</td>
- *       <td><b>Nieodwracalne zniszczenie źródła prawdy.</b> {@code operations} ma
- *           {@code ON DELETE CASCADE} na {@code doc_id}, więc jedno {@code DELETE} na
- *           dokumencie kasuje całą jego historię — tabelę, która wg ADR-0003 jest wyłącznie
- *           dopisywana. Nie da się tego cofnąć i nie widać tego, dopóki ktoś nie poprosi
- *           o przywrócenie.</td></tr>
+ *       <td><b>Irreversible destruction of the source of truth.</b> {@code operations} has
+ *           {@code ON DELETE CASCADE} on {@code doc_id}, so one {@code DELETE} on a document
+ *           erases its entire history — a table that per ADR-0003 is append-only. It cannot be
+ *           undone and is invisible until somebody asks for a restore.</td></tr>
  *   <tr><td>{@code deletedDocumentDisappearsFromList}</td>
- *       <td>Usunięcie, które niczego nie chowa. Bez tego „usuń" nie robi nic widocznego.</td></tr>
+ *       <td>A delete that hides nothing. Without this, "delete" does nothing visible.</td></tr>
  *   <tr><td>{@code restoreBringsDocumentBack}</td>
- *       <td>Miękkie usuwanie bez drogi powrotnej — czyli twarde usuwanie z dodatkowym
- *           kosztem miejsca w bazie i bez żadnej z jego zalet.</td></tr>
+ *       <td>Soft delete with no way back — which is hard delete with the extra cost of database
+ *           space and none of its benefits.</td></tr>
  *   <tr><td>{@code previewIsMaterialisedAtSnapshot}</td>
- *       <td>Lista dokumentów bez podglądu musiałaby ładować replikę CRDT dla każdej
- *           pozycji. Poprawność cała, koszt otwarcia listy rośnie z liczbą dokumentów
- *           razy ich rozmiar.</td></tr>
+ *       <td>Without a preview, the document list would have to load a CRDT replica per entry.
+ *           Correctness is intact; the cost of opening the list grows with the number of documents
+ *           times their size.</td></tr>
  *   <tr><td>{@code searchFindsByTitleAndContent}</td>
- *       <td>Indeks pełnotekstowy nieobejmujący treści — wyszukiwarka znajdująca wyłącznie
- *           to, co użytkownik sam nazwał.</td></tr>
+ *       <td>A full-text index that does not cover content — a search that finds only what the user
+ *           named themselves.</td></tr>
  * </table>
  */
 class DocumentCatalogIT extends IntegrationTestBase {
@@ -64,15 +63,15 @@ class DocumentCatalogIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("miękkie usunięcie NIE tyka logu operacji")
+    @DisplayName("a soft delete does NOT touch the operation log")
     void softDeleteKeepsOperationLog() throws Exception {
-        UUID document = newDocument("Do usunięcia");
+        UUID document = newDocument("To be deleted");
 
         try (TestStompClient anna = new TestStompClient(
             port, tokens.issue(new TokenService.Principal(
                 UUID.randomUUID().toString(), "Anna", "#C1592E")), document, 901)) {
-            anna.insert(0, "treść, której nie wolno stracić");
-            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            anna.insert(0, "content that must not be lost");
+            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
 
         int before = operationRows(document);
@@ -81,14 +80,14 @@ class DocumentCatalogIT extends IntegrationTestBase {
         assertThat(catalog.softDelete(document)).isTrue();
 
         assertThat(operationRows(document))
-            .as("usunięcie dokumentu skasowało jego log operacji — to jest nieodwracalne")
+            .as("deleting the document erased its operation log — that is irreversible")
             .isEqualTo(before);
     }
 
     @Test
-    @DisplayName("usunięty dokument znika z listy i pojawia się w koszu")
+    @DisplayName("a deleted document disappears from the list and appears in the bin")
     void deletedDocumentDisappearsFromList() {
-        UUID document = newDocument("Znikający");
+        UUID document = newDocument("Vanishing");
         assertThat(catalog.list(null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
 
@@ -102,41 +101,41 @@ class DocumentCatalogIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("przywrócenie wraca dokument na listę")
+    @DisplayName("restoring brings the document back to the list")
     void restoreBringsDocumentBack() {
-        UUID document = newDocument("Wracający");
+        UUID document = newDocument("Returning");
         catalog.softDelete(document);
 
         assertThat(catalog.restore(document)).isTrue();
         assertThat(catalog.find(document)).isPresent();
-        // Powtórzone przywrócenie nie ma czego przywracać i mówi to wprost.
+        // A repeated restore has nothing to restore, and says so plainly.
         assertThat(catalog.restore(document)).isFalse();
     }
 
     @Test
-    @DisplayName("powtórzone usunięcie nie przesuwa daty usunięcia")
+    @DisplayName("a repeated delete does not move the deletion date")
     void repeatedDeleteIsIdempotent() {
-        UUID document = newDocument("Dwa razy");
+        UUID document = newDocument("Twice");
 
         assertThat(catalog.softDelete(document)).isTrue();
         assertThat(catalog.softDelete(document))
-            .as("drugie usunięcie zgłosiło sukces — czyli przestawiło datę na dzisiaj")
+            .as("the second delete reported success — meaning it moved the date to today")
             .isFalse();
     }
 
     @Test
-    @DisplayName("podgląd treści powstaje przy snapshotowaniu, bez ładowania repliki przez listę")
+    @DisplayName("the content preview is materialised at snapshot time, so the list loads no replica")
     void previewIsMaterialisedAtSnapshot() throws Exception {
-        UUID document = newDocument("Z podglądem");
+        UUID document = newDocument("With a preview");
 
         try (TestStompClient anna = new TestStompClient(
             port, tokens.issue(new TokenService.Principal(
                 UUID.randomUUID().toString(), "Anna", "#C1592E")), document, 902)) {
-            // Próg snapshotowania w testach to 20 operacji.
+            // The snapshot threshold in tests is 20 operations.
             for (int i = 0; i < 25; i++) {
                 anna.insert(i, "x");
             }
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 25, PATIENCE, "zapis potwierdzony");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 25, PATIENCE, "write acknowledged");
         }
 
         for (int attempt = 0; attempt < 200; attempt++) {
@@ -147,31 +146,31 @@ class DocumentCatalogIT extends IntegrationTestBase {
         }
 
         assertThat(catalog.find(document).orElseThrow().preview())
-            .as("podgląd nie powstał — lista dokumentów musiałaby ładować repliki CRDT")
+            .as("the preview was not created — the document list would have to load CRDT replicas")
             .isEqualTo("x".repeat(25));
     }
 
     @Test
-    @DisplayName("wyszukiwanie znajduje po tytule i po treści")
+    @DisplayName("search finds by title and by content")
     void searchFindsByTitleAndContent() throws Exception {
-        String marker = "kwantowy" + System.nanoTime();
-        UUID byTitle = newDocument("Raport " + marker);
+        String marker = "quantum" + System.nanoTime();
+        UUID byTitle = newDocument("Report " + marker);
 
         assertThat(catalog.search(marker, 50))
-            .as("wyszukiwanie nie znajduje po tytule")
+            .as("search does not find by title")
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(byTitle);
 
-        // Treść wchodzi do indeksu przez preview_text, czyli dopiero po snapshocie.
-        UUID byContent = newDocument("Bez znacznika w tytule");
-        String contentMarker = "fotoniczny" + System.nanoTime();
+        // Content enters the index through preview_text, so only after a snapshot.
+        UUID byContent = newDocument("No marker in the title");
+        String contentMarker = "photonic" + System.nanoTime();
         try (TestStompClient anna = new TestStompClient(
             port, tokens.issue(new TokenService.Principal(
                 UUID.randomUUID().toString(), "Anna", "#C1592E")), byContent, 903)) {
             for (int i = 0; i < 25; i++) {
                 anna.insert(anna.text().length(), i == 0 ? contentMarker : " ");
             }
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 25, PATIENCE, "zapis potwierdzony");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 25, PATIENCE, "write acknowledged");
         }
 
         boolean found = false;
@@ -183,7 +182,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
             }
         }
         assertThat(found)
-            .as("wyszukiwanie nie obejmuje treści — znajduje tylko to, co użytkownik sam nazwał")
+            .as("search does not cover content — it finds only what the user named themselves")
             .isTrue();
     }
 }
