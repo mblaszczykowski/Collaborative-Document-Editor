@@ -16,14 +16,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Repliki dokumentów trzymane w pamięci tej instancji — ładowanie na żądanie, zwalnianie
- * po bezczynności.
+ * The document replicas held in this instance's memory — loaded on demand, released when idle.
  *
- * <p>Wynika z ADR-0004: dokument otwarty przez klientów podłączonych do trzech instancji
- * żyje w trzech kopiach. To jest <b>świadomy koszt</b> rezygnacji z właściciela dokumentu
- * i sticky sessions — zapisany wprost w konsekwencjach negatywnych tamtego ADR-a. Przy
- * dokumentach rzędu megabajtów albo przy kilkunastu instancjach właściwą odpowiedzią
- * byłaby zmiana architektury, a nie optymalizacja tego miejsca.
+ * <p>This follows from ADR-0004: a document open by clients connected to three instances lives in
+ * three copies. That is the <b>deliberate cost</b> of doing without a document owner and sticky
+ * sessions — written down explicitly in that ADR's negative consequences. With documents in the
+ * megabytes, or with a dozen or more instances, the right answer would be a change of architecture
+ * rather than an optimisation here.
  */
 @Component
 public class DocumentRegistry {
@@ -31,12 +30,12 @@ public class DocumentRegistry {
     private static final Logger log = LoggerFactory.getLogger(DocumentRegistry.class);
 
     /**
-     * Identyfikator repliki tej instancji backendu.
+     * This backend instance's replica identifier.
      *
-     * <p>Ujemny celowo: klienty dostają identyfikatory dodatnie (licznik w Redisie), więc
-     * przestrzenie nie mogą się przeciąć nawet przy błędzie w przydzielaniu. Instancja
-     * serwera prawie nigdy nie generuje własnych operacji — wyjątkiem jest przywracanie
-     * wersji z historii (CP5), które zgodnie z ADR-0003 zapisujemy jako nowe operacje.
+     * <p>Negative deliberately: clients get positive identifiers (the counter in Redis), so the two
+     * spaces cannot intersect even if allocation goes wrong. A server instance almost never
+     * generates operations of its own — the exception is restoring a version from history (CP5),
+     * which per ADR-0003 we record as new operations.
      */
     private final int serverReplicaId = -Math.abs(UUID.randomUUID().hashCode() % 1_000_000) - 1;
 
@@ -57,12 +56,12 @@ public class DocumentRegistry {
     }
 
     /**
-     * Replika dokumentu, ładowana z bazy przy pierwszym użyciu.
+     * A document's replica, loaded from the database on first use.
      *
-     * <p>Ładowanie to snapshot (jeśli jest czytelny) plus odtworzenie ogona logu operacji.
-     * Gdy snapshotu nie ma albo ma nieobsługiwany format, odtwarzamy z całego logu — wolniej,
-     * ale z identycznym wynikiem. Ta równoważność jest testowana wprost (CP5), bo bez testu
-     * cache po cichu stałby się źródłem prawdy.
+     * <p>Loading means a snapshot (when one is readable) plus replaying the tail of the operation
+     * log. When there is no snapshot, or it is in an unsupported format, we replay the whole log —
+     * slower, with an identical result. That equivalence is tested explicitly (CP5), because
+     * without a test the cache would quietly become the source of truth.
      */
     public DocumentReplica get(UUID documentId) {
         DocumentReplica replica = replicas.computeIfAbsent(documentId, this::load);
@@ -193,14 +192,14 @@ public class DocumentRegistry {
         }
 
         if (document.pendingCount() > 0) {
-            // Operacja bez swojej przyczyny w logu oznaczałaby uszkodzony log — coś, czego
-            // przy poprawnym zapisie nie da się wytworzyć. Logujemy głośno zamiast milczeć,
-            // bo cicha utrata treści jest znacznie gorsza niż widoczny alarm.
-            log.error("Dokument {} po odtworzeniu ma {} operacji bez przyczyny — log może być uszkodzony",
+            // An operation without its cause in the log would mean a corrupt log — something a
+            // correct write cannot produce. We log loudly rather than stay silent, because
+            // silently losing content is far worse than a visible alarm.
+            log.error("After replay, document {} has {} operations with no cause — the log may be corrupt",
                 documentId, document.pendingCount());
         }
 
-        log.info("Załadowano dokument {}: snapshot={}, operacji z logu={}, znaków={}, tombstonów={}, czas={}ms",
+        log.info("Loaded document {}: snapshot={}, operations from the log={}, characters={}, tombstones={}, time={}ms",
             documentId, snapshot.isPresent(), tail.size(), document.visibleLength(),
             document.tombstoneCount(), (System.nanoTime() - started) / 1_000_000);
 
@@ -216,10 +215,10 @@ public class DocumentRegistry {
     }
 
     /**
-     * Zwalnia z pamięci repliki dokumentów, które od dłuższego czasu nikogo nie interesują.
+     * Releases from memory the replicas of documents nobody has been interested in for a while.
      *
-     * <p>Replika z niezapisanym wsadem nie jest zwalniana — inaczej zwolnienie pamięci
-     * kasowałoby przyjęte, ale jeszcze nietrwałe operacje.
+     * <p>A replica with an unwritten batch is not released — otherwise reclaiming memory would
+     * discard operations that were accepted but are not yet durable.
      */
     public int evictIdle(long nowMillis) {
         long ttl = properties.cluster().idleDocumentEvictionMs();
@@ -243,7 +242,7 @@ public class DocumentRegistry {
         return evicted;
     }
 
-    /** Wyłącznie do testów — wymusza ponowne odczytanie stanu z bazy. */
+    /** For tests only — forces the state to be read from the database again. */
     public void forget(UUID documentId) {
         replicas.remove(documentId);
     }
