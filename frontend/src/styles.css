@@ -476,3 +476,68 @@ button { font-family: inherit; cursor: pointer; }
   margin: 24px 0; padding: 14px 16px; border-radius: 6px; font-size: 13.5px; line-height: 1.55;
   border: 1px solid var(--chrome-line); background: var(--hover); color: var(--text);
 }
+
+/* --- udostępnianie (CP21) --- */
+
+/* Panel jest modalny, a nie rozwijany spod przycisku. Powód jest treściowy, nie estetyczny:
+   pokazuje LISTĘ osób i LISTĘ zaproszeń, więc jego wysokość zależy od danych — a rozwijana
+   warstwa, która czasem sięga poza okno, zmusza do przewijania czegoś, czego użytkownik
+   nie widzi jako obszaru przewijania. */
+.share-backdrop {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(26, 26, 26, 0.28);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 72px 16px 16px;
+}
+
+.share-panel {
+  width: min(560px, 100%); max-height: calc(100vh - 96px); overflow-y: auto;
+  background: var(--page); border: 1px solid var(--chrome-line); border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  padding: 18px 20px 22px; display: flex; flex-direction: column; gap: 18px;
+}
+
+.share-head { display: flex; align-items: center; justify-content: space-between; }
+.share-head h2 { margin: 0; font-family: var(--serif); font-size: 19px; font-weight: 600; }
+.share-close {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 22px; line-height: 1; color: var(--text-faint); padding: 0 4px;
+}
+.share-close:hover { color: var(--text); }
+
+.share-section { display: flex; flex-direction: column; gap: 8px; }
+.share-section h3 {
+  margin: 0; font-size: 11.5px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.share-hint { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-dim); }
+.share-loading { margin: 0; font-size: 13px; color: var(--text-dim); }
+
+.share-row { display: flex; gap: 8px; align-items: center; }
+.share-row select { flex: 1; min-width: 0; }
+
+.share-panel select,
+.share-panel input {
+  padding: 6px 8px; font-size: 13px; font-family: var(--sans);
+  border: 1px solid var(--chrome-line); border-radius: 4px;
+  background: var(--page); color: var(--text);
+}
+.share-panel input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; }
+
+.share-fresh { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.share-fresh .share-hint { flex-basis: 100%; }
+
+.share-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.share-list li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--page-line);
+}
+.share-list li:last-child { border-bottom: none; }
+.share-list li > span:first-child { flex: 1; min-width: 0; }
+.share-meta { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+
+.share-action {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 12px; color: var(--text-faint); padding: 2px 0;
+}
+.share-action:hover { color: var(--bad); text-decoration: underline; }

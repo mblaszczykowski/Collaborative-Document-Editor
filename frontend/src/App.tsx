@@ -18,6 +18,7 @@ import { initials, peopleLabel, shiftAfter, wordCount } from './ui/format'
 import { CommentsPanel } from './ui/CommentsPanel'
 import { HistoryPanel } from './ui/HistoryPanel'
 import { SaveIndicator } from './ui/SaveIndicator'
+import { SharePanel } from './ui/SharePanel'
 import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
 
 /**
@@ -103,7 +104,39 @@ function Workspace({ session }: { session: Session }) {
 
   useEffect(() => {
     void refresh().then(async (list) => {
-      const requested = new URLSearchParams(window.location.search).get('doc')
+      const params = new URLSearchParams(window.location.search)
+
+      /**
+       * Zaproszenie w adresie (CP21).
+       *
+       * Wymieniamy je na rolę PRZED otwarciem dokumentu, bo bez tego pierwsze żądanie
+       * poszłoby bez dostępu i skończyło się ekranem „nie możemy otworzyć" — dla osoby,
+       * która właśnie kliknęła zaproszenie, jest to najgorszy możliwy komunikat.
+       *
+       * Token znika z adresu od razu po wymianie. Zostawiony w pasku adresu byłby dalej
+       * roznoszony przy każdym kopiowaniu linku — a jest to poświadczenie na okaziciela.
+       */
+      const invite = params.get('invite')
+      if (invite !== null) {
+        const url = new URL(window.location.href)
+        url.searchParams.delete('invite')
+        try {
+          const redeemed = await api.redeemInvite(invite)
+          url.searchParams.set('doc', redeemed.documentId)
+          window.history.replaceState({ doc: redeemed.documentId }, '', url)
+          await refresh()
+          setOpenId(redeemed.documentId)
+          return
+        } catch {
+          // Zaproszenie nieznane, wycofane albo przeterminowane — jedna odpowiedź na trzy
+          // przypadki, tak samo jak przy dokumencie bez dostępu. Otwieramy dokument
+          // normalnie: jeśli dostęp jest z innego tytułu, zadziała; jeśli nie, użytkownik
+          // zobaczy ekran braku dostępu, który tłumaczy, co robić.
+          window.history.replaceState({}, '', url)
+        }
+      }
+
+      const requested = params.get('doc')
       if (requested !== null) {
         setOpenId(requested)
         return
@@ -212,6 +245,7 @@ function DocumentWorkspace(props: {
   const [characters, setCharacters] = useState(0)
   const [recovery, setRecovery] = useState<{ title: string; id: string } | null>(null)
   const [shared, setShared] = useState(false)
+  const [sharing, setSharing] = useState(false)
   const [network, setNetwork] = useState<NetworkConditions>({
     latencyMs: 0,
     jitterMs: 0,
@@ -354,6 +388,25 @@ function DocumentWorkspace(props: {
           }
           console.error(`[${code}] ${message}`)
         },
+        /**
+         * Zmiana dostępu (CP21) — pytamy serwer o SWOJĄ rolę, nie wierzymy komunikatowi.
+         *
+         * Do CP21 rola przyjeżdżała raz, ze stanem początkowym, więc podniesienie komuś
+         * uprawnień nie robiło nic do czasu przeładowania strony. Nie była to dziura —
+         * serwer i tak odrzucał operacje — tylko sposób, w jaki działająca funkcja
+         * wygląda na zepsutą: właściciel nadaje dostęp, a druga osoba dalej widzi
+         * dokument tylko do odczytu i nic jej tego nie tłumaczy.
+         *
+         * Pytamy o samą rolę, a nie przez `openDocument`: tamto niesie też cały tekst.
+         */
+        onAccessChanged: (userId) => {
+          if (userId !== null && userId !== session.userId) return
+          void api.myRole(documentId)
+            .then((mine) => setRole(mine.role))
+            // 404 znaczy „już nie masz dostępu" — ta sama odpowiedź co przy dokumencie,
+            // którego nie wolno czytać, i ten sam ekran co przy otwarciu bez dostępu.
+            .catch(() => setUnavailable(true))
+        },
       })
       link.simulator.onChange(setNetwork)
       void link.restoreOfflineBuffer().then(() => link.connect())
@@ -369,7 +422,7 @@ function DocumentWorkspace(props: {
       connection.current?.disconnect()
       connection.current = null
     }
-  }, [documentId, session.token, refreshStats, recoverAfterRejection])
+  }, [documentId, session.token, session.userId, refreshStats, recoverAfterRejection])
 
   const onLocalOps = useCallback(
     (ops: Op[]) => {
@@ -442,7 +495,20 @@ function DocumentWorkspace(props: {
       }))
   }, [presence, session.userId, characters])
 
+  /**
+   * Udostępnianie (CP21).
+   *
+   * Właściciel dostaje panel; wszyscy pozostali — kopię adresu, czyli to, co ten przycisk
+   * robił wcześniej dla wszystkich. Różnica nie jest kosmetyczna: od CP21 nowy dokument
+   * jest prywatny, więc sam adres nikogo nie wpuszcza. Skopiowanie go przez osobę bez prawa
+   * zarządzania dostępem jest nadal sensownym gestem („wyślij mi to jeszcze raz"), ale to
+   * zaproszenie wpuszcza — i tylko właściciel może je wystawić.
+   */
   async function share() {
+    if (role === 'owner') {
+      setSharing(true)
+      return
+    }
     await navigator.clipboard.writeText(window.location.href)
     setShared(true)
     setTimeout(() => setShared(false), 2000)
@@ -487,6 +553,8 @@ function DocumentWorkspace(props: {
           </button>
         </div>
       </header>
+
+      {sharing && <SharePanel documentId={documentId} onClose={() => setSharing(false)} />}
 
       {DEBUG && (
         <DiagnosticsBar

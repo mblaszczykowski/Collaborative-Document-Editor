@@ -130,6 +130,14 @@ export interface CommentThread {
   messages: CommentMessage[]
 }
 
+/** Kto ma dostęp do dokumentu — widok właściciela (CP21). */
+export interface AccessState {
+  visibility: 'private' | 'link'
+  ownerId: string | null
+  members: { userId: string; displayName: string; role: DocumentState['role'] }[]
+  invites: { id: string; role: DocumentState['role']; expiresAt: string }[]
+}
+
 export const api = {
   history: (documentId: string) =>
     request<Version[]>(`/documents/${documentId}/history`),
@@ -219,4 +227,53 @@ export const api = {
 
   reopenThread: (threadId: string) =>
     requestNoContent(`/comments/${threadId}/reopen`, { method: 'POST' }),
+
+  // --- dostęp (CP21) ---
+  //
+  // Do CP21 tych wywołań nie było i nie było czego wołać: `grant`/`revoke` istniały na
+  // serwerze wyłącznie dla testów. Zapraszanie idzie LINKIEM, a nie po nazwie użytkownika,
+  // bo logowanie bez hasła nadaje nowy identyfikator przy każdym wejściu — nie ma czego
+  // wpisać w pole „udostępnij komu" (ADR-0014).
+
+  access: (documentId: string) => request<AccessState>(`/documents/${documentId}/access`),
+
+  /**
+   * Rola pytającego i nic poza nią.
+   *
+   * Osobne wywołanie, bo `openDocument` niesie też CAŁY tekst — a po komunikacie
+   * `ACCESS_CHANGED` potrzebujemy jednego słowa, nie stu tysięcy znaków.
+   */
+  myRole: (documentId: string) =>
+    request<{ role: DocumentState['role'] }>(`/documents/${documentId}/access/me`),
+
+  setVisibility: (documentId: string, visibility: 'private' | 'link') =>
+    requestNoContent(`/documents/${documentId}/access/visibility`, {
+      method: 'PUT',
+      body: JSON.stringify({ visibility }),
+    }),
+
+  setMemberRole: (documentId: string, userId: string, role: DocumentState['role']) =>
+    requestNoContent(`/documents/${documentId}/access/members/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role }),
+    }),
+
+  removeMember: (documentId: string, userId: string) =>
+    requestNoContent(`/documents/${documentId}/access/members/${userId}`, { method: 'DELETE' }),
+
+  createInvite: (documentId: string, role: DocumentState['role']) =>
+    request<{ token: string; id: string; role: string; expiresAt: string }>(
+      `/documents/${documentId}/access/invites`,
+      { method: 'POST', body: JSON.stringify({ role }) },
+    ),
+
+  revokeInvite: (documentId: string, inviteId: string) =>
+    requestNoContent(`/documents/${documentId}/access/invites/${inviteId}`, { method: 'DELETE' }),
+
+  /** Wymienia token zaproszenia na rolę. Dokument bierze się Z TOKENU, nie z adresu. */
+  redeemInvite: (token: string) =>
+    request<{ documentId: string; role: DocumentState['role'] }>('/invites/redeem', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
 }

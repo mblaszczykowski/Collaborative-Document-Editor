@@ -27,6 +27,7 @@ than I had assumed.
 | [0011](0011-komentarze.md) | The comment anchor in the CRDT, the conversation outside it | Accepted |
 | [0012](0012-autoryzacja-strukturalna.md) | Authorization declared at the endpoint and enforced by construction — an endpoint that declares nothing is not served | Accepted |
 | [0013](0013-symulacja-deterministyczna.md) | Deterministic simulation as a third testing pillar — a seed instead of a thread interleaving | Accepted |
+| [0014](0014-zapraszanie.md) | Sharing by invitation link carrying a role, because passwordless login leaves nobody to name | Accepted |
 
 Filenames keep their original Polish slugs. Renaming them would break every link in the README, in
 the commit history and in the other ADRs, in exchange for cosmetics — and the commit history is

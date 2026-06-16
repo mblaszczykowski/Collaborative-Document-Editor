@@ -49,6 +49,17 @@ export interface ConnectionHandlers {
   onPresence: (entries: PresenceEntry[]) => void
   onStateChange: (state: ConnectionState, pendingCount: number) => void
   onError: (code: string, message: string) => void
+  /**
+   * Czyjś dostęp do tego dokumentu się zmienił (CP21).
+   *
+   * Komunikat NIE niesie nowej roli tego klienta w sposób, któremu wolno wierzyć — idzie
+   * na temat dokumentu, więc słyszą go wszyscy uczestnicy. Klient dowiaduje się z niego
+   * wyłącznie tego, że ma dopytać serwer o SWOJĄ rolę.
+   *
+   * @param userId osoba, której to dotyczy; `null` znaczy „wszyscy sprawdźcie ponownie"
+   *               (tak wygląda zmiana widoczności)
+   */
+  onAccessChanged: (userId: string | null) => void
 }
 
 export class DocumentConnection {
@@ -166,6 +177,10 @@ export class DocumentConnection {
       client.subscribe(`/topic/doc/${this.documentId}/presence`, (message) =>
         this.onPresence(message),
       ),
+      client.subscribe(`/topic/doc/${this.documentId}/access`, (message) => {
+        const change = JSON.parse(message.body) as { userId: string | null }
+        this.handlers.onAccessChanged(change.userId)
+      }),
       client.subscribe('/user/queue/session', (message) => {
         const info = JSON.parse(message.body) as { replicaId: number }
         this.handlers.onSession(info.replicaId)

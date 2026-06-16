@@ -19,8 +19,29 @@ export const API = 'http://localhost:8080/api'
  * dostępu do niej z poziomu testu.
  */
 export async function freshDocument(request: APIRequestContext, title: string): Promise<string> {
-  const response = await request.post(`${API}/documents`, { data: { title } })
-  return (await response.json()).id as string
+  // Zalogowanie się PRZED utworzeniem dokumentu (CP16 + CP21).
+  //
+  // Ta funkcja tworzyła dokument BEZ tokenu. Do CP16 działało, bo endpoint nie wymagał
+  // tożsamości — a od CP16 wymaga jej z konkretnego powodu: dokument bez właściciela jest
+  // dokumentem, którego nikt nigdy nie zabezpieczy. Żądanie bez tokenu dostaje więc 401,
+  // a `response.json()` wywala się na pustej odpowiedzi. Czyli te scenariusze były czerwone
+  // od CP16, a plan v3 §10.1 zapisał, że e2e nie zostały uruchomione — jedno tłumaczy drugie.
+  const login = await request.post(`${API}/login`, { data: { displayName: 'Fixture' } })
+  const { token } = (await login.json()) as { token: string }
+  const headers = { Authorization: `Bearer ${token}` }
+
+  const response = await request.post(`${API}/documents`, { data: { title }, headers })
+  const id = (await response.json()).id as string
+
+  // Od CP21 nowy dokument jest PRYWATNY, więc przeglądarki logujące się jako inne osoby
+  // nie zobaczyłyby go wcale. Te scenariusze sprawdzają zbieżność, nie kontrolę dostępu,
+  // więc dokument fixture'owy jest jawnie przełączany na „każdy zalogowany z linkiem".
+  // Scenariusz sprawdzający samo udostępnianie robi to odwrotnie — patrz sharing.spec.ts.
+  await request.put(`${API}/documents/${id}/access/visibility`, {
+    data: { visibility: 'link' },
+    headers,
+  })
+  return id
 }
 
 /**
