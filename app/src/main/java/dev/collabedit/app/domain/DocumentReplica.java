@@ -100,6 +100,72 @@ public class DocumentReplica {
     }
 
     /**
+     * Whether this replica has been dropped from the registry and must not be written to.
+     *
+     * <p>Only ever set under {@link #lock}, by {@link #tryEvict()}, and only ever from false to
+     * true — an evicted replica is never revived, it is replaced by a fresh load.
+     */
+    private boolean evicted;
+
+    /** Thrown when an operation reaches a replica the registry has already dropped. */
+    public static class StaleReplicaException extends RuntimeException {
+        public StaleReplicaException(UUID documentId) {
+            super("replica of document " + documentId + " was evicted while an operation "
+                + "was in flight; the caller should reload it and retry");
+        }
+    }
+
+    /**
+     * Claims this replica for eviction, refusing if it still holds work.
+     *
+     * <h2>Why the check and the claim have to be one step</h2>
+     * The registry used to ask {@code unwrittenCount() > 0} and then remove the replica from its
+     * map, as two separate operations. Between them, another thread could take a reference from
+     * the registry, merge an operation into it, and find that operation in a replica nothing
+     * iterates any more: {@code flushAll} and {@code broadcastAll} both walk {@code registry
+     * .loaded()}, so an orphaned replica is never written and never broadcast.
+     *
+     * <p>The effect is subtle rather than loud, which is what makes it worth closing. The client
+     * gets no acknowledgement, so it keeps the operation in its offline buffer and resends on
+     * reconnect — nothing is permanently lost. But until then <b>nobody sees the edit</b>,
+     * including the author's collaborators, and no error is raised anywhere.
+     *
+     * <p>It needs the memory limit to be exceeded at the moment somebody edits a document being
+     * evicted, so with {@code max-loaded-documents: 200} it is rare. Rare and silent is the
+     * combination this project treats as worse than frequent and loud.
+     */
+    boolean tryEvict() {
+        lock.lock();
+        try {
+            if (!unwritten.isEmpty() || !pendingBroadcast.isEmpty()) {
+                return false;
+            }
+            evicted = true;
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Refuses to accept work into a replica the registry has already dropped.
+     *
+     * <p>Called under {@link #lock} from every mutating path, which is what makes
+     * {@link #tryEvict()} an actual claim rather than a hint: once eviction has taken the lock and
+     * set the flag, no operation can be added behind it. Without this the check and the removal
+     * are two steps with a window between them, and an operation landing in that window goes into
+     * a replica nothing iterates — never written, never broadcast, and no error anywhere.
+     *
+     * <p>The caller's correct response is to reload from the registry and try again, which is
+     * cheap and rare. {@code DocumentService} does exactly that, once.
+     */
+    private void refuseIfEvicted() {
+        if (evicted) {
+            throw new StaleReplicaException(documentId);
+        }
+    }
+
+    /**
      * Runs an action under the document's lock.
      *
      * <p>Every path that touches {@link RgaDocument} goes through here — including reading the
@@ -124,6 +190,7 @@ public class DocumentReplica {
     public boolean merge(Op op, String userId, String traceparent, long nowMillis) {
         lock.lock();
         try {
+            refuseIfEvicted();
             RgaDocument.ApplyResult result = document.apply(op);
             lastActivityMillis = nowMillis;
             if (result.isNews()) {
@@ -149,6 +216,7 @@ public class DocumentReplica {
     public void enqueueForWrite(Op op, String userId, long nowMillis) {
         lock.lock();
         try {
+            refuseIfEvicted();
             PendingOperation pending = new PendingOperation(op, userId, null);
             unwritten.add(pending);
             pendingBroadcast.add(pending);
@@ -169,6 +237,7 @@ public class DocumentReplica {
     public void enqueueForBroadcast(Op op, long nowMillis) {
         lock.lock();
         try {
+            refuseIfEvicted();
             pendingBroadcast.add(new PendingOperation(op, null, null));
             lastActivityMillis = nowMillis;
         } finally {

@@ -71,33 +71,74 @@ public class DocumentRegistry {
     }
 
     /**
-     * Pilnuje górnej granicy liczby replik trzymanych w pamięci.
+     * How long to wait before repeating an enforcement attempt that <b>freed nothing</b>.
      *
-     * <h2>Dlaczego sam czas bezczynności nie wystarcza</h2>
-     * {@link #evictIdle} zwalnia dokumenty nietykane od pięciu minut i przy jednym wspólnym
-     * dokumencie było to całe zarządzanie pamięcią, jakiego potrzebowaliśmy. Przy wielu
-     * dokumentach ten mechanizm przestaje ograniczać cokolwiek: sto osób otwierających sto
-     * różnych dokumentów w ciągu minuty daje sto replik w pamięci, z których ŻADNA nie jest
-     * bezczynna. Granica czasowa nie jest granicą pamięci.
+     * <p>{@link #enforceMemoryLimit} runs from {@link #get}, which runs on <b>every operation</b>.
+     * While the limit is exceeded and nothing can be freed — every replica holding unwritten work
+     * — the scan found no candidates, logged a warning and left the state unchanged, so the next
+     * keystroke did all of it again: a full copy of the replica list, a {@code lastActivity} sort,
+     * a lock acquisition per replica, and another WARN line. At the configured limit of 200 that
+     * is 200 lock acquisitions and one log line <b>per keystroke</b>, which is to say the
+     * degradation path fired hardest under exactly the load that triggered it, and buried the log
+     * while doing so.
      *
-     * <h2>Co jest zwalniane</h2>
-     * Najdawniej używane repliki <b>bez niezapisanych operacji</b>. Warunek jest twardy:
-     * zwolnienie repliki z niepustym buforem skasowałoby operacje już przyjęte od klienta,
-     * ale jeszcze nietrwałe. Jeśli wszystkie repliki mają pracę w toku, limit zostaje
-     * chwilowo przekroczony — bo utrata danych jest gorsza niż przekroczony limit pamięci,
-     * a bufory i tak opróżniają się co 50 ms.
+     * <p><b>Only futile attempts are throttled, and the distinction is the whole design.</b> A
+     * first version throttled every attempt and broke {@code limitIsEnforcedOnLoad}: opening
+     * twenty-four documents in a burst left twenty-four replicas in memory, because the second
+     * through twenty-fourth calls were inside the window. That is not a test being fussy — a
+     * memory bound that only applies once a second is not a memory bound. An attempt that evicts
+     * something clears the throttle immediately; only an attempt that finds nothing to evict is
+     * worth not repeating, because nothing about the situation has changed.
+     */
+    private static final long FUTILE_RETRY_INTERVAL_MS = 1_000;
+
+    /**
+     * When an enforcement attempt last found nothing it could release; 0 means "never".
      *
-     * <p>Dokument właśnie otwierany jest wykluczany z kandydatów, inaczej przy limicie
-     * osiągniętym co do jednego mógłby zostać zwolniony w tej samej chwili, w której
-     * został załadowany — i wpaść w pętlę ładowania.
+     * <p>Zero rather than {@link Long#MIN_VALUE}, and this cost a red test to notice:
+     * {@code System.currentTimeMillis() - Long.MIN_VALUE} <b>overflows</b> to a negative value,
+     * so the "was the last futile attempt recent?" check was true forever and the limit was never
+     * enforced at all. With zero the subtraction is just the current epoch millis, which is
+     * comfortably larger than any interval.
+     */
+    private final java.util.concurrent.atomic.AtomicLong lastFutileAttemptMillis =
+        new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * Enforces the upper bound on how many replicas are held in memory.
+     *
+     * <h2>Why the idle threshold alone is not enough</h2>
+     * {@link #evictIdle} releases documents untouched for five minutes, and with a single shared
+     * document that was all the memory management needed. With many documents that mechanism
+     * bounds nothing: a hundred people opening a hundred different documents in a minute gives a
+     * hundred replicas in memory, NONE of them idle. A time limit is not a memory limit.
+     *
+     * <h2>What gets released</h2>
+     * The least recently used replicas <b>with no unwritten operations</b>. That condition is
+     * hard: releasing a replica with a non-empty buffer would discard operations already accepted
+     * from a client but not yet durable. If every replica has work in flight the limit is
+     * temporarily exceeded — losing data is worse than exceeding a memory bound, and the buffers
+     * drain every 50 ms anyway.
+     *
+     * <p>The document being opened right now is excluded from the candidates; otherwise, at a
+     * limit reached exactly, it could be released in the same instant it was loaded and fall into
+     * a load loop.
      */
     private void enforceMemoryLimit(UUID justLoaded) {
         int limit = properties.cluster().maxLoadedDocuments();
         if (replicas.size() <= limit) {
             return;
         }
+
+        long now = System.currentTimeMillis();
+        if (now - lastFutileAttemptMillis.get() < FUTILE_RETRY_INTERVAL_MS) {
+            // The last attempt found nothing releasable and that was moments ago. Repeating the
+            // scan would take a lock on every replica to reach the same conclusion.
+            return;
+        }
+
         List<DocumentReplica> candidates = new java.util.ArrayList<>(replicas.values());
-        candidates.removeIf(r -> r.documentId().equals(justLoaded) || r.unwrittenCount() > 0);
+        candidates.removeIf(r -> r.documentId().equals(justLoaded));
         candidates.sort(java.util.Comparator.comparingLong(DocumentReplica::lastActivityMillis));
 
         int toEvict = replicas.size() - limit;
@@ -106,19 +147,26 @@ public class DocumentRegistry {
             if (evicted >= toEvict) {
                 break;
             }
-            if (replicas.remove(replica.documentId(), replica)) {
+            // tryEvict CLAIMS the replica under its own lock, refusing if it still holds work.
+            // Asking first and removing afterwards was two steps with a window between them, and
+            // an operation merged in that window landed in a replica nothing iterates — see
+            // DocumentReplica.tryEvict for why that is quiet rather than loud.
+            if (replica.tryEvict() && replicas.remove(replica.documentId(), replica)) {
                 evicted++;
             }
         }
         if (evicted > 0) {
-            log.info("Limit {} dokumentów w pamięci przekroczony — zwolniono {} najdawniej używanych",
+            lastFutileAttemptMillis.set(0);
+            log.info("In-memory document limit of {} exceeded — released {} least recently used",
                 limit, evicted);
         } else {
-            // Nie zamiatamy pod dywan: limit jest przekroczony i nic nie dało się zwolnić.
-            // Utrzymujący się taki stan znaczy, że limit jest za niski wobec liczby
-            // JEDNOCZEŚNIE edytowanych dokumentów, a nie że mechanizm nie działa.
-            log.warn("Limit {} dokumentów w pamięci przekroczony ({}), ale żadnej repliki "
-                    + "nie dało się zwolnić — wszystkie mają niezapisane operacje",
+            lastFutileAttemptMillis.set(now);
+            // Not swept under the carpet: the limit is exceeded and nothing could be freed. A
+            // persistent state like this means the limit is too low for the number of documents
+            // being edited AT ONCE, not that the mechanism is broken. Rate-limited above, so it
+            // says this once a second rather than once per keystroke.
+            log.warn("In-memory document limit of {} exceeded ({}), and no replica could be "
+                    + "released — all of them have unwritten operations",
                 limit, replicas.size());
         }
     }
@@ -181,14 +229,16 @@ public class DocumentRegistry {
             if (nowMillis - replica.lastActivityMillis() < ttl) {
                 continue;
             }
-            if (replica.unwrittenCount() > 0) {
+            // Claim under the replica's own lock rather than checking and then removing: the
+            // same race as in enforceMemoryLimit, and the same reason it matters.
+            if (!replica.tryEvict()) {
                 continue;
             }
             replicas.remove(entry.getKey(), replica);
             evicted++;
         }
         if (evicted > 0) {
-            log.debug("Zwolniono {} bezczynnych dokumentów", evicted);
+            log.debug("Released {} idle documents", evicted);
         }
         return evicted;
     }

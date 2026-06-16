@@ -112,9 +112,34 @@ public class DocumentService {
      * clear this is not the same path as an operation from a client.
      */
     public void submitAlreadyMerged(UUID documentId, Op op, String userId) {
-        DocumentReplica replica = registry.get(documentId);
         // Queues for the write AND for the broadcast — both paths go out in batches.
-        replica.enqueueForWrite(op, userId, System.currentTimeMillis());
+        onActiveReplica(documentId,
+            replica -> replica.enqueueForWrite(op, userId, System.currentTimeMillis()));
+    }
+
+    /**
+     * Runs an action against a replica that is still the registry's, retrying once if it is not.
+     *
+     * <h2>The window this closes</h2>
+     * A caller takes a replica from the registry and then uses it. Between those two moments the
+     * memory limit can evict it, and until now the operation would land in a replica nothing
+     * iterates: {@code flushAll} and {@code broadcastAll} both walk {@code registry.loaded()}, so
+     * it would never be written and never broadcast — with no error raised anywhere.
+     *
+     * <p>{@code DocumentReplica.tryEvict} now claims the replica under its own lock and the
+     * mutating methods refuse afterwards, which converts that silence into a
+     * {@link DocumentReplica.StaleReplicaException}. Here is where it is answered: reload and try
+     * again. Once, not in a loop — a second eviction of a document being actively written to,
+     * inside a single operation, would mean the limit is so far below the working set that
+     * retrying is not the problem to solve.
+     */
+    private void onActiveReplica(UUID documentId, java.util.function.Consumer<DocumentReplica> action) {
+        try {
+            action.accept(registry.get(documentId));
+        } catch (DocumentReplica.StaleReplicaException stale) {
+            log.debug("Replica of {} was evicted mid-operation; reloading and retrying", documentId);
+            action.accept(registry.get(documentId));
+        }
     }
 
     /** Thrown when an operation can no longer be merged because GC removed its anchor point. */
@@ -147,7 +172,7 @@ public class DocumentService {
         String traceparent = tracer.currentTraceparent();
         var merging = metrics.startTimer();
         try (var span = tracer.startStage("crdt.merge")) {
-            isNews = replica.merge(op, userId, traceparent, System.currentTimeMillis());
+            isNews = mergeRetryingIfEvicted(documentId, replica, op, userId, traceparent);
             span.attribute("collabedit.op.news", String.valueOf(isNews));
         }
         metrics.recordMerge(merging);
@@ -160,6 +185,18 @@ public class DocumentService {
         // The operation is already in the broadcast buffer (merge put it there) and will go out in
         // the next window — see broadcastAll. There is nothing to do here.
         metrics.recordServerLatency(wholeCall);
+    }
+
+    /** {@link #onActiveReplica} for the merge path, which needs the return value. */
+    private boolean mergeRetryingIfEvicted(UUID documentId, DocumentReplica replica, Op op,
+                                           String userId, String traceparent) {
+        try {
+            return replica.merge(op, userId, traceparent, System.currentTimeMillis());
+        } catch (DocumentReplica.StaleReplicaException stale) {
+            log.debug("Replica of {} was evicted mid-merge; reloading and retrying", documentId);
+            return registry.get(documentId)
+                .merge(op, userId, traceparent, System.currentTimeMillis());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -435,7 +472,11 @@ public class DocumentService {
             RgaDocument.ApplyResult result =
                 replica.withLock(document -> document.apply(stored.op()));
             if (result.isNews()) {
-                replica.enqueueForBroadcast(stored.op(), now);
+                // An eviction here loses nothing durable — these operations came from the
+                // cluster and are already in the log — but the clients connected to this
+                // instance still have to see them, so reload and enqueue.
+                onActiveReplica(replica.documentId(),
+                    active -> active.enqueueForBroadcast(stored.op(), now));
                 applied++;
             }
         }
