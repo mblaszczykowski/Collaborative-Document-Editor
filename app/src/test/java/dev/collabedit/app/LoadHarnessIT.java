@@ -19,37 +19,37 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Harness obciążeniowy (CP8) — źródło liczb do sekcji „Wydajność" w README.
+ * The load harness (CP8) — the source of the numbers in the README's "Performance" section.
  *
- * <p>Uruchamiany osobno, nie w normalnym przebiegu testów:
+ * <p>Run separately, not in a normal test run:
  * <pre>./mvnw -pl app test -Dtest=LoadHarnessIT -Dbenchmark=true</pre>
  *
- * <p>Wyłączenie przez {@code @EnabledIfSystemProperty}, a nie przez tagi JUnit i
- * {@code excludedGroups} w Surefire: przy tagach {@code -Dgroups=benchmark} NIE nadpisuje
- * {@code excludedGroups} z konfiguracji, więc build kończy się sukcesem, uruchamiając zero
- * testów — bez żadnego ostrzeżenia. Warunek na właściwości systemowej jest widoczny
- * w kodzie i nie da się go przypadkiem obejść.
+ * <p>Disabled via {@code @EnabledIfSystemProperty} rather than JUnit tags and Surefire's
+ * {@code excludedGroups}: with tags, {@code -Dgroups=benchmark} does NOT override
+ * {@code excludedGroups} from the configuration, so the build succeeds having run zero tests —
+ * with no warning at all. A system-property condition is visible in the code and cannot be
+ * accidentally bypassed.
  *
- * <h2>Dlaczego własny harness zamiast Gatlinga</h2>
- * Plan zakładał Gatlinga i ta decyzja została zmieniona świadomie. Gatling świetnie mierzy
- * <b>czas odpowiedzi na żądanie</b>, a interesująca wielkość w tym systemie to
- * <b>czas propagacji zmiany od jednego uczestnika do drugiego</b> — czyli odstęp między
- * zdarzeniami u DWÓCH różnych klientów. Zmierzenie tego wymaga, żeby oba końce dzieliły
- * jeden zegar; harness w jednym procesie to zapewnia, a dwa procesy Gatlinga nie.
+ * <h2>Why a custom harness rather than Gatling</h2>
+ * The plan called for Gatling, and that decision was changed deliberately. Gatling measures
+ * <b>response time to a request</b> very well, whereas the interesting quantity in this system is
+ * <b>the time for a change to propagate from one participant to another</b> — that is, the interval
+ * between events at TWO different clients. Measuring that requires both ends to share one clock; a
+ * harness in a single process provides that, and two Gatling processes do not.
  *
- * <h2>Metodyka — czytać przed cytowaniem liczb</h2>
+ * <h2>Methodology — read before quoting the numbers</h2>
  * <ul>
- *   <li><b>Latencja propagacji</b> = {@code nanoTime} odbioru u odbiorcy minus {@code nanoTime}
- *       wysłania u nadawcy, oba w tym samym procesie i z tego samego zegara monotonicznego.
- *       Jest to wielkość <b>bez</b> narzutu przeglądarki i renderowania — czyli mierzy system,
- *       a nie interfejs.</li>
- *   <li><b>Klienci i serwer działają na tej samej maszynie.</b> Latencja sieci wynosi więc
- *       praktycznie zero. Liczby mówią o kosztach systemu, nie o tym, czego doświadczy
- *       użytkownik przez internet — te trzeba by powiększyć o RTT łącza.</li>
- *   <li><b>Pomijamy pierwsze 20% pomiarów</b> jako rozgrzewkę JIT-u. Bez tego p99 opisuje
- *       głównie kompilację, a nie działanie.</li>
- *   <li>Specyfikacja maszyny jest wypisywana razem z wynikiem, bo liczba bez maszyny
- *       jest bezużyteczna.</li>
+ *   <li><b>Propagation latency</b> = the receiver's {@code nanoTime} at receipt minus the sender's
+ *       {@code nanoTime} at send, both in the same process and from the same monotonic clock. It is
+ *       a quantity <b>excluding</b> browser and rendering overhead — so it measures the system, not
+ *       the interface.</li>
+ *   <li><b>The clients and the server run on the same machine.</b> Network latency is therefore
+ *       essentially zero. The numbers describe the system's costs, not what a user over the
+ *       internet experiences — for that they would have to be increased by the link's RTT.</li>
+ *   <li><b>The first 20% of measurements are dropped</b> as JIT warm-up. Without that, p99
+ *       describes compilation rather than operation.</li>
+ *   <li>The machine's specification is printed with the result, because a number without a machine
+ *       is useless.</li>
  * </ul>
  */
 @EnabledIfSystemProperty(named = "benchmark", matches = "true")
@@ -69,32 +69,31 @@ class LoadHarnessIT extends IntegrationTestBase {
         return documentService;
     }
 
-    /** Ilu klientów jednocześnie w jednym dokumencie. */
+    /** How many clients at once in one document. */
     private static final int[] CLIENT_COUNTS = {2, 10, 25, 50};
 
-    /** Ile znaków ma dokument przed rozpoczęciem pomiaru. */
+    /** How many characters the document holds before the measurement starts. */
     private static final int[] DOCUMENT_SIZES = {0, 10_000, 100_000};
 
     private static final int OPERATIONS_PER_CLIENT = 40;
 
     @Test
-    @DisplayName("przepustowość i latencja propagacji w funkcji liczby klientów i rozmiaru dokumentu")
+    @DisplayName("throughput and propagation latency as a function of client count and document size")
     void measure() throws Exception {
         System.out.println();
-        System.out.println("=== HARNESS OBCIĄŻENIOWY ===");
-        System.out.printf("maszyna: %s, %d rdzeni, Java %s, pamięć JVM %d MB%n",
+        System.out.println("=== LOAD HARNESS ===");
+        System.out.printf("machine: %s, %d cores, Java %s, JVM memory %d MB%n",
             System.getProperty("os.name") + " " + System.getProperty("os.arch"),
             Runtime.getRuntime().availableProcessors(),
             System.getProperty("java.version"),
             Runtime.getRuntime().maxMemory() / 1024 / 1024);
         System.out.println();
-        // „przyjęcia/s" to tempo, w jakim serwer PRZYJMUJE operacje — nie to samo co tempo
-        // propagacji. Rozdzielone jawnie, bo mieszanie tych dwóch liczb jest najczęstszym
-        // sposobem, w jaki benchmarki systemów czasu rzeczywistego wychodzą lepiej,
-        // niż systemy są.
+        // "intake/s" is the rate at which the server ACCEPTS operations — not the same as the
+        // propagation rate. Kept explicitly separate, because conflating those two numbers is the
+        // most common way real-time system benchmarks come out better than the systems are.
         System.out.printf("%-10s %-10s %10s %10s %10s %10s %12s %10s %14s%n",
-            "znaki", "klienci", "przyjęcia/s", "p50 ms", "p95 ms", "p99 ms", "zbieżność",
-            "dogon. ms", "min.kl./serw.");
+            "chars", "clients", "intake/s", "p50 ms", "p95 ms", "p99 ms", "converged",
+            "catchup ms", "min.cli./srv.");
 
         for (int documentSize : DOCUMENT_SIZES) {
             for (int clients : CLIENT_COUNTS) {
@@ -110,7 +109,7 @@ class LoadHarnessIT extends IntegrationTestBase {
             document, "bench-" + documentSize + "-" + clientCount);
 
         List<TestStompClient> clients = new ArrayList<>(clientCount);
-        // Czas wysłania operacji, wspólny dla wszystkich klientów — jeden zegar, jeden proces.
+        // The send time of each operation, shared by every client — one clock, one process.
         Map<String, Long> sentAt = new ConcurrentHashMap<>();
         List<Long> latencies = Collections.synchronizedList(new ArrayList<>());
         AtomicLong receivedCount = new AtomicLong();
@@ -140,27 +139,26 @@ class LoadHarnessIT extends IntegrationTestBase {
                 Thread.ofVirtual().start(() -> {
                     try {
                         for (int i = 0; i < OPERATIONS_PER_CLIENT; i++) {
-                            // Wstawianie na POCZĄTEK, nie na koniec: pisanie ciągiem
-                            // kompresuje się do jednego bloku i nie dotyka ścieżki, która
-                            // faktycznie skaluje się z rozmiarem dokumentu. Wstawianie
-                            // na początek zmusza strukturę do pracy.
+                            // Inserting at the FRONT, not the end: continuous typing compresses
+                            // into one block and never touches the path that actually scales with
+                            // document size. Inserting at the front makes the structure work.
                             Op op = client.insertReturningOp(0, "x");
                             sentAt.put(key(op), System.nanoTime());
 
-                            // Ruch obecności — co drugie naciśnięcie klawisza, czyli tempo
-                            // ograniczone tak samo, jak robi to prawdziwy klient (100 ms).
+                            // Presence traffic — every other keystroke, that is, throttled the
+                            // same way a real client throttles it (100 ms).
                             //
-                            // Do CP15 harness go NIE generował, przez co liczby opisywały
-                            // system lżejszy niż ten, którego używa przeglądarka. Kursor
-                            // jest najczęstszym zdarzeniem w całym systemie i pomijanie go
-                            // czyniło pomiar optymistycznym w sposób niemożliwy do zauważenia.
+                            // Up to CP15 the harness did NOT generate it, so the numbers described
+                            // a lighter system than the one a browser uses. The cursor is the most
+                            // frequent event in the whole system, and omitting it made the
+                            // measurement optimistic in a way impossible to notice.
                             if (i % 2 == 0) {
                                 client.sendPresence();
                             }
 
-                            // Operacja formatowania co dziesiątą edycję (CP13). Proporcja
-                            // dobrana z obserwacji: ludzie formatują znacznie rzadziej,
-                            // niż piszą, ale nie na tyle rzadko, żeby dało się to pominąć.
+                            // A formatting operation every tenth edit (CP13). The ratio comes
+                            // from observation: people format far less often than they type, but
+                            // not so rarely that it can be left out.
                             if (i % 10 == 9 && client.text().length() >= 2) {
                                 Op mark = client.markReturningOp(0, 2, "bold", null);
                                 sentAt.put(key(mark), System.nanoTime());
@@ -172,11 +170,10 @@ class LoadHarnessIT extends IntegrationTestBase {
                 });
             }
             done.await(120, TimeUnit.SECONDS);
-            // Przepustowość mierzona do momentu WYSŁANIA wszystkich operacji, nie do
-            // osiągnięcia zbieżności. Wliczenie oczekiwania na zbieżność sprawiłoby, że
-            // scenariusz, który się NIE zbiegł, raportowałby przepustowość równą liczbie
-            // operacji podzielonej przez limit czasu — czyli liczbę bez znaczenia,
-            // wyglądającą jak pomiar.
+            // Throughput measured up to the moment every operation has been SENT, not to
+            // convergence. Including the wait for convergence would make a scenario that did NOT
+            // converge report a throughput equal to the operation count divided by the timeout —
+            // a meaningless number that looks like a measurement.
             long elapsedNanos = System.nanoTime() - startedAt;
 
             int expectedLength = documentSize + clientCount * OPERATIONS_PER_CLIENT;
@@ -189,13 +186,13 @@ class LoadHarnessIT extends IntegrationTestBase {
 
             List<Long> measured = new ArrayList<>(latencies);
             Collections.sort(measured);
-            // Odcięcie rozgrzewki: pierwsze 20% pomiarów opisuje głównie kompilację JIT.
+            // Dropping the warm-up: the first 20% of measurements mostly describe JIT compilation.
             List<Long> steady = measured.subList(measured.size() / 5, measured.size());
 
-            // Rozróżnienie „operacje zginęły" od „operacje nie zdążyły" jest kluczowe:
-            // pierwsze to błąd poprawności, drugie to ograniczenie przepustowości harnessu.
-            // Bez tej diagnostyki obie sytuacje wyglądają identycznie („brak zbieżności")
-            // i łatwo przypisać systemowi winę za ograniczenie stanowiska pomiarowego.
+            // Distinguishing "operations were lost" from "operations did not arrive in time" is
+            // essential: the first is a correctness bug, the second a throughput limit of the
+            // harness. Without this diagnostic both look identical ("did not converge") and it is
+            // easy to blame the system for a limitation of the measuring rig.
             int serverLength = documentsService().textOf(document).length();
             int minClient = clients.stream().mapToInt(c -> c.text().length()).min().orElse(0);
 
@@ -204,7 +201,7 @@ class LoadHarnessIT extends IntegrationTestBase {
                 percentile(steady, 0.50) / 1e6,
                 percentile(steady, 0.95) / 1e6,
                 percentile(steady, 0.99) / 1e6,
-                converged ? "tak" : "NIE",
+                converged ? "yes" : "NO",
                 converged ? String.format("%.0f", convergenceNanos / 1e6) : "—",
                 minClient + "/" + serverLength);
         } finally {
@@ -215,8 +212,8 @@ class LoadHarnessIT extends IntegrationTestBase {
     }
 
     private void seedDocument(TestStompClient client, int characters) {
-        // Wstawiane porcjami: jedna operacja na 100 tys. znaków przekroczyłaby limit
-        // rozmiaru wiadomości z ADR-0002 (64 KiB).
+        // Inserted in chunks: a single operation for 100k characters would exceed the message
+        // size limit from ADR-0002 (64 KiB).
         String chunk = "x".repeat(500);
         for (int written = 0; written < characters; written += chunk.length()) {
             client.insert(client.text().length(), chunk);

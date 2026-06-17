@@ -15,12 +15,11 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Testy integracyjne całej ścieżki: przeglądarka → WebSocket → scalenie CRDT → zapis →
- * rozgłoszenie do pozostałych klientów.
+ * Integration tests for the whole path: browser -> WebSocket -> CRDT merge -> write -> broadcast to
+ * the other clients.
  *
- * <p>Każdy z nich odpowiada na pytanie, na które <b>nie da się odpowiedzieć testem
- * jednostkowym</b> — bo dotyczy współpracy warstw, kolejności kroków z ADR-0004 albo
- * zachowania prawdziwej bazy.
+ * <p>Each of them answers a question a <b>unit test cannot</b> — because it concerns layers
+ * cooperating, the ordering of steps from ADR-0004, or the behaviour of a real database.
  */
 class DocumentCollaborationIT extends IntegrationTestBase {
 
@@ -44,13 +43,14 @@ class DocumentCollaborationIT extends IntegrationTestBase {
 
 
     /**
-     * Czeka na powstanie snapshotu.
+     * Waits for a snapshot to appear.
      *
-     * <p>Potwierdzenie zapisu jest rozsyłane PRZED zrobieniem snapshotu — świadomie, bo
-     * potwierdzenie zwalnia bufor klienta i nie ma powodu, żeby czekało na zapis cache'u.
-     * Test, który po odebraniu potwierdzenia od razu sprawdzał liczbę snapshotów, był przez
-     * to niestabilny: przechodził pojedynczo, a padał w pełnym przebiegu. Poprawka jest po
-     * stronie testu, bo to jego założenie było błędne, a nie kolejność w kodzie produkcyjnym.
+     * <p>The write acknowledgement is broadcast BEFORE the snapshot is taken — deliberately,
+     * because the acknowledgement releases the client's buffer and there is no reason for it to
+     * wait on a cache write. A test that checked the snapshot count immediately after receiving the
+     * acknowledgement was flaky because of that: it passed alone and failed in a full run. The fix
+     * belongs to the test, because it was the test's assumption that was wrong, not the ordering in
+     * production code.
      */
     private void awaitSnapshot(UUID document) throws InterruptedException {
         for (int attempt = 0; attempt < 200; attempt++) {
@@ -59,7 +59,7 @@ class DocumentCollaborationIT extends IntegrationTestBase {
             }
             Thread.sleep(20);
         }
-        throw new AssertionError("nie powstał żaden snapshot dla dokumentu " + document);
+        throw new AssertionError("no snapshot was created for document " + document);
     }
 
     private UUID newDocument(String title) {
@@ -73,118 +73,118 @@ class DocumentCollaborationIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("dwóch klientów edytujących jednocześnie zbiega się do tego samego tekstu")
+    @DisplayName("two clients editing at once converge to the same text")
     void twoClientsConverge() throws Exception {
-        UUID document = newDocument("Zbieżność");
+        UUID document = newDocument("Convergence");
 
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 101);
              TestStompClient marek = new TestStompClient(port, tokenFor("Marek"), document, 202)) {
 
             anna.insert(0, "AB");
-            anna.awaitCondition(() -> marek.text().equals("AB"), PATIENCE, "Marek dostaje AB");
+            anna.awaitCondition(() -> marek.text().equals("AB"), PATIENCE, "Marek receives AB");
 
-            // Obie osoby wstawiają w to samo miejsce, nie widząc jeszcze zmiany drugiej.
+            // Both people insert at the same place, neither having seen the other's change yet.
             anna.insert(1, "hello");
             marek.insert(1, "world");
 
             anna.awaitCondition(() -> anna.text().equals(marek.text()) && anna.text().length() == 12,
-                PATIENCE, "obaj mają ten sam tekst o długości 12");
+                PATIENCE, "both hold the same text of length 12");
 
             assertThat(anna.text()).isEqualTo(marek.text());
             assertThat(anna.text())
-                .as("obie zmiany muszą przetrwać — to jest teza całego projektu")
+                .as("both changes have to survive — that is the whole project's thesis")
                 .contains("hello")
                 .contains("world");
 
-            // Replika serwera to trzeci uczestnik i też musi się zgadzać (ADR-0004).
+            // The server replica is a third participant and has to agree too (ADR-0004).
             assertThat(documents.textOf(document)).isEqualTo(anna.text());
         }
     }
 
     @Test
-    @DisplayName("stan przeżywa utratę repliki z pamięci — odtworzenie z logu operacji")
+    @DisplayName("state survives losing the in-memory replica — rebuilt from the operation log")
     void stateSurvivesReplicaLoss() throws Exception {
-        UUID document = newDocument("Odtworzenie");
+        UUID document = newDocument("Replay");
 
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 111)) {
             anna.insert(0, "Inkline");
-            anna.insert(7, " dziala");
-            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            anna.insert(7, " works");
+            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
 
         String beforeEviction = documents.textOf(document);
 
-        // Symulacja padu instancji: replika znika z pamięci. Stan musi dać się odtworzyć
-        // ze ŹRÓDŁA PRAWDY, czyli z logu operacji (ADR-0003).
+        // Simulating an instance crash: the replica disappears from memory. The state has to be
+        // rebuildable from the SOURCE OF TRUTH, that is, the operation log (ADR-0003).
         registry.forget(document);
 
         assertThat(documents.textOf(document))
-            .as("odtworzenie z logu dało inny tekst niż stan sprzed utraty repliki")
+            .as("replaying the log gave different text from the state before the replica was lost")
             .isEqualTo(beforeEviction)
-            .isEqualTo("Inkline dziala");
+            .isEqualTo("Inkline works");
     }
 
     @Test
-    @DisplayName("skasowanie wszystkich snapshotów nie zmienia niczego poza czasem odczytu")
+    @DisplayName("deleting every snapshot changes nothing but the read time")
     void snapshotsAreOnlyACache() throws Exception {
-        UUID document = newDocument("Snapshoty");
+        UUID document = newDocument("Snapshots");
 
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 121)) {
-            // Próg snapshotowania w testach to 20 operacji — piszemy dość, żeby na pewno
-            // powstał przynajmniej jeden snapshot.
+            // The snapshot threshold in tests is 20 operations — we write enough for at least one
+            // snapshot to be certain.
             for (int i = 0; i < 40; i++) {
                 anna.insert(i, "x");
             }
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 40, PATIENCE, "wszystko zapisane");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 40, PATIENCE, "everything written");
         }
 
         awaitSnapshot(document);
 
         String withSnapshots = documents.textOf(document);
 
-        // ADR-0003: snapshot jest cache'em, wolno go skasować w każdej chwili.
-        // Bez tego testu cache po cichu stałby się źródłem prawdy — a dowiedzielibyśmy
-        // się o tym dopiero przy awarii albo przy zmianie formatu serializacji.
+        // ADR-0003: a snapshot is a cache and may be deleted at any moment. Without this test the
+        // cache would quietly become the source of truth — and we would find out only at a failure
+        // or at a change to the serialisation format.
         snapshots.deleteAll(document);
         registry.forget(document);
 
         assertThat(documents.textOf(document))
-            .as("odtworzenie bez snapshotów dało inny wynik — cache przestał być cache'em")
+            .as("replaying without snapshots gave a different result — the cache stopped being a cache")
             .isEqualTo(withSnapshots);
     }
 
     @Test
-    @DisplayName("powtórzona operacja nie duplikuje tekstu ani wiersza w logu")
+    @DisplayName("a repeated operation duplicates neither the text nor a row in the log")
     void duplicateOperationIsHarmless() throws Exception {
-        UUID document = newDocument("Idempotencja");
+        UUID document = newDocument("Idempotence");
 
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 131)) {
-            anna.insert(0, "raz");
-            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            anna.insert(0, "once");
+            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "write acknowledged");
 
-            // Retransmisja tej samej operacji — dokładnie to, co robi klient po ponownym
-            // połączeniu, gdy nie doczekał się potwierdzenia.
+            // Retransmitting the same operation — exactly what a client does after reconnecting
+            // when it never saw an acknowledgement.
             anna.requestSync(0);
-            anna.awaitCondition(() -> anna.receivedCount() >= 0, Duration.ofMillis(500), "chwila");
+            anna.awaitCondition(() -> anna.receivedCount() >= 0, Duration.ofMillis(500), "a moment");
 
             Thread.sleep(300);
 
             assertThat(documents.textOf(document))
-                .as("retransmisja zdublowała tekst")
-                .isEqualTo("raz");
+                .as("the retransmission duplicated the text")
+                .isEqualTo("once");
 
             Integer rows = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM operations WHERE doc_id = ?", Integer.class, document);
             assertThat(rows)
-                .as("retransmisja utworzyła drugi wiersz w logu — klucz główny nie chroni")
+                .as("the retransmission created a second row in the log — the primary key is not protecting")
                 .isEqualTo(1);
         }
     }
 
     @Test
-    @DisplayName("numeracja server_seq jest ciągła — na niej opiera się wykrywanie luk")
+    @DisplayName("the server_seq numbering is contiguous — gap detection rests on it")
     void serverSequenceHasNoGaps() throws Exception {
-        UUID document = newDocument("Numeracja");
+        UUID document = newDocument("Numbering");
 
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 141);
              TestStompClient marek = new TestStompClient(port, tokenFor("Marek"), document, 142)) {
@@ -193,69 +193,69 @@ class DocumentCollaborationIT extends IntegrationTestBase {
                 anna.insert(anna.text().length(), "a");
                 marek.insert(0, "m");
             }
-            anna.awaitCondition(() -> anna.text().equals(marek.text()), PATIENCE, "zbieżność");
+            anna.awaitCondition(() -> anna.text().equals(marek.text()), PATIENCE, "convergence");
             Thread.sleep(300);
 
-            // ADR-0004 opiera wykrywanie zgubionych wiadomości Redisa na CIĄGŁOŚCI tej
-            // numeracji. Dziura oznaczałaby, że instancja w nieskończoność dopytuje bazę
-            // o operację, której tam nigdy nie było.
+            // ADR-0004 bases detection of lost Redis messages on the CONTINUITY of this
+            // numbering. A gap would mean an instance asking the database forever for an operation
+            // that was never there.
             Integer count = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM operations WHERE doc_id = ?", Integer.class, document);
             Long max = jdbc.queryForObject(
                 "SELECT MAX(server_seq) FROM operations WHERE doc_id = ?", Long.class, document);
 
             assertThat(max)
-                .as("numeracja server_seq ma dziurę: %d operacji, najwyższy numer %d", count, max)
+                .as("the server_seq numbering has a gap: %d operations, highest number %d", count, max)
                 .isEqualTo(Long.valueOf(count));
         }
     }
 
     @Test
-    @DisplayName("dokument, który ucichł, dostaje snapshot mimo niedobicia progu operacji")
+    @DisplayName("a document that has gone quiet gets a snapshot despite missing the operation threshold")
     void quietDocumentIsSnapshottedBelowOperationThreshold() throws Exception {
-        UUID document = newDocument("Cisza");
+        UUID document = newDocument("Quiet");
 
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 151)) {
-            // PIĘĆ operacji przy progu dwudziestu (IntegrationTestBase). Ścieżka
-            // „snapshot co N operacji" nie ma tu prawa zadziałać — jeśli snapshot powstanie,
-            // to wyłącznie dzięki wykryciu ciszy.
+            // FIVE operations against a threshold of twenty (IntegrationTestBase). The "snapshot
+            // every N operations" path cannot fire here — if a snapshot appears, it is solely
+            // because idleness was detected.
             for (int i = 0; i < 5; i++) {
                 anna.insert(i, "x");
             }
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 5, PATIENCE, "zapis potwierdzony");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 5, PATIENCE, "write acknowledged");
         }
 
-        // Bez tego mechanizmu dokument edytowany krótkimi sesjami NIGDY nie dostaje snapshotu:
-        // każda sesja zostawia kilka operacji, próg nie zostaje przekroczony, a ogon logu
-        // do odtworzenia rośnie z każdym otwarciem. Objaw jest podstępny, bo poprawność
-        // jest cała — psuje się wyłącznie czas ładowania, i to stopniowo.
+        // Without this mechanism a document edited in short sessions NEVER gets a snapshot: each
+        // session leaves a few operations, the threshold is never crossed, and the log tail to
+        // replay grows with every open. The symptom is insidious, because correctness is intact —
+        // only the loading time degrades, and gradually at that.
         awaitSnapshot(document);
 
         assertThat(snapshots.count(document))
-            .as("dokument ucichł na dłużej niż snapshot-after-idle-ms, a snapshot nie powstał")
+            .as("the document was quiet for longer than snapshot-after-idle-ms and no snapshot appeared")
             .isPositive();
     }
 
     @Test
-    @DisplayName("zakończenie sesji trafia do metryki z powodem — listener jest podpięty")
+    @DisplayName("a session ending reaches the metric with a reason — the listener is wired up")
     void sessionCloseIsRecordedWithReason() throws Exception {
-        UUID document = newDocument("Metryka rozłączeń");
+        UUID document = newDocument("Disconnect metric");
         double before = closedSessions();
 
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 161)) {
             anna.insert(0, "x");
-            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "sesja żyje i zapisuje");
+            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "the session is alive and writing");
         }
 
-        // Samo mapowanie kodu na tag jest sprawdzone jednostkowo. Ten test odpowiada na inne
-        // pytanie: czy @EventListener jest w ogóle wołany. Metryka, która nigdy nie rośnie,
-        // wygląda na dowód braku problemu, a jest dowodem braku pomiaru.
+        // The code-to-tag mapping itself is covered by a unit test. This test answers a different
+        // question: whether the @EventListener is called at all. A metric that never rises looks
+        // like proof there is no problem, and is proof there is no measurement.
         for (int attempt = 0; attempt < 200 && closedSessions() <= before; attempt++) {
             Thread.sleep(20);
         }
 
         assertThat(closedSessions())
-            .as("rozłączenie klienta nie zwiększyło ws.sessions.closed.total — listener nie jest wpięty")
+            .as("a client disconnect did not increase ws.sessions.closed.total — the listener is not wired in")
             .isGreaterThan(before);
     }
 
