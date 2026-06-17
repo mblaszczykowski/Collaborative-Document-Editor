@@ -22,12 +22,12 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 
 /**
- * Klient testowy — przeglądarka udawana na tyle wiernie, żeby test był o czymś.
+ * The test client — a browser faked faithfully enough for the test to be about something.
  *
- * <p>Kluczowe: klient trzyma <b>własną replikę CRDT</b> i stosuje do niej operacje odebrane
- * z serwera, dokładnie tak jak zrobi to frontend. Bez tego test sprawdzałby jedynie, czy
- * serwer coś rozsyła — a pytanie brzmi, czy <b>wszystkie strony dochodzą do tego samego
- * tekstu</b>, co jest tezą całego projektu.
+ * <p>The crucial part: the client keeps <b>its own CRDT replica</b> and applies operations received
+ * from the server to it, exactly as the frontend does. Without that, a test would only check
+ * whether the server broadcasts something — whereas the question is whether <b>every party arrives
+ * at the same text</b>, which is the whole project's thesis.
  */
 public class TestStompClient implements AutoCloseable {
 
@@ -36,31 +36,30 @@ public class TestStompClient implements AutoCloseable {
     private final RgaDocument document;
 
     /**
-     * Dostęp do repliki jest serializowany.
+     * Access to the replica is serialised.
      *
-     * <p>{@link RgaDocument} celowo NIE jest bezpieczny wątkowo — rdzeń algorytmu nie ma się
-     * zajmować współbieżnością (tym zajmuje się DocumentReplica po stronie serwera, a po
-     * stronie przeglądarki jest jeden wątek). W tym kliencie testowym są jednak dwa wątki:
-     * odbiór ze STOMP i wysyłka z harnessu obciążeniowego. Bez tej blokady stan repliki
-     * ulegał cichemu uszkodzeniu, a harness raportował brak zbieżności — czyli mierzył
-     * własny błąd i przypisywał go systemowi.
+     * <p>{@link RgaDocument} deliberately is NOT thread-safe — the algorithm's core has no business
+     * dealing with concurrency (DocumentReplica handles that on the server, and the browser has one
+     * thread). This test client, however, has two threads: STOMP reception and sending from the
+     * load harness. Without this lock the replica's state was silently corrupted and the harness
+     * reported non-convergence — that is, it measured its own bug and attributed it to the system.
      */
     private final Object documentLock = new Object();
 
     private final List<Op> received = new CopyOnWriteArrayList<>();
     private final AtomicLong lastAckSeq = new AtomicLong(0);
 
-    /** Ustawiane, gdy serwer odrzucił operację z powodu tempa — patrz {@link #send}. */
+    /** Set when the server refused an operation for rate — see {@link #send}. */
     private final java.util.concurrent.atomic.AtomicBoolean throttled =
         new java.util.concurrent.atomic.AtomicBoolean();
 
     /**
-     * Wywoływane przy odebraniu operacji, z czasem odbioru.
+     * Called when an operation is received, with the time of receipt.
      *
-     * <p>Istnieje dla harnessu obciążeniowego: latencję propagacji da się zmierzyć uczciwie
-     * tylko wtedy, gdy nadawca i odbiorca dzielą JEDEN zegar. Tutaj oba końce są w tym samym
-     * procesie, więc {@code System.nanoTime()} po obu stronach jest porównywalny — czego
-     * nie da się powiedzieć o dwóch przeglądarkach na dwóch maszynach.
+     * <p>It exists for the load harness: propagation latency can only be measured honestly when
+     * sender and receiver share ONE clock. Here both ends are in the same process, so
+     * {@code System.nanoTime()} on either side is comparable — which cannot be said of two browsers
+     * on two machines.
      */
     private volatile java.util.function.ObjLongConsumer<Op> onOperationReceived = (op, at) -> { };
 
@@ -68,17 +67,17 @@ public class TestStompClient implements AutoCloseable {
         this.documentId = documentId;
         this.document = new RgaDocument(replicaId, new TreapBlockList());
 
-        // Bufor tekstowy kontenera JSR-356 ma domyślnie 8 KiB — czyli OSIEM RAZY MNIEJ niż
-        // limit ramki, który ten system deklaruje w ADR-0002 (64 KiB). Bez podniesienia go
-        // klient testowy gubi każdą wiadomość powyżej 8 KiB i wygląda to jak utrata operacji
-        // po stronie serwera.
+        // The JSR-356 container's text buffer defaults to 8 KiB — that is, EIGHT TIMES SMALLER
+        // than the frame limit this system declares in ADR-0002 (64 KiB). Without raising it, the
+        // test client loses every message above 8 KiB, and it looks like operation loss on the
+        // server.
         //
-        // Kosztowało to jeden fałszywy alarm: po wprowadzeniu sklejania rozgłoszeń (CP10)
-        // harness pokazał brak zbieżności przy 10 klientach, a serwer miał komplet operacji.
-        // Winą obciążony byłby system, gdyby nie to, że przeglądarka takiego limitu nie ma —
-        // API WebSocket składa wiadomości wieloramkowe samo. To jest ograniczenie STANOWISKA
-        // POMIAROWEGO i musi być ustawione POWYŻEJ limitu serwera, żeby stanowisko mierzyło
-        // system, a nie siebie.
+        // This cost one false alarm: after broadcast coalescing was introduced (CP10) the harness
+        // showed non-convergence at 10 clients while the server held the complete set of
+        // operations. The system would have taken the blame, except that a browser has no such
+        // limit — the WebSocket API reassembles multi-frame messages itself. This is a limitation
+        // of the MEASURING RIG and has to be set ABOVE the server's limit, so that the rig measures
+        // the system rather than itself.
         jakarta.websocket.WebSocketContainer container =
             jakarta.websocket.ContainerProvider.getWebSocketContainer();
         container.setDefaultMaxTextMessageBufferSize(1024 * 1024);
@@ -88,8 +87,8 @@ public class TestStompClient implements AutoCloseable {
         client.setMessageConverter(new MappingJackson2MessageConverter());
 
         StompHeaders connectHeaders = new StompHeaders();
-        // Token w nagłówku ramki CONNECT, nie w nagłówku HTTP — przeglądarka nie potrafi
-        // ustawić nagłówków na uścisku dłoni WebSocketa (patrz StompConnectInterceptor).
+        // The token goes in a CONNECT frame header, not an HTTP header — a browser cannot set
+        // headers on the WebSocket handshake (see StompConnectInterceptor).
         connectHeaders.add("token", token);
 
         this.session = client
@@ -112,8 +111,8 @@ public class TestStompClient implements AutoCloseable {
         });
 
         subscribe("/topic/doc/" + documentId + "/acks", List.class, payload -> {
-            // Cokolwiek przeszło — tempo znów jest w normie, więc wydłużanie odstępu zaczyna
-            // się od nowa. Bez tego jedna seria odmów spowalnia klienta do końca przebiegu.
+            // Something got through — the rate is back to normal, so the backoff starts over.
+            // Without this, one run of refusals slows the client down for the rest of the run.
             if (!((List<?>) payload).isEmpty()) {
                 throttleRounds.set(0);
             }
@@ -122,8 +121,8 @@ public class TestStompClient implements AutoCloseable {
                 long seq = node.get("serverSeq").asLong();
                 lastAckSeq.accumulateAndGet(seq, Math::max);
 
-                // Wykrywanie luk: potwierdzenie niesie tożsamość operacji, więc brak tej
-                // operacji u nas oznacza, że rozgłoszenie do nas nie dotarło.
+                // Gap detection: an acknowledgement carries the operation's identity, so not
+                // holding that operation means its broadcast never reached us.
                 Id acknowledged = new Id(node.get("r").asInt(), node.get("l").asLong());
                 unacknowledged.remove(acknowledged.replicaId() + "@" + acknowledged.lamport());
                 synchronized (documentLock) {
@@ -134,11 +133,10 @@ public class TestStompClient implements AutoCloseable {
             }
         });
 
-        // Odpowiedzi na prośbę o resynchronizację. Bez tej subskrypcji `requestSync`
-        // wysyłał pytanie, na które odpowiedź szła w próżnię — a wykryta luka nigdy się
-        // nie zabliźniała. Prawdziwy frontend subskrybuje ten kanał od początku;
-        // brakowało go WYŁĄCZNIE w stanowisku pomiarowym, co przez chwilę wyglądało
-        // jak wada systemu.
+        // Responses to a resynchronisation request. Without this subscription `requestSync` sent
+        // a question whose answer went nowhere — and a detected gap never healed. The real frontend
+        // subscribes to this channel from the start; it was missing ONLY in the measuring rig,
+        // which for a while looked like a defect in the system.
         subscribe("/user/queue/sync", java.util.Map.class, payload -> {
             Object ops = ((Map<?, ?>) payload).get("ops");
             if (ops instanceof List<?> list) {
@@ -155,10 +153,10 @@ public class TestStompClient implements AutoCloseable {
             }
         });
 
-        // Odrzucenia z powodu tempa. Prawdziwy klient ponawia po czasie PODANYM PRZEZ SERWER
-        // (connection.ts, CP20), więc stanowisko musi robić to samo — inaczej mierzy inny
-        // mechanizm naprawczy niż ten, który działa w przeglądarce, a to właśnie z tego
-        // harnessu pochodzą liczby p99 w README.
+        // Rate-limit refusals. A real client retries after the time ADVERTISED BY THE SERVER
+        // (connection.ts, CP20), so the rig has to do the same — otherwise it measures a different
+        // recovery mechanism from the one running in the browser, and the p99 numbers in the README
+        // come from this very harness.
         subscribe("/user/queue/errors", java.util.Map.class, payload -> {
             Map<?, ?> error = (Map<?, ?>) payload;
             if (!"RATE_LIMITED".equals(error.get("code"))) {
@@ -175,17 +173,18 @@ public class TestStompClient implements AutoCloseable {
 
         session.send("/app/doc/" + documentId + "/join", Map.of());
 
-        // Raport postępu — ten sam, który wysyła prawdziwy klient. Serwer wykrywa po nim,
-        // że replika jest w tyle, i dosyła brakujące operacje. Bez tego harness mierzyłby
-        // system BEZ mechanizmu naprawczego, czyli nie ten, który działa w przeglądarce.
+        // The progress report — the same one a real client sends. From it the server detects that
+        // a replica is behind and sends the missing operations. Without this the harness would
+        // measure the system WITHOUT its repair mechanism, which is not the one running in the
+        // browser.
         progressReporter = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(r, "progress-" + replicaId);
             thread.setDaemon(true);
             return thread;
         });
-        // Bezpiecznik, nie główna ścieżka. Ponowienie planuje teraz komunikat o odmowie,
-        // na czas podany przez serwer; ten przebieg łapie wyłącznie przypadek, w którym
-        // komunikat zginął.
+        // A safety net, not the main path. The retry is now scheduled by the refusal message, for
+        // the time the server advertised; this sweep only catches the case where that message was
+        // lost.
         progressReporter.scheduleWithFixedDelay(this::retryThrottledOperations, 1000, 1000,
             java.util.concurrent.TimeUnit.MILLISECONDS);
         progressReporter.scheduleWithFixedDelay(this::reportProgress, 500, 500,
@@ -208,23 +207,23 @@ public class TestStompClient implements AutoCloseable {
         });
     }
 
-    /** Wstawia tekst lokalnie i wysyła operację — dokładnie tak, jak zrobi to edytor. */
+    /** Inserts text locally and sends the operation — exactly as the editor does. */
     public void insert(int position, String text) {
         insertReturningOp(position, text);
     }
 
-    /** Jak {@link #insert}, ale zwraca operację — harness obciążeniowy stempluje ją czasem. */
+    /** Like {@link #insert}, but returns the operation — the load harness timestamps it. */
     /**
-     * Tworzy znacznik lokalnie i wysyła go (CP13/CP14).
+     * Creates a mark locally and sends it (CP13/CP14).
      *
-     * <p>Rozdzielone od {@link #insert}, bo test autoryzacji musi móc wysłać DOKŁADNIE
-     * operację znacznikową i sprawdzić, że przechodzi tam, gdzie wstawienie tekstu nie.
+     * <p>Separate from {@link #insert}, because the authorization test has to be able to send
+     * EXACTLY a mark operation and check that it gets through where a text insertion does not.
      */
     /**
-     * Wysyła raport obecności — ten sam, który wysyła prawdziwy klient przy ruchu kursora.
+     * Sends a presence report — the same one a real client sends on cursor movement.
      *
-     * <p>Istnieje dla harnessu: do CP15 stanowisko NIE generowało ruchu obecności, przez
-     * co mierzyło system lżejszy niż ten, którego używa przeglądarka.
+     * <p>It exists for the harness: up to CP15 the rig generated NO presence traffic, so it
+     * measured a lighter system than the one a browser uses.
      */
     public void sendPresence() {
         try {
@@ -233,8 +232,8 @@ public class TestStompClient implements AutoCloseable {
                 "cursorLamport", Math.max(0, document.clock() - 1),
                 "typing", true));
         } catch (RuntimeException e) {
-            // Obecność jest najlepszym wysiłkiem — jej niepowodzenie nie może przewrócić
-            // pomiaru, którego przedmiotem jest propagacja operacji.
+            // Presence is best-effort — its failure must not bring down a measurement whose
+            // subject is operation propagation.
         }
     }
 
@@ -265,47 +264,46 @@ public class TestStompClient implements AutoCloseable {
     }
 
     private void send(Op op) {
-        // Wysyłamy OBIEKT, nie gotowego JSON-a w stringu. Konwerter Jacksona zserializowałby
-        // string jako string JSON-owy ("{\"op\":...}"), a serwer dostałby tekst zamiast
-        // struktury — i po cichu niczego nie zrobił. Kosztowało to jeden przebieg testów.
+        // We send an OBJECT, not ready-made JSON in a string. The Jackson converter would
+        // serialise a string as a JSON string ("{\"op\":...}"), and the server would receive text
+        // instead of a structure — and silently do nothing. This cost one test run.
         session.send("/app/doc/" + documentId + "/op", Map.of("op", OpCodec.toJson(op)));
         unacknowledged.put(op.id().replicaId() + "@" + op.id().lamport(), op);
     }
 
-    /** Bufor operacji niepotwierdzonych — odpowiednik `unacknowledged` w connection.ts. */
+    /** The buffer of unacknowledged operations — the counterpart of `unacknowledged` in connection.ts. */
     private final Map<String, Op> unacknowledged = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
-     * Ponawia operacje niepotwierdzone po odrzuceniu z powodu tempa.
+     * Retries unacknowledged operations after a rate-limit refusal.
      *
-     * <p><b>Na własnym harmonogramie, nie przy okazji kolejnej wysyłki</b> — i to jest
-     * istotne. Pierwsza wersja sprawdzała flagę wewnątrz {@code send}, więc gdy odrzucone
-     * zostały OSTATNIE operacje klienta, nikt ich już nie ponawiał: pętla się kończyła
-     * i sygnał przepadał. Przeglądarka tego problemu nie ma, bo używa timera (connection.ts),
-     * więc stanowisko musi robić to samo — inaczej mierzy słabszy mechanizm naprawczy
-     * niż ten, który faktycznie działa u użytkownika.
+     * <p><b>On its own schedule, not on the back of the next send</b> — and that matters. The first
+     * version checked the flag inside {@code send}, so when the client's LAST operations were
+     * refused, nobody retried them: the loop ended and the signal was lost. A browser does not have
+     * this problem because it uses a timer (connection.ts), so the rig has to do the same —
+     * otherwise it measures a weaker recovery mechanism than the one actually running for the user.
      */
     /**
-     * Zapas nad czasem podanym przez serwer — ten sam co w {@code connection.ts}.
+     * Headroom on top of the time the server advertised — the same as in {@code connection.ts}.
      *
-     * <p>Wiadro napełnia się w sposób ciągły, a zegary obu stron nie są zsynchronizowane,
-     * więc ponowienie milisekundę za wcześnie zostaje odrzucone po raz drugi.
+     * <p>The bucket refills continuously and the two sides' clocks are not synchronised, so a retry
+     * a millisecond too early is refused a second time.
      */
     private static final long THROTTLE_GRACE_MS = 25;
 
-    /** Gdy serwer nie podał czasu — zachowanie sprzed CP20. */
+    /** When the server advertised no time — the pre-CP20 behaviour. */
     private static final long THROTTLE_FALLBACK_MS = 1000;
 
-    /** Górna granica odstępu przy odmowach pod rząd — tyle, ile wynosiła stała sprzed CP20. */
+    /** The upper bound on the backoff under consecutive refusals — the pre-CP20 constant's value. */
     private static final long THROTTLE_MAX_MS = 1000;
 
     /**
-     * Odmowy pod rząd, do wykładniczego wydłużania odstępu.
+     * Consecutive refusals, for exponential backoff.
      *
-     * <p>Ten sam mechanizm co w {@code connection.ts} i z tego samego zmierzonego powodu:
-     * sam czas podany przez serwer dotyczy JEDNEGO żetonu, a klient ma w buforze kilkadziesiąt
-     * operacji — więc ponawianie po tym czasie zamienia się w odpytywanie w pętli. Harness
-     * pokazał p99 rosnące z 872 ms do 1352 ms po samym dodaniu czasu z serwera, bez wydłużania.
+     * <p>The same mechanism as in {@code connection.ts} and for the same measured reason: the time
+     * the server advertises is for ONE token, while the client has dozens of operations buffered —
+     * so retrying after that time turns into polling in a loop. The harness showed p99 rising from
+     * 872 ms to 1352 ms from adding the server's time alone, without backoff.
      */
     private final java.util.concurrent.atomic.AtomicInteger throttleRounds =
         new java.util.concurrent.atomic.AtomicInteger();
@@ -314,11 +312,11 @@ public class TestStompClient implements AutoCloseable {
         new java.util.concurrent.atomic.AtomicBoolean();
 
     /**
-     * Planuje JEDNO ponowienie całego bufora po podanym czasie.
+     * Schedules ONE retry of the whole buffer after the given wait.
      *
-     * <p>Jedno na całą serię, nie jedno na odrzuconą ramkę: przy przekroczeniu limitu odrzucanych
-     * ramek jest zwykle wiele naraz, a osobne ponowienie dla każdej odtworzyłoby dokładnie ten
-     * zryw, który limit właśnie odrzucił.
+     * <p>One per run of refusals, not one per refused frame: when the limit is exceeded, many
+     * frames are usually refused at once, and a separate retry for each would recreate exactly the
+     * burst the limit just refused.
      */
     private void scheduleThrottledRetry(long waitMillis) {
         if (progressReporter == null || !retryScheduled.compareAndSet(false, true)) {
@@ -338,7 +336,7 @@ public class TestStompClient implements AutoCloseable {
             try {
                 session.send("/app/doc/" + documentId + "/op", Map.of("op", OpCodec.toJson(pending)));
             } catch (RuntimeException e) {
-                // Ponowienie jest najlepszym wysiłkiem; kolejna odmowa ustawi flagę znowu.
+                // The retry is best-effort; the next refusal will set the flag again.
                 throttled.set(true);
                 return;
             }
@@ -354,8 +352,8 @@ public class TestStompClient implements AutoCloseable {
         if (!session.isConnected()) {
             return;
         }
-        // Luka wykryta z potwierdzeń → prosimy o brakujące operacje. Kursor cofamy do
-        // ostatniego POTWIERDZONEGO ZAPISU, bo o tym, co poniżej, wiemy na pewno.
+        // A gap detected from the acknowledgements -> ask for the missing operations. We rewind
+        // the cursor to the last CONFIRMED WRITE, because everything below it we know for certain.
         if (gapDetected.compareAndSet(true, false)) {
             requestSync(0);
         }
@@ -363,8 +361,8 @@ public class TestStompClient implements AutoCloseable {
             session.send("/app/doc/" + documentId + "/progress",
                 Map.of("sinceServerSeq", lastAckSeq.get(), "version", Map.of(0, 0)));
         } catch (RuntimeException e) {
-            // Raport postępu jest najlepszym wysiłkiem — jego niepowodzenie nie może
-            // przewrócić klienta ani testu.
+            // The progress report is best-effort — its failure must not bring down the client or
+            // the test.
         }
     }
 
@@ -387,7 +385,7 @@ public class TestStompClient implements AutoCloseable {
         return received.size();
     }
 
-    /** Ile operacji znacznikowych zna ta replika — do sprawdzania, czy formatowanie doszło. */
+    /** How many mark operations this replica knows — for checking whether formatting arrived. */
     public int markCount() {
         synchronized (documentLock) {
             return document.markCount();
@@ -398,7 +396,7 @@ public class TestStompClient implements AutoCloseable {
         return lastAckSeq.get();
     }
 
-    /** Czeka, aż tekst klienta osiągnie oczekiwaną wartość, albo minie limit czasu. */
+    /** Waits until the client's text reaches the expected value, or the timeout elapses. */
     public void awaitText(String expected, Duration timeout) {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
@@ -407,7 +405,7 @@ public class TestStompClient implements AutoCloseable {
             }
             sleepBriefly();
         }
-        throw new AssertionError("oczekiwano \"" + expected + "\", jest \"" + document.text() + "\"");
+        throw new AssertionError("expected \"" + expected + "\", got \"" + document.text() + "\"");
     }
 
     public void awaitCondition(java.util.function.BooleanSupplier condition, Duration timeout, String what) {
@@ -418,7 +416,7 @@ public class TestStompClient implements AutoCloseable {
             }
             sleepBriefly();
         }
-        throw new AssertionError("nie doczekano się: " + what);
+        throw new AssertionError("timed out waiting for: " + what);
     }
 
     private static void sleepBriefly() {
