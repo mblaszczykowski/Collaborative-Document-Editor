@@ -477,12 +477,12 @@ button { font-family: inherit; cursor: pointer; }
   border: 1px solid var(--chrome-line); background: var(--hover); color: var(--text);
 }
 
-/* --- udostępnianie (CP21) --- */
+/* --- sharing (CP21) --- */
 
-/* Panel jest modalny, a nie rozwijany spod przycisku. Powód jest treściowy, nie estetyczny:
-   pokazuje LISTĘ osób i LISTĘ zaproszeń, więc jego wysokość zależy od danych — a rozwijana
-   warstwa, która czasem sięga poza okno, zmusza do przewijania czegoś, czego użytkownik
-   nie widzi jako obszaru przewijania. */
+/* The panel is modal rather than a dropdown under the button. The reason is about content
+   rather than taste: it shows a LIST of people and a LIST of invitations, so its height
+   depends on the data — and a dropdown that sometimes runs past the window forces the user
+   to scroll something they do not perceive as a scrollable area. */
 .share-backdrop {
   position: fixed; inset: 0; z-index: 40;
   background: rgba(26, 26, 26, 0.28);
@@ -541,3 +541,35 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 12px; color: var(--text-faint); padding: 2px 0;
 }
 .share-action:hover { color: var(--bad); text-decoration: underline; }
+
+/* --- version comparison (CP22) --- */
+
+.history-actions { display: flex; flex-direction: column; gap: 6px; }
+
+.history-compare {
+  width: 100%; padding: 6px; border: 1px solid var(--chrome-line); border-radius: 5px;
+  background: var(--chrome); color: var(--text-dim); font-size: 11.5px; cursor: pointer;
+}
+.history-compare:hover { background: var(--hover); color: var(--text); }
+
+/* The difference is computed from character identity, so it can show something a text diff
+   cannot see: a word deleted and retyped. The colours are the ones already used by the
+   timeline counters — added in green, removed in red — so the reader is not taught a second
+   set of meanings for the same information. */
+.history-diff {
+  border: 1px solid var(--chrome-line); border-radius: 5px; background: #fff;
+  padding: 9px 10px; margin: 8px 0; font-family: var(--serif); font-size: 12px;
+  line-height: 1.7; color: #333; max-height: 200px; overflow-y: auto; white-space: pre-wrap;
+}
+.history-diff.empty { font-family: var(--sans); font-size: 11.5px; color: var(--text-faint); }
+.history-diff .diff-added { background: rgba(46, 139, 107, 0.16); color: #1d5c46; }
+.history-diff .diff-removed {
+  background: rgba(193, 89, 46, 0.14); color: #8a3d1f; text-decoration: line-through;
+}
+
+/* An entry that changed no characters is a formatting change — until CP22 it looked empty,
+   because the counter said "+0 −0" and the preview showed the text alone. */
+.history-entry .h-desc .formatting-only { color: var(--text-faint); font-style: italic; }
+
+/* An anchored comment in the history preview — the same highlight as in the editor. */
+.preview-commented { background: rgba(184, 134, 46, 0.18); }

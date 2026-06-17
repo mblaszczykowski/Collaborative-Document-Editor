@@ -3,13 +3,22 @@ package dev.collabedit.app.history;
 import dev.collabedit.app.persist.OperationStore;
 import dev.collabedit.app.persist.SnapshotStore;
 import dev.collabedit.app.persist.StoredOperation;
+import dev.collabedit.crdt.Block;
+import dev.collabedit.crdt.Id;
+import dev.collabedit.crdt.MarkSet;
+import dev.collabedit.crdt.MarkTypes;
 import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.RgaDocument;
 import dev.collabedit.crdt.TreapBlockList;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -163,6 +172,37 @@ public class HistoryService {
      * quietly become the source of truth.
      */
     public String textAt(UUID documentId, long throughServerSeq) {
+        return documentAt(documentId, throughServerSeq).text();
+    }
+
+    /**
+     * The document at that moment — <b>text and formatting</b> (CP22).
+     *
+     * <p>Until CP22 this layer returned a {@code String}, which was right in CP5 and stopped being
+     * right in CP13 without anybody noticing: a version whose only change was formatting looked
+     * identical to the one before it, and restoring a version brought the text back while leaving
+     * the appearance as it happened to be.
+     *
+     * <p>Comment anchors are marks too, and they are deliberately part of this — the preview shows
+     * what the document looked like, and a highlighted fragment is part of that. What treats them
+     * differently is {@link #restoreOperations}; the reason is written there.
+     */
+    public record State(String text, List<MarkSet.Span> marks) {
+    }
+
+    public State stateAt(UUID documentId, long throughServerSeq) {
+        RgaDocument document = documentAt(documentId, throughServerSeq);
+        return new State(document.text(), document.formatting());
+    }
+
+    /**
+     * Rebuilds the document as of a sequence number.
+     *
+     * <p>The snapshot is purely a shortcut: without it, replaying the whole log would give the same
+     * result. That equivalence is tested explicitly, because without a test the cache would quietly
+     * become the source of truth.
+     */
+    private RgaDocument documentAt(UUID documentId, long throughServerSeq) {
         var snapshot = snapshots.findLatestUpTo(documentId, throughServerSeq);
 
         RgaDocument document;
@@ -178,7 +218,116 @@ public class HistoryService {
         for (StoredOperation stored : operations.loadRange(documentId, from, throughServerSeq)) {
             document.apply(stored.op());
         }
-        return document.text();
+        return document;
+    }
+
+    // ------------------------------------------------------------------
+    // Comparing two versions (CP22)
+    // ------------------------------------------------------------------
+
+    /**
+     * One run of text in a comparison of two versions.
+     *
+     * @param kind {@code same}, {@code added} (present in the later version only) or
+     *             {@code removed} (present in the earlier one only)
+     */
+    public record Segment(String kind, String text) {
+    }
+
+    /**
+     * What changed between two moments — computed from <b>character identity</b>, not from a text
+     * diff.
+     *
+     * <h2>Why this is the one thing a CRDT gives away for free</h2>
+     * Every character here carries {@code (replicaId, lamport)} for the whole life of the document,
+     * because that identity is what the merge algorithm is built on. Two states of one document are
+     * the same append-only log stopped at two points, so any two characters present in both appear
+     * in the <b>same relative order</b> in both. That is enough to compare them with a single
+     * left-to-right walk and a hash lookup per character — no Myers, no heuristics, no
+     * "similarity".
+     *
+     * <p>And it answers a question a text diff cannot. Delete a word and type the same word again:
+     * a text diff sees nothing at all, because the strings match. The identifiers do not match, so
+     * this sees a removal and an insertion — which is what actually happened, and what the person
+     * asking "what did they change" wants to know.
+     *
+     * <p>The cost is two state rebuilds, exactly like two previews. There is no index for this and
+     * there does not need to be: the comparison is O(n) once the states exist, and the states are
+     * what the timeline already pays for.
+     */
+    public List<Segment> diff(UUID documentId, long fromServerSeq, long toServerSeq) {
+        List<Character> beforeText = new ArrayList<>();
+        List<Id> beforeIds = new ArrayList<>();
+        collectVisible(documentAt(documentId, fromServerSeq), beforeIds, beforeText);
+
+        List<Character> afterText = new ArrayList<>();
+        List<Id> afterIds = new ArrayList<>();
+        collectVisible(documentAt(documentId, toServerSeq), afterIds, afterText);
+
+        Map<Id, Integer> positionBefore = new HashMap<>();
+        for (int i = 0; i < beforeIds.size(); i++) {
+            positionBefore.put(beforeIds.get(i), i);
+        }
+
+        List<Segment> segments = new ArrayList<>();
+        StringBuilder run = new StringBuilder();
+        String runKind = null;
+        int consumedBefore = 0;
+
+        for (int i = 0; i < afterIds.size(); i++) {
+            Integer match = positionBefore.get(afterIds.get(i));
+            if (match != null && match >= consumedBefore) {
+                // Everything skipped over in the earlier state is gone from the later one.
+                if (match > consumedBefore) {
+                    runKind = flush(segments, run, runKind, "removed");
+                    for (int j = consumedBefore; j < match; j++) {
+                        run.append(beforeText.get(j));
+                    }
+                    runKind = "removed";
+                }
+                runKind = flush(segments, run, runKind, "same");
+                run.append(afterText.get(i));
+                runKind = "same";
+                consumedBefore = match + 1;
+            } else {
+                runKind = flush(segments, run, runKind, "added");
+                run.append(afterText.get(i));
+                runKind = "added";
+            }
+        }
+        if (consumedBefore < beforeIds.size()) {
+            runKind = flush(segments, run, runKind, "removed");
+            for (int j = consumedBefore; j < beforeIds.size(); j++) {
+                run.append(beforeText.get(j));
+            }
+            runKind = "removed";
+        }
+        flush(segments, run, runKind, null);
+        return segments;
+    }
+
+    /** Closes the current run when the kind changes; returns the kind now in progress. */
+    private static String flush(List<Segment> segments, StringBuilder run, String current,
+                                String next) {
+        if (current != null && !current.equals(next) && !run.isEmpty()) {
+            segments.add(new Segment(current, run.toString()));
+            run.setLength(0);
+        }
+        return next;
+    }
+
+    /** The visible characters of a state, with the identifier each one carries. */
+    private static void collectVisible(RgaDocument document, List<Id> ids, List<Character> text) {
+        for (Block block : document.blocks()) {
+            if (block.deleted() || !block.hasContent()) {
+                continue;
+            }
+            String content = block.text();
+            for (int offset = 0; offset < content.length(); offset++) {
+                ids.add(block.idAt(offset));
+                text.add(content.charAt(offset));
+            }
+        }
     }
 
     /**
@@ -193,9 +342,29 @@ public class HistoryService {
      * and bring it to the target state. To connected clients it looks like an ordinary edit —
      * because it is one.
      *
+     * <h2>Formatting is restored; conversations are not touched (CP22)</h2>
+     * Until CP22 this method took a {@code String} and restored the text alone, so rolling a
+     * document back left it wearing whatever formatting happened to be current. It now brings the
+     * marks back as well — <b>except comment anchors</b>.
+     *
+     * <p>That exception is a decision, not an oversight. Formatting is how the document looked at
+     * that moment, so it belongs to the version. A comment is people talking, and this project
+     * already ruled once that text deletion must not delete conversations (CP14: the thread
+     * survives, marked as detached). Reconciling comment anchors here would mean a rollback
+     * silently detaching every conversation started since — a bigger loss than the one the
+     * rollback was asked for, and one nobody would connect to the button they pressed.
+     *
      * @param replica a replica with the current state, on which we generate the change
      */
-    public List<Op> restoreOperations(RgaDocument replica, String targetText) {
+    public List<Op> restoreOperations(RgaDocument replica, State target) {
+        List<Op> generated = new ArrayList<>(restoreText(replica, target.text()));
+        // Marks second, and this order is required rather than tidy: mark operations address
+        // ranges of the CURRENT text, so they have to be computed after the text is back.
+        generated.addAll(restoreMarks(replica, target.marks()));
+        return generated;
+    }
+
+    private List<Op> restoreText(RgaDocument replica, String targetText) {
         String current = replica.text();
         if (current.equals(targetText)) {
             return List.of();
@@ -232,4 +401,106 @@ public class HistoryService {
         return generated;
     }
 
+    /**
+     * Brings the formatting back to what it was, by adding and removing marks.
+     *
+     * <p>Not by re-applying the old operations: those are already in the log and in every replica,
+     * and re-applying them would be a no-op by idempotence (ADR-0001). Restoring the <i>state</i>
+     * therefore means new operations that produce it — the same principle the text half of this
+     * method follows, and the same one that makes a restore mergeable rather than special.
+     *
+     * <p>The comparison walks the boundaries of both span lists rather than the characters. A
+     * per-character map would be simpler and would allocate one map per character of a hundred
+     * thousand character document to answer a question with a handful of answers in it.
+     */
+    private List<Op> restoreMarks(RgaDocument replica, List<MarkSet.Span> target) {
+        List<MarkSet.Span> current = replica.formatting();
+        int length = replica.visibleLength();
+        if (length == 0 || (target.isEmpty() && current.isEmpty())) {
+            return List.of();
+        }
+
+        Set<Integer> boundarySet = new HashSet<>();
+        boundarySet.add(0);
+        boundarySet.add(length);
+        for (MarkSet.Span span : target) {
+            boundarySet.add(Math.min(span.from(), length));
+            boundarySet.add(Math.min(span.to(), length));
+        }
+        for (MarkSet.Span span : current) {
+            boundarySet.add(Math.min(span.from(), length));
+            boundarySet.add(Math.min(span.to(), length));
+        }
+        List<Integer> boundaries = new ArrayList<>(boundarySet);
+        boundaries.sort(Integer::compare);
+
+        List<Op> generated = new ArrayList<>();
+        int index = 0;
+        while (index < boundaries.size() - 1) {
+            int from = boundaries.get(index);
+            Map<String, String> want = marksAt(target, from);
+            Map<String, String> have = marksAt(current, from);
+
+            // Extend over the neighbouring intervals that need the same thing done to them, so a
+            // paragraph that lost its bolding is one operation rather than one per span boundary.
+            int end = boundaries.get(index + 1);
+            int next = index + 1;
+            while (next < boundaries.size() - 1
+                && want.equals(marksAt(target, boundaries.get(next)))
+                && have.equals(marksAt(current, boundaries.get(next)))) {
+                end = boundaries.get(next + 1);
+                next++;
+            }
+            index = next;
+
+            if (from >= end) {
+                continue;
+            }
+            for (Map.Entry<String, String> entry : have.entrySet()) {
+                if (isConversation(entry.getKey())) {
+                    continue;
+                }
+                // containsKey BEFORE comparing values, and the value comparison is
+                // Objects.equals. Both halves were bugs in the first version of this loop, and
+                // both come from the same fact: a mark's value is null for every type that
+                // carries no payload — bold, italic, underline, strike — and only `link` and
+                // `comment` have one. Comparing with equals() threw on the commonest mark in
+                // the project; treating null as absent then made "italic present, no value"
+                // indistinguishable from "no italic", so a restore silently kept the formatting
+                // it was asked to remove. The test that found the second one is
+                // VersionComparisonIT.restoringBringsFormattingBack.
+                if (!wants(want, entry.getKey(), entry.getValue())) {
+                    generated.add(replica.removeMark(from, end, entry.getKey()));
+                }
+            }
+            for (Map.Entry<String, String> entry : want.entrySet()) {
+                if (isConversation(entry.getKey())) {
+                    continue;
+                }
+                if (!wants(have, entry.getKey(), entry.getValue())) {
+                    generated.add(replica.addMark(from, end, entry.getKey(), entry.getValue()));
+                }
+            }
+        }
+        return generated;
+    }
+
+    /** Whether these marks contain exactly this type with exactly this value, null included. */
+    private static boolean wants(Map<String, String> marks, String type, String value) {
+        return marks.containsKey(type) && java.util.Objects.equals(marks.get(type), value);
+    }
+
+    /** A comment anchor is a mark, and a restore deliberately leaves it alone — see above. */
+    private static boolean isConversation(String markType) {
+        return MarkTypes.COMMENT.equals(markType);
+    }
+
+    private static Map<String, String> marksAt(List<MarkSet.Span> spans, int position) {
+        for (MarkSet.Span span : spans) {
+            if (span.from() <= position && position < span.to()) {
+                return new LinkedHashMap<>(span.marks());
+            }
+        }
+        return Map.of();
+    }
 }

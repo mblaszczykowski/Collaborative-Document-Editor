@@ -136,7 +136,7 @@ test('demo: współbieżna edycja, praca offline i cofnięcie wersji', async ({ 
     timeout: 10_000,
   })
   await anna.waitForTimeout(1200)
-  await anna.getByRole('button', { name: 'Przywróć tę wersję' }).click()
+  await anna.getByRole('button', { name: 'Restore this version' }).click()
 
   // Przywrócenie wraca zwykłym kanałem operacji, więc widzą je OBIE przeglądarki.
   await expect(marek.locator('.cm-content')).not.toContainText('bez sieci', { timeout: 20_000 })

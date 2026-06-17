@@ -173,7 +173,7 @@ test('historia pozwala cofnąć dokument do wcześniejszej wersji', async ({ bro
     timeout: 10_000,
   })
 
-  await anna.getByRole('button', { name: 'Przywróć tę wersję' }).click()
+  await anna.getByRole('button', { name: 'Restore this version' }).click()
 
   // Przywrócenie wraca zwykłym kanałem operacji — edytor ma się zaktualizować sam,
   // bez przeładowania strony. To jest sedno decyzji z ADR-0003 pkt 6.

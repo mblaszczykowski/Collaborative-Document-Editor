@@ -227,7 +227,7 @@ class CommentIT extends IntegrationTestBase {
             // powodu, żeby cokolwiek kasowało wątki. Test pilnuje, żeby tak zostało: gdyby
             // przywracanie kiedykolwiek zaczęło czyścić stan „spoza przywracanej wersji",
             // rozmowy zniknęłyby razem z tekstem, o którym mówiły.
-            String restored = history.textAt(document, checkpoint);
+            var restored = history.stateAt(document, checkpoint);
             var replica = registry.get(document);
             var generated = replica.withLock(model -> history.restoreOperations(model, restored));
             for (var op : generated) {

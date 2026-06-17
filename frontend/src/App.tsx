@@ -107,14 +107,15 @@ function Workspace({ session }: { session: Session }) {
       const params = new URLSearchParams(window.location.search)
 
       /**
-       * Zaproszenie w adresie (CP21).
+       * An invitation in the address (CP21).
        *
-       * Wymieniamy je na rolę PRZED otwarciem dokumentu, bo bez tego pierwsze żądanie
-       * poszłoby bez dostępu i skończyło się ekranem „nie możemy otworzyć" — dla osoby,
-       * która właśnie kliknęła zaproszenie, jest to najgorszy możliwy komunikat.
+       * Redeemed for a role BEFORE the document is opened: without that the first request
+       * would go out with no access and end on the "we cannot open this" screen — the worst
+       * possible message for somebody who has just clicked an invitation.
        *
-       * Token znika z adresu od razu po wymianie. Zostawiony w pasku adresu byłby dalej
-       * roznoszony przy każdym kopiowaniu linku — a jest to poświadczenie na okaziciela.
+       * The token leaves the address immediately after redemption. Left in the address bar it
+       * would keep being passed on every time somebody copies the link — and it is a bearer
+       * credential.
        */
       const invite = params.get('invite')
       if (invite !== null) {
@@ -128,10 +129,10 @@ function Workspace({ session }: { session: Session }) {
           setOpenId(redeemed.documentId)
           return
         } catch {
-          // Zaproszenie nieznane, wycofane albo przeterminowane — jedna odpowiedź na trzy
-          // przypadki, tak samo jak przy dokumencie bez dostępu. Otwieramy dokument
-          // normalnie: jeśli dostęp jest z innego tytułu, zadziała; jeśli nie, użytkownik
-          // zobaczy ekran braku dostępu, który tłumaczy, co robić.
+          // Unknown, revoked or expired — one answer to three cases, exactly as with a
+          // document one may not read. We then open the document normally: if access exists
+          // for another reason it works, and if it does not, the user gets the no-access
+          // screen, which explains what to do.
           window.history.replaceState({}, '', url)
         }
       }
@@ -389,22 +390,24 @@ function DocumentWorkspace(props: {
           console.error(`[${code}] ${message}`)
         },
         /**
-         * Zmiana dostępu (CP21) — pytamy serwer o SWOJĄ rolę, nie wierzymy komunikatowi.
+         * Access changed (CP21) — we ask the server for OUR role rather than believing the
+         * message.
          *
-         * Do CP21 rola przyjeżdżała raz, ze stanem początkowym, więc podniesienie komuś
-         * uprawnień nie robiło nic do czasu przeładowania strony. Nie była to dziura —
-         * serwer i tak odrzucał operacje — tylko sposób, w jaki działająca funkcja
-         * wygląda na zepsutą: właściciel nadaje dostęp, a druga osoba dalej widzi
-         * dokument tylko do odczytu i nic jej tego nie tłumaczy.
+         * Until CP21 the role arrived once, with the initial state, so raising somebody's
+         * permissions did nothing until they reloaded. Never a hole — the server rejects the
+         * operation anyway — but exactly how a working feature reads as broken: the owner
+         * grants access, the other person still sees a read-only document, and nothing
+         * explains why.
          *
-         * Pytamy o samą rolę, a nie przez `openDocument`: tamto niesie też cały tekst.
+         * We ask for the role alone rather than through `openDocument`: that one also carries
+         * the whole text.
          */
         onAccessChanged: (userId) => {
           if (userId !== null && userId !== session.userId) return
           void api.myRole(documentId)
             .then((mine) => setRole(mine.role))
-            // 404 znaczy „już nie masz dostępu" — ta sama odpowiedź co przy dokumencie,
-            // którego nie wolno czytać, i ten sam ekran co przy otwarciu bez dostępu.
+            // A 404 means "you no longer have access" — the same answer as for a document one
+            // may not read, and the same screen as opening one without access.
             .catch(() => setUnavailable(true))
         },
       })
@@ -496,13 +499,13 @@ function DocumentWorkspace(props: {
   }, [presence, session.userId, characters])
 
   /**
-   * Udostępnianie (CP21).
+   * Sharing (CP21).
    *
-   * Właściciel dostaje panel; wszyscy pozostali — kopię adresu, czyli to, co ten przycisk
-   * robił wcześniej dla wszystkich. Różnica nie jest kosmetyczna: od CP21 nowy dokument
-   * jest prywatny, więc sam adres nikogo nie wpuszcza. Skopiowanie go przez osobę bez prawa
-   * zarządzania dostępem jest nadal sensownym gestem („wyślij mi to jeszcze raz"), ale to
-   * zaproszenie wpuszcza — i tylko właściciel może je wystawić.
+   * The owner gets the panel; everybody else gets a copy of the address, which is what this
+   * button did for everyone before. The difference is not cosmetic: since CP21 a new document
+   * is private, so the address alone lets nobody in. Copying it is still a sensible gesture
+   * for somebody without access management ("send me that again"), but it is the invitation
+   * that opens the door — and only the owner can issue one.
    */
   async function share() {
     if (role === 'owner') {

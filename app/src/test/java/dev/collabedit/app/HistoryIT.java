@@ -255,7 +255,7 @@ class HistoryIT extends IntegrationTestBase {
         Integer operationsBefore = jdbc.queryForObject(
             "SELECT COUNT(*) FROM operations WHERE doc_id = ?", Integer.class, document);
 
-        String target = history.textAt(document, afterFirst);
+        var target = history.stateAt(document, afterFirst);
         var replica = registry.get(document);
         var generated = replica.withLock(model -> history.restoreOperations(model, target));
         for (var op : generated) {

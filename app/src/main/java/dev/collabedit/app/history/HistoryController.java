@@ -4,6 +4,7 @@ import dev.collabedit.app.auth.Capability;
 import dev.collabedit.app.auth.RequiresDocumentAccess;
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
+import dev.collabedit.crdt.MarkSet;
 import dev.collabedit.crdt.Op;
 import java.util.List;
 import java.util.UUID;
@@ -73,7 +74,14 @@ public class HistoryController {
         return ResponseEntity.ok(history.timeline(documentId));
     }
 
-    public record Preview(long throughServerSeq, String text) {
+    /**
+     * A past state of the document.
+     *
+     * <p>Carries the marks as well since CP22. Without them the preview of a version whose only
+     * change was formatting was identical to the version before it — the timeline said "3
+     * operations" and the preview showed no difference at all.
+     */
+    public record Preview(long throughServerSeq, String text, List<MarkSet.Span> marks) {
     }
 
     // Returns the FULL TEXT of the document, exactly like `GET /documents/{id}` does, only
@@ -82,8 +90,28 @@ public class HistoryController {
     @RequiresDocumentAccess(value = Capability.READ, param = "documentId")
     public ResponseEntity<Preview> textAt(@PathVariable("documentId") UUID documentId,
                                           @RequestParam("seq") long throughServerSeq) {
-        return ResponseEntity.ok(
-            new Preview(throughServerSeq, history.textAt(documentId, throughServerSeq)));
+        var state = history.stateAt(documentId, throughServerSeq);
+        return ResponseEntity.ok(new Preview(throughServerSeq, state.text(), state.marks()));
+    }
+
+    public record Comparison(long fromServerSeq, long toServerSeq,
+                             List<HistoryService.Segment> segments) {
+    }
+
+    /**
+     * What changed between two versions, computed from character identity (CP22).
+     *
+     * <p>READ, like the preview: it discloses exactly what the preview discloses, in a different
+     * arrangement. Worth saying out loud, because "a diff is only a summary" is the sort of
+     * reasoning that produces an endpoint with a weaker check than the one it summarises.
+     */
+    @GetMapping("/diff")
+    @RequiresDocumentAccess(value = Capability.READ, param = "documentId")
+    public ResponseEntity<Comparison> diff(@PathVariable("documentId") UUID documentId,
+                                           @RequestParam("from") long fromServerSeq,
+                                           @RequestParam("to") long toServerSeq) {
+        return ResponseEntity.ok(new Comparison(fromServerSeq, toServerSeq,
+            history.diff(documentId, fromServerSeq, toServerSeq)));
     }
 
     public record RestoreRequest(long throughServerSeq) {
@@ -112,7 +140,7 @@ public class HistoryController {
     @RequiresDocumentAccess(value = Capability.WRITE_TEXT, param = "documentId")
     public ResponseEntity<RestoreResult> restore(@PathVariable("documentId") UUID documentId,
                                                  @RequestBody RestoreRequest body) {
-        String target = history.textAt(documentId, body.throughServerSeq());
+        var target = history.stateAt(documentId, body.throughServerSeq());
         var replica = registry.get(documentId);
 
         List<Op> generated = replica.withLock(
@@ -128,6 +156,6 @@ public class HistoryController {
         log.info("Restored document {} to its state at server_seq={} ({} operations)",
             documentId, body.throughServerSeq(), generated.size());
 
-        return ResponseEntity.ok(new RestoreResult(generated.size(), target));
+        return ResponseEntity.ok(new RestoreResult(generated.size(), target.text()));
     }
 }

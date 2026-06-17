@@ -50,14 +50,14 @@ export interface ConnectionHandlers {
   onStateChange: (state: ConnectionState, pendingCount: number) => void
   onError: (code: string, message: string) => void
   /**
-   * Czyjś dostęp do tego dokumentu się zmienił (CP21).
+   * Somebody's access to this document changed (CP21).
    *
-   * Komunikat NIE niesie nowej roli tego klienta w sposób, któremu wolno wierzyć — idzie
-   * na temat dokumentu, więc słyszą go wszyscy uczestnicy. Klient dowiaduje się z niego
-   * wyłącznie tego, że ma dopytać serwer o SWOJĄ rolę.
+   * The message does NOT carry this client's new role in a form worth trusting — it goes to
+   * the document topic, so every participant hears it. All the client learns from it is that
+   * it should ask the server about ITS OWN role.
    *
-   * @param userId osoba, której to dotyczy; `null` znaczy „wszyscy sprawdźcie ponownie"
-   *               (tak wygląda zmiana widoczności)
+   * @param userId the person affected; `null` means "everybody re-check", which is what a
+   *               visibility change looks like
    */
   onAccessChanged: (userId: string | null) => void
 }

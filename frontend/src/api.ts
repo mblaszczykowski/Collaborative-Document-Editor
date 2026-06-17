@@ -96,6 +96,19 @@ async function requestNoContent(path: string, init: RequestInit): Promise<void> 
   }
 }
 
+/** One run of text in a version comparison (CP22). */
+export interface DiffSegment {
+  kind: 'same' | 'added' | 'removed'
+  text: string
+}
+
+/** A range with uniform formatting — the same shape as `Span` in the CRDT layer. */
+export interface Span {
+  from: number
+  to: number
+  marks: Record<string, string>
+}
+
 export interface Version {
   throughServerSeq: number
   userId: string
@@ -130,7 +143,7 @@ export interface CommentThread {
   messages: CommentMessage[]
 }
 
-/** Kto ma dostęp do dokumentu — widok właściciela (CP21). */
+/** Who has access to a document — the owner's view (CP21). */
 export interface AccessState {
   visibility: 'private' | 'link'
   ownerId: string | null
@@ -142,9 +155,31 @@ export const api = {
   history: (documentId: string) =>
     request<Version[]>(`/documents/${documentId}/history`),
 
+  /**
+   * A past state of the document — text TOGETHER WITH its marks (CP22).
+   *
+   * Until CP22 only the text arrived, so a version whose sole change was formatting looked
+   * identical to the one before it in the preview. The timeline said "3 operations" and the
+   * preview showed no difference at all — not a bug, but the CP5 history layer, which nobody
+   * revisited after CP13.
+   */
   textAt: (documentId: string, throughServerSeq: number) =>
-    request<{ throughServerSeq: number; text: string }>(
+    request<{ throughServerSeq: number; text: string; marks: Span[] }>(
       `/documents/${documentId}/history/at?seq=${throughServerSeq}`,
+    ),
+
+  /**
+   * What changed between two versions — computed from character IDENTITY, not from the text.
+   *
+   * Every character carries `(replicaId, lamport)` for the whole life of the document, because
+   * that is what merging is built on. Two states of one document are the same log stopped at
+   * two points, so characters present in both appear in the same order — the comparison is a
+   * single pass with no heuristics. And it answers a question a text diff cannot: deleting a
+   * word and retyping it identically is a change.
+   */
+  compare: (documentId: string, from: number, to: number) =>
+    request<{ fromServerSeq: number; toServerSeq: number; segments: DiffSegment[] }>(
+      `/documents/${documentId}/history/diff?from=${from}&to=${to}`,
     ),
 
   /**
@@ -228,20 +263,20 @@ export const api = {
   reopenThread: (threadId: string) =>
     requestNoContent(`/comments/${threadId}/reopen`, { method: 'POST' }),
 
-  // --- dostęp (CP21) ---
+  // --- access (CP21) ---
   //
-  // Do CP21 tych wywołań nie było i nie było czego wołać: `grant`/`revoke` istniały na
-  // serwerze wyłącznie dla testów. Zapraszanie idzie LINKIEM, a nie po nazwie użytkownika,
-  // bo logowanie bez hasła nadaje nowy identyfikator przy każdym wejściu — nie ma czego
-  // wpisać w pole „udostępnij komu" (ADR-0014).
+  // Until CP21 these calls did not exist, and there was nothing to call: `grant`/`revoke`
+  // lived on the server for the tests only. Inviting goes by LINK rather than by user name,
+  // because passwordless login mints a new identifier on every visit — there is nothing to
+  // type into a "share with…" box (ADR-0014).
 
   access: (documentId: string) => request<AccessState>(`/documents/${documentId}/access`),
 
   /**
-   * Rola pytającego i nic poza nią.
+   * The caller's role and nothing else.
    *
-   * Osobne wywołanie, bo `openDocument` niesie też CAŁY tekst — a po komunikacie
-   * `ACCESS_CHANGED` potrzebujemy jednego słowa, nie stu tysięcy znaków.
+   * A separate call, because `openDocument` also carries the ENTIRE text — and after an
+   * `ACCESS_CHANGED` message we need one word, not a hundred thousand characters.
    */
   myRole: (documentId: string) =>
     request<{ role: DocumentState['role'] }>(`/documents/${documentId}/access/me`),
@@ -270,7 +305,7 @@ export const api = {
   revokeInvite: (documentId: string, inviteId: string) =>
     requestNoContent(`/documents/${documentId}/access/invites/${inviteId}`, { method: 'DELETE' }),
 
-  /** Wymienia token zaproszenia na rolę. Dokument bierze się Z TOKENU, nie z adresu. */
+  /** Exchanges an invitation token for a role. The document comes FROM THE TOKEN, not the URL. */
   redeemInvite: (token: string) =>
     request<{ documentId: string; role: DocumentState['role'] }>('/invites/redeem', {
       method: 'POST',

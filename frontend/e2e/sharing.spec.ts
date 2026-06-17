@@ -2,35 +2,35 @@ import { expect, test } from '@playwright/test'
 import { APP, joinAs, typeInto } from './helpers'
 
 /**
- * Udostępnianie dokumentu (CP21) na prawdziwej przeglądarce.
+ * Sharing a document (CP21) in a real browser.
  *
- * Testy integracyjne po stronie serwera (`AccessIT`) sprawdzają, że reguła jest właściwa:
- * kto może nadać rolę, czego nadać nie można i kiedy zaproszenie przestaje działać. Tutaj
- * sprawdzana jest rzecz, której tamte sprawdzić nie mogą — **czy tą regułą da się posłużyć**.
- * Do CP21 nie dało się: `grant` i `revoke` istniały wyłącznie dla testów, a każdy dokument
- * z interfejsu był domyślnie edytowalny dla wszystkich zalogowanych, więc żadna rola poza
- * właścicielem nie była w produkcie osiągalna.
+ * The server-side integration tests (`AccessIT`) check that the rule is right: who may grant a
+ * role, what cannot be granted, and when an invitation stops working. What they cannot check is
+ * the thing tested here — **whether that rule can be used at all**. Until CP21 it could not:
+ * `grant` and `revoke` existed for the tests only, and every document created through the
+ * interface was editable by anybody signed in, so no role except owner was reachable in the
+ * product.
  *
- * Dlatego pierwszy scenariusz zaczyna się od dokumentu utworzonego **w przeglądarce**, a nie
- * przez `freshDocument`: fixture przełącza widoczność na `link`, czyli omija dokładnie ten
- * mechanizm, który jest tu przedmiotem badania.
+ * That is why the first scenario starts from a document created **in the browser** rather than
+ * through `freshDocument`: the fixture switches visibility to `link`, which bypasses exactly the
+ * mechanism under examination here.
  */
 
-/** Świeży użytkownik i jego własny (prywatny) dokument. */
+/** A fresh user and their own (private) document. */
 async function ownerWithDocument(browser: Parameters<typeof joinAs>[0], name: string) {
   const context = await browser.newContext()
   const page = await context.newPage()
   await page.goto(APP)
   await page.getByPlaceholder('Twoje imię').fill(name)
   await page.getByRole('button', { name: 'Rozpocznij' }).click()
-  // Pusta lista dokumentów kończy się utworzeniem pierwszego — a od CP21 jest on prywatny.
+  // An empty document list ends with the first one being created — and since CP21 it is private.
   await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
   return page
 }
 
-test('zaproszenie wpuszcza dokładnie z tą rolą, którą niesie', async ({ browser }) => {
+test('an invitation lets somebody in with exactly the role it carries', async ({ browser }) => {
   const anna = await ownerWithDocument(browser, 'Anna')
-  await typeInto(anna, 'Tekst Anny. ')
+  await typeInto(anna, "Anna's text. ")
 
   await anna.getByRole('button', { name: 'Udostępnij' }).click()
   const panel = anna.getByRole('dialog', { name: 'Share this document' })
@@ -39,9 +39,9 @@ test('zaproszenie wpuszcza dokładnie z tą rolą, którą niesie', async ({ bro
   await panel.getByRole('combobox').first().selectOption('commenter')
   await panel.getByRole('button', { name: 'Create link' }).click()
 
-  // Link pokazujemy raz — serwer trzyma wyłącznie jego skrót. Czytamy go z pola,
-  // a nie ze schowka: schowek w Playwrighcie wymaga uprawnień przeglądarki, a to
-  // testowałoby uprawnienia przeglądarki, nie udostępnianie.
+  // The link is shown once — the server keeps only its hash. We read it from the field rather
+  // than from the clipboard: clipboard access in Playwright needs browser permissions, and that
+  // would be testing browser permissions rather than sharing.
   const link = await panel.locator('input').first().inputValue()
   expect(link).toContain('invite=')
 
@@ -51,36 +51,36 @@ test('zaproszenie wpuszcza dokładnie z tą rolą, którą niesie', async ({ bro
   await bartekPage.getByPlaceholder('Twoje imię').fill('Bartek')
   await bartekPage.getByRole('button', { name: 'Rozpocznij' }).click()
 
-  // Dostęp jest prawdziwy: widzi tekst Anny.
-  await expect(bartekPage.locator('.cm-content')).toContainText('Tekst Anny.', {
+  // The access is real: he can see Anna's text.
+  await expect(bartekPage.locator('.cm-content')).toContainText("Anna's text.", {
     timeout: 15_000,
   })
-  // I jest DOKŁADNIE tą rolą, którą niosło zaproszenie — komentator, nie edytor.
+  // And it is EXACTLY the role the invitation carried — commenter, not editor.
   await expect(bartekPage.locator('.role-badge')).toHaveText('Możesz komentować')
 
   await anna.context().close()
   await bartek.close()
 })
 
-test('bez zaproszenia sam adres dokumentu nie wpuszcza', async ({ browser }) => {
+test('without an invitation the address alone lets nobody in', async ({ browser }) => {
   const anna = await ownerWithDocument(browser, 'Anna')
   const url = anna.url()
 
-  const obcy = await browser.newContext()
-  const obcyPage = await obcy.newPage()
-  await obcyPage.goto(url)
-  await obcyPage.getByPlaceholder('Twoje imię').fill('Obcy')
-  await obcyPage.getByRole('button', { name: 'Rozpocznij' }).click()
+  const stranger = await browser.newContext()
+  const strangerPage = await stranger.newPage()
+  await strangerPage.goto(url)
+  await strangerPage.getByPlaceholder('Twoje imię').fill('Stranger')
+  await strangerPage.getByRole('button', { name: 'Rozpocznij' }).click()
 
-  // Ten sam ekran co przy dokumencie usuniętym — serwer odpowiada 404 na brak dostępu
-  // i na nieistnienie tak samo, celowo.
-  await expect(obcyPage.locator('.unavailable-banner')).toBeVisible({ timeout: 15_000 })
+  // The same screen as for a deleted document — the server answers 404 to "no access" and to
+  // "does not exist" identically, on purpose.
+  await expect(strangerPage.locator('.unavailable-banner')).toBeVisible({ timeout: 15_000 })
 
   await anna.context().close()
-  await obcy.close()
+  await stranger.close()
 })
 
-test('podniesienie roli działa bez przeładowania strony', async ({ browser }) => {
+test('raising a role takes effect without a reload', async ({ browser }) => {
   const anna = await ownerWithDocument(browser, 'Anna')
 
   await anna.getByRole('button', { name: 'Udostępnij' }).click()
@@ -99,15 +99,15 @@ test('podniesienie roli działa bez przeładowania strony', async ({ browser }) 
     timeout: 15_000,
   })
 
-  // Anna podnosi mu rolę. To jest ta rzecz, której brak README wypisywało jako pozycję
-  // otwartą: rola przyjeżdżała raz, ze stanem początkowym, więc nadanie uprawnień nie
-  // robiło NIC do czasu przeładowania — czyli działająca funkcja wyglądała na zepsutą.
+  // Anna raises his role. This is the thing the README listed as open: the role arrived once,
+  // with the initial state, so granting permissions did NOTHING until a reload — which is to
+  // say a working feature looked broken.
   await anna.getByRole('button', { name: 'Udostępnij' }).click()
   const reopened = anna.getByRole('dialog', { name: 'Share this document' })
   const member = reopened.locator('.share-list li', { hasText: 'Bartek' })
   await member.getByRole('combobox').selectOption('editor')
 
-  // Bez odświeżania: odznaka roli znika, bo rola przestała cokolwiek ograniczać.
+  // With no refresh: the role badge disappears, because the role stopped restricting anything.
   await expect(bartekPage.locator('.role-badge')).toHaveCount(0, { timeout: 15_000 })
 
   await anna.context().close()
