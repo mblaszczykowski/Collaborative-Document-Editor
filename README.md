@@ -776,7 +776,12 @@ solution loses its point if it shows only the limits that still stand. Full reck
   `server_seq` is a requirement of gap detection. This is the first place that will limit
   throughput.
 - **No SockJS fallback** — a client behind a proxy that blocks `Upgrade` will not connect at all.
-- **The GC window (7 days) is a guessed value**, not derived from telemetry.
+- **The GC window (7 days) is a guessed value**, not derived from telemetry. It is also, until
+  recently, a value nothing read: [ADR-0005](docs/adr/0005-tombstone-gc.md) defines the replicas
+  constraining GC as "connected now, **or disconnected for less than the GC window**", and only the
+  first clause was implemented — a disconnected client was forgotten immediately. The failure mode
+  below said seven days; the code gave minutes. Now implemented as documented, and pinned by
+  `GcWindowTest`.
 
 **Open, unresolved**
 - **The resynchronisation chunk limit is counted in operations, not bytes**

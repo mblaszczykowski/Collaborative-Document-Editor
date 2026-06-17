@@ -392,7 +392,12 @@ public class DocumentService {
         // Tombstone GC happens DURING snapshotting rather than as a separate process (ADR-0005):
         // a snapshot rewrites the whole structure anyway, so compaction is free at this point.
         VersionVector stable = replica.stableVersion(
-            System.currentTimeMillis(), properties.gc().unresponsiveReplicaTimeoutMs());
+            System.currentTimeMillis(),
+            properties.gc().unresponsiveReplicaTimeoutMs(),
+            // The GC window. Configured since CP5 and read by nothing until now: ADR-0005 defines
+            // the replicas that constrain GC as "connected now, OR disconnected for less than the
+            // GC window", and only the first half was implemented.
+            java.time.Duration.ofDays(properties.gc().windowDays()).toMillis());
 
         long seq = replica.appliedServerSeq();
         // The preview is taken under THE SAME lock acquisition as the snapshot, so both describe

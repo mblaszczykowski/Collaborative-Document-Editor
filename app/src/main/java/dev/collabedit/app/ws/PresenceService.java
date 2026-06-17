@@ -98,11 +98,17 @@ public class PresenceService {
             return;
         }
         metrics.sessionClosed();
-        // A replica that has disconnected stops holding back the causal-stability computation
-        // for GC (ADR-0005). Without this, one closed browser tab would stall tombstone
-        // compaction for the rest of the process's life.
+        // The replica is recorded as DEPARTED rather than forgotten (ADR-0005). It keeps
+        // constraining causal stability for the GC window, because that window exists precisely
+        // to let a client that closed its laptop come back and still merge.
+        //
+        // This line used to call forgetReplica, which removed the entry outright — so a departed
+        // client constrained nothing, and the tombstones its pending work was anchored to became
+        // collectable as soon as everyone still present moved past them. The comment here said
+        // that was to stop one closed tab stalling compaction forever, which is a real concern
+        // and is now handled by the window expiring rather than by forgetting immediately.
         if (registry.isLoaded(gone.documentId())) {
-            registry.get(gone.documentId()).forgetReplica(gone.replicaId());
+            registry.get(gone.documentId()).markDeparted(gone.replicaId(), System.currentTimeMillis());
         }
         broadcast(gone.documentId());
     }

@@ -77,7 +77,19 @@ public class DocumentReplica {
      */
     private final Map<Integer, ReplicaProgress> replicaProgress = new ConcurrentHashMap<>();
 
-    public record ReplicaProgress(VersionVector version, long reportedAtMillis) {
+    /**
+     * What one replica last told us, and whether it is still here.
+     *
+     * @param departedAtMillis when the replica disconnected, or 0 while it is still connected.
+     *                         Kept rather than deleted on disconnect — see
+     *                         {@link #markDeparted(int, long)}.
+     */
+    public record ReplicaProgress(VersionVector version, long reportedAtMillis,
+                                  long departedAtMillis) {
+
+        boolean stillConnected() {
+            return departedAtMillis == 0;
+        }
     }
 
     public DocumentReplica(UUID documentId, RgaDocument document, long appliedServerSeq, long nowMillis) {
@@ -435,11 +447,35 @@ public class DocumentReplica {
     // ------------------------------------------------------------------
 
     public void reportProgress(int replicaId, VersionVector version, long nowMillis) {
-        replicaProgress.put(replicaId, new ReplicaProgress(version, nowMillis));
+        // A reconnecting replica is connected again, so the departure is cleared.
+        replicaProgress.put(replicaId, new ReplicaProgress(version, nowMillis, 0));
     }
 
-    public void forgetReplica(int replicaId) {
-        replicaProgress.remove(replicaId);
+    /**
+     * Records that a replica disconnected — <b>keeping</b> what it had seen.
+     *
+     * <h2>This used to delete the entry, and the ADR said otherwise</h2>
+     * [ADR-0005](../../../../../../../docs/adr/0005-tombstone-gc.md) defines the replicas that
+     * constrain GC as those <i>"connected now, <b>or disconnected for less than the GC window</b>"</i>,
+     * with the window set to seven days and a whole section on what happens to a client that
+     * returns after it. The code implemented the first half and dropped the entry outright on
+     * disconnect, so a departed replica constrained nothing at all.
+     *
+     * <p>The gap between the document and the code was five orders of magnitude. README describes
+     * {@code RESYNC_REQUIRED} as what happens to "a client offline longer than the GC window
+     * (7 days)"; what actually happened is that closing a laptop removed that client from the
+     * calculation immediately, so the tombstones its pending operations were anchored to became
+     * collectable as soon as everyone still present moved past them and a snapshot ran. Minutes,
+     * not days — on the one path in this system that refuses a user's work by design.
+     *
+     * <p>Keeping the last known vector is also the semantically correct thing rather than merely
+     * the documented one: what may be collected is what <b>everyone who might come back has
+     * already seen</b>. Forgetting a replica collects things it never saw, which is exactly the
+     * state that makes its return unmergeable.
+     */
+    public void markDeparted(int replicaId, long nowMillis) {
+        replicaProgress.computeIfPresent(replicaId, (id, progress) ->
+            new ReplicaProgress(progress.version(), progress.reportedAtMillis(), nowMillis));
     }
 
     public Map<Integer, ReplicaProgress> replicaProgress() {
@@ -449,15 +485,38 @@ public class DocumentReplica {
     /**
      * The boundary below which tombstones may be physically removed.
      *
-     * <p>It is the meet of the version vectors of every <b>responsive</b> replica. A replica that
-     * has not reported progress for {@code unresponsiveTimeoutMs} despite an active connection is
-     * excluded from the calculation — otherwise one hung client would block GC for the whole
-     * document (ADR-0005, the negative consequences section).
+     * <p>It is the meet of the version vectors of every replica that still counts, and two
+     * different rules decide that, because two different failure modes are involved:
+     *
+     * <ul>
+     *   <li><b>Connected but silent</b> — excluded after {@code unresponsiveTimeoutMs}. Otherwise
+     *       one hung client blocks GC for the whole document (ADR-0005, negative consequences).</li>
+     *   <li><b>Disconnected</b> — kept for {@code offlineGraceMillis}, the GC window. This is the
+     *       half ADR-0005 specifies and the code did not implement; see
+     *       {@link #markDeparted(int, long)}.</li>
+     * </ul>
+     *
+     * <p>The distinction matters: silence from a client that is still connected is evidence
+     * something is wrong with it, while silence from one that has closed its laptop is exactly
+     * what is expected and is the case the window exists for.
+     *
+     * @param offlineGraceMillis how long a departed replica keeps constraining GC — the GC window
      */
-    public VersionVector stableVersion(long nowMillis, long unresponsiveTimeoutMs) {
+    public VersionVector stableVersion(long nowMillis, long unresponsiveTimeoutMs,
+                                       long offlineGraceMillis) {
+        // Entries past the window are pruned here rather than on a timer: this is the only reader,
+        // it runs at every snapshot, and a map that is only ever added to is the kind of unbounded
+        // growth this class is otherwise careful about.
+        replicaProgress.values().removeIf(progress ->
+            !progress.stillConnected()
+                && nowMillis - progress.departedAtMillis() > offlineGraceMillis);
+
         List<VersionVector> responsive = new ArrayList<>();
         for (ReplicaProgress progress : replicaProgress.values()) {
-            if (nowMillis - progress.reportedAtMillis() <= unresponsiveTimeoutMs) {
+            boolean counts = progress.stillConnected()
+                ? nowMillis - progress.reportedAtMillis() <= unresponsiveTimeoutMs
+                : nowMillis - progress.departedAtMillis() <= offlineGraceMillis;
+            if (counts) {
                 responsive.add(progress.version());
             }
         }

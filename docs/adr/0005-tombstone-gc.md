@@ -167,6 +167,47 @@ as a **known, named gap**, not as an oversight.
 - The 7-day window is a **guessed value** based on intuition about user behaviour, not on data. In
   production I would derive it from telemetry of offline session lengths. Written down explicitly
   so as not to pretend the number was computed.
+
+### Correction: for five checkpoints the window did not exist in the code
+
+Point 1 of the mechanism above defines the replicas that constrain GC as *"connected now, or
+disconnected for less than the GC window"*. **Only the first clause was implemented.**
+`PresenceService.leave` called `forgetReplica`, which deleted the replica's entry outright, so a
+disconnected client constrained nothing at all. `collabedit.gc.window-days: 7` sat in
+`application.yml` with a paragraph of justification, and in `CollabEditProperties` as a field, and
+**no code read it**.
+
+The gap between this document and the behaviour was five orders of magnitude. The README describes
+`RESYNC_REQUIRED` as what happens to a client "offline longer than the GC window (7 days)"; what
+actually happened is that closing a laptop removed that client from the calculation immediately, so
+the tombstones its unsent work was anchored to became collectable as soon as the clients still
+present moved past them and a snapshot ran. Minutes rather than days — on the one path in this
+system that refuses a user's work by design.
+
+Two things are worth recording about how it survived so long:
+
+1. **Every test agreed with the code rather than with this document.** `GarbageCollectionIT`
+   constructs its late replica as one that never reported progress at all, so it was never in the
+   map and deleting-versus-keeping made no difference to it. The test asserts the refusal
+   *happens*, which is the interesting half, and says nothing about *when* — so the window could
+   be absent without a single assertion noticing.
+2. **The configuration made it look implemented.** A named, justified, documented value that
+   nothing reads is worse than an absent one: it answers the question "is this handled?" with a
+   yes.
+
+Now implemented as written here: a departed replica keeps its last known version vector for the
+window, and only then is pruned. This is also the semantically correct rule rather than merely the
+documented one — what may be collected is what *everyone who might come back has already seen*,
+and forgetting a departed replica collects precisely the things it has not.
+
+The two timeouts stay separate, because they answer different questions: silence from a client
+that is **still connected** is evidence something is wrong with it (excluded after
+`unresponsive-replica-timeout-ms`), while silence from one that has **disconnected** is expected
+and is the case the window exists for. `GcWindowTest` pins both.
+
+**What this costs, stated plainly:** GC now collects strictly less than it did, and for up to a
+week after anyone disconnects. That is the trade this ADR chose; the previous behaviour was not a
+better trade, it was this trade not being made.
 - The mechanism does not protect against a document that is **continuously** actively edited by a
   client holding old version vectors — theoretically GC might never fire. **To be checked in CP8**,
   whether that is a realistic scenario under synthetic load.
