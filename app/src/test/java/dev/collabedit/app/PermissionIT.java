@@ -20,33 +20,33 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Kontrola dostępu (CP12) — <b>najważniejszy zestaw testów w tym checkpoincie</b>.
+ * Access control (CP12) — <b>the most important set of tests in this checkpoint</b>.
  *
- * <p>Do CP12 autoryzacji nie było: token sprawdzano raz, przy {@code CONNECT}, i na tym
- * kontrola się kończyła. Przy jednym wspólnym dokumencie było to spójne uproszczenie.
- * Od CP11 identyfikator dokumentu jest częścią adresu podawanego przez klienta, więc
- * to samo uproszczenie staje się podatnością — i to <b>dwiema drogami naraz</b>.
+ * <p>Before CP12 there was no authorization: the token was checked once, at {@code CONNECT}, and
+ * the control ended there. With one shared document that was a coherent simplification. Since CP11
+ * the document identifier is part of an address the client supplies, so the same simplification
+ * becomes a vulnerability — and by <b>two routes at once</b>.
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code restCannotReadForeignPrivateDocument}</td>
- *       <td>IDOR przez REST. {@code GET /api/documents/{id}} zwraca PEŁNĄ TREŚĆ — bez
- *           sprawdzenia dostępu cała autoryzacja WebSocketa jest ozdobą, bo te same dane
- *           wychodzą jednym żądaniem.</td></tr>
+ *       <td>IDOR over REST. {@code GET /api/documents/{id}} returns the FULL CONTENT — without an
+ *           access check the whole WebSocket authorization is decoration, because the same data
+ *           leaves through one request.</td></tr>
  *   <tr><td>{@code websocketCannotSubscribeToForeignPrivateDocument}</td>
- *       <td>IDOR przez WebSocket — podgląd cudzego dokumentu NA ŻYWO, znak po znaku.</td></tr>
+ *       <td>IDOR over WebSocket — watching somebody else's document LIVE, character by character.</td></tr>
  *   <tr><td>{@code viewerCannotWriteText}</td>
- *       <td>Autoryzacja per dokument zamiast per operacja. Rola tylko do odczytu, która
- *           mimo to potrafi zmienić treść, nie jest rolą.</td></tr>
+ *       <td>Authorization per document instead of per operation. A read-only role that can change
+ *           the content anyway is not a role.</td></tr>
  *   <tr><td>{@code revokingAccessTakesEffect}</td>
- *       <td>Uprawnienia zapamiętane na zawsze. Odebranie dostępu, które nie działa,
- *           jest gorsze niż jego brak — bo ktoś na nim polega.</td></tr>
+ *       <td>Permissions remembered forever. A revocation that does not work is worse than none at
+ *           all — because somebody is relying on it.</td></tr>
  *   <tr><td>{@code linkVisibilityKeepsSharedDocumentsWorking}</td>
- *       <td>Migracja odbierająca dostęp do dokumentów, które wcześniej działały.
- *           Zabezpieczenie, które psuje istniejące dane, nie wejdzie na produkcję.</td></tr>
+ *       <td>A migration taking away access to documents that used to work. A protection that breaks
+ *           existing data will not reach production.</td></tr>
  *   <tr><td>{@code deletedDocumentIsInvisibleEvenToOwner}</td>
- *       <td>Kosz jako obejście uprawnień albo jako źródło treści usuniętego dokumentu.</td></tr>
+ *       <td>The bin as a way around permissions, or as a source of a deleted document's content.</td></tr>
  * </table>
  */
 class PermissionIT extends IntegrationTestBase {
@@ -77,7 +77,7 @@ class PermissionIT extends IntegrationTestBase {
         return new User(id, tokens.issue(new TokenService.Principal(id, name, "#4C5FD5")));
     }
 
-    /** Dokument prywatny, należący do wskazanego użytkownika. */
+    /** A private document belonging to the given user. */
     private UUID privateDocument(User owner, String title) {
         UUID id = UUID.randomUUID();
         catalog.create(id, title, null);
@@ -111,323 +111,323 @@ class PermissionIT extends IntegrationTestBase {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("REST nie oddaje treści cudzego dokumentu prywatnego")
+    @DisplayName("REST does not hand out the content of somebody else's private document")
     void restCannotReadForeignPrivateDocument() throws Exception {
         User anna = newUser("Anna");
         User marek = newUser("Marek");
-        UUID document = privateDocument(anna, "Prywatny Anny");
+        UUID document = privateDocument(anna, "Anna's private document");
 
         try (TestStompClient writer = new TestStompClient(port, anna.token(), document, 701)) {
-            writer.insert(0, "tajna treść");
-            writer.awaitCondition(() -> writer.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            writer.insert(0, "secret content");
+            writer.awaitCondition(() -> writer.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
 
         assertThat(get("/api/documents/" + document, anna.token()).body())
-            .as("właściciel musi widzieć własny dokument")
-            .contains("tajna treść");
+            .as("the owner has to see their own document")
+            .contains("secret content");
 
         HttpResponse<String> foreign = get("/api/documents/" + document, marek.token());
         assertThat(foreign.statusCode())
-            .as("obcy użytkownik dostał treść cudzego dokumentu prywatnego (IDOR)")
+            .as("an unrelated user received the content of somebody else's private document (IDOR)")
             .isEqualTo(404);
-        assertThat(foreign.body()).doesNotContain("tajna treść");
+        assertThat(foreign.body()).doesNotContain("secret content");
 
         assertThat(get("/api/documents/" + document, null).statusCode())
-            .as("żądanie bez tokenu dostało treść dokumentu prywatnego")
+            .as("a request with no token received a private document's content")
             .isEqualTo(404);
     }
 
     @Test
-    @DisplayName("WebSocket nie przepuszcza subskrypcji cudzego dokumentu prywatnego")
+    @DisplayName("WebSocket does not allow subscribing to somebody else's private document")
     void websocketCannotSubscribeToForeignPrivateDocument() throws Exception {
         User anna = newUser("Anna");
         User marek = newUser("Marek");
-        UUID document = privateDocument(anna, "Prywatny Anny 2");
+        UUID document = privateDocument(anna, "Anna's private document 2");
 
         try (TestStompClient owner = new TestStompClient(port, anna.token(), document, 702);
              TestStompClient intruder = new TestStompClient(port, marek.token(), document, 703)) {
 
-            owner.insert(0, "podglądany tekst");
-            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            owner.insert(0, "text being watched");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "write acknowledged");
             Thread.sleep(500);
 
             assertThat(intruder.text())
-                .as("obcy klient zobaczył treść cudzego dokumentu prywatnego NA ŻYWO")
+                .as("an unrelated client saw the content of somebody else's private document LIVE")
                 .isEmpty();
         }
     }
 
     @Test
-    @DisplayName("rola tylko do odczytu nie może zmienić treści")
+    @DisplayName("a read-only role cannot change the content")
     void viewerCannotWriteText() throws Exception {
         User anna = newUser("Anna");
-        User obserwator = newUser("Obserwator");
-        UUID document = privateDocument(anna, "Do czytania");
-        permissions.grant(document, obserwator.id(), Role.VIEWER);
+        User observer = newUser("Observer");
+        UUID document = privateDocument(anna, "For reading");
+        permissions.grant(document, observer.id(), Role.VIEWER);
 
         try (TestStompClient owner = new TestStompClient(port, anna.token(), document, 704)) {
-            owner.insert(0, "oryginał");
-            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            owner.insert(0, "original");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
 
-        try (TestStompClient viewer = new TestStompClient(port, obserwator.token(), document, 705)) {
-            // Klient testowy nie pobiera stanu początkowego sam — buduje go z rozgłoszeń.
-            // Prośba o resynchronizację jest tu więc konieczna, a przy okazji sprawdza,
-            // że dla roli tylko do odczytu ta ścieżka JEST dozwolona: obserwator ma widzieć
-            // dokument, tylko nie może go zmieniać.
+        try (TestStompClient viewer = new TestStompClient(port, observer.token(), document, 705)) {
+            // The test client does not fetch the initial state itself — it builds it from
+            // broadcasts. A resynchronisation request is therefore necessary here, and it also
+            // checks that this path IS allowed for a read-only role: an observer is meant to see
+            // the document, just not change it.
             viewer.requestSync(0);
-            viewer.awaitCondition(() -> viewer.text().equals("oryginał"), PATIENCE,
-                "obserwator widzi treść");
+            viewer.awaitCondition(() -> viewer.text().equals("original"), PATIENCE,
+                "the observer sees the content");
 
-            viewer.insert(0, "WANDALIZM");
+            viewer.insert(0, "VANDALISM");
             Thread.sleep(500);
 
             assertThat(documents.textOf(document))
-                .as("rola tylko do odczytu zmieniła treść dokumentu")
-                .isEqualTo("oryginał");
+                .as("a read-only role changed the document's content")
+                .isEqualTo("original");
         }
     }
 
     @Test
-    @DisplayName("rola tylko do odczytu nie może też SFORMATOWAĆ tekstu")
+    @DisplayName("a read-only role cannot FORMAT the text either")
     void viewerCannotFormatText() throws Exception {
         User anna = newUser("Anna");
-        User obserwator = newUser("Obserwator");
-        UUID document = privateDocument(anna, "Do czytania, nie do pogrubiania");
-        permissions.grant(document, obserwator.id(), Role.VIEWER);
+        User observer = newUser("Observer");
+        UUID document = privateDocument(anna, "For reading, not for bolding");
+        permissions.grant(document, observer.id(), Role.VIEWER);
 
         try (TestStompClient owner = new TestStompClient(port, anna.token(), document, 706)) {
-            owner.insert(0, "oryginał");
-            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            owner.insert(0, "original");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
 
-        try (TestStompClient viewer = new TestStompClient(port, obserwator.token(), document, 707)) {
+        try (TestStompClient viewer = new TestStompClient(port, observer.token(), document, 707)) {
             viewer.requestSync(0);
-            viewer.awaitCondition(() -> viewer.text().equals("oryginał"), PATIENCE, "stan pobrany");
+            viewer.awaitCondition(() -> viewer.text().equals("original"), PATIENCE, "state fetched");
 
-            // Formatowanie idzie TYM SAMYM kanałem co tekst i jest tak samo zmianą dokumentu.
-            // Osobny test, bo w interfejsie prowadzi do niego osobne wejście — skrót
-            // klawiszowy, którego `EditorState.readOnly` nie blokuje.
+            // Formatting goes over the SAME channel as text and is just as much a change to the
+            // document. A separate test, because in the interface it has its own entry point — a
+            // keyboard shortcut that `EditorState.readOnly` does not block.
             viewer.markReturningOp(0, 5, "bold", null);
             Thread.sleep(500);
         }
 
         try (TestStompClient check = new TestStompClient(port, anna.token(), document, 708)) {
             check.requestSync(0);
-            check.awaitCondition(() -> check.text().equals("oryginał"), PATIENCE, "stan pobrany");
+            check.awaitCondition(() -> check.text().equals("original"), PATIENCE, "state fetched");
             assertThat(check.markCount())
-                .as("czytelnik nadał formatowanie — rola tylko do odczytu zmieniła dokument")
+                .as("a reader applied formatting — a read-only role changed the document")
                 .isZero();
         }
     }
 
     @Test
-    @DisplayName("odebranie dostępu zaczyna działać")
+    @DisplayName("revoking access takes effect")
     void revokingAccessTakesEffect() throws Exception {
         User anna = newUser("Anna");
         User marek = newUser("Marek");
-        UUID document = privateDocument(anna, "Chwilowo wspólny");
+        UUID document = privateDocument(anna, "Temporarily shared");
         permissions.grant(document, marek.id(), Role.EDITOR);
 
         assertThat(permissions.canWriteText(marek.id(), document)).isTrue();
 
         permissions.revoke(document, marek.id());
 
-        // Unieważnienie jest częścią revoke() — bez niego zmiana zadziałałaby dopiero
-        // po wygaśnięciu wpisu w cache'u, czyli po czasie, w którym użytkownik zdążyłby
-        // uznać, że odebranie dostępu nie działa.
+        // The invalidation is part of revoke() — without it the change would only take effect
+        // once the cache entry expired, that is, after long enough for the user to conclude that
+        // revoking access does not work.
         assertThat(permissions.canRead(marek.id(), document))
-            .as("odebranie dostępu nie zadziałało — uprawnienie zostało zapamiętane")
+            .as("revoking access did nothing — the permission was remembered")
             .isFalse();
         assertThat(get("/api/documents/" + document, marek.token()).statusCode()).isEqualTo(404);
     }
 
     @Test
-    @DisplayName("dokument z widocznością 'link' pozostaje dostępny dla każdego zalogowanego")
+    @DisplayName("a document with 'link' visibility stays available to every logged-in user")
     void linkVisibilityKeepsSharedDocumentsWorking() throws Exception {
         User anna = newUser("Anna");
-        User ktokolwiek = newUser("Ktokolwiek");
+        User anybody = newUser("Anybody");
 
-        // Domyślna widoczność — dokładnie taka, jaką dostają dokumenty utworzone przed CP12
-        // i wszystkie tworzone bez jawnej zmiany ustawień.
+        // The default visibility — exactly what documents created before CP12 have, and all those
+        // created without an explicit settings change.
         UUID document = UUID.randomUUID();
-        catalog.create(document, "Współdzielony linkiem", null);
+        catalog.create(document, "Shared by link", null);
         permissions.setOwner(document, anna.id());
 
-        assertThat(permissions.roleOf(ktokolwiek.id(), document))
-            .as("migracja odebrała dostęp do dokumentu, który wcześniej działał")
+        assertThat(permissions.roleOf(anybody.id(), document))
+            .as("the migration took away access to a document that used to work")
             .contains(Role.EDITOR);
-        assertThat(get("/api/documents/" + document, ktokolwiek.token()).statusCode()).isEqualTo(200);
+        assertThat(get("/api/documents/" + document, anybody.token()).statusCode()).isEqualTo(200);
     }
 
     @Test
-    @DisplayName("dokument w koszu jest niedostępny nawet dla właściciela, ale widoczny w koszu")
+    @DisplayName("a document in the bin is unreachable even for its owner, but visible in the bin")
     void deletedDocumentIsInvisibleEvenToOwner() throws Exception {
         User anna = newUser("Anna");
-        UUID document = privateDocument(anna, "Do kosza");
+        UUID document = privateDocument(anna, "For the bin");
 
         catalog.softDelete(document);
         permissions.invalidate(document);
 
         assertThat(permissions.canRead(anna.id(), document))
-            .as("usunięty dokument nadal daje się otworzyć zwykłą ścieżką")
+            .as("a deleted document can still be opened by the ordinary path")
             .isFalse();
         assertThat(get("/api/documents/" + document, anna.token()).statusCode()).isEqualTo(404);
 
-        // …ale kosz musi go pokazać, inaczej nie da się go przywrócić.
+        // ...but the bin has to show it, otherwise it cannot be restored.
         assertThat(permissions.roleOfDeleted(anna.id(), document))
-            .as("właściciel nie widzi własnego dokumentu w koszu — nie da się go przywrócić")
+            .as("the owner cannot see their own document in the bin — it cannot be restored")
             .contains(Role.OWNER);
     }
 
     @Test
-    @DisplayName("stan początkowy niesie rolę pytającego, a nie rolę właściciela")
+    @DisplayName("the initial state carries the caller's role, not the owner's")
     void openedDocumentCarriesCallersRole() throws Exception {
         User anna = newUser("Anna");
-        User czytelnik = newUser("Czytelnik");
-        User komentator = newUser("Komentator");
-        UUID document = privateDocument(anna, "Z rolami");
-        permissions.grant(document, czytelnik.id(), Role.VIEWER);
-        permissions.grant(document, komentator.id(), Role.COMMENTER);
+        User reader = newUser("Reader");
+        User commenter = newUser("Commenter");
+        UUID document = privateDocument(anna, "With roles");
+        permissions.grant(document, reader.id(), Role.VIEWER);
+        permissions.grant(document, commenter.id(), Role.COMMENTER);
 
-        // Rola jedzie razem ze stanem początkowym z tego samego powodu, dla którego odmowa
-        // z powodu tempa jest głośna: egzekwowanie po stronie serwera BEZ powiedzenia o tym
-        // klientowi zamienia odmowę w cichy rozjazd. Czytelnik, który nie wie, że jest
-        // czytelnikiem, pisze u siebie, widzi swój tekst, a serwer go odrzuca — i lokalna
-        // replika już nigdy nie zgadza się z resztą, bez jednego komunikatu.
+        // The role travels with the initial state for the same reason a rate-limit refusal is
+        // loud: enforcing on the server WITHOUT telling the client turns a refusal into silent
+        // divergence. A reader who does not know they are a reader types, sees their own text, and
+        // the server rejects it — and their local replica never agrees with the rest again,
+        // without a single message.
         assertThat(get("/api/documents/" + document, anna.token()).body())
-            .as("właściciel nie dostał swojej roli")
+            .as("the owner did not receive their role")
             .contains("\"role\":\"owner\"");
-        assertThat(get("/api/documents/" + document, czytelnik.token()).body())
-            .as("czytelnik dostał rolę pozwalającą pisać")
+        assertThat(get("/api/documents/" + document, reader.token()).body())
+            .as("the reader received a role that permits writing")
             .contains("\"role\":\"viewer\"");
-        assertThat(get("/api/documents/" + document, komentator.token()).body())
+        assertThat(get("/api/documents/" + document, commenter.token()).body())
             .contains("\"role\":\"commenter\"");
     }
 
     @Test
-    @DisplayName("historia nie jest trzecią drogą do cudzego dokumentu — ani do odczytu, ani do zapisu")
+    @DisplayName("history is not a third route into somebody else's document — for reading or writing")
     void historyEndpointsCheckAccess() throws Exception {
         User anna = newUser("Anna");
-        User obcy = newUser("Obcy");
-        User czytelnik = newUser("Czytelnik");
-        UUID document = privateDocument(anna, "Prywatny z historią");
-        permissions.grant(document, czytelnik.id(), Role.VIEWER);
+        User outsider = newUser("Outsider");
+        User reader = newUser("Reader");
+        UUID document = privateDocument(anna, "Private, with history");
+        permissions.grant(document, reader.id(), Role.VIEWER);
 
         try (TestStompClient writer = new TestStompClient(port, anna.token(), document, 731)) {
-            writer.insert(0, "tajna treść");
-            writer.awaitCondition(() -> writer.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            writer.insert(0, "secret content");
+            writer.awaitCondition(() -> writer.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
 
-        // CP12 zamknął DWIE drogi do treści — WebSocket i GET /documents/{id} — i przeoczył
-        // trzecią, mimo że plan v2 wskazywał ją wprost. Historia oddawała pełną treść
-        // dowolnego dokumentu, więc poprawka z CP12 była do obejścia jednym żądaniem.
-        assertThat(get("/api/documents/" + document + "/history", obcy.token()).statusCode())
-            .as("oś czasu cudzego dokumentu prywatnego jest widoczna")
+        // CP12 closed TWO routes to the content — the WebSocket and GET /documents/{id} — and
+        // missed a third, even though the v2 plan pointed at it explicitly. History handed out the
+        // full content of any document, so the CP12 fix could be bypassed with one request.
+        assertThat(get("/api/documents/" + document + "/history", outsider.token()).statusCode())
+            .as("the timeline of somebody else's private document is visible")
             .isEqualTo(404);
-        assertThat(get("/api/documents/" + document + "/history/at?seq=1", obcy.token()).body())
-            .as("historia oddaje treść cudzego dokumentu prywatnego")
-            .doesNotContain("tajna");
+        assertThat(get("/api/documents/" + document + "/history/at?seq=1", outsider.token()).body())
+            .as("history hands out the content of somebody else's private document")
+            .doesNotContain("secret");
 
-        // NAJWAŻNIEJSZE: przywracanie zmienia treść, więc wymaga prawa ZAPISU, a nie odczytu.
-        // Bez tego czytelnik miał jedyną w projekcie drogę do zmiany cudzego tekstu — i to
-        // nie o znak, tylko cofając cały dokument.
+        // THE IMPORTANT ONE: restoring changes the content, so it requires WRITE, not read.
+        // Without this a reader had the only route in the project to change somebody else's text —
+        // and not by a character, but by rewinding the whole document.
         assertThat(post("/api/documents/" + document + "/history/restore",
-                czytelnik.token(), "{\"throughServerSeq\":1}").statusCode())
-            .as("czytelnik przywrócił wersję — rola tylko do odczytu potrafi zmienić treść")
+                reader.token(), "{\"throughServerSeq\":1}").statusCode())
+            .as("a reader restored a version — a read-only role can change the content")
             .isEqualTo(404);
         assertThat(post("/api/documents/" + document + "/history/restore",
-                obcy.token(), "{\"throughServerSeq\":1}").statusCode())
+                outsider.token(), "{\"throughServerSeq\":1}").statusCode())
             .isEqualTo(404);
 
-        // …a właścicielowi wolno, inaczej zabezpieczenie zepsułoby funkcję.
+        // ...and the owner is allowed, otherwise the protection would break the feature.
         assertThat(post("/api/documents/" + document + "/history/restore",
                 anna.token(), "{\"throughServerSeq\":1}").statusCode())
-            .as("zabezpieczenie odebrało dostęp również właścicielowi")
+            .as("the protection took access away from the owner too")
             .isEqualTo(200);
     }
 
     @Test
-    @DisplayName("rola nadana per dokument nadpisuje rolę odziedziczoną z workspace'u")
+    @DisplayName("a per-document role overrides the one inherited from the workspace")
     void documentRoleOverridesWorkspaceRole() {
         User anna = newUser("Anna");
-        User zespol = newUser("Członek zespołu");
+        User teamMember = newUser("Team member");
 
         UUID workspace = UUID.randomUUID();
         jdbc.update("INSERT INTO workspaces (id, name, owner_id) VALUES (?, ?, ?)",
-            workspace, "Zespół", anna.id());
+            workspace, "The team", anna.id());
         jdbc.update("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)",
-            workspace, zespol.id(), "editor");
+            workspace, teamMember.id(), "editor");
 
-        UUID document = privateDocument(anna, "Dokument zespołu");
+        UUID document = privateDocument(anna, "The team's document");
         jdbc.update("UPDATE documents SET workspace_id = ? WHERE id = ?", workspace, document);
         permissions.invalidate(document);
 
-        assertThat(permissions.roleOf(zespol.id(), document))
-            .as("dziedziczenie z workspace'u nie działa — dokument zespołu jest niewidoczny")
+        assertThat(permissions.roleOf(teamMember.id(), document))
+            .as("workspace inheritance does not work — the team's document is invisible")
             .contains(Role.EDITOR);
 
-        // Sedno: nadpisanie musi działać W DÓŁ, nie tylko w górę. Gdyby wygrywała rola
-        // silniejsza, nie dałoby się nikomu ograniczyć dostępu do JEDNEGO dokumentu
-        // bez wyrzucania go z całego workspace'u — czyli dziedziczenie odbierałoby
-        // kontrolę zamiast ją dawać.
-        permissions.grant(document, zespol.id(), Role.VIEWER);
+        // The crux: the override has to work DOWNWARDS, not only upwards. If the stronger role
+        // won, there would be no way to restrict somebody's access to ONE document without
+        // ejecting them from the whole workspace — that is, inheritance would take control away
+        // instead of giving it.
+        permissions.grant(document, teamMember.id(), Role.VIEWER);
 
-        assertThat(permissions.roleOf(zespol.id(), document))
-            .as("rola per dokument nie nadpisała odziedziczonej — ograniczenie dostępu nie działa")
+        assertThat(permissions.roleOf(teamMember.id(), document))
+            .as("the per-document role did not override the inherited one — restricting access does not work")
             .contains(Role.VIEWER);
-        assertThat(permissions.canWriteText(zespol.id(), document)).isFalse();
+        assertThat(permissions.canWriteText(teamMember.id(), document)).isFalse();
     }
 
     @Test
-    @DisplayName("tożsamość bierze się z tokenu, a nie z parametru żądania")
+    @DisplayName("identity comes from the token, not from a request parameter")
     void identityComesFromTokenNotFromRequest() throws Exception {
         User anna = newUser("Anna");
-        User ciekawski = newUser("Ciekawski");
+        User snooper = newUser("Snooper");
 
         UUID workspace = UUID.randomUUID();
         jdbc.update("INSERT INTO workspaces (id, name, owner_id) VALUES (?, ?, ?)",
-            workspace, "Prywatny zespół Anny", anna.id());
+            workspace, "Anna's private team", anna.id());
 
-        // Identyfikator innego użytkownika NIE jest sekretem — widać go w każdej ramce
-        // obecności wspólnego dokumentu. Autoryzacja oparta na tym, że ktoś go nie zna,
-        // nie jest autoryzacją; ten sam błąd co IDOR zamknięty w CP12, tylko na innej encji.
-        assertThat(get("/api/workspaces?owner=" + anna.id(), ciekawski.token()).body())
-            .as("parametr żądania decyduje, czyje workspace'y zobaczy pytający")
-            .doesNotContain("Prywatny zespół Anny");
+        // Another user's identifier is NOT a secret — it is visible in every presence frame of a
+        // shared document. Authorization resting on somebody not knowing it is not authorization;
+        // the same bug as the IDOR closed in CP12, on a different entity.
+        assertThat(get("/api/workspaces?owner=" + anna.id(), snooper.token()).body())
+            .as("a request parameter decides whose workspaces the caller sees")
+            .doesNotContain("Anna's private team");
 
         assertThat(get("/api/workspaces?owner=" + anna.id(), anna.token()).body())
-            .as("właściciel przestał widzieć własne workspace'y")
-            .contains("Prywatny zespół Anny");
+            .as("the owner stopped seeing their own workspaces")
+            .contains("Anna's private team");
 
-        // Tworzenie też: bez tego dało się wstawić komuś wpis na jego własną listę.
-        post("/api/workspaces", ciekawski.token(), "{\"name\":\"Podrzucony\"}");
+        // Creation too: without this it was possible to insert an entry onto somebody else's list.
+        post("/api/workspaces", snooper.token(), "{\"name\":\"Planted\"}");
         assertThat(get("/api/workspaces", anna.token()).body())
-            .as("obcy utworzył workspace należący do kogoś innego")
-            .doesNotContain("Podrzucony");
+            .as("an outsider created a workspace belonging to somebody else")
+            .doesNotContain("Planted");
     }
 
     @Test
-    @DisplayName("odzyskany szkic należy do osoby, która go odzyskała, i jest prywatny")
+    @DisplayName("a recovered draft belongs to the person who recovered it, and is private")
     void recoveredDraftIsPrivateToItsOwner() throws Exception {
         User anna = newUser("Anna");
-        User ktokolwiek = newUser("Ktokolwiek");
+        User anybody = newUser("Anybody");
 
         String created = post("/api/documents/recovered", anna.token(),
-            "{\"title\":\"Odzyskany szkic Anny\",\"text\":\"praca offline\"}").body();
+            "{\"title\":\"Anna's recovered draft\",\"text\":\"offline work\"}").body();
         UUID id = UUID.fromString(created.replaceAll(".*\"id\"\\s*:\\s*\"([^\"]+)\".*", "$1"));
 
-        // Szkic powstaje z niezsynchronizowanej pracy JEDNEJ osoby, której nikt nigdy nie
-        // widział. Domyślna widoczność „link" oddałaby ją wszystkim zalogowanym dokładnie
-        // w chwili, w której użytkownik martwi się o jej utratę.
-        assertThat(get("/api/documents/" + id, ktokolwiek.token()).statusCode())
-            .as("odzyskany szkic jest czytelny dla każdego zalogowanego")
+        // A draft is created from ONE person's unsynchronised work that nobody else has ever seen.
+        // The default "link" visibility would hand it to every logged-in user at exactly the moment
+        // the user is worried about losing it.
+        assertThat(get("/api/documents/" + id, anybody.token()).statusCode())
+            .as("the recovered draft is readable by every logged-in user")
             .isEqualTo(404);
         assertThat(get("/api/documents/" + id, anna.token()).body())
-            .as("odzyskujący nie ma dostępu do własnego szkicu")
-            .contains("praca offline");
+            .as("the person who recovered it has no access to their own draft")
+            .contains("offline work");
         assertThat(permissions.roleOf(anna.id(), id))
-            .as("odzyskujący nie jest właścicielem, więc nie może zmienić widoczności")
+            .as("the person who recovered it is not the owner, so cannot change the visibility")
             .contains(Role.OWNER);
     }
 
@@ -447,17 +447,17 @@ class PermissionIT extends IntegrationTestBase {
         // endpoint exists ONLY for clients that were offline longer than the 7-day GC window.
         // The population it was written for is the population whose token has certainly expired.
         HttpResponse<String> anonymous = post("/api/documents/recovered", null,
-            "{\"title\":\"Szkic bez tożsamości\",\"text\":\"praca offline\"}");
+            "{\"title\":\"Draft with no identity\",\"text\":\"offline work\"}");
 
         assertThat(anonymous.statusCode())
             .as("an anonymous caller created a document; it has no owner, so nobody can ever "
                 + "secure it, and it is link-visible to every logged-in user")
             .isEqualTo(401);
 
-        User ktokolwiek = newUser("Ktokolwiek");
-        assertThat(get("/api/documents", ktokolwiek.token()).body())
+        User anybody = newUser("Anybody");
+        assertThat(get("/api/documents", anybody.token()).body())
             .as("the ownerless draft is readable by an unrelated user")
-            .doesNotContain("Szkic bez tożsamości");
+            .doesNotContain("Draft with no identity");
     }
 
     @Test
@@ -467,7 +467,7 @@ class PermissionIT extends IntegrationTestBase {
         // the owner only when one happened to be present. A document created without an owner
         // can never have its visibility changed or access granted — it is unsecurable for the
         // rest of its life, and nothing anywhere reports that.
-        HttpResponse<String> anonymous = post("/api/documents", null, "{\"title\":\"Bezpański\"}");
+        HttpResponse<String> anonymous = post("/api/documents", null, "{\"title\":\"Ownerless\"}");
 
         assertThat(anonymous.statusCode())
             .as("an ownerless document was created and cannot be secured by anyone, ever")
@@ -475,15 +475,15 @@ class PermissionIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("obcy użytkownik nie widzi cudzego dokumentu prywatnego w koszu")
+    @DisplayName("an unrelated user does not see somebody else's private document in the bin")
     void trashDoesNotLeakForeignDocuments() {
         User anna = newUser("Anna");
         User marek = newUser("Marek");
-        UUID document = privateDocument(anna, "Prywatny w koszu");
+        UUID document = privateDocument(anna, "Private, in the bin");
         catalog.softDelete(document);
 
         assertThat(permissions.roleOfDeleted(marek.id(), document))
-            .as("kosz stał się listą cudzych tytułów")
+            .as("the bin became a list of other people's titles")
             .isEmpty();
     }
 }
