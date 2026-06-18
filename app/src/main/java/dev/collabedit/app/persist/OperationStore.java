@@ -4,7 +4,6 @@ import dev.collabedit.crdt.Id;
 import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.OpCodec;
 import java.sql.PreparedStatement;
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -259,11 +258,16 @@ public class OperationStore {
         return value == null ? 0L : value;
     }
 
-    /** The highest {@code server_seq} stored no later than the given moment (CP5). */
-    public long maxServerSeqAt(UUID documentId, java.time.Instant moment) {
-        Long value = jdbc.queryForObject(
-            "SELECT COALESCE(MAX(server_seq), 0) FROM operations WHERE doc_id = ? AND created_at <= ?",
-            Long.class, documentId, Timestamp.from(moment));
-        return value == null ? 0L : value;
-    }
+    // maxServerSeqAt(documentId, moment) used to live here — "the highest server_seq stored no
+    // later than the given moment (CP5)". Nothing ever called it, in main or in tests.
+    //
+    // Removed rather than indexed. It was also the only query in this class with no supporting
+    // index: filtering on created_at is not served by operations_by_seq (doc_id, server_seq), so
+    // it scanned every row of the document. Adding an index for a caller that does not exist
+    // would have been paying storage and write cost for a query nobody runs.
+    //
+    // The feature it was written for does exist, and takes a different route: history addresses
+    // states by server_seq, not by timestamp (HistoryService.textAt), because a sequence number
+    // identifies a state exactly and a timestamp identifies whatever happened to be written by
+    // then. This method is a leftover from the shape that idea had before ADR-0003 settled it.
 }
