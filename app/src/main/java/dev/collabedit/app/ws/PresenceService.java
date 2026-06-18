@@ -5,6 +5,7 @@ import dev.collabedit.app.observability.DocumentMetrics;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -33,6 +34,28 @@ public class PresenceService {
 
     /** sessionId -> presence. */
     private final Map<String, Participant> bySession = new ConcurrentHashMap<>();
+
+    /**
+     * documentId -> the sessions in it. A second index over the same data, maintained alongside.
+     *
+     * <h2>Why a second map rather than a scan</h2>
+     * {@link #participants} used to walk <b>every session on the instance</b> and keep the ones
+     * matching the document. That is fine with one document open and wrong with a thousand: the
+     * cost of telling one document's participants about a join grew with the number of people
+     * using every OTHER document, which is a coupling nothing about the feature implies.
+     *
+     * <p>It is the same reasoning that took {@link dev.collabedit.app.cluster.ClusterBus} from
+     * parsing the whole cluster's traffic to filtering on the channel name first: at one document
+     * the difference is invisible, and the shape of the cost is wrong either way.
+     *
+     * <p>The two maps are updated together and read separately, so they can disagree for an
+     * instant under concurrency. What that costs is bounded and small — a participant list that
+     * briefly includes somebody who has just left, or omits somebody who has just arrived, and
+     * the next join or leave sends a full list that corrects it. Presence is a decoration, not a
+     * correctness mechanism (ADR-0004), which is exactly why a lock here would be paying for a
+     * guarantee nothing needs.
+     */
+    private final Map<UUID, Set<String>> byDocument = new ConcurrentHashMap<>();
 
     private final SimpMessagingTemplate messaging;
     private final DocumentRegistry registry;
@@ -64,6 +87,7 @@ public class PresenceService {
             userId, displayName, color, null, null, null, null, false)) == null) {
             metrics.sessionOpened();
         }
+        byDocument.computeIfAbsent(documentId, id -> ConcurrentHashMap.newKeySet()).add(sessionId);
         broadcast(documentId);
     }
 
@@ -98,6 +122,13 @@ public class PresenceService {
             return;
         }
         metrics.sessionClosed();
+        // Removing the empty set as well, so a server that has served many documents does not
+        // keep one entry per document it has ever seen — the same unbounded-growth trap the
+        // permission cache and the replica registry each had to be given a bound for.
+        byDocument.computeIfPresent(gone.documentId(), (id, sessions) -> {
+            sessions.remove(sessionId);
+            return sessions.isEmpty() ? null : sessions;
+        });
         // The replica is recorded as DEPARTED rather than forgotten (ADR-0005). It keeps
         // constraining causal stability for the GC window, because that window exists precisely
         // to let a client that closed its laptop come back and still merge.
@@ -114,9 +145,17 @@ public class PresenceService {
     }
 
     public List<Participant> participants(UUID documentId) {
-        List<Participant> result = new ArrayList<>();
-        for (Participant participant : bySession.values()) {
-            if (participant.documentId().equals(documentId)) {
+        Set<String> sessions = byDocument.get(documentId);
+        if (sessions == null) {
+            return List.of();
+        }
+        List<Participant> result = new ArrayList<>(sessions.size());
+        for (String sessionId : sessions) {
+            Participant participant = bySession.get(sessionId);
+            // Null when a session was removed between reading the index and reading the entry.
+            // Skipped rather than guarded against: see the note on byDocument about why the two
+            // maps are allowed to disagree for an instant.
+            if (participant != null) {
                 result.add(participant);
             }
         }
