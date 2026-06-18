@@ -32,16 +32,25 @@ import java.util.TreeMap;
  * delaying, reordering or crashing can leave two instances permanently disagreeing, because the
  * log is authoritative and anti-entropy always catches up.
  *
- * <h2>What is deliberately NOT modelled — the boundary of the claim</h2>
- * The log append is <b>synchronous with the edit</b>. That leaves out the window in which an
- * instance broadcasts an operation and dies before persisting it, which the README lists as a
- * real failure mode. It is left out because the repair for it lives in the <i>client</i> — the
- * unacknowledged-operation buffer, which releases only on write confirmation, not on broadcast
- * — and there is no client in this model. Simulating the server half alone would prove a
- * property the real system does not rely on.
+ * <h2>Two write models, and why the boundary moved</h2>
+ * This class used to append to the log <b>synchronously with the edit</b>, and said so as an
+ * explicit boundary: that leaves out the window in which an instance broadcasts an operation and
+ * dies before persisting it. The reasoning for leaving it out was sound — <i>"the repair for it
+ * lives in the client, the unacknowledged-operation buffer that releases only on write
+ * confirmation, not on broadcast, and there is no client in this model"</i> — and it ended with
+ * "that is the first thing to add when extending this".
  *
- * <p>That is the first thing to add when extending this, and until it is added, this class does
- * not speak to that failure mode at all.
+ * <p>{@link Durability#DEFERRED} adds it, together with the client the reasoning said was
+ * missing. In that mode an edit is merged, broadcast immediately, and only appended to the log
+ * after a delay; the acknowledgement follows the append. A crash inside that window therefore
+ * loses an operation from the server entirely — and the only thing that can bring it back is a
+ * client that has not released it yet.
+ *
+ * <p>{@link Durability#SYNCHRONOUS} is kept, and every pre-existing scenario still uses it. Not
+ * out of caution: the two modes ask different questions. The synchronous one asks whether a lossy
+ * fast path can make replicas disagree, which is ADR-0004's claim and needs no client to state.
+ * The deferred one asks whether an acknowledged operation can be lost, which is ADR-0003's claim
+ * and cannot be asked without one.
  */
 final class SimulatedCluster {
 
@@ -52,18 +61,51 @@ final class SimulatedCluster {
     /** How often an instance sweeps the log for what it missed. */
     private static final long ANTI_ENTROPY_INTERVAL_MS = 250;
 
+    /** When the authoritative log learns about an operation. See the class javadoc. */
+    enum Durability {
+        /** Append happens with the edit. No crash window, and no client needed. */
+        SYNCHRONOUS,
+        /**
+         * Append happens after {@link #PERSIST_DELAY_MS}, and the acknowledgement after that.
+         *
+         * <p>This is the real ordering from ADR-0004: merge, broadcast, persist, acknowledge. It
+         * exists so that a crash can land between the broadcast and the append, which is the one
+         * window in which the server loses an operation others have already seen.
+         */
+        DEFERRED
+    }
+
+    /**
+     * How long an operation waits before reaching the log.
+     *
+     * <p>Longer than the delivery range above on purpose: the window this mode exists to model is
+     * the one where a broadcast has already landed elsewhere and the append has not happened yet.
+     * A delay shorter than delivery would close that window and the mode would model nothing.
+     */
+    private static final long PERSIST_DELAY_MS = 60;
+
     private final DeterministicSimulation sim;
     private final double dropRate;
+    private final Durability durability;
 
     /** Standing in for Postgres: append-only, ordered, authoritative. */
     private final List<Op> log = new ArrayList<>();
+
+    /** Ids already in {@link #log} — the append is idempotent, as it is in OperationStore. */
+    private final Set<Id> logged = new LinkedHashSet<>();
 
     /** Sorted so that iteration order never depends on hashing. */
     private final Map<Integer, Instance> instances = new TreeMap<>();
 
     SimulatedCluster(DeterministicSimulation sim, int instanceCount, double dropRate) {
+        this(sim, instanceCount, dropRate, Durability.SYNCHRONOUS);
+    }
+
+    SimulatedCluster(DeterministicSimulation sim, int instanceCount, double dropRate,
+                     Durability durability) {
         this.sim = sim;
         this.dropRate = dropRate;
+        this.durability = durability;
         for (int id = 1; id <= instanceCount; id++) {
             instances.put(id, new Instance(id));
         }
@@ -135,6 +177,18 @@ final class SimulatedCluster {
             return x ^ (x >>> 29);
         }
 
+        /**
+         * The browser attached to this instance, in {@link Durability#DEFERRED} mode.
+         *
+         * <p>One client per instance rather than many: what is being modelled is the
+         * <b>unacknowledged-operation buffer</b>, and a second client on the same instance would
+         * exercise the same buffer logic twice while doubling the state space.
+         */
+        private final Map<Id, Op> unacknowledged = new LinkedHashMap<>();
+
+        /** Operations this client has been TOLD are durable. The subject of the invariant. */
+        private final Set<Id> acknowledged = new LinkedHashSet<>();
+
         Instance(int id) {
             this.id = id;
             this.document = new RgaDocument(id);
@@ -169,11 +223,9 @@ final class SimulatedCluster {
         //
         // The sweep will re-apply this instance's own operation later. That is free: apply() is
         // idempotent and returns DUPLICATE.
-        log.add(op);
         instance.receive(op.id());
         sim.record("edit i" + instanceId + " @" + clamped + " " + describe(op));
-
-        broadcast(instance, op);
+        submit(instance, op);
     }
 
     /** Deletes {@code count} characters, if the instance has that many. */
@@ -186,11 +238,9 @@ final class SimulatedCluster {
         int clampedCount = Math.min(count, instance.document.visibleLength() - clampedPosition);
         Op op = instance.document.delete(clampedPosition, clampedCount);
 
-        log.add(op);
         instance.receive(op.id());
         sim.record("delete i" + instanceId + " @" + clampedPosition + "+" + clampedCount);
-
-        broadcast(instance, op);
+        submit(instance, op);
     }
 
     /**
@@ -209,6 +259,9 @@ final class SimulatedCluster {
         instance.logCursor = 0;
         instance.received.clear();
         instance.receivedFingerprint = 0;
+        // The client's buffers are deliberately NOT cleared. That is the whole point: the server
+        // has forgotten an operation it never persisted, and the browser holding it is the only
+        // copy left. Clearing them here would model a crash that takes the users' laptops with it.
         sim.record("crash i" + instanceId);
     }
 
@@ -225,6 +278,7 @@ final class SimulatedCluster {
         instance.receivedFingerprint = 0;
         sim.record("restart i" + instanceId);
         sweep(instance);
+        retransmit(instance);
         scheduleAntiEntropy(instance);
     }
 
@@ -233,6 +287,75 @@ final class SimulatedCluster {
         Instance instance = instances.get(instanceId);
         instance.partitioned = cut;
         sim.record((cut ? "partition i" : "heal i") + instanceId);
+    }
+
+    // ------------------------------------------------------------------
+    // The write path: merge, broadcast, persist, acknowledge (ADR-0004)
+    // ------------------------------------------------------------------
+
+    /**
+     * Puts a freshly merged operation on its way.
+     *
+     * <p>The broadcast goes first in both modes, because that is what ADR-0004 specifies and what
+     * the user sees. The two modes differ only in when the log learns about it.
+     */
+    private void submit(Instance instance, Op op) {
+        if (durability == Durability.SYNCHRONOUS) {
+            append(op);
+            broadcast(instance, op);
+            return;
+        }
+        instance.unacknowledged.put(op.id(), op);
+        broadcast(instance, op);
+
+        int instanceId = instance.id;
+        sim.schedule(PERSIST_DELAY_MS, "persist", () -> persist(instanceId, op));
+    }
+
+    /**
+     * Writes an operation to the log and tells the client, if the instance is still alive.
+     *
+     * <p>A crash between {@link #submit} and here loses the operation from the server outright:
+     * the log never sees it, so anti-entropy has nothing to find and no other instance will ever
+     * hear about it again. The operation survives only in the client's buffer, which is exactly
+     * the arrangement ADR-0003 describes when it says an acknowledgement must follow the write
+     * rather than the broadcast.
+     */
+    private void persist(int instanceId, Op op) {
+        Instance instance = instances.get(instanceId);
+        if (instance.down) {
+            sim.record("  persist lost (i" + instanceId + " down) " + describe(op));
+            return;
+        }
+        append(op);
+        instance.unacknowledged.remove(op.id());
+        instance.acknowledged.add(op.id());
+        sim.record("  ack i" + instanceId + " " + describe(op));
+    }
+
+    /** Append, idempotently — the primary key does this for real in {@code OperationStore}. */
+    private void append(Op op) {
+        if (logged.add(op.id())) {
+            log.add(op);
+        }
+    }
+
+    /**
+     * The client resends everything it still holds, on reconnect.
+     *
+     * <p>This is the repair the old boundary paragraph pointed at. Without it a crash inside the
+     * persist window is permanent data loss, and the deferred mode would simply prove that.
+     */
+    private void retransmit(Instance instance) {
+        if (instance.unacknowledged.isEmpty()) {
+            return;
+        }
+        sim.record("  retransmit i" + instance.id + " x" + instance.unacknowledged.size());
+        for (Op op : List.copyOf(instance.unacknowledged.values())) {
+            instance.receive(op.id());
+            instance.document.apply(op);
+            submit(instance, op);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -301,6 +424,13 @@ final class SimulatedCluster {
         sim.record("  sweep i" + instance.id + " " + from + "->" + log.size());
     }
 
+    /** Brings back every instance that is currently down. */
+    void restartAll() {
+        for (Integer id : List.copyOf(instances.keySet())) {
+            restart(id);
+        }
+    }
+
     /**
      * Brings every live instance fully up to date.
      *
@@ -337,6 +467,34 @@ final class SimulatedCluster {
 
     int logSize() {
         return log.size();
+    }
+
+    /**
+     * Every operation some client has been told is durable but which is not in the log.
+     *
+     * <p>Empty is the invariant. A non-empty result means the system acknowledged work it then
+     * lost — the one promise in ADR-0003 that a user has no way to check for themselves.
+     */
+    List<Id> acknowledgedButNotLogged() {
+        List<Id> broken = new ArrayList<>();
+        for (Instance instance : instances.values()) {
+            for (Id id : instance.acknowledged) {
+                if (!logged.contains(id)) {
+                    broken.add(id);
+                }
+            }
+        }
+        return broken;
+    }
+
+    /** Operations still held by some client, i.e. submitted and not yet confirmed durable. */
+    int unacknowledgedCount() {
+        return instances.values().stream().mapToInt(i -> i.unacknowledged.size()).sum();
+    }
+
+    /** Operations every client believes are safely stored. */
+    int acknowledgedCount() {
+        return instances.values().stream().mapToInt(i -> i.acknowledged.size()).sum();
     }
 
     /**

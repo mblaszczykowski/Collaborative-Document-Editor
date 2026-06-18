@@ -207,6 +207,140 @@ class ClusterSimulationTest {
             .isGreaterThan(0);
     }
 
+    // ------------------------------------------------------------------
+    // Durability — the half CP17 explicitly did not model
+    // ------------------------------------------------------------------
+
+    /**
+     * An acknowledged operation is never lost, however badly the instance behaves.
+     *
+     * <h2>Why this scenario had to exist</h2>
+     * {@code SimulatedCluster} used to append to the log synchronously with the edit, and named
+     * that as its boundary: it left out <i>"the window in which an instance broadcasts an
+     * operation and dies before persisting it"</i>, because the repair lives in the client's
+     * unacknowledged buffer and there was no client in the model. It ended with "that is the
+     * first thing to add when extending this".
+     *
+     * <p>The omission mattered more than it looks. ADR-0003 makes a promise a user cannot check
+     * for themselves — <b>an acknowledgement means the work is durable</b> — and the ordering it
+     * rests on was written down only in prose, in the javadoc of
+     * {@code DocumentReplica.drainForFlush}. Nothing executable held it. "CP17 found zero bugs
+     * across 806 scenarios" is a weaker statement than it appears when the layer carrying that
+     * promise was outside the model.
+     *
+     * <p>{@code Durability.DEFERRED} puts the append 60 ms after the broadcast, so a crash lands
+     * inside the window regularly rather than by luck.
+     */
+    @ParameterizedTest
+    @MethodSource("seeds")
+    @DisplayName("no acknowledged operation is ever lost, across crashes inside the write window")
+    void acknowledgedWorkSurvivesCrashes(int seed) {
+        Run run = runDurabilityScenario(seed);
+
+        assertThat(run.cluster().acknowledgedButNotLogged())
+            .as("""
+                The system told a client its work was durable and then lost it. This is the one \
+                promise in ADR-0003 that a user has no way of checking, which is why it is \
+                asserted rather than trusted: the acknowledgement goes out AFTER the append, \
+                never after the broadcast.""")
+            .isEmpty();
+    }
+
+    /**
+     * Work that was never acknowledged still arrives, because the client resends it.
+     *
+     * <p>The complement of the invariant above, and the reason a client is in the model at all.
+     * Durability says an ack is honest; this says a missing ack is not silent loss — the browser
+     * keeps the operation and retransmits on reconnect, which is exactly why the ack is tied to
+     * the write rather than to the broadcast.
+     */
+    @ParameterizedTest
+    @MethodSource("seeds")
+    @DisplayName("unacknowledged work is retransmitted rather than dropped")
+    void unacknowledgedWorkIsRetransmitted(int seed) {
+        Run run = runDurabilityScenario(seed);
+
+        assertThat(run.cluster().unacknowledgedCount())
+            .as("""
+                Operations were still sitting in a client buffer after everything settled and \
+                every instance had come back. They were accepted from the user, never confirmed \
+                and never resent — the silent loss the buffer exists to prevent.""")
+            .isZero();
+    }
+
+    /**
+     * The scenario has to actually reach the window, or the two assertions above prove nothing.
+     *
+     * <p>Without this, a change that made crashes impossible — or the persist delay zero — would
+     * leave them green and empty. The same failure mode as the {@code *Measurement} class that
+     * never ran: passing because it never got to the interesting part.
+     */
+    @Test
+    @DisplayName("the durability scenario really does crash inside the write window")
+    void durabilityScenarioReachesTheWindow() {
+        int seedsLosingAnUnpersistedOperation = 0;
+        int seedsAcknowledgingSomething = 0;
+
+        for (int seed = 1; seed <= 100; seed++) {
+            Run run = runDurabilityScenario(seed);
+            if (run.history().stream().anyMatch(entry -> entry.contains("persist lost"))) {
+                seedsLosingAnUnpersistedOperation++;
+            }
+            if (run.cluster().acknowledgedCount() > 0) {
+                seedsAcknowledgingSomething++;
+            }
+        }
+
+        assertThat(seedsLosingAnUnpersistedOperation)
+            .as("""
+                No seed ever crashed an instance between the broadcast and the append, so the \
+                durability assertion never had anything to catch. Either the crash schedule or \
+                the persist delay stopped producing the window this scenario exists for.""")
+            .isGreaterThan(0);
+
+        assertThat(seedsAcknowledgingSomething)
+            .as("nothing was ever acknowledged, so the invariant ranged over an empty set")
+            .isGreaterThan(50);
+    }
+
+    /**
+     * Three instances in deferred-durability mode, crashing far more often than {@link
+     * #runScenario} does.
+     *
+     * <p>The frequency is deliberate: this scenario is not hunting for convergence under a lossy
+     * fast path, it is hunting for the narrow window between a broadcast and its append, and a
+     * rare crash would find it rarely.
+     */
+    private static Run runDurabilityScenario(long seed) {
+        DeterministicSimulation sim = new DeterministicSimulation(seed);
+        SimulatedCluster cluster = new SimulatedCluster(sim, 3, 0.2,
+            SimulatedCluster.Durability.DEFERRED);
+        sim.checkAfterEachStep(cluster::violatedInvariant);
+
+        scheduleTyping(sim, cluster, 3, 60);
+
+        // Crashes scheduled up front, like the typing: an instance that comes back has to
+        // retransmit, so every crash is paired with a restart. Leaving one down at the end would
+        // strand a client buffer and fail the retransmission assertion for a reason about the
+        // scenario rather than about the system.
+        long at = 0;
+        for (int i = 0; i < 12; i++) {
+            at += sim.delayBetween(80, 400);
+            int victim = 1 + sim.random().nextInt(3);
+            long crashAt = at;
+            sim.schedule(crashAt, "crash", () -> cluster.crash(victim));
+            sim.schedule(crashAt + sim.delayBetween(40, 250), "restart",
+                () -> cluster.restart(victim));
+        }
+
+        sim.runUntil(HORIZON_MS, STEP_LIMIT);
+        // Anything still down never got to retransmit; bring it back and let the queue drain.
+        cluster.restartAll();
+        sim.runUntil(HORIZON_MS * 2, STEP_LIMIT);
+        cluster.settle();
+        return new Run(sim, cluster);
+    }
+
     @ParameterizedTest
     @MethodSource("regressionSeeds")
     @DisplayName("a seed that once found a bug still passes")
