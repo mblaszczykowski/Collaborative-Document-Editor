@@ -1,20 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, setAuthToken, type DocumentState, type DocumentSummary, type Session } from './api'
-import { RgaDocument } from './crdt/document'
-import { UndoManager } from './crdt/undo'
-import type { Id, Op } from './crdt/types'
+import { useCallback, useEffect, useState } from 'react'
+import { api, setAuthToken, type DocumentSummary, type Session } from './api'
 import { Editor } from './editor/Editor'
-import type { RemoteCursor } from './editor/remoteCursors'
-import {
-  DocumentConnection,
-  type ConnectionState,
-  type PresenceEntry,
-} from './transport/connection'
-import type { NetworkConditions } from './transport/simulator'
+import { useCollaborativeDocument } from './editor/useCollaborativeDocument'
 import { DiagnosticsBar } from './ui/DiagnosticsBar'
-import type { Span } from './crdt/marks'
 import { DocumentList } from './ui/DocumentList'
-import { initials, peopleLabel, shiftAfter, wordCount } from './ui/format'
+import { initials, peopleLabel, wordCount } from './ui/format'
 import { CommentsPanel } from './ui/CommentsPanel'
 import { HistoryPanel } from './ui/HistoryPanel'
 import { SaveIndicator } from './ui/SaveIndicator'
@@ -212,291 +202,15 @@ function DocumentWorkspace(props: {
 }) {
   const { session, documentId } = props
 
-  const [title, setTitle] = useState('')
-  /**
-   * Rola w tym dokumencie, przysłana razem ze stanem początkowym (CP12).
-   *
-   * Domyślnie **najsłabsza z możliwych**, a nie najsilniejsza: gdyby serwer nie odpowiedział
-   * albo odpowiedział starym formatem, użytkownik ma widzieć dokument tylko do odczytu.
-   * Odwrotny domyślny wybór pozwalałby pisać w oknie między otwarciem a odpowiedzią —
-   * czyli dokładnie w tym momencie, w którym nie wiadomo jeszcze, czy wolno.
-   */
-  const [role, setRole] = useState<DocumentState['role']>('viewer')
-  const [ready, setReady] = useState(false)
-  /**
-   * Dokumentu nie da się otworzyć — bo nie istnieje, jest w koszu albo nie mamy do niego
-   * dostępu. Serwer odpowiada 404 na wszystkie trzy przypadki celowo (potwierdzenie, że
-   * dokument istnieje, jest samo w sobie wyciekiem), więc i komunikat jest jeden.
-   *
-   * Bez tego stanu odmowa dostępu kończyła się PUSTĄ STRONĄ: `ready` zostawało `false`,
-   * edytor nie renderował się nigdy, a jedynym śladem było odrzucone `Promise` w konsoli.
-   * Regresja wprowadzona razem z autoryzacją w CP12 — wcześniej to żądanie nie miało prawa
-   * zwrócić 404 dla poprawnego identyfikatora.
-   */
-  const [unavailable, setUnavailable] = useState(false)
+  // Everything about the document itself lives in the hook: opening it, the replica, the socket,
+  // the commands and their permission checks. What is left here is what the page LOOKS like.
+  // The split is described in useCollaborativeDocument; the short version is that only one of
+  // those two changes when somebody redesigns the page.
+  const doc = useCollaborativeDocument(documentId, session)
 
-  // Te same progi co po stronie serwera (Role.canWriteText / Role.canComment). Duplikat
-  // reguły jest tu ŚWIADOMY i nieszkodliwy: serwer sprawdza niezależnie i to on rozstrzyga.
-  // Klient używa jej wyłącznie do tego, żeby nie proponować gestu, który zostanie odrzucony.
-  const canWrite = role === 'owner' || role === 'editor'
-  const canComment = canWrite || role === 'commenter'
-  const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
-  const [pendingCount, setPendingCount] = useState(0)
-  const [presence, setPresence] = useState<PresenceEntry[]>([])
-  const [characters, setCharacters] = useState(0)
-  const [recovery, setRecovery] = useState<{ title: string; id: string } | null>(null)
+  const [panel, setPanel] = useState<'history' | 'comments'>('history')
   const [shared, setShared] = useState(false)
   const [sharing, setSharing] = useState(false)
-  const [network, setNetwork] = useState<NetworkConditions>({
-    latencyMs: 0,
-    jitterMs: 0,
-    packetLoss: 0,
-    partitioned: false,
-  })
-
-  const document = useRef<RgaDocument | null>(null)
-  const undo = useRef<UndoManager | null>(null)
-  const connection = useRef<DocumentConnection | null>(null)
-  const applyRemote = useRef<() => void>(() => {})
-
-  const [formatting, setFormatting] = useState<Span[]>([])
-  const [panel, setPanel] = useState<'history' | 'comments'>('history')
-
-  /**
-   * Aktualnie zaznaczony tekst i jego zakres.
-   *
-   * Trzymane w stanie, bo panel komentarzy potrzebuje go PO kliknięciu w swoje pole tekstowe —
-   * a wtedy zaznaczenie w edytorze już nie istnieje. Zapamiętujemy je w chwili, gdy jeszcze jest.
-   */
-  const [selection, setSelection] = useState('')
-  const selectionRange = useRef<{ from: number; to: number } | null>(null)
-
-  /**
-   * Stawia kotwicę komentarza — znacznik CRDT typu `comment` z identyfikatorem wątku.
-   *
-   * Powstaje PO wątku, bo potrzebuje jego identyfikatora, i idzie inną drogą: wątek REST-em,
-   * kotwica WebSocketem. Jest to celowe — kotwica musi scalać się jak każda inna operacja
-   * CRDT, a treść rozmowy nie ma czego scalać (ADR-0010, CP14).
-   */
-  const anchorComment = useCallback((threadId: string) => {
-    const model = document.current
-    const link = connection.current
-    const range = selectionRange.current
-    if (model === null || link === null || range === null) return
-    // Jw. — panel nie pokazuje czytelnikowi pola komentarza, ale wejście do tej funkcji
-    // ma być zamknięte niezależnie od tego, co akurat rysuje interfejs.
-    if (!canComment) return
-    link.send(model.addMark(range.from, range.to, 'comment', threadId))
-    setFormatting(model.formatting())
-  }, [canComment])
-
-  /**
-   * Przełącza formatowanie na zaznaczeniu.
-   *
-   * „Przełącza", nie „nadaje": jeśli CAŁY zaznaczony zakres ma już ten znacznik, gest
-   * ma go zdjąć. Bez tego Ctrl+B na pogrubionym tekście nadawałby pogrubienie po raz drugi,
-   * czyli nie robił nic widocznego — a użytkownik nie ma jak się domyślić, że musi użyć
-   * innego gestu, żeby cofnąć własną zmianę.
-   */
-  const toggleMark = useCallback((type: string, from: number, to: number) => {
-    const model = document.current
-    const link = connection.current
-    if (model === null || link === null || from >= to) return
-    // Wyszarzenie przycisków nie wystarcza: SKRÓT KLAWISZOWY omija pasek narzędzi,
-    // a `EditorState.readOnly` blokuje wyłącznie zmiany dokumentu — polecenia z keymapy
-    // wykonują się dalej. Bez tego warunku Ctrl+B u czytelnika tworzył znacznik lokalnie,
-    // serwer odrzucał go po cichu i replika rozjeżdżała się na zawsze. Ta sama klasa błędu
-    // co przy limicie tempa, tylko wejściem, o którym łatwo zapomnieć.
-    if (!canWrite) return
-
-    const alreadyMarked = coveredBy(model.formatting(), type, from, to)
-    const op = alreadyMarked
-      ? model.removeMark(from, to, type)
-      : model.addMark(from, to, type, type === 'link' ? window.prompt('Adres linku') : null)
-
-    link.send(op)
-    // Przeliczamy od razu, zamiast czekać na echo z serwera: operacja jest już zastosowana
-    // lokalnie, więc czekanie oznaczałoby widoczne opóźnienie między naciśnięciem Ctrl+B
-    // a zmianą wyglądu — dokładnie ten koszt, którego edycja optymistyczna ma unikać.
-    setFormatting(model.formatting())
-  }, [canWrite])
-
-  const refreshStats = useCallback(() => {
-    const model = document.current
-    if (model === null) return
-    setCharacters(model.visibleLength)
-    // Formatowanie przeliczamy przy każdej zmianie treści, bo odcinki są wyrażone
-    // w pozycjach widocznego tekstu — a te przesuwają się przy każdym wstawieniu.
-    setFormatting(model.formatting())
-  }, [])
-
-  /**
-   * Reakcja na odmowę scalenia (ADR-0005).
-   *
-   * Serwer odmówił, bo punkt zaczepienia tych operacji usunął garbage collector. Informacja
-   * o pozycji tego tekstu jest bezpowrotnie utracona i nie ma sposobu, żeby go uczciwie
-   * wstawić z powrotem. Zamiast udawać sukces (doklejenie na koniec = cicha korupcja) albo
-   * milczeć (= cicha utrata pracy), ratujemy lokalną wersję jako osobny dokument.
-   */
-  const recoverAfterRejection = useCallback(
-    async (model: RgaDocument, link: DocumentConnection) => {
-      const rescued = await api.createRecovered(
-        `Recovered draft — ${new Date().toLocaleString('en-GB')}`,
-        model.text,
-      )
-      await link.abandonBuffer()
-      setRecovery({ title: rescued.title, id: rescued.id })
-    },
-    [],
-  )
-
-  useEffect(() => {
-    let cancelled = false
-
-    void api.openDocument(documentId).then((state) => {
-      if (cancelled) return
-      setUnavailable(false)
-
-      // Dokument startuje PUSTY i jest budowany z operacji przysłanych przez serwer.
-      // Zasianie go tekstem z REST-a tworzyłoby nowe operacje lokalne, których serwer nie
-      // zna — a potem synchronizacja dostarczyłaby operacje opisujące ten sam tekst.
-      const model = new RgaDocument(0)
-      document.current = model
-      undo.current = new UndoManager(model)
-      setTitle(state.title)
-      setRole(state.role)
-      setReady(true)
-      refreshStats()
-
-      const link = new DocumentConnection(documentId, session.token, 0, {
-        onSession: (replicaId) => model.adoptReplicaId(replicaId),
-        versionVector: () => model.version,
-        hasOperation: (replicaId, lamport) => model.contains({ replicaId, lamport }),
-        onRemoteOps: (ops) => {
-          model.applyAll(ops)
-          applyRemote.current()
-          refreshStats()
-        },
-        onPresence: setPresence,
-        onStateChange: (nextState, pending) => {
-          setConnectionState(nextState)
-          setPendingCount(pending)
-        },
-        onError: (code, message) => {
-          if (code === 'RESYNC_REQUIRED') {
-            void recoverAfterRejection(model, link)
-            return
-          }
-          console.error(`[${code}] ${message}`)
-        },
-        /**
-         * Access changed (CP21) — we ask the server for OUR role rather than believing the
-         * message.
-         *
-         * Until CP21 the role arrived once, with the initial state, so raising somebody's
-         * permissions did nothing until they reloaded. Never a hole — the server rejects the
-         * operation anyway — but exactly how a working feature reads as broken: the owner
-         * grants access, the other person still sees a read-only document, and nothing
-         * explains why.
-         *
-         * We ask for the role alone rather than through `openDocument`: that one also carries
-         * the whole text.
-         */
-        onAccessChanged: (userId) => {
-          if (userId !== null && userId !== session.userId) return
-          void api.myRole(documentId)
-            .then((mine) => setRole(mine.role))
-            // A 404 means "you no longer have access" — the same answer as for a document one
-            // may not read, and the same screen as opening one without access.
-            .catch(() => setUnavailable(true))
-        },
-      })
-      link.simulator.onChange(setNetwork)
-      void link.restoreOfflineBuffer().then(() => link.connect())
-      connection.current = link
-    }).catch(() => {
-      // Nie łączymy się WebSocketem: interceptor odrzuciłby subskrypcję z tego samego
-      // powodu, tylko po cichu — a klient próbowałby się łączyć w pętli.
-      if (!cancelled) setUnavailable(true)
-    })
-
-    return () => {
-      cancelled = true
-      connection.current?.disconnect()
-      connection.current = null
-    }
-  }, [documentId, session.token, session.userId, refreshStats, recoverAfterRejection])
-
-  const onLocalOps = useCallback(
-    (ops: Op[]) => {
-      for (const op of ops) connection.current?.send(op)
-      refreshStats()
-    },
-    [refreshStats],
-  )
-
-  const onCursorMove = useCallback((head: Id | null, anchor: Id | null) => {
-    connection.current?.sendPresence(head, anchor, false)
-  }, [])
-
-  /**
-   * Zapamiętuje zaznaczenie, dopóki jeszcze istnieje.
-   *
-   * Kliknięcie w pole komentarza odbiera fokus edytorowi i wtedy jest już za późno,
-   * żeby je odczytać. Offsety, nie identyfikatory: identyfikator nie wyraża pozycji zero,
-   * więc zaznaczenie od początku dokumentu wyglądałoby jak jego brak.
-   */
-  const onSelectionChange = useCallback((from: number, to: number, text: string) => {
-    selectionRange.current = from < to ? { from, to } : null
-    setSelection(text)
-  }, [])
-
-  const runUndo = useCallback(() => {
-    const ops = undo.current?.undo() ?? []
-    if (ops.length > 0) {
-      applyRemote.current()
-      onLocalOps(ops)
-    }
-  }, [onLocalOps])
-
-  const runRedo = useCallback(() => {
-    const ops = undo.current?.redo() ?? []
-    if (ops.length > 0) {
-      applyRemote.current()
-      onLocalOps(ops)
-    }
-  }, [onLocalOps])
-
-  // Pozycje kursorów przychodzą jako identyfikatory znaków CRDT i dopiero tutaj,
-  // na ostatnią chwilę przed rysowaniem, zamieniamy je na offsety (ADR-0006).
-  const remoteCursors: RemoteCursor[] = useMemo(() => {
-    const model = document.current
-    if (!model) return []
-    const clamp = (index: number | null) => (index === null ? null : Math.min(index, characters))
-
-    return presence
-      .filter((entry) => entry.userId !== session.userId)
-      .map((entry) => ({
-        replicaId: entry.replicaId,
-        displayName: entry.displayName,
-        color: entry.color,
-        head:
-          entry.cursorReplicaId !== null && entry.cursorLamport !== null
-            ? clamp(shiftAfter(model.visibleIndexOf({
-                replicaId: entry.cursorReplicaId,
-                lamport: entry.cursorLamport,
-              })))
-            : null,
-        anchor:
-          entry.anchorReplicaId !== null && entry.anchorLamport !== null
-            ? clamp(shiftAfter(model.visibleIndexOf({
-                replicaId: entry.anchorReplicaId,
-                lamport: entry.anchorLamport,
-              })))
-            : null,
-        typing: entry.typing,
-      }))
-  }, [presence, session.userId, characters])
 
   /**
    * Sharing (CP21).
@@ -508,7 +222,7 @@ function DocumentWorkspace(props: {
    * that opens the door — and only the owner can issue one.
    */
   async function share() {
-    if (role === 'owner') {
+    if (doc.role === 'owner') {
       setSharing(true)
       return
     }
@@ -517,7 +231,7 @@ function DocumentWorkspace(props: {
     setTimeout(() => setShared(false), 2000)
   }
 
-  const others = presence.filter((entry) => entry.userId !== session.userId)
+  const others = doc.presence.filter((entry) => entry.userId !== session.userId)
 
   return (
     <div className="app">
@@ -527,10 +241,10 @@ function DocumentWorkspace(props: {
           Inkline
         </div>
         <span className="menu-divider" />
-        <span className="doc-title">{title}</span>
+        <span className="doc-title">{doc.title}</span>
 
         <div className="menubar-right">
-          <SaveIndicator state={connectionState} pending={pendingCount} />
+          <SaveIndicator state={doc.connectionState} pending={doc.pendingCount} />
           <div className="presence">
             <span className="avatar" style={{ background: session.color }} title={session.displayName}>
               {initials(session.displayName)}
@@ -546,9 +260,9 @@ function DocumentWorkspace(props: {
               </span>
             ))}
           </div>
-          {!canWrite && (
+          {!doc.canWrite && (
             <span className="role-badge" title="Twoja rola w tym dokumencie">
-              {canComment ? 'Możesz komentować' : 'Tylko do odczytu'}
+              {doc.canComment ? 'Możesz komentować' : 'Tylko do odczytu'}
             </span>
           )}
           <button className="btn-outline" onClick={share}>
@@ -561,10 +275,10 @@ function DocumentWorkspace(props: {
 
       {DEBUG && (
         <DiagnosticsBar
-          network={network}
-          onChange={(patch) => connection.current?.simulator.update(patch)}
-          document={document.current}
-          characters={characters}
+          network={doc.network}
+          onChange={doc.updateNetwork}
+          document={doc.model}
+          characters={doc.characters}
         />
       )}
 
@@ -579,7 +293,7 @@ function DocumentWorkspace(props: {
 
         <main className="canvas-col">
           <div className="editor-toolbar">
-            <FormatButtons onToggle={toggleMark} disabled={!canWrite} />
+            <FormatButtons onToggle={doc.toggleMark} disabled={!doc.canWrite} />
             <span className="tb-divider" />
             <button
               className={`tb-icon${panel === 'comments' ? ' active' : ''}`}
@@ -590,15 +304,15 @@ function DocumentWorkspace(props: {
               💬
             </button>
             <span className="tb-divider" />
-            <button className="tb-icon" onClick={runUndo} title="Cofnij (⌘Z)" aria-label="Cofnij"
-              disabled={!canWrite}>
+            <button className="tb-icon" onClick={doc.runUndo} title="Cofnij (⌘Z)" aria-label="Cofnij"
+              disabled={!doc.canWrite}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M3 10h10a4 4 0 0 1 0 8H8" />
                 <path d="M7 6l-4 4 4 4" />
               </svg>
             </button>
-            <button className="tb-icon" onClick={runRedo} title="Ponów (⇧⌘Z)" aria-label="Ponów"
-              disabled={!canWrite}>
+            <button className="tb-icon" onClick={doc.runRedo} title="Ponów (⇧⌘Z)" aria-label="Ponów"
+              disabled={!doc.canWrite}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21 10H11a4 4 0 0 0 0 8h5" />
                 <path d="M17 6l4 4-4 4" />
@@ -608,50 +322,48 @@ function DocumentWorkspace(props: {
 
           <div className="canvas-wrap">
             <div className="page">
-              <h1>{title}</h1>
+              <h1>{doc.title}</h1>
               <div className="meta-line">
                 {others.length === 0 ? 'Tylko Ty' : `${peopleLabel(others.length + 1)} w dokumencie`}
               </div>
-              {recovery !== null && (
+              {doc.recovery !== null && (
                 <div className="recovery-banner">
                   <strong>Twoich zmian nie dało się scalić.</strong> Zbyt długo pracowałeś
                   offline i miejsce, do którego pisałeś, przestało istnieć. Twoja wersja
-                  została zapisana jako <a href={`?doc=${recovery.id}`}>{recovery.title}</a>.
+                  została zapisana jako <a href={`?doc=${doc.recovery.id}`}>{doc.recovery.title}</a>.
                   Nic nie przepadło.
                 </div>
               )}
-              {unavailable && (
+              {doc.unavailable && (
                 <div className="unavailable-banner">
                   <strong>Nie możemy otworzyć tego dokumentu.</strong> Mógł zostać usunięty
                   albo nie masz do niego dostępu — poproś osobę, która przysłała Ci link,
                   żeby udostępniła go ponownie.
                 </div>
               )}
-              {ready && document.current && undo.current && (
+              {doc.ready && doc.model && doc.undo && (
                 <Editor
-                  document={document.current}
-                  undo={undo.current}
-                  remoteCursors={remoteCursors}
-                  formatting={formatting}
-                  onLocalOps={onLocalOps}
-                  onToggleMark={toggleMark}
-                  onCursorMove={onCursorMove}
-                  onSelectionChange={onSelectionChange}
-                  onUndo={runUndo}
-                  onRedo={runRedo}
-                  readOnly={!canWrite}
-                  registerRemoteApply={(apply) => {
-                    applyRemote.current = apply
-                  }}
+                  document={doc.model}
+                  undo={doc.undo}
+                  remoteCursors={doc.remoteCursors}
+                  formatting={doc.formatting}
+                  onLocalOps={doc.onLocalOps}
+                  onToggleMark={doc.toggleMark}
+                  onCursorMove={doc.onCursorMove}
+                  onSelectionChange={doc.onSelectionChange}
+                  onUndo={doc.runUndo}
+                  onRedo={doc.runRedo}
+                  readOnly={!doc.canWrite}
+                  registerRemoteApply={doc.registerRemoteApply}
                 />
               )}
             </div>
           </div>
 
           <footer className="statusbar">
-            <span>{wordCount(characters)}</span>
+            <span>{wordCount(doc.characters)}</span>
             <span className="sep" />
-            <span data-testid="char-count">{characters} znaków</span>
+            <span data-testid="char-count">{doc.characters} znaków</span>
             <div className="statusbar-right">
               <span>{others.length + 1} online</span>
             </div>
@@ -659,14 +371,14 @@ function DocumentWorkspace(props: {
         </main>
 
         {panel === 'history' ? (
-          <HistoryPanel documentId={documentId} revision={characters} readOnly={!canWrite} />
+          <HistoryPanel documentId={documentId} revision={doc.characters} readOnly={!doc.canWrite} />
         ) : (
           <CommentsPanel
             documentId={documentId}
-            selection={selection}
-            revision={characters}
-            onAnchor={anchorComment}
-            readOnly={!canComment}
+            selection={doc.selection}
+            revision={doc.characters}
+            onAnchor={doc.anchorComment}
+            readOnly={!doc.canComment}
           />
         )}
       </div>
@@ -736,23 +448,4 @@ function FormatButtons(
       ))}
     </>
   )
-}
-
-/**
- * Czy CAŁY zakres [from, to) ma już znacznik danego typu.
- *
- * Warunek jest celowo mocny: przy zaznaczeniu obejmującym pogrubiony i niepogrubiony
- * fragment gest ma DODAĆ pogrubienie do całości, a nie zdjąć je z części. Tak zachowują się
- * edytory, do których ludzie są przyzwyczajeni, i jest to zachowanie łatwiejsze do cofnięcia
- * niż odwrotne.
- */
-function coveredBy(spans: Span[], type: string, from: number, to: number): boolean {
-  let covered = from
-  for (const span of spans) {
-    if (!span.marks.has(type)) continue
-    if (span.from > covered) break
-    covered = Math.max(covered, span.to)
-    if (covered >= to) return true
-  }
-  return covered >= to
 }
