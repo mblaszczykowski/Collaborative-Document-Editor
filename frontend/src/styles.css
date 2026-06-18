@@ -573,3 +573,68 @@ button { font-family: inherit; cursor: pointer; }
 
 /* An anchored comment in the history preview — the same highlight as in the editor. */
 .preview-commented { background: rgba(184, 134, 46, 0.18); }
+
+/* --- suggestions (CP23) --- */
+
+/* Struck through for a proposed deletion, underlined for a proposed insertion — the convention
+   every editor with track changes has used for thirty years. Copying it is the point: a reader
+   should not have to learn what the colours mean here. */
+.cm-mark-suggest-insert {
+  background: rgba(46, 139, 107, 0.14);
+  border-bottom: 1px solid rgba(46, 139, 107, 0.55);
+}
+.cm-mark-suggest-delete {
+  background: rgba(193, 89, 46, 0.12);
+  text-decoration: line-through;
+  text-decoration-color: rgba(193, 89, 46, 0.75);
+}
+
+.suggest-compose {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px; margin-bottom: 10px;
+  border: 1px solid var(--chrome-line); border-radius: 6px; background: var(--chrome);
+}
+.suggest-compose input {
+  padding: 5px 7px; font-size: 12px; font-family: var(--sans);
+  border: 1px solid var(--chrome-line); border-radius: 4px;
+  background: var(--page); color: var(--text);
+}
+.suggest-action {
+  padding: 6px; font-size: 12px; text-align: left;
+  border: 1px solid var(--chrome-line); border-radius: 4px;
+  background: var(--page); color: var(--text); cursor: pointer;
+}
+.suggest-action:disabled { color: var(--text-faint); cursor: default; }
+.suggest-hint { margin: 0; font-size: 11px; line-height: 1.45; color: var(--text-faint); }
+.suggest-failed { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--bad); }
+
+.suggest-entry {
+  padding: 9px 0; border-bottom: 1px solid var(--page-line);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.suggest-entry .s-top {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text);
+}
+.s-kind {
+  margin-left: auto; font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 8px; border: 1px solid var(--chrome-line);
+}
+.s-kind.insert { color: var(--ok); }
+.s-kind.delete { color: var(--bad); }
+
+.s-quote {
+  font-family: var(--serif); font-size: 12px; line-height: 1.55; padding: 6px 8px;
+  border-radius: 4px; background: var(--page); border: 1px solid var(--chrome-line);
+  max-height: 90px; overflow-y: auto; white-space: pre-wrap;
+}
+.s-quote.delete { text-decoration: line-through; color: #8a3d1f; }
+.s-quote.insert { color: #1d5c46; }
+
+.s-actions { display: flex; gap: 6px; }
+.suggest-accept, .suggest-reject {
+  flex: 1; padding: 5px; font-size: 11.5px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--chrome-line); background: var(--page); color: var(--text);
+}
+.suggest-accept:hover { border-color: var(--ok); color: var(--ok); }
+.suggest-reject:hover { border-color: var(--bad); color: var(--bad); }
+.suggest-accept:disabled, .suggest-reject:disabled { opacity: 0.5; cursor: default; }

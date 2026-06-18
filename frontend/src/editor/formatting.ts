@@ -43,6 +43,14 @@ function classOf(type: string): string {
       // Kotwica komentarza jest znacznikiem jak każdy inny — cała różnica jest w tym,
       // że jej wartością jest identyfikator wątku, a nie treść formatowania.
       return 'cm-mark-comment'
+    // Suggestions (CP23) are the third thing built out of this layer, and they need nothing
+    // here beyond a class: the proposed text is ordinary text, and the mark is what says it is
+    // a proposal. Deleting is shown struck through and inserting underlined, because that is
+    // how every editor with track changes has shown it for thirty years.
+    case 'suggest-insert':
+      return 'cm-mark-suggest-insert'
+    case 'suggest-delete':
+      return 'cm-mark-suggest-delete'
     default:
       return 'cm-mark-unknown'
   }

@@ -9,6 +9,7 @@ import { CommentsPanel } from './ui/CommentsPanel'
 import { HistoryPanel } from './ui/HistoryPanel'
 import { SaveIndicator } from './ui/SaveIndicator'
 import { SharePanel } from './ui/SharePanel'
+import { SuggestionsPanel } from './ui/SuggestionsPanel'
 import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
 
 /**
@@ -208,7 +209,7 @@ function DocumentWorkspace(props: {
   // those two changes when somebody redesigns the page.
   const doc = useCollaborativeDocument(documentId, session)
 
-  const [panel, setPanel] = useState<'history' | 'comments'>('history')
+  const [panel, setPanel] = useState<'history' | 'comments' | 'suggestions'>('history')
   const [shared, setShared] = useState(false)
   const [sharing, setSharing] = useState(false)
 
@@ -303,6 +304,20 @@ function DocumentWorkspace(props: {
             >
               💬
             </button>
+            {/* Suggestions (CP23). Shown to anybody who may comment — which includes editors,
+                because proposing a change to somebody else's paragraph is a reasonable thing to
+                do even when you could simply make it. */}
+            <button
+              className={`tb-icon${panel === 'suggestions' ? ' active' : ''}`}
+              title="Sugestie"
+              aria-label="Sugestie"
+              disabled={!doc.canComment}
+              onClick={() =>
+                setPanel((current) => (current === 'suggestions' ? 'history' : 'suggestions'))
+              }
+            >
+              ✍️
+            </button>
             <span className="tb-divider" />
             <button className="tb-icon" onClick={doc.runUndo} title="Cofnij (⌘Z)" aria-label="Cofnij"
               disabled={!doc.canWrite}>
@@ -370,15 +385,30 @@ function DocumentWorkspace(props: {
           </footer>
         </main>
 
-        {panel === 'history' ? (
+        {panel === 'history' && (
           <HistoryPanel documentId={documentId} revision={doc.characters} readOnly={!doc.canWrite} />
-        ) : (
+        )}
+        {panel === 'comments' && (
           <CommentsPanel
             documentId={documentId}
             selection={doc.selection}
             revision={doc.characters}
             onAnchor={doc.anchorComment}
             readOnly={!doc.canComment}
+          />
+        )}
+        {panel === 'suggestions' && (
+          <SuggestionsPanel
+            documentId={documentId}
+            // The character count alone would not do here: accepting a proposed DELETION is the
+            // only kind of change that alters marks without altering the text, and the list has
+            // to follow it.
+            revision={doc.characters + doc.formatting.length}
+            canPropose={doc.canComment}
+            canDecide={doc.canWrite}
+            selection={doc.selection}
+            onProposeDeletion={doc.proposeDeletion}
+            onProposeInsertion={doc.proposeInsertion}
           />
         )}
       </div>

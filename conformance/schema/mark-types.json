@@ -1,17 +1,21 @@
 {
   "_comment": [
-    "Tablica typów znaczników — WSPÓLNE ŹRÓDŁO PRAWDY dla implementacji w Javie",
-    "(MarkTypes.java) i w TypeScripcie (crdt/types.ts).",
+    "The mark type table — THE SHARED SOURCE OF TRUTH for the Java implementation",
+    "(MarkTypes.java) and the TypeScript one (crdt/types.ts).",
     "",
-    "Dlaczego osobny plik, a nie zwykły wektor konformancyjny: wektory zawierają operacje",
-    "JUŻ UTWORZONE, więc pinują strony kotwic wybrane w chwili generowania. Ta tablica jest",
-    "używana przy TWORZENIU operacji — zmiana jej po jednej stronie nie zmienia ani jednego",
-    "wektora, a zmienia zachowanie edytora. Rozjazd objawiłby się dopiero u użytkownika,",
-    "jako „u mnie pogrubienie rośnie przy pisaniu, u ciebie nie”.",
+    "Why a separate file rather than an ordinary conformance vector: vectors contain operations",
+    "that have ALREADY BEEN CREATED, so they pin the anchor sides chosen at generation time. This",
+    "table is used when CREATING an operation — changing it on one side changes not a single",
+    "vector while changing how the editor behaves. The divergence would surface only in front of",
+    "a user, as \"bold grows as I type on my side and not on yours\".",
     "",
-    "Katalog schema/ jest poza korpusem wektorów celowo: obie strony wczytują conformance/*.json",
-    "jako wektory, a to nie jest wektor."
+    "The schema/ directory is outside the vector corpus deliberately: both sides load",
+    "conformance/*.json as vectors, and this is not a vector.",
+    "",
+    "suggest-insert and suggest-delete (CP23) do not expand for the reason a link does not:",
+    "typing after a proposed insertion is ordinary writing, not part of somebody's proposal, and",
+    "a mark that swallowed it would put a stranger's text inside a suggestion they never made."
   ],
   "expandsAtEnd": ["bold", "italic", "underline", "strike"],
-  "doesNotExpandAtEnd": ["code", "link", "comment"]
+  "doesNotExpandAtEnd": ["code", "link", "comment", "suggest-insert", "suggest-delete"]
 }

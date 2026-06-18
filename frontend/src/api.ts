@@ -143,6 +143,28 @@ export interface CommentThread {
   messages: CommentMessage[]
 }
 
+/** A character identifier on the wire — the same shape the presence frames use. */
+export interface WireId {
+  replicaId: number
+  lamport: number
+}
+
+/** A proposed change (CP23). */
+export interface Suggestion {
+  id: string
+  documentId: string
+  authorId: string
+  authorName: string
+  authorColor: string
+  kind: 'INSERT' | 'DELETE'
+  /** What was proposed, as of when it was proposed — survives the anchored text. */
+  quotedText: string
+  createdAt: string
+  /** Whether the proposal still has a place in the document. Computed from the CRDT layer. */
+  anchored: boolean
+  range: { from: number; to: number } | null
+}
+
 /** Who has access to a document — the owner's view (CP21). */
 export interface AccessState {
   visibility: 'private' | 'link'
@@ -262,6 +284,38 @@ export const api = {
 
   reopenThread: (threadId: string) =>
     requestNoContent(`/comments/${threadId}/reopen`, { method: 'POST' }),
+
+  // --- suggestions (CP23) ---
+  //
+  // A commenter cannot send an Insert operation — that is what the role means — so a proposal
+  // is asked for over REST and the SERVER replica generates the operations, exactly as a
+  // history restore does. Positions travel as character identifiers, like cursors and marks:
+  // an offset is stale the moment somebody types before it.
+
+  listSuggestions: (documentId: string) =>
+    request<Suggestion[]>(`/documents/${documentId}/suggestions`),
+
+  proposeInsertion: (documentId: string, after: WireId | null, text: string) =>
+    request<{ id: string }>(`/documents/${documentId}/suggestions`, {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'insert', text, after }),
+    }),
+
+  proposeDeletion: (documentId: string, from: WireId, to: WireId) =>
+    request<{ id: string }>(`/documents/${documentId}/suggestions`, {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'delete', from, to }),
+    }),
+
+  acceptSuggestion: (documentId: string, suggestionId: string) =>
+    requestNoContent(`/documents/${documentId}/suggestions/${suggestionId}/accept`, {
+      method: 'POST',
+    }),
+
+  rejectSuggestion: (documentId: string, suggestionId: string) =>
+    requestNoContent(`/documents/${documentId}/suggestions/${suggestionId}/reject`, {
+      method: 'POST',
+    }),
 
   // --- access (CP21) ---
   //

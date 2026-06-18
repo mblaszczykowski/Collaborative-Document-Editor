@@ -44,6 +44,25 @@ public final class MarkTypes {
     public static final String COMMENT = "comment";
 
     /**
+     * A proposed insertion (CP23).
+     *
+     * <p>The third thing built out of this layer, after formatting and comments, and the first one
+     * nobody had in mind when the layer was designed. A suggestion is not a separate document, a
+     * branch, or a shadow copy: the proposed text goes into the ordinary character sequence and
+     * wears a mark saying it is a proposal. Accepting removes the mark; rejecting deletes the
+     * characters.
+     *
+     * <p>The value is the suggestion's identifier, exactly as {@link #COMMENT} carries a thread
+     * identifier — the author, the time and the resolution live in a table, because none of them
+     * is edited concurrently and none of them belongs in an operation log (ADR-0011, the same
+     * split, for the same reason).
+     */
+    public static final String SUGGEST_INSERT = "suggest-insert";
+
+    /** A proposed deletion (CP23). Nothing is deleted until somebody accepts it. */
+    public static final String SUGGEST_DELETE = "suggest-delete";
+
+    /**
      * Types whose range <b>grows</b> when text is typed immediately after it.
      *
      * <p>An unknown type does NOT grow. That is the cautious choice: a mark that expands
