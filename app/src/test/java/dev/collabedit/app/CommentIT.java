@@ -19,28 +19,28 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Komentarze (CP14).
+ * Comments (CP14).
  *
  * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>Co wyłapuje</th></tr>
+ *   <caption>Test -> failure mode</caption>
+ *   <tr><th>Test</th><th>What it catches</th></tr>
  *   <tr><td>{@code commenterCannotChangeText}</td>
- *       <td><b>Rola „komentujący" znacząca w praktyce „redagujący".</b> Komentarze idą tym
- *           samym kanałem operacji co edycja, więc bez sprawdzenia TYPU operacji autoryzacja
- *           per destynacja przepuszcza wszystko albo nic. To jest cały powód, dla którego
- *           ADR-0009 zszedł z autoryzacją do poziomu operacji.</td></tr>
+ *       <td><b>A "commenter" role that in practice means "editor".</b> Comments travel over the
+ *           same operation channel as edits, so without checking the operation TYPE, per-destination
+ *           authorization lets through everything or nothing. That is the entire reason ADR-0009
+ *           took authorization down to the operation level.</td></tr>
  *   <tr><td>{@code commenterCanAnchorComment}</td>
- *       <td>Zbyt szerokie zaostrzenie: komentujący, który nie może postawić kotwicy,
- *           nie może komentować niczego konkretnego.</td></tr>
+ *       <td>Tightening too far: a commenter who cannot place an anchor cannot comment on anything
+ *           specific.</td></tr>
  *   <tr><td>{@code threadSurvivesDeletionOfAnchoredText}</td>
- *       <td>Skasowanie zakotwiczonego tekstu gubi ROZMOWĘ. Wątek ma zostać jako odłączony,
- *           z zacytowanym fragmentem — kasowanie rozmowy w reakcji na edycję tekstu jest
- *           zachowaniem, którego nikt się nie spodziewa.</td></tr>
+ *       <td>Deleting anchored text losing the CONVERSATION. The thread should remain, detached,
+ *           with its quoted fragment — deleting a conversation in response to a text edit is
+ *           behaviour nobody expects.</td></tr>
  *   <tr><td>{@code resolvingKeepsTheConversation}</td>
- *       <td>Rozwiązanie wątku jako usunięcie. Kontekst decyzji jest zwykle jedyną rzeczą,
- *           dla której ktoś wraca do komentarzy po miesiącach.</td></tr>
+ *       <td>Resolving a thread treated as deleting it. The context behind a decision is usually
+ *           the only reason anyone comes back to comments months later.</td></tr>
  *   <tr><td>{@code viewerCannotComment}</td>
- *       <td>Rola tylko do odczytu pisząca w dokumencie — inną drogą niż tekst.</td></tr>
+ *       <td>A read-only role writing into the document — by a route other than text.</td></tr>
  * </table>
  */
 class CommentIT extends IntegrationTestBase {
@@ -79,126 +79,126 @@ class CommentIT extends IntegrationTestBase {
 
     private UUID privateDocument(User owner) {
         UUID id = UUID.randomUUID();
-        catalog.create(id, "Z komentarzami", null);
+        catalog.create(id, "With comments", null);
         permissions.setOwner(id, owner.id());
         permissions.setVisibility(id, "private");
         return id;
     }
 
     @Test
-    @DisplayName("komentujący NIE może zmienić tekstu, choć używa tego samego kanału")
+    @DisplayName("a commenter CANNOT change the text, despite using the same channel")
     void commenterCannotChangeText() throws Exception {
         User ania = newUser("Ania");
-        User krytyk = newUser("Krytyk");
+        User critic = newUser("Critic");
         UUID document = privateDocument(ania);
-        permissions.grant(document, krytyk.id(), Role.COMMENTER);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
 
         try (TestStompClient owner = new TestStompClient(port, ania.token(), document, 801)) {
-            owner.insert(0, "oryginalny tekst");
-            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            owner.insert(0, "the original text");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
 
-        try (TestStompClient commenter = new TestStompClient(port, krytyk.token(), document, 802)) {
+        try (TestStompClient commenter = new TestStompClient(port, critic.token(), document, 802)) {
             commenter.requestSync(0);
-            commenter.awaitCondition(() -> commenter.text().equals("oryginalny tekst"),
-                PATIENCE, "komentujący widzi tekst");
+            commenter.awaitCondition(() -> commenter.text().equals("the original text"),
+                PATIENCE, "the commenter sees the text");
 
-            commenter.insert(0, "WANDALIZM");
+            commenter.insert(0, "VANDALISM");
             Thread.sleep(500);
 
             assertThat(documents.textOf(document))
-                .as("rola komentującego zmieniła treść dokumentu")
-                .isEqualTo("oryginalny tekst");
+                .as("the commenter role changed the document's content")
+                .isEqualTo("the original text");
         }
     }
 
     @Test
-    @DisplayName("komentujący MOŻE postawić kotwicę komentarza")
+    @DisplayName("a commenter CAN place a comment anchor")
     void commenterCanAnchorComment() throws Exception {
         User ania = newUser("Ania");
-        User krytyk = newUser("Krytyk");
+        User critic = newUser("Critic");
         UUID document = privateDocument(ania);
-        permissions.grant(document, krytyk.id(), Role.COMMENTER);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
 
         try (TestStompClient owner = new TestStompClient(port, ania.token(), document, 803)) {
-            owner.insert(0, "zdanie do omówienia");
-            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            owner.insert(0, "a sentence to discuss");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
 
-        UUID threadId = comments.openThread(document, krytyk.id(), "zdanie", "Nie zgadzam się.");
+        UUID threadId = comments.openThread(document, critic.id(), "sentence", "I disagree.");
 
-        try (TestStompClient commenter = new TestStompClient(port, krytyk.token(), document, 804)) {
+        try (TestStompClient commenter = new TestStompClient(port, critic.token(), document, 804)) {
             commenter.requestSync(0);
-            commenter.awaitCondition(() -> commenter.text().length() == 19, PATIENCE, "widzi tekst");
+            commenter.awaitCondition(() -> commenter.text().length() == 21, PATIENCE, "sees the text");
 
-            // Kotwica to znacznik CRDT typu `comment` z identyfikatorem wątku jako wartością.
+            // The anchor is a CRDT mark of type `comment` carrying the thread id as its value.
             commenter.markReturningOp(0, 6, "comment", threadId.toString());
 
             commenter.awaitCondition(
                 () -> documents.markCountOf(document) > 0, PATIENCE,
-                "kotwica komentarza nie dotarła — komentujący nie może zakotwiczyć rozmowy");
+                "the comment anchor never arrived — a commenter cannot anchor a conversation");
         }
     }
 
     @Test
-    @DisplayName("rola tylko do odczytu nie może komentować")
+    @DisplayName("a read-only role cannot comment")
     void viewerCannotComment() {
         User ania = newUser("Ania");
-        User widz = newUser("Widz");
+        User observer = newUser("Observer");
         UUID document = privateDocument(ania);
-        permissions.grant(document, widz.id(), Role.VIEWER);
+        permissions.grant(document, observer.id(), Role.VIEWER);
 
-        assertThat(permissions.roleOf(widz.id(), document).filter(Role::canComment))
-            .as("obserwator może komentować — rola tylko do odczytu pisze w dokumencie")
+        assertThat(permissions.roleOf(observer.id(), document).filter(Role::canComment))
+            .as("an observer can comment — a read-only role writes into the document")
             .isEmpty();
     }
 
     @Test
-    @DisplayName("wątek przeżywa skasowanie zakotwiczonego tekstu, z zacytowanym fragmentem")
+    @DisplayName("a thread survives deletion of its anchored text, with the quoted fragment")
     void threadSurvivesDeletionOfAnchoredText() throws Exception {
         User ania = newUser("Ania");
         UUID document = privateDocument(ania);
 
         try (TestStompClient owner = new TestStompClient(port, ania.token(), document, 805)) {
-            owner.insert(0, "fragment do usunięcia");
-            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "zapis potwierdzony");
+            owner.insert(0, "fragment to be deleted");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "write acknowledged");
 
-            UUID threadId = comments.openThread(document, ania.id(), "fragment", "Czy to zostaje?");
+            UUID threadId = comments.openThread(document, ania.id(), "fragment", "Does this stay?");
             assertThat(threadId).isNotNull();
 
             owner.delete(0, 8);
-            owner.awaitCondition(() -> owner.text().startsWith(" do"), PATIENCE, "tekst skasowany");
+            owner.awaitCondition(() -> owner.text().startsWith(" to"), PATIENCE, "text deleted");
             Thread.sleep(300);
         }
 
         var threads = comments.threadsOf(document, false);
         assertThat(threads)
-            .as("skasowanie zakotwiczonego tekstu usunęło ROZMOWĘ")
+            .as("deleting the anchored text removed the CONVERSATION")
             .hasSize(1);
         assertThat(threads.getFirst().quotedText())
-            .as("wątek odłączony bez zacytowanego fragmentu — nie wiadomo, czego dotyczył")
+            .as("a detached thread with no quoted fragment — there is no telling what it was about")
             .isEqualTo("fragment");
     }
 
     @Test
-    @DisplayName("rozwiązanie wątku zachowuje rozmowę")
+    @DisplayName("resolving a thread keeps the conversation")
     void resolvingKeepsTheConversation() {
         User ania = newUser("Ania");
         UUID document = privateDocument(ania);
 
-        UUID threadId = comments.openThread(document, ania.id(), "cytat", "Pierwsza uwaga");
-        comments.addMessage(threadId, ania.id(), "Druga uwaga");
+        UUID threadId = comments.openThread(document, ania.id(), "quote", "First remark");
+        comments.addMessage(threadId, ania.id(), "Second remark");
 
         assertThat(comments.resolve(threadId, ania.id())).isTrue();
 
         assertThat(comments.threadsOf(document, false))
-            .as("rozwiązany wątek nadal jest na liście domyślnej")
+            .as("a resolved thread is still on the default list")
             .isEmpty();
 
         var withResolved = comments.threadsOf(document, true);
         assertThat(withResolved).hasSize(1);
         assertThat(withResolved.getFirst().messages())
-            .as("rozwiązanie wątku skasowało rozmowę zamiast ją schować")
+            .as("resolving the thread deleted the conversation instead of hiding it")
             .hasSize(2);
 
         assertThat(comments.reopen(threadId)).isTrue();
@@ -206,27 +206,28 @@ class CommentIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("przywrócenie wcześniejszej wersji nie kasuje komentarzy dodanych później")
+    @DisplayName("restoring an earlier version does not delete comments added later")
     void threadSurvivesDocumentRestore() throws Exception {
         User ania = newUser("Ania");
         UUID document = privateDocument(ania);
 
         try (TestStompClient owner = new TestStompClient(port, ania.token(), document, 806)) {
-            owner.insert(0, "pierwsza wersja");
-            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "pierwszy zapis");
+            owner.insert(0, "the first version");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "first write");
             long checkpoint = owner.lastAckSeq();
 
-            owner.insert(15, " i dopisek");
-            owner.awaitCondition(() -> owner.lastAckSeq() > checkpoint, PATIENCE, "drugi zapis");
+            owner.insert(17, " and an addendum");
+            owner.awaitCondition(() -> owner.lastAckSeq() > checkpoint, PATIENCE, "second write");
 
-            // Komentarz powstaje PO punkcie, do którego zaraz cofniemy dokument.
-            UUID threadId = comments.openThread(document, ania.id(), "dopisek", "Uwaga do dopisku");
+            // The comment is created AFTER the point we are about to rewind the document to.
+            UUID threadId = comments.openThread(document, ania.id(), "addendum",
+                "A remark on the addendum");
             assertThat(threadId).isNotNull();
 
-            // Przywrócenie jest NOWĄ zmianą, a nie cofnięciem logu (ADR-0003) — więc nie ma
-            // powodu, żeby cokolwiek kasowało wątki. Test pilnuje, żeby tak zostało: gdyby
-            // przywracanie kiedykolwiek zaczęło czyścić stan „spoza przywracanej wersji",
-            // rozmowy zniknęłyby razem z tekstem, o którym mówiły.
+            // A restore is a NEW change, not an undo of the log (ADR-0003) — so there is no reason
+            // for anything to delete threads. This test keeps it that way: if restoring ever began
+            // clearing state "outside the restored version", conversations would disappear along
+            // with the text they were about.
             var restored = history.stateAt(document, checkpoint);
             var replica = registry.get(document);
             var generated = replica.withLock(model -> history.restoreOperations(model, restored));
@@ -238,28 +239,28 @@ class CommentIT extends IntegrationTestBase {
 
         var threads = comments.threadsOf(document, true);
         assertThat(threads)
-            .as("przywrócenie wersji skasowało rozmowę dodaną później")
+            .as("restoring a version deleted a conversation added later")
             .hasSize(1);
         assertThat(threads.getFirst().messages().getFirst().body())
-            .isEqualTo("Uwaga do dopisku");
+            .isEqualTo("A remark on the addendum");
 
-        // Kotwica wskazuje tekst, którego już nie ma, więc wątek ma być ODŁĄCZONY —
-        // a nie usunięty i nie udający, że nadal coś obejmuje.
+        // The anchor points at text that no longer exists, so the thread should be DETACHED — not
+        // deleted, and not pretending it still covers something.
         assertThat(threads.getFirst().quotedText())
-            .as("odłączony wątek stracił zacytowany fragment")
-            .isEqualTo("dopisek");
+            .as("the detached thread lost its quoted fragment")
+            .isEqualTo("addendum");
     }
 
     @Test
-    @DisplayName("wątek zawsze ma co najmniej jedną wiadomość")
+    @DisplayName("a thread always has at least one message")
     void threadAlwaysHasAtLeastOneMessage() {
         User ania = newUser("Ania");
         UUID document = privateDocument(ania);
 
-        comments.openThread(document, ania.id(), "cytat", "Jedyna wiadomość");
+        comments.openThread(document, ania.id(), "quote", "The only message");
 
         assertThat(comments.threadsOf(document, true).getFirst().messages())
-            .as("wątek bez wiadomości to stan, którego interfejs nie umie pokazać")
+            .as("a thread with no messages is a state the interface cannot render")
             .isNotEmpty();
     }
 }

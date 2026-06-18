@@ -16,13 +16,13 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Historia zmian i cofanie się w czasie (ADR-0003, CP5).
+ * Change history and travelling back in time (ADR-0003, CP5).
  *
- * <p>Najważniejszy test w tej klasie to {@code timeTravelIgnoresSnapshots}. ADR-0003 opiera
- * się na twierdzeniu, że snapshot jest <b>cache'em</b>, a nie źródłem prawdy — i to
- * twierdzenie musi być sprawdzane, a nie deklarowane. Bez tego testu snapshot po cichu
- * stałby się jedynym nośnikiem informacji, a dowiedzielibyśmy się o tym przy pierwszej
- * zmianie formatu serializacji, czyli w najgorszym możliwym momencie.
+ * <p>The most important test in this class is {@code timeTravelIgnoresSnapshots}. ADR-0003 rests on
+ * the claim that a snapshot is a <b>cache</b> and not the source of truth — and that claim has to
+ * be checked, not declared. Without this test a snapshot would quietly become the only carrier of
+ * the information, and we would find out at the first change to the serialisation format, that is,
+ * at the worst possible moment.
  */
 class HistoryIT extends IntegrationTestBase {
 
@@ -46,13 +46,14 @@ class HistoryIT extends IntegrationTestBase {
 
 
     /**
-     * Czeka na powstanie snapshotu.
+     * Waits for a snapshot to appear.
      *
-     * <p>Potwierdzenie zapisu jest rozsyłane PRZED zrobieniem snapshotu — świadomie, bo
-     * potwierdzenie zwalnia bufor klienta i nie ma powodu, żeby czekało na zapis cache'u.
-     * Test, który po odebraniu potwierdzenia od razu sprawdzał liczbę snapshotów, był przez
-     * to niestabilny: przechodził pojedynczo, a padał w pełnym przebiegu. Poprawka jest po
-     * stronie testu, bo to jego założenie było błędne, a nie kolejność w kodzie produkcyjnym.
+     * <p>The write acknowledgement is broadcast BEFORE the snapshot is taken — deliberately,
+     * because the acknowledgement releases the client's buffer and there is no reason for it to
+     * wait on a cache write. A test that checked the snapshot count immediately after receiving the
+     * acknowledgement was flaky because of that: it passed alone and failed in a full run. The fix
+     * belongs to the test, because it was the test's assumption that was wrong, not the ordering in
+     * production code.
      */
     private void awaitSnapshot(UUID document) throws InterruptedException {
         for (int attempt = 0; attempt < 200; attempt++) {
@@ -61,7 +62,7 @@ class HistoryIT extends IntegrationTestBase {
             }
             Thread.sleep(20);
         }
-        throw new AssertionError("nie powstał żaden snapshot dla dokumentu " + document);
+        throw new AssertionError("no snapshot was created for document " + document);
     }
 
     private UUID newDocument(String title) {
@@ -75,45 +76,45 @@ class HistoryIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("stan na dowolny moment odtwarza się z logu operacji")
+    @DisplayName("the state at any moment is rebuilt from the operation log")
     void timeTravel() throws Exception {
-        UUID document = newDocument("Podróż w czasie");
+        UUID document = newDocument("Time travel");
 
         long afterFirst;
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 201)) {
-            anna.insert(0, "wersja pierwsza");
-            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "pierwszy zapis");
+            anna.insert(0, "the first version");
+            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "first write");
             afterFirst = anna.lastAckSeq();
 
-            anna.insert(15, " i druga");
-            anna.awaitCondition(() -> anna.lastAckSeq() > afterFirst, PATIENCE, "drugi zapis");
+            anna.insert(17, " and the second");
+            anna.awaitCondition(() -> anna.lastAckSeq() > afterFirst, PATIENCE, "second write");
         }
 
-        assertThat(documents.textOf(document)).isEqualTo("wersja pierwsza i druga");
+        assertThat(documents.textOf(document)).isEqualTo("the first version and the second");
         assertThat(history.textAt(document, afterFirst))
-            .as("cofnięcie do wcześniejszego numeru dało zły stan")
-            .isEqualTo("wersja pierwsza");
+            .as("rewinding to an earlier sequence number gave the wrong state")
+            .isEqualTo("the first version");
     }
 
     @Test
-    @DisplayName("skasowanie snapshotów nie zmienia wyniku podróży w czasie")
+    @DisplayName("deleting the snapshots does not change the result of time travel")
     void timeTravelIgnoresSnapshots() throws Exception {
-        UUID document = newDocument("Snapshot to cache");
+        UUID document = newDocument("A snapshot is a cache");
 
         long midpoint;
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 211)) {
-            // Próg snapshotowania w testach to 20 operacji — piszemy dość, żeby powstał
-            // przynajmniej jeden, i zapamiętujemy punkt PO nim.
+            // The snapshot threshold in tests is 20 operations — we write enough for at least one
+            // to exist, and remember the point AFTER it.
             for (int i = 0; i < 30; i++) {
                 anna.insert(i, "x");
             }
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 30, PATIENCE, "pierwsza część");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 30, PATIENCE, "the first part");
             midpoint = anna.lastAckSeq();
 
             for (int i = 0; i < 20; i++) {
                 anna.insert(30 + i, "y");
             }
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 50, PATIENCE, "druga część");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 50, PATIENCE, "the second part");
         }
 
         awaitSnapshot(document);
@@ -125,14 +126,14 @@ class HistoryIT extends IntegrationTestBase {
         registry.forget(document);
 
         assertThat(history.textAt(document, midpoint))
-            .as("bez snapshotów wyszedł inny stan — cache przestał być cache'em")
+            .as("without snapshots a different state came out — the cache stopped being a cache")
             .isEqualTo(withSnapshots);
     }
 
     @Test
-    @DisplayName("oś czasu grupuje operacje w wersje i pokazuje autora")
+    @DisplayName("the timeline groups operations into versions and shows the author")
     void timelineGroupsOperations() throws Exception {
-        UUID document = newDocument("Oś czasu");
+        UUID document = newDocument("Timeline");
         String userId = UUID.randomUUID().toString();
         jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
             userId, "Anna", "#C1592E");
@@ -142,13 +143,13 @@ class HistoryIT extends IntegrationTestBase {
             for (int i = 0; i < 12; i++) {
                 anna.insert(i, "z");
             }
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 12, PATIENCE, "zapis");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 12, PATIENCE, "write");
         }
 
         var timeline = history.timeline(document);
         assertThat(timeline)
-            .as("dwanaście operacji jednego autora w jednej chwili to JEDEN wpis historii, "
-                + "nie dwanaście — oś czasu z wpisem na naciśnięcie klawisza byłaby bezużyteczna")
+            .as("twelve operations by one author in one moment are ONE history entry, not twelve "
+                + "— a timeline with an entry per keystroke would be useless")
             .hasSize(1);
         assertThat(timeline.getFirst().displayName()).isEqualTo("Anna");
         assertThat(timeline.getFirst().operationCount()).isEqualTo(12);
@@ -178,9 +179,9 @@ class HistoryIT extends IntegrationTestBase {
      * </ul>
      */
     @Test
-    @DisplayName("oś czasu liczy usunięcia, nie liczy znaczników jako znaków i dzieli po autorze")
+    @DisplayName("the timeline counts deletions, counts marks as no characters, and splits by author")
     void timelineCountsDeletionsAndSeparatesAuthors() throws Exception {
-        UUID document = newDocument("Oś czasu — usunięcia");
+        UUID document = newDocument("Timeline — deletions");
 
         String annaId = UUID.randomUUID().toString();
         jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
@@ -193,11 +194,11 @@ class HistoryIT extends IntegrationTestBase {
             port, tokens.issue(new TokenService.Principal(annaId, "Anna", "#C1592E")),
             document, 241)) {
             anna.insert(0, "abcdefghij");
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 1, PATIENCE, "wstawienie");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 1, PATIENCE, "insertion");
             anna.delete(2, 4);
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 2, PATIENCE, "usunięcie");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 2, PATIENCE, "deletion");
             anna.markReturningOp(0, 3, "bold", null);
-            anna.awaitCondition(() -> anna.lastAckSeq() >= 3, PATIENCE, "znacznik");
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 3, PATIENCE, "mark");
         }
 
         try (TestStompClient bartek = new TestStompClient(
@@ -206,15 +207,15 @@ class HistoryIT extends IntegrationTestBase {
             // The test client does not synchronise on connect — it only subscribes. Bartek
             // has to ask for the existing log before he can insert at a meaningful position.
             bartek.requestSync(0);
-            bartek.awaitCondition(() -> bartek.text().length() == 6, PATIENCE, "synchronizacja");
+            bartek.awaitCondition(() -> bartek.text().length() == 6, PATIENCE, "synchronisation");
             bartek.insert(bartek.text().length(), "XY");
-            bartek.awaitCondition(() -> bartek.lastAckSeq() >= 4, PATIENCE, "wstawienie Bartka");
+            bartek.awaitCondition(() -> bartek.lastAckSeq() >= 4, PATIENCE, "Bartek's insertion");
         }
 
         var timeline = history.timeline(document);
 
         assertThat(timeline)
-            .as("dwóch autorów to dwa wpisy — granica grupy biegnie po autorze")
+            .as("two authors mean two entries — the group boundary runs along the author")
             .hasSize(2);
 
         // Newest first, so Bartek's entry leads.
@@ -226,30 +227,30 @@ class HistoryIT extends IntegrationTestBase {
 
         assertThat(annaEntry.displayName()).isEqualTo("Anna");
         assertThat(annaEntry.charactersInserted())
-            .as("wstawienie dziesięciu znaków")
+            .as("an insertion of ten characters")
             .isEqualTo(10);
         assertThat(annaEntry.charactersDeleted())
-            .as("usunięcie czterech znaków — liczone z kolumny, nie z ładunku")
+            .as("a deletion of four characters — counted from a column, not from the payload")
             .isEqualTo(4);
         assertThat(annaEntry.operationCount())
-            .as("wstawienie, usunięcie i znacznik to trzy operacje; znacznik JEST zmianą "
-                + "dokumentu i ma być widoczny na osi czasu")
+            .as("an insertion, a deletion and a mark are three operations; a mark IS a change to "
+                + "the document and has to be visible on the timeline")
             .isEqualTo(3);
     }
 
     @Test
-    @DisplayName("przywrócenie wersji dopisuje operacje, nie obcina logu")
+    @DisplayName("restoring a version appends operations rather than truncating the log")
     void restoreIsAppendOnly() throws Exception {
-        UUID document = newDocument("Przywracanie");
+        UUID document = newDocument("Restoring");
 
         long afterFirst;
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 231)) {
-            anna.insert(0, "tekst oryginalny");
-            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "pierwszy zapis");
+            anna.insert(0, "the original text");
+            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "first write");
             afterFirst = anna.lastAckSeq();
 
-            anna.insert(16, " ZEPSUTY");
-            anna.awaitCondition(() -> anna.lastAckSeq() > afterFirst, PATIENCE, "drugi zapis");
+            anna.insert(17, " BROKEN");
+            anna.awaitCondition(() -> anna.lastAckSeq() > afterFirst, PATIENCE, "second write");
         }
 
         Integer operationsBefore = jdbc.queryForObject(
@@ -264,21 +265,21 @@ class HistoryIT extends IntegrationTestBase {
         Thread.sleep(300);
 
         assertThat(documents.textOf(document))
-            .as("przywrócenie nie dało stanu docelowego")
-            .isEqualTo("tekst oryginalny");
+            .as("the restore did not produce the target state")
+            .isEqualTo("the original text");
 
         Integer operationsAfter = jdbc.queryForObject(
             "SELECT COUNT(*) FROM operations WHERE doc_id = ?", Integer.class, document);
 
-        // ADR-0003 pkt 6: log jest wyłącznie dopisywany. Obcięcie zniszczyłoby audytowalność
-        // (kto i kiedy przywrócił) i rozspójniło klientów, którzy nadal mają usunięte operacje.
+        // ADR-0003, point 6: the log is append-only. Truncating it would destroy auditability
+        // (who restored, and when) and diverge the clients that still hold the removed operations.
         assertThat(operationsAfter)
-            .as("log skurczył się przy przywracaniu — to znaczy, że coś zostało obcięte")
+            .as("the log shrank during the restore — meaning something was truncated")
             .isGreaterThan(operationsBefore);
 
-        // Stan sprzed przywrócenia MUSI nadal dać się odtworzyć — historia nie znika
-        // dlatego, że ktoś się z niej wycofał.
+        // The state from before the restore MUST still be reproducible — history does not vanish
+        // because somebody backed out of it.
         assertThat(history.textAt(document, operationsBefore))
-            .isEqualTo("tekst oryginalny ZEPSUTY");
+            .isEqualTo("the original text BROKEN");
     }
 }
