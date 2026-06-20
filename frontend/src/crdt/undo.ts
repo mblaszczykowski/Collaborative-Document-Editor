@@ -42,7 +42,30 @@ interface UndoableDelete {
   text: string
 }
 
-type UndoEntry = UndoableInsert | UndoableDelete
+/**
+ * A formatting change (CP25).
+ *
+ * The interesting field is `before`, and it is why undoing a mark is not "remove the mark". The
+ * inverse of "make this bold" is "put back whatever this range had before", which is not the same
+ * thing whenever somebody else's mark of the same type was already there and losing the MarkSet
+ * resolution: removing would take away their formatting too, and they never touched anything.
+ *
+ * `undefined` means the type was absent over the range; `null` means it was present with no value,
+ * which is what every mark that carries no payload looks like (bold, italic, underline, strike).
+ * The two are different states and the distinction is load-bearing — the same one that made a
+ * restore silently keep formatting it had been asked to remove, in CP22.
+ */
+interface UndoableMark {
+  kind: 'mark'
+  type: string
+  /** First and last character of the range, as anchors — positions drift, identifiers do not. */
+  from: Id
+  to: Id
+  before: string | null | undefined
+  after: string | null | undefined
+}
+
+type UndoEntry = UndoableInsert | UndoableDelete | UndoableMark
 
 export class UndoManager {
   private readonly undoStack: UndoEntry[] = []
@@ -70,8 +93,38 @@ export class UndoManager {
 
   private readonly document: RgaDocument
 
+  /**
+   * Called after every change to the stacks, so they can be persisted (CP25).
+   *
+   * A callback rather than the manager writing to storage itself: this class is part of the CRDT
+   * layer and knows nothing about IndexedDB, and the one test that matters here — that undo puts
+   * the right state back — should not need a database.
+   */
+  private onChange: (() => void) | null = null
+
   constructor(document: RgaDocument) {
     this.document = document
+  }
+
+  observe(onChange: () => void): void {
+    this.onChange = onChange
+  }
+
+  /**
+   * The stacks, in a form that survives a reload (CP25).
+   *
+   * Every entry is already made of things that outlive a session: character identifiers and text.
+   * Positions would not be — which is the same reason the entries hold anchors in the first place.
+   */
+  serialise(): { undo: UndoEntry[]; redo: UndoEntry[] } {
+    return { undo: [...this.undoStack], redo: [...this.redoStack] }
+  }
+
+  restore(state: { undo: UndoEntry[]; redo: UndoEntry[] }): void {
+    this.undoStack.length = 0
+    this.redoStack.length = 0
+    this.undoStack.push(...state.undo.slice(-UndoManager.LIMIT))
+    this.redoStack.push(...state.redo.slice(-UndoManager.LIMIT))
   }
 
   get canUndo(): boolean {
@@ -104,6 +157,7 @@ export class UndoManager {
       previous.length += length
       this.lastRecordedAt = Date.now()
       this.redoStack.length = 0
+      this.onChange?.()
       return
     }
 
@@ -122,6 +176,7 @@ export class UndoManager {
       previous.after = after
       this.lastRecordedAt = Date.now()
       this.redoStack.length = 0
+      this.onChange?.()
       return
     }
 
@@ -140,6 +195,7 @@ export class UndoManager {
     }
     // A new change invalidates the redo branch — standard behaviour for any editor.
     this.redoStack.length = 0
+    this.onChange?.()
   }
 
   undo(): Op[] {
@@ -156,16 +212,65 @@ export class UndoManager {
 
     this.applying = true
     try {
-      const result = entry.kind === 'insert' ? this.revertInsert(entry) : this.revertDelete(entry)
+      const result =
+        entry.kind === 'insert'
+          ? this.revertInsert(entry)
+          : entry.kind === 'delete'
+            ? this.revertDelete(entry)
+            : this.revertMark(entry)
       if (result === null) {
         // The anchor is gone — skip the entry and try the next one. Without this, one
         // irreversible step would block undoing everything beneath it.
         return this.step(from, to)
       }
       to.push(result.inverse)
+      this.onChange?.()
       return result.ops
     } finally {
       this.applying = false
+    }
+  }
+
+  /**
+   * Records a formatting change so that Ctrl+Z can put the previous state back (CP25).
+   *
+   * Until CP25 mark operations never entered the stack at all, so Ctrl+Z after Ctrl+B undid **the
+   * previous text change** — predictable once you know, and surprising every time until then. The
+   * README listed it as a known limit.
+   *
+   * @param before what the range carried before, `undefined` when the type was absent
+   */
+  recordMark(
+    type: string,
+    from: Id,
+    to: Id,
+    before: string | null | undefined,
+    after: string | null | undefined,
+  ): void {
+    if (this.applying) return
+    this.push({ kind: 'mark', type, from, to, before, after })
+  }
+
+  /**
+   * Undoing a formatting change = putting the previous STATE back, not performing the opposite
+   * gesture.
+   */
+  private revertMark(entry: UndoableMark): { ops: Op[]; inverse: UndoEntry } | null {
+    const from = this.document.visibleIndexOf(entry.from)
+    const to = this.document.visibleIndexOf(entry.to)
+    if (from === null || to === null || to < from) {
+      // The anchored text is gone. Skipped rather than guessed, exactly as for text entries:
+      // re-formatting a range that is not there any more would put a mark somewhere arbitrary.
+      return null
+    }
+
+    const op =
+      entry.before === undefined
+        ? this.document.removeMark(from, to + 1, entry.type)
+        : this.document.addMark(from, to + 1, entry.type, entry.before)
+    return {
+      ops: [op],
+      inverse: { ...entry, before: entry.after, after: entry.before },
     }
   }
 

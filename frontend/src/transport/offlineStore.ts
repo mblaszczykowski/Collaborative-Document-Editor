@@ -19,7 +19,15 @@ import type { Op } from '../crdt/types'
 
 const DATABASE = 'inkline'
 const STORE = 'unacknowledged'
-const VERSION = 1
+
+/**
+ * The undo stacks, kept per document (CP25).
+ *
+ * A second store rather than a second database: they share a lifetime (both belong to "what this
+ * browser knows about a document that is not on the server yet") and an upgrade path.
+ */
+const UNDO_STORE = 'undo'
+const VERSION = 2
 
 interface StoredEntry {
   key: string
@@ -37,6 +45,12 @@ function openDatabase(): Promise<IDBDatabase> {
         const store = database.createObjectStore(STORE, { keyPath: 'key' })
         store.createIndex('byDocument', 'documentId')
       }
+      // Created without touching the store above: a browser that already has a buffer from
+      // before CP25 must keep it. An upgrade that dropped unacknowledged operations would lose
+      // exactly the work this whole mechanism exists to protect.
+      if (!database.objectStoreNames.contains(UNDO_STORE)) {
+        database.createObjectStore(UNDO_STORE, { keyPath: 'documentId' })
+      }
     }
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
@@ -46,12 +60,13 @@ function openDatabase(): Promise<IDBDatabase> {
 function transact<T>(
   mode: IDBTransactionMode,
   action: (store: IDBObjectStore) => IDBRequest<T>,
+  storeName: string = STORE,
 ): Promise<T> {
   return openDatabase().then(
     (database) =>
       new Promise<T>((resolve, reject) => {
-        const transaction = database.transaction(STORE, mode)
-        const request = action(transaction.objectStore(STORE))
+        const transaction = database.transaction(storeName, mode)
+        const request = action(transaction.objectStore(storeName))
         request.onsuccess = () => resolve(request.result)
         request.onerror = () => reject(request.error)
         transaction.oncomplete = () => database.close()
@@ -103,5 +118,26 @@ export const offlineStore = {
     for (const entry of all) {
       await transact('readwrite', (store) => store.delete(entry.key))
     }
+  },
+
+  /**
+   * Saves the undo stacks for a document (CP25).
+   *
+   * The stacks used to live in the tab's memory and die with a reload, which the README listed as
+   * a limit: reloading a page cost you the ability to undo work you could still see on screen.
+   * Storing them is cheap because the entries are already made of things that outlive a session —
+   * character identifiers and text, never positions.
+   */
+  async saveUndo(documentId: string, state: unknown): Promise<void> {
+    await transact('readwrite', (store) => store.put({ documentId, state }), UNDO_STORE)
+  },
+
+  async loadUndo<T>(documentId: string): Promise<T | null> {
+    const row = await transact<{ documentId: string; state: T } | undefined>(
+      'readonly',
+      (store) => store.get(documentId),
+      UNDO_STORE,
+    )
+    return row?.state ?? null
   },
 }

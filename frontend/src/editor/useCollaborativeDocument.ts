@@ -5,6 +5,7 @@ import { decodeSnapshot } from '../crdt/snapshot'
 import type { Span } from '../crdt/marks'
 import type { Id, Op } from '../crdt/types'
 import { UndoManager } from '../crdt/undo'
+import { offlineStore } from '../transport/offlineStore'
 import {
   DocumentConnection,
   type ConnectionState,
@@ -215,7 +216,25 @@ export function useCollaborativeDocument(
       if (cancelled) return
 
       document.current = model
-      undo.current = new UndoManager(model)
+      const undoManager = new UndoManager(model)
+      undo.current = undoManager
+
+      /**
+       * The undo stacks survive a reload (CP25).
+       *
+       * They used to live in the tab's memory, so reloading the page cost the ability to undo
+       * work that was still on screen. Loading is best-effort — a browser without IndexedDB, or
+       * a stack from an older format, means no history rather than no editor.
+       */
+      void offlineStore
+        .loadUndo<Parameters<UndoManager['restore']>[0]>(documentId)
+        .then((saved) => {
+          if (!cancelled && saved !== null) undoManager.restore(saved)
+        })
+        .catch(() => {})
+      undoManager.observe(() => {
+        void offlineStore.saveUndo(documentId, undoManager.serialise()).catch(() => {})
+      })
       setTitle(state.title)
       setRole(state.role)
       setReady(true)
@@ -317,9 +336,25 @@ export function useCollaborativeDocument(
     if (!canWrite) return
 
     const alreadyMarked = coveredBy(model.formatting(), type, from, to)
+    // What the range carried BEFORE, so undo can put that back rather than perform the opposite
+    // gesture (CP25). `undefined` means the type was absent; `null` means present with no value,
+    // which is what bold and italic look like. Conflating the two is how a restore silently keeps
+    // formatting it was asked to remove — the bug CP22 found in the history layer.
+    const before = alreadyMarked
+      ? (model.formatting().find((span) => span.from <= from && span.marks.has(type))
+          ?.marks.get(type) ?? null)
+      : undefined
+    const value = type === 'link' ? window.prompt('Adres linku') : null
     const op = alreadyMarked
       ? model.removeMark(from, to, type)
-      : model.addMark(from, to, type, type === 'link' ? window.prompt('Adres linku') : null)
+      : model.addMark(from, to, type, value)
+
+    const anchorFrom = model.idAtVisible(from)
+    const anchorTo = model.idAtVisible(to - 1)
+    if (anchorFrom !== null && anchorTo !== null) {
+      undo.current?.recordMark(type, anchorFrom, anchorTo, before,
+        alreadyMarked ? undefined : value)
+    }
 
     link.send(op)
     // Recomputed immediately rather than waiting for the echo from the server: the operation is
