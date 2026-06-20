@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type DocumentState, type Session } from '../api'
 import { RgaDocument } from '../crdt/document'
+import { decodeSnapshot } from '../crdt/snapshot'
 import type { Span } from '../crdt/marks'
 import type { Id, Op } from '../crdt/types'
 import { UndoManager } from '../crdt/undo'
@@ -71,6 +72,15 @@ export interface CollaborativeDocument {
 
   toggleMark: (type: string, from: number, to: number) => void
   anchorComment: (threadId: string) => void
+  /**
+   * Suggestion mode (CP23): propose a change instead of making it.
+   *
+   * Declared here because the hook already returns both. They were added to the implementation
+   * and to the call sites while this interface was being extracted out of App.tsx, and the two
+   * halves landed in one commit without meeting — the type error is exactly the seam.
+   */
+  proposeDeletion: () => Promise<void>
+  proposeInsertion: (text: string) => Promise<void>
   onLocalOps: (ops: Op[]) => void
   onCursorMove: (head: Id | null, anchor: Id | null) => void
   onSelectionChange: (from: number, to: number, text: string) => void
@@ -164,7 +174,8 @@ export function useCollaborativeDocument(
   useEffect(() => {
     let cancelled = false
 
-    void api.openDocument(documentId).then((state) => {
+    void (async () => {
+      const state = await api.openDocument(documentId)
       if (cancelled) return
       setUnavailable(false)
 
@@ -172,6 +183,37 @@ export function useCollaborativeDocument(
       // with the text from REST would create new local operations the server does not know
       // about — and then synchronisation would deliver operations describing the same text.
       const model = new RgaDocument(0)
+
+      /**
+       * The snapshot, in place of replaying the whole log (CP24).
+       *
+       * Until CP24 opening a document meant asking for every operation from zero — a hundred
+       * thousand characters typed one at a time is a hundred thousand operations across the
+       * socket, each integrated by the merge algorithm, to reach a state the server already
+       * held as one object.
+       *
+       * Every failure here falls back to the old path rather than surfacing: an unreadable or
+       * unknown-version snapshot is a cache miss, and rebuilding from the log is slower and
+       * always correct (ADR-0003). That is why this is wrapped separately from the open call
+       * above — a snapshot that does not arrive must not read as a document that cannot be
+       * opened.
+       */
+      let from = 0
+      try {
+        const snapshot = await api.snapshot(documentId)
+        if (cancelled) return
+        if (snapshot !== null) {
+          const decoded = await decodeSnapshot(snapshot.bytes)
+          if (decoded !== null) {
+            model.restoreFrom(decoded)
+            from = snapshot.throughServerSeq
+          }
+        }
+      } catch {
+        // Falls through to `from = 0`, i.e. the pre-CP24 behaviour.
+      }
+      if (cancelled) return
+
       document.current = model
       undo.current = new UndoManager(model)
       setTitle(state.title)
@@ -179,7 +221,7 @@ export function useCollaborativeDocument(
       setReady(true)
       refreshStats()
 
-      const link = new DocumentConnection(documentId, session.token, 0, {
+      const link = new DocumentConnection(documentId, session.token, from, {
         onSession: (replicaId) => model.adoptReplicaId(replicaId),
         versionVector: () => model.version,
         hasOperation: (replicaId, lamport) => model.contains({ replicaId, lamport }),
@@ -219,7 +261,7 @@ export function useCollaborativeDocument(
       link.simulator.onChange(setNetwork)
       void link.restoreOfflineBuffer().then(() => link.connect())
       connection.current = link
-    }).catch(() => {
+    })().catch(() => {
       // We do not open the WebSocket: the interceptor would reject the subscription for the same
       // reason, only silently — and the client would retry in a loop.
       if (!cancelled) setUnavailable(true)
