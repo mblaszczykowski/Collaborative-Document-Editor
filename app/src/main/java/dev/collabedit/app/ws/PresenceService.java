@@ -128,7 +128,13 @@ public class PresenceService {
      * alternative is publishing the most frequent event in the system — ~30 per second per
      * person — across the cluster, to make a decoration smoother.
      */
-    @org.springframework.scheduling.annotation.Scheduled(fixedRate = ANNOUNCE_EVERY_MILLIS)
+    @org.springframework.scheduling.annotation.Scheduled(
+        fixedRate = ANNOUNCE_EVERY_MILLIS,
+        // The maintenance pool, not the flow one. This publishes to Redis and walks every
+        // participant, and the flow pool exists to broadcast every 10 ms with nothing queued
+        // ahead of it (SchedulingConfig). Presence is soft state — the announcement being a
+        // moment late costs a cursor drawn a moment late.
+        scheduler = dev.collabedit.app.config.SchedulingConfig.MAINTENANCE)
     void announceAndExpire() {
         long now = System.currentTimeMillis();
         boolean reachable = true;
