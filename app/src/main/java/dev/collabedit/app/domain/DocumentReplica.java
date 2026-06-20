@@ -56,6 +56,27 @@ public class DocumentReplica {
      */
     private final List<PendingOperation> pendingBroadcast = new ArrayList<>();
 
+    /**
+     * How many flushes have drained a write batch but not yet reached the log.
+     *
+     * <p>Exists so a snapshot can tell whether the document's state corresponds to any
+     * {@code server_seq} at all. A flush drains operations under this lock, appends them to the
+     * log <b>outside</b> it, and only then advances {@link #appliedServerSeq}. In between, the
+     * document holds work that is in neither {@code unwritten} nor the sequence number — so a
+     * snapshot taken there would be labelled with a number lower than the state it contains.
+     *
+     * <p>That mislabelling is invisible to document loading, which re-applies the tail from the
+     * log and is idempotent. It is not invisible to {@code HistoryService.textAt}, which trusts
+     * the label to mean "exactly the operations up to here" and would show a state from slightly
+     * in the future.
+     *
+     * <p>The window existed before the scheduler split too — a merge between reading the number
+     * and taking the snapshot did the same thing — but both ran on one thread, so a whole flush
+     * could never fit inside it. Moving snapshots to their own pool made it wide enough to matter,
+     * which is why the counter is here rather than in a note.
+     */
+    private int flushesInFlight;
+
     /** How many operations have arrived since the last snapshot — the threshold from ADR-0003. */
     private int operationsSinceSnapshot;
 
@@ -327,7 +348,12 @@ public class DocumentReplica {
         try {
             // The lock is reentrant, and holding it from outside guarantees nobody adds an
             // operation between these two drains.
-            return new OutboundBatch(drainBroadcast(), drainUnwritten(writeLimit));
+            OutboundBatch outbound =
+                new OutboundBatch(drainBroadcast(), drainUnwritten(writeLimit));
+            if (!outbound.writes().isEmpty()) {
+                flushesInFlight++;
+            }
+            return outbound;
         } finally {
             lock.unlock();
         }
@@ -388,6 +414,49 @@ public class DocumentReplica {
         lock.lock();
         try {
             return pendingBroadcast.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Ends a flush started by {@link #drainForFlush}, recording how far the log now reaches.
+     *
+     * <p>Must be called on every path out of the flush, including failure — otherwise
+     * {@link #flushesInFlight} never returns to zero and this document stops snapshotting for the
+     * lifetime of the process. Pass 0 when nothing was written.
+     */
+    public void flushCompleted(long highestServerSeq) {
+        lock.lock();
+        try {
+            if (highestServerSeq > appliedServerSeq) {
+                appliedServerSeq = highestServerSeq;
+            }
+            flushesInFlight--;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Runs an action only if the document's state corresponds <b>exactly</b> to a sequence number.
+     *
+     * <p>The action receives the replica and that number. It is refused — empty result — while a
+     * flush is in flight or operations are waiting to be written, because in both cases the
+     * document contains work whose {@code server_seq} is not settled and any label would be wrong.
+     *
+     * <p>Refusing rather than waiting is deliberate: the caller is the snapshot sweep, it runs
+     * every second, and a snapshot is a cache. Blocking the maintenance thread on the write path
+     * would trade a skipped round for exactly the coupling the scheduler split removed.
+     */
+    public <T> java.util.Optional<T> withConsistentState(
+        java.util.function.BiFunction<RgaDocument, Long, T> action) {
+        lock.lock();
+        try {
+            if (flushesInFlight > 0 || !unwritten.isEmpty()) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(action.apply(document, appliedServerSeq));
         } finally {
             lock.unlock();
         }

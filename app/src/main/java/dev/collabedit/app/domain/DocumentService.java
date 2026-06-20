@@ -362,25 +362,31 @@ public class DocumentService {
 
         List<PendingOperation> batch = outbound.writes();
         if (batch.isEmpty()) {
+            // Nothing was drained for writing, so drainForFlush counted no flush in flight and
+            // there is nothing to close.
             return;
         }
 
-        var persisting = metrics.startTimer();
-        List<StoredOperation> appended;
-        try (var span = tracer.startBatch("op.persist",
-            batch.stream().map(PendingOperation::traceparent).toList())) {
-            appended = operations.append(replica.documentId(), batch);
-            span.attribute("collabedit.batch.size", batch.size());
-            span.attribute("collabedit.batch.written", appended.size());
+        // From here the replica considers a flush IN FLIGHT, and every path out has to end it —
+        // including the failure path. Leaving the counter raised would stop this document
+        // snapshotting for the rest of the process's life.
+        List<StoredOperation> appended = List.of();
+        try {
+            var persisting = metrics.startTimer();
+            try (var span = tracer.startBatch("op.persist",
+                batch.stream().map(PendingOperation::traceparent).toList())) {
+                appended = operations.append(replica.documentId(), batch);
+                span.attribute("collabedit.batch.size", batch.size());
+                span.attribute("collabedit.batch.written", appended.size());
+            }
+            metrics.recordPersist(persisting);
+        } finally {
+            replica.flushCompleted(appended.isEmpty() ? 0 : appended.getLast().serverSeq());
         }
-        metrics.recordPersist(persisting);
+
         if (appended.isEmpty()) {
             return;
         }
-
-        long highest = appended.getLast().serverSeq();
-        replica.advanceServerSeq(highest);
-
         onBroadcast.accept(replica.documentId(), appended);
         cluster.publish(replica.documentId(), appended);
         // No snapshot here any more: {@link #snapshotSweep()} owns that, on the maintenance
@@ -399,12 +405,13 @@ public class DocumentService {
             // GC window", and only the first half was implemented.
             java.time.Duration.ofDays(properties.gc().windowDays()).toMillis());
 
-        long seq = replica.appliedServerSeq();
-        // The preview is taken under THE SAME lock acquisition as the snapshot, so both describe
-        // the same state. A separate acquisition would give a preview from a different moment than
-        // the snapshot — harmless, but then "the list shows something different from the document"
-        // stops having a single explanation.
-        var captured = replica.withLock(document -> {
+        // The sequence number is read under THE SAME lock acquisition as the snapshot, and the
+        // replica refuses if the two would not match — see DocumentReplica.withConsistentState.
+        // Reading it beforehand, as this did, meant a flush completing in between produced a
+        // snapshot labelled with a number lower than the state it holds. Loading a document
+        // survives that (re-applying the tail is idempotent); HistoryService.textAt does not, and
+        // would show a state from slightly in the future.
+        var maybeCaptured = replica.withConsistentState((document, seq) -> {
             // "reclaimed", not "removed": since CP18 a block that must not be removed gives up its
             // content and stays in the structure. Both paths reclaim memory, but only one removes
             // anything — and a log saying "removed" while the block count is unchanged sends
@@ -418,10 +425,17 @@ public class DocumentService {
             String preview = document.visibleLength() <= DocumentCatalog.PREVIEW_LENGTH
                 ? document.text()
                 : document.text().substring(0, DocumentCatalog.PREVIEW_LENGTH);
-            return new Captured(document.snapshot(), preview);
+            return new Captured(document.snapshot(), preview, seq);
         });
 
-        snapshots.save(replica.documentId(), seq, captured.snapshot());
+        if (maybeCaptured.isEmpty()) {
+            // A flush is in flight or operations are waiting: the document holds work whose
+            // server_seq is not settled yet, so no label would be true. The sweep runs every
+            // second and a snapshot is a cache, so skipping a round costs nothing.
+            return;
+        }
+        Captured captured = maybeCaptured.get();
+        snapshots.save(replica.documentId(), captured.seq(), captured.snapshot());
         // The preview for the document list. Materialised HERE, because this is the only moment
         // the content is already in hand — the list cannot afford to load a replica for every entry
         // (CP11).
@@ -534,7 +548,8 @@ public class DocumentService {
     // ------------------------------------------------------------------
 
     /** State taken under one lock: the snapshot to store and the preview for the document list. */
-    private record Captured(dev.collabedit.crdt.DocumentSnapshot snapshot, String preview) {
+    private record Captured(dev.collabedit.crdt.DocumentSnapshot snapshot, String preview,
+                            long seq) {
     }
 
     /** The number of mark operations in the replica — for diagnostics and tests (CP13). */
