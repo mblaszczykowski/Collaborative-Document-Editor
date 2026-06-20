@@ -1,5 +1,6 @@
 package dev.collabedit.app.ws;
 
+import dev.collabedit.app.cluster.PresenceBus;
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.observability.DocumentMetrics;
 import java.util.ArrayList;
@@ -60,12 +61,98 @@ public class PresenceService {
     private final SimpMessagingTemplate messaging;
     private final DocumentRegistry registry;
     private final DocumentMetrics metrics;
+    private final PresenceBus bus;
+
+    /**
+     * How often this instance announces who it has, and how long another instance's announcement
+     * is believed (CP26).
+     *
+     * <p>The ratio is the one ADR-0002 chose for STOMP heartbeats and for the same reason: one
+     * lost message is normal, three in a row is an instance that is gone. There is no repair
+     * mechanism here and none is needed — the next announcement carries the whole truth again,
+     * because they are full lists rather than deltas.
+     */
+    private static final long ANNOUNCE_EVERY_MILLIS = 1_000;
+    private static final long BELIEVE_FOR_MILLIS = 3_000;
+
+    /** What other instances last said, keyed by instance and document. */
+    private final Map<String, RemoteEntry> remote = new ConcurrentHashMap<>();
+
+    /**
+     * Whether the last announcement reached Redis.
+     *
+     * <p>Sent to the clients so the participant list can say it may be incomplete. This is the
+     * one place in the system where best-effort has to be VISIBLE: everywhere else a message
+     * arriving late is repaired by convergence, and a participant list that is quietly short
+     * looks exactly like a document nobody else is in.
+     */
+    private volatile boolean clusterReachable = true;
+
+    private record RemoteEntry(UUID documentId, List<Messages.PresenceBroadcast> participants,
+                               long receivedAtMillis) {
+    }
 
     public PresenceService(SimpMessagingTemplate messaging, DocumentRegistry registry,
-                           DocumentMetrics metrics) {
+                           DocumentMetrics metrics, PresenceBus bus) {
         this.messaging = messaging;
         this.registry = registry;
         this.metrics = metrics;
+        this.bus = bus;
+    }
+
+    @jakarta.annotation.PostConstruct
+    void subscribeToOtherInstances() {
+        bus.onAnnouncement(announcement -> {
+            List<Messages.PresenceBroadcast> participants = new ArrayList<>();
+            for (com.fasterxml.jackson.databind.JsonNode node : announcement.participants()) {
+                participants.add(WIRE.convertValue(node, Messages.PresenceBroadcast.class));
+            }
+            remote.put(announcement.instanceId() + "|" + announcement.documentId(),
+                new RemoteEntry(announcement.documentId(), participants,
+                    System.currentTimeMillis()));
+            // Only the local clients of THIS instance are told; the announcing instance already
+            // told its own. Without this line a remote arrival would be invisible until the next
+            // local event, which in a quiet document is never.
+            broadcast(announcement.documentId());
+        });
+    }
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper WIRE =
+        new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /**
+     * Announces this instance's participants and forgets instances that have gone quiet.
+     *
+     * <p>Cursor movement rides this heartbeat rather than being published as it happens, and that
+     * is a deliberate limit: a cursor from another instance moves at most once a second. The
+     * alternative is publishing the most frequent event in the system — ~30 per second per
+     * person — across the cluster, to make a decoration smoother.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedRate = ANNOUNCE_EVERY_MILLIS)
+    void announceAndExpire() {
+        long now = System.currentTimeMillis();
+        boolean reachable = true;
+
+        for (UUID documentId : Set.copyOf(byDocument.keySet())) {
+            List<Messages.PresenceBroadcast> mine = localParticipants(documentId).stream()
+                .map(PresenceService::wire)
+                .toList();
+            reachable &= bus.publish(documentId, mine);
+        }
+        clusterReachable = reachable;
+
+        // Expire, and tell the local clients about the documents that changed. A departed
+        // instance's participants must disappear from the list; nothing else would remove them,
+        // because the instance that could have said so is the one that is gone.
+        Set<UUID> stale = new java.util.HashSet<>();
+        remote.entrySet().removeIf(entry -> {
+            if (now - entry.getValue().receivedAtMillis() <= BELIEVE_FOR_MILLIS) {
+                return false;
+            }
+            stale.add(entry.getValue().documentId());
+            return true;
+        });
+        stale.forEach(this::broadcast);
     }
 
     public record Participant(
@@ -83,12 +170,32 @@ public class PresenceService {
 
     public void join(String sessionId, UUID documentId, int replicaId,
                      String userId, String displayName, String color) {
-        if (bySession.put(sessionId, new Participant(sessionId, documentId, replicaId,
-            userId, displayName, color, null, null, null, null, false)) == null) {
+        Participant previous = bySession.put(sessionId, new Participant(sessionId, documentId,
+            replicaId, userId, displayName, color, null, null, null, null, false));
+        if (previous == null) {
             metrics.sessionOpened();
+        } else if (!previous.documentId().equals(documentId)) {
+            // The same session joining a DIFFERENT document. Today's client never does this — it
+            // builds a fresh connection per document — but the index has to be maintained against
+            // what the protocol allows, not against what one client happens to do. Without this
+            // the old document keeps the session id forever: `leave` only ever cleans up the
+            // document the participant is currently in.
+            forgetFromDocument(previous.documentId(), sessionId);
+            broadcast(previous.documentId());
         }
         byDocument.computeIfAbsent(documentId, id -> ConcurrentHashMap.newKeySet()).add(sessionId);
         broadcast(documentId);
+    }
+
+    /** Drops a session from a document's index, removing the set once it empties. */
+    private void forgetFromDocument(UUID documentId, String sessionId) {
+        // Removing the empty set as well, so a server that has served many documents does not
+        // keep one entry per document it has ever seen — the same unbounded-growth trap the
+        // permission cache and the replica registry each had to be given a bound for.
+        byDocument.computeIfPresent(documentId, (id, sessions) -> {
+            sessions.remove(sessionId);
+            return sessions.isEmpty() ? null : sessions;
+        });
     }
 
     /**
@@ -113,7 +220,8 @@ public class PresenceService {
             update.typing());
         bySession.put(sessionId, moved);
 
-        send(moved.documentId(), new Messages.PresenceUpdate(false, List.of(wire(moved))));
+        send(moved.documentId(), new Messages.PresenceUpdate(false, List.of(wire(moved)),
+            clusterReachable));
     }
 
     public void leave(String sessionId) {
@@ -122,13 +230,7 @@ public class PresenceService {
             return;
         }
         metrics.sessionClosed();
-        // Removing the empty set as well, so a server that has served many documents does not
-        // keep one entry per document it has ever seen — the same unbounded-growth trap the
-        // permission cache and the replica registry each had to be given a bound for.
-        byDocument.computeIfPresent(gone.documentId(), (id, sessions) -> {
-            sessions.remove(sessionId);
-            return sessions.isEmpty() ? null : sessions;
-        });
+        forgetFromDocument(gone.documentId(), sessionId);
         // The replica is recorded as DEPARTED rather than forgotten (ADR-0005). It keeps
         // constraining causal stability for the GC window, because that window exists precisely
         // to let a client that closed its laptop come back and still merge.
@@ -144,7 +246,19 @@ public class PresenceService {
         broadcast(gone.documentId());
     }
 
+    /**
+     * Everybody in the document, including the people connected to other instances (CP26).
+     *
+     * <p>Remote participants arrive as wire records rather than as {@link Participant}: this
+     * instance knows nothing about their sessions and has no business inventing session
+     * identifiers for them. That is why the merge happens at the broadcast, in {@link #broadcast},
+     * and this method still answers the local question.
+     */
     public List<Participant> participants(UUID documentId) {
+        return localParticipants(documentId);
+    }
+
+    private List<Participant> localParticipants(UUID documentId) {
         Set<String> sessions = byDocument.get(documentId);
         if (sessions == null) {
             return List.of();
@@ -155,7 +269,18 @@ public class PresenceService {
             // Null when a session was removed between reading the index and reading the entry.
             // Skipped rather than guarded against: see the note on byDocument about why the two
             // maps are allowed to disagree for an instant.
-            if (participant != null) {
+            // Two reasons to skip, and the second is why this check survives the index.
+            //
+            // Null: the session was removed between reading the index and reading the entry. See
+            // the note on byDocument about why the two maps may disagree for an instant.
+            //
+            // A DIFFERENT document: the index is derived, and this is the authoritative answer.
+            // The version before the index filtered every session by documentId, so "a
+            // participant of X is in document X" held by construction; trusting the index alone
+            // would quietly downgrade that to "holds as long as the index is maintained correctly
+            // everywhere". The comparison costs one equality per participant and keeps the
+            // guarantee where it was.
+            if (participant != null && participant.documentId().equals(documentId)) {
                 result.add(participant);
             }
         }
@@ -170,8 +295,29 @@ public class PresenceService {
      * more to maintain than sending the whole list.
      */
     private void broadcast(UUID documentId) {
-        send(documentId, new Messages.PresenceUpdate(true,
-            participants(documentId).stream().map(PresenceService::wire).toList()));
+        send(documentId, new Messages.PresenceUpdate(true, everybody(documentId),
+            clusterReachable));
+    }
+
+    /**
+     * Everybody in the document as the clients see them: this instance's participants plus what
+     * the other instances last announced and we still believe (CP26).
+     *
+     * <p>Public because it is what the tests have to look at. The alternative — asserting on a
+     * broadcast captured through a STOMP client — would test the messaging plumbing as well, and
+     * the thing worth pinning here is the merge and the expiry.
+     */
+    public List<Messages.PresenceBroadcast> everybody(UUID documentId) {
+        List<Messages.PresenceBroadcast> result = new ArrayList<>(
+            localParticipants(documentId).stream().map(PresenceService::wire).toList());
+        long now = System.currentTimeMillis();
+        for (RemoteEntry entry : remote.values()) {
+            if (entry.documentId().equals(documentId)
+                && now - entry.receivedAtMillis() <= BELIEVE_FOR_MILLIS) {
+                result.addAll(entry.participants());
+            }
+        }
+        return result;
     }
 
     private void send(UUID documentId, Messages.PresenceUpdate update) {

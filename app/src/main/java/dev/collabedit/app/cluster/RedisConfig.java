@@ -31,7 +31,7 @@ public class RedisConfig {
     @Bean
     public RedisMessageListenerContainer clusterListenerContainer(
         RedisConnectionFactory connectionFactory, ClusterBus bus,
-        PermissionInvalidationBus permissions) {
+        PermissionInvalidationBus permissions, PresenceBus presence) {
 
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
@@ -43,6 +43,9 @@ public class RedisConfig {
         // PermissionInvalidationBus for why this is a separate channel rather than a message type
         // on the existing one.
         container.addMessageListener(permissions, new ChannelTopic(PermissionInvalidationBus.CHANNEL));
+        // Presence (CP26) — soft state with an expiry, on its own channel. See PresenceBus for
+        // why it is not folded into either of the two above.
+        container.addMessageListener(presence, new ChannelTopic(PresenceBus.CHANNEL));
         return container;
     }
 }

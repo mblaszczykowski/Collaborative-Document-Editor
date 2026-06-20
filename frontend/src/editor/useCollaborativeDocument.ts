@@ -62,6 +62,8 @@ export interface CollaborativeDocument {
   connectionState: ConnectionState
   pendingCount: number
   presence: PresenceEntry[]
+  /** Whether the participant list covers the whole cluster (CP26). */
+  presenceComplete: boolean
   remoteCursors: RemoteCursor[]
   network: NetworkConditions
 
@@ -113,6 +115,8 @@ export function useCollaborativeDocument(
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
   const [pendingCount, setPendingCount] = useState(0)
   const [presence, setPresence] = useState<PresenceEntry[]>([])
+  /** Whether the participant list covers the whole cluster (CP26). */
+  const [presenceComplete, setPresenceComplete] = useState(true)
   const [characters, setCharacters] = useState(0)
   const [formatting, setFormatting] = useState<Span[]>([])
   const [recovery, setRecovery] = useState<{ title: string; id: string } | null>(null)
@@ -249,7 +253,12 @@ export function useCollaborativeDocument(
           applyRemote.current()
           refreshStats()
         },
-        onPresence: setPresence,
+        onPresence: (entries, complete) => {
+          setPresence(entries)
+          // False only when the server could not reach the cluster channel (CP26). The
+          // interface says so rather than showing a short list as if it were the whole one.
+          setPresenceComplete(complete)
+        },
         onStateChange: (nextState, pending) => {
           setConnectionState(nextState)
           setPendingCount(pending)
@@ -481,6 +490,7 @@ export function useCollaborativeDocument(
     connectionState,
     pendingCount,
     presence,
+    presenceComplete,
     remoteCursors,
     network,
     characters,

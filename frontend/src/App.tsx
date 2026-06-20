@@ -13,25 +13,25 @@ import { SuggestionsPanel } from './ui/SuggestionsPanel'
 import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
 
 /**
- * Powłoka aplikacji.
+ * The application shell.
  *
- * **Interfejs pokazuje wyłącznie rzeczy, które są funkcją produktu.** Symulator sieci
- * i podgląd stanu CRDT — dwa narzędzia bezcenne przy pracy nad tym projektem — są schowane
- * za parametrem `?debug=1` i nie widzi ich nikt, kto po prostu otworzył edytor
- * (ADR-0007, decyzja zrewidowana).
+ * **The interface shows only things that are a feature of the product.** The network simulator and
+ * the CRDT state view — two tools that were invaluable while working on this project — are hidden
+ * behind the `?debug=1` parameter and are seen by nobody who simply opened the editor (ADR-0007, a
+ * revised decision).
  *
- * Powód: użytkownik nie ma pojęcia, czym jest tombstone ani version vector, a suwak
- * „utrata pakietów" nad dokumentem sprawia, że produkt wygląda na stanowisko laboratoryjne.
- * Diagnostyka nie znika — przenosi się tam, gdzie jej miejsce.
+ * The reason: a user has no idea what a tombstone or a version vector is, and a "packet loss"
+ * slider above the document makes the product look like a laboratory rig. The diagnostics do not
+ * disappear — they move to where they belong.
  */
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(loadSession)
 
-  // Token musi być ustawiony ZANIM padnie pierwsze żądanie REST — również przy sesji
-  // odtworzonej z sessionStorage, gdzie nie ma logowania, przy którym można by go ustawić.
-  // useState z funkcją inicjalizującą wykonuje się przed pierwszym renderem, więc
-  // ustawienie tutaj wyprzedza useEffect w komponentach potomnych.
+  // The token has to be set BEFORE the first REST request goes out — including for a session
+  // restored from sessionStorage, where there is no login at which to set it. useState with an
+  // initialiser function runs before the first render, so setting it here precedes any useEffect in
+  // child components.
   const [, setTokenReady] = useState(() => {
     setAuthToken(session?.token ?? null)
     return true
@@ -68,15 +68,15 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
           <span className="brand-mark" />
           Inkline
         </div>
-        <p>Edytor dokumentów do pracy zespołowej w czasie rzeczywistym.</p>
+        <p>A document editor for real-time teamwork.</p>
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          placeholder="Twoje imię"
+          placeholder="Your name"
           autoFocus
         />
         <button type="submit" disabled={busy}>
-          {busy ? 'Łączę…' : 'Rozpocznij'}
+          {busy ? 'Connecting…' : 'Get started'}
         </button>
       </form>
     </div>
@@ -144,12 +144,11 @@ function Workspace({ session }: { session: Session }) {
   }, [refresh])
 
   /**
-   * Adres jest źródłem prawdy o tym, co jest otwarte.
+   * The address is the source of truth about what is open.
    *
-   * `pushState`, nie `replaceState`: przycisk „wstecz" przeglądarki ma wracać
-   * do poprzedniego dokumentu. Przy `replaceState` historia przeglądarki nie zawierała
-   * przełączeń, więc „wstecz" wyrzucało użytkownika z aplikacji — zachowanie, którego
-   * nikt się nie spodziewa po liście dokumentów.
+   * `pushState`, not `replaceState`: the browser's back button should return to the previous
+   * document. With `replaceState` the browser history contained no switches, so "back" threw the
+   * user out of the application — behaviour nobody expects from a document list.
    */
   const select = useCallback((id: string) => {
     setOpenId(id)
@@ -158,8 +157,8 @@ function Workspace({ session }: { session: Session }) {
     window.history.pushState({ doc: id }, '', url)
   }, [])
 
-  // Nawigacja przeglądarki (wstecz/dalej) musi przełączać dokument, inaczej adres
-  // i zawartość rozjeżdżają się po pierwszym kliknięciu „wstecz".
+  // Browser navigation (back/forward) has to switch documents, otherwise the address and the
+  // content diverge after the first click of "back".
   useEffect(() => {
     const onPop = () => {
       const requested = new URLSearchParams(window.location.search).get('doc')
@@ -187,7 +186,7 @@ function Workspace({ session }: { session: Session }) {
     />
   ) : (
     <div className="app">
-      <div className="loading">Ładowanie…</div>
+      <div className="loading">Loading…</div>
     </div>
   )
 }
@@ -198,7 +197,7 @@ function DocumentWorkspace(props: {
   documents: DocumentSummary[]
   onSelect: (id: string) => void
   onCreate: () => void
-  /** Lista wymaga odświeżenia — po zmianie nazwy, usunięciu albo przywróceniu. */
+  /** The list needs refreshing — after a rename, a delete or a restore. */
   onRefresh: () => void
 }) {
   const { session, documentId } = props
@@ -261,13 +260,21 @@ function DocumentWorkspace(props: {
               </span>
             ))}
           </div>
+          {!doc.presenceComplete && (
+            // The list may be missing people connected to another instance (CP26). Said out
+            // loud rather than hidden: a participant list that is quietly short looks exactly
+            // like a document nobody else is in, and that is a worse lie than an honest doubt.
+            <span className="role-badge" title="This instance cannot reach the cluster channel">
+              List may be incomplete
+            </span>
+          )}
           {!doc.canWrite && (
-            <span className="role-badge" title="Twoja rola w tym dokumencie">
-              {doc.canComment ? 'Możesz komentować' : 'Tylko do odczytu'}
+            <span className="role-badge" title="Your role in this document">
+              {doc.canComment ? 'You can comment' : 'Read-only'}
             </span>
           )}
           <button className="btn-outline" onClick={share}>
-            {shared ? 'Skopiowano' : 'Udostępnij'}
+            {shared ? 'Copied' : 'Share'}
           </button>
         </div>
       </header>
@@ -298,8 +305,8 @@ function DocumentWorkspace(props: {
             <span className="tb-divider" />
             <button
               className={`tb-icon${panel === 'comments' ? ' active' : ''}`}
-              title="Komentarze"
-              aria-label="Komentarze"
+              title="Comments"
+              aria-label="Comments"
               onClick={() => setPanel((current) => (current === 'comments' ? 'history' : 'comments'))}
             >
               💬
@@ -309,8 +316,8 @@ function DocumentWorkspace(props: {
                 do even when you could simply make it. */}
             <button
               className={`tb-icon${panel === 'suggestions' ? ' active' : ''}`}
-              title="Sugestie"
-              aria-label="Sugestie"
+              title="Suggestions"
+              aria-label="Suggestions"
               disabled={!doc.canComment}
               onClick={() =>
                 setPanel((current) => (current === 'suggestions' ? 'history' : 'suggestions'))
@@ -319,14 +326,14 @@ function DocumentWorkspace(props: {
               ✍️
             </button>
             <span className="tb-divider" />
-            <button className="tb-icon" onClick={doc.runUndo} title="Cofnij (⌘Z)" aria-label="Cofnij"
+            <button className="tb-icon" onClick={doc.runUndo} title="Undo (⌘Z)" aria-label="Undo"
               disabled={!doc.canWrite}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M3 10h10a4 4 0 0 1 0 8H8" />
                 <path d="M7 6l-4 4 4 4" />
               </svg>
             </button>
-            <button className="tb-icon" onClick={doc.runRedo} title="Ponów (⇧⌘Z)" aria-label="Ponów"
+            <button className="tb-icon" onClick={doc.runRedo} title="Redo (⇧⌘Z)" aria-label="Redo"
               disabled={!doc.canWrite}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21 10H11a4 4 0 0 0 0 8h5" />
@@ -339,21 +346,20 @@ function DocumentWorkspace(props: {
             <div className="page">
               <h1>{doc.title}</h1>
               <div className="meta-line">
-                {others.length === 0 ? 'Tylko Ty' : `${peopleLabel(others.length + 1)} w dokumencie`}
+                {others.length === 0 ? 'Only you' : `${peopleLabel(others.length + 1)} in the document`}
               </div>
               {doc.recovery !== null && (
                 <div className="recovery-banner">
-                  <strong>Twoich zmian nie dało się scalić.</strong> Zbyt długo pracowałeś
-                  offline i miejsce, do którego pisałeś, przestało istnieć. Twoja wersja
-                  została zapisana jako <a href={`?doc=${doc.recovery.id}`}>{doc.recovery.title}</a>.
-                  Nic nie przepadło.
+                  <strong>Your changes could not be merged.</strong> You were offline for too
+                  long and the place you were writing into no longer exists. Your version has been
+                  saved as <a href={`?doc=${doc.recovery.id}`}>{doc.recovery.title}</a>. Nothing
+                  was lost.
                 </div>
               )}
               {doc.unavailable && (
                 <div className="unavailable-banner">
-                  <strong>Nie możemy otworzyć tego dokumentu.</strong> Mógł zostać usunięty
-                  albo nie masz do niego dostępu — poproś osobę, która przysłała Ci link,
-                  żeby udostępniła go ponownie.
+                  <strong>We cannot open this document.</strong> It may have been deleted, or you
+                  may not have access to it — ask whoever sent you the link to share it again.
                 </div>
               )}
               {doc.ready && doc.model && doc.undo && (
@@ -378,7 +384,7 @@ function DocumentWorkspace(props: {
           <footer className="statusbar">
             <span>{wordCount(doc.characters)}</span>
             <span className="sep" />
-            <span data-testid="char-count">{doc.characters} znaków</span>
+            <span data-testid="char-count">{doc.characters} characters</span>
             <div className="statusbar-right">
               <span>{others.length + 1} online</span>
             </div>
@@ -417,20 +423,20 @@ function DocumentWorkspace(props: {
 }
 
 /**
- * Wskaźnik zapisu — jedyna informacja o stanie połączenia, jaką widzi użytkownik.
+ * The save indicator — the only information about the connection state a user sees.
  *
- * Świadomie w języku produktu („Zapisano", „Praca offline"), a nie protokołu
- * („resynchronizacja", „N operacji w buforze"). Użytkownik ma wiedzieć, czy jego praca
- * jest bezpieczna — nie jak działa transport.
+ * Deliberately in the product's language ("Saved", "Working offline") rather than the protocol's
+ * ("resynchronising", "N operations buffered"). The user should know whether their work is safe —
+ * not how the transport works.
  */
 
 /**
- * Przyciski formatowania.
+ * The formatting buttons.
  *
- * Działają na AKTUALNYM ZAZNACZENIU odczytanym z DOM-u, a nie ze stanu Reacta. Powód jest
- * praktyczny: kliknięcie przycisku odbiera fokus edytorowi, więc gdyby zaznaczenie było
- * trzymane w stanie i aktualizowane zdarzeniem, w chwili kliknięcia byłoby już puste.
- * `onMouseDown` z `preventDefault` zatrzymuje utratę fokusu, zanim do niej dojdzie.
+ * They act on the CURRENT SELECTION read from the DOM, not from React state. The reason is
+ * practical: clicking a button takes focus away from the editor, so if the selection were held in
+ * state and updated by an event, it would already be empty by the time of the click. `onMouseDown`
+ * with `preventDefault` stops the focus loss before it happens.
  */
 function FormatButtons(
   { onToggle, disabled }:
@@ -442,8 +448,9 @@ function FormatButtons(
     const editor = window.document.querySelector('.cm-content')
     if (editor === null) return
 
-    // Offsety liczone względem treści edytora, nie węzła DOM — CodeMirror dzieli tekst
-    // na wiele elementów, więc offset w węźle nie mówi nic o pozycji w dokumencie.
+    // Offsets are computed relative to the editor's content, not a DOM node — CodeMirror splits
+    // the text across many elements, so an offset within a node says nothing about the position in
+    // the document.
     const range = selection.getRangeAt(0)
     const before = range.cloneRange()
     before.selectNodeContents(editor)
@@ -454,10 +461,10 @@ function FormatButtons(
   }
 
   const buttons: { type: string; label: string; title: string; render: React.ReactNode }[] = [
-    { type: 'bold', label: 'Pogrubienie', title: 'Pogrubienie (⌘B)', render: <strong>B</strong> },
-    { type: 'italic', label: 'Kursywa', title: 'Kursywa (⌘I)', render: <em>I</em> },
-    { type: 'underline', label: 'Podkreślenie', title: 'Podkreślenie (⌘U)', render: <u>U</u> },
-    { type: 'code', label: 'Kod', title: 'Kod', render: <code>{'<>'}</code> },
+    { type: 'bold', label: 'Bold', title: 'Bold (⌘B)', render: <strong>B</strong> },
+    { type: 'italic', label: 'Italic', title: 'Italic (⌘I)', render: <em>I</em> },
+    { type: 'underline', label: 'Underline', title: 'Underline (⌘U)', render: <u>U</u> },
+    { type: 'code', label: 'Code', title: 'Code', render: <code>{'<>'}</code> },
     { type: 'link', label: 'Link', title: 'Link', render: <span>🔗</span> },
   ]
 

@@ -46,7 +46,7 @@ export interface ConnectionHandlers {
   onRemoteOps: (ops: Op[]) => void
   /** The replica's current version vector — reported to the server for GC (ADR-0005). */
   versionVector: () => Map<number, number>
-  onPresence: (entries: PresenceEntry[]) => void
+  onPresence: (entries: PresenceEntry[], complete: boolean) => void
   onStateChange: (state: ConnectionState, pendingCount: number) => void
   onError: (code: string, message: string) => void
   /**
@@ -413,7 +413,11 @@ export class DocumentConnection {
    * at all.
    */
   private onPresence(message: IMessage): void {
-    const update = JSON.parse(message.body) as { full: boolean; entries: PresenceEntry[] }
+    const update = JSON.parse(message.body) as {
+      full: boolean
+      entries: PresenceEntry[]
+      complete?: boolean
+    }
 
     if (update.full) {
       this.presence.clear()
@@ -421,7 +425,11 @@ export class DocumentConnection {
     for (const entry of update.entries) {
       this.presence.set(entry.replicaId, entry)
     }
-    this.handlers.onPresence([...this.presence.values()])
+    // `complete === false` means the server could not reach the cluster channel, so people
+    // connected to other instances may be missing from this list (CP26). Defaulting to true
+    // keeps an older server working — and defaulting the other way would put a warning on every
+    // single-instance deployment, where the list is always complete.
+    this.handlers.onPresence([...this.presence.values()], update.complete ?? true)
   }
 
   private parseOps(message: IMessage): Op[] {

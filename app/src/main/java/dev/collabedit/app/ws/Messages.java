@@ -15,7 +15,7 @@ import java.util.Map;
  *
  *   server -> clients  /topic/doc/{id}/ops      {@link OpBroadcast}
  *                      /topic/doc/{id}/acks     {@link OpAck}
- *                      /topic/doc/{id}/presence {@link PresenceBroadcast}
+ *                      /topic/doc/{id}/presence {@link PresenceUpdate}
  *                      /topic/doc/{id}/access   {@link AccessChanged}
  *   server -> client   /user/queue/sync         {@link SyncResponse}
  *                      /user/queue/errors       {@link ErrorMessage}
@@ -131,11 +131,19 @@ public final class Messages {
      * we added a third message type. At that frequency the full list is cheaper than an extra type
      * in the protocol.
      *
-     * @param full    {@code true} -> replace the whole list; {@code false} -> merge by
-     *                {@code replicaId}
-     * @param entries the participants: all of them when {@code full}, one when a delta
+     * <p>Since CP26 the list spans instances: what arrives here is this instance's participants
+     * merged with what the other instances last announced (PresenceBus).
+     *
+     * @param full     {@code true} -> replace the whole list; {@code false} -> merge by
+     *                 {@code replicaId}
+     * @param entries  the participants: all of them when {@code full}, one when a delta
+     * @param complete {@code false} when this instance could not reach the cluster channel, so the
+     *                 list may be missing people connected elsewhere (CP26). The one place in this
+     *                 system where best-effort is shown to the user instead of being hidden behind
+     *                 convergence — a participant list that is quietly short looks exactly like a
+     *                 document nobody else is in
      */
-    public record PresenceUpdate(boolean full, List<PresenceBroadcast> entries) {
+    public record PresenceUpdate(boolean full, List<PresenceBroadcast> entries, boolean complete) {
     }
 
     /**
