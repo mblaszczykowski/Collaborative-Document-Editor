@@ -701,7 +701,30 @@ with what was confirmed along the way and what was not — a section about the l
 solution loses its point if it shows only the limits that still stand. Full reckoning:
 [PLAN-v2](docs/PLAN-v2.md), [PLAN-v3](docs/PLAN-v3.md).
 
-**Algorithm**
+### The five worth reading, if you read none of the rest
+
+There are around thirty entries below, and that is a problem this section created for itself:
+past a certain length, honesty about limits starts reading as a list of things that do not work.
+Nothing has been removed or shortened — the groups are folded, and these five are the ones I
+would point at.
+
+1. **[Two implementations of one algorithm](#two-implementations)** — Java on the server,
+   TypeScript in the browser, because the client edits offline. The conformance corpus stops them
+   diverging silently; nothing stops the work being done twice, and CP13 and CP18 each paid it.
+2. **[The client replays the whole operation log on open](#log-replay)** — the server has used
+   snapshots internally since CP5 and still sends the log. The one item here a real user feels.
+3. **[Authorization reads the frame body](#authorization-body)** — the `commenter` role needs to
+   tell a comment mark from a formatting mark, so the interceptor parses the payload. An
+   authorization layer coupled to a data format.
+4. **[Undo does not cover formatting](#undo-limits)** — Ctrl+Z after Ctrl+B undoes the previous
+   *text* change. Predictable, surprising, and the same problem as CRDT-aware undo.
+5. **[The performance numbers come from a single process](#single-process)** — clients, server,
+   Postgres and Redis share ten cores and network latency is zero. They describe the cost of the
+   system, not the experience of a user over the internet.
+
+<details open>
+<summary><strong>Algorithm</strong></summary>
+
 - **Fugue instead of RGA.** RGA has an interleaving anomaly Fugue does not have. Still rejected
   on budget — but the entry used to end there, and "documented anomaly" was the one claim in this
   repository carrying an adjective where everything else carries a number. It now carries a
@@ -714,7 +737,7 @@ solution loses its point if it shows only the limits that still stand. Full reck
   while keeping them in the structure. A tombstone in the middle of the text is still the next
   block's origin and still cannot be removed — CP18 makes that cost a fixed handful of bytes
   instead of the text it used to hold.
-- **Two implementations of one algorithm** (Java + TypeScript) is a debt: every change costs
+- <a id="two-implementations"></a>**Two implementations of one algorithm** (Java + TypeScript) is a debt: every change costs
   twice. The conformance-vector corpus protects against silent divergence, but not against the
   cost. In production: one implementation compiled to WebAssembly.
   CP18 was a counterexample worth recording: the change cost nothing on the client, because the
@@ -724,7 +747,10 @@ solution loses its point if it shows only the limits that still stand. Full reck
   I have not made the equivalent measurement in the browser, so I did not optimise blind. The
   port is mechanical.
 
-**Product scope**
+</details>
+
+<details>
+<summary><strong>Product scope</strong> — what the editor deliberately does not do</summary>
 - **Diagnostics live behind `?debug=1`.** The network simulator and the CRDT state view were
   visible in the interface for a while; that was a mistake about the audience
   ([ADR-0007](docs/adr/0007-zakres-ui.md), the revision section). A user should see a product,
@@ -740,14 +766,17 @@ solution loses its point if it shows only the limits that still stand. Full reck
   offline (the buffer covers CRDT operations, not REST), the panel refreshes by polling rather
   than by an event, there are no notifications or mentions, and revoking permissions takes effect
   within the 5 s cache window.
-- **Undo works only within a session and does not cover formatting.** `UndoManager` undoes your
+- <a id="undo-limits"></a>**Undo works only within a session and does not cover formatting.** `UndoManager` undoes your
   own insertions and deletions and merges continuous typing into one step — but the stack lives
   in the tab's memory and disappears on reload, and mark operations never enter it at all.
   Ctrl+Z after Ctrl+B therefore undoes **the previous text change**, not the bolding. Predictable
   but surprising; mark-aware undo requires extending the stack with operations inverse to
   `AddMark`/`RemoveMark`, which is the same problem as CRDT-aware undo.
 
-**Infrastructure and operations**
+</details>
+
+<details>
+<summary><strong>Infrastructure and operations</strong> — auth, storage, deployment</summary>
 - **Password-less authentication**, an HMAC-signed token, with no revocation and no key rotation.
   A token revoked mid-session does not tear down the connection, because we check it once, at
   `CONNECT`.
@@ -761,7 +790,7 @@ solution loses its point if it shows only the limits that still stand. Full reck
   and compaction.
 - **Presence is instance-local** — a client connected to another instance does not appear in the
   list of people present. Requires a separate channel and entry expiry.
-- **The client replays the whole log when opening a document.** The server uses snapshots
+- <a id="log-replay"></a>**The client replays the whole log when opening a document.** The server uses snapshots
   internally; the client should receive a serialised CRDT snapshot rather than the full set of
   operations.
 - ~~**No rate limiting**~~ **— there is (CP12), and it taught me something I had not assumed.**
@@ -783,16 +812,21 @@ solution loses its point if it shows only the limits that still stand. Full reck
   below said seven days; the code gave minutes. Now implemented as documented, and pinned by
   `GcWindowTest`.
 
-**Open, unresolved**
+</details>
+
+<details>
+<summary><strong>Open, unresolved</strong> — the ones still standing</summary>
 - **The resynchronisation chunk limit is counted in operations, not bytes**
   (`SYNC_CHUNK = 300`). That assumes an operation weighs ~100 B — which stops being true when
   someone pastes a large fragment of text, because that is **one** operation of tens of
   kilobytes. The broadcast path moved to a byte budget in CP10; the resynchronisation path did
   not. A known debt, not an oversight.
 - ~~**Mark resolution grows superlinearly with their number — measured.**~~
-  **Done (CP20): a sweep instead of `O(m²)`.** At 6400 marks **62.1 ms → 4.72 ms**, and growth
-  per fourfold increase in marks dropped from ×14.9 to ×3.2. The limit moved from hundreds to
-  thousands. The remaining limit is somewhere other than I assumed: below ~1000 marks the
+  **Done (CP20): a sweep instead of `O(m²)`.** At 6400 marks **62.1 ms → 4.72 ms**. The limit
+  moved from hundreds to thousands. (This entry used to add "and growth per fourfold increase in
+  marks dropped from ×14.9 to ×3.2". That comparison is gone: the series it came from changed
+  geometry at its last point, so the ratios were the measurement moving rather than the
+  complexity — [the correction](#a-row-of-that-table-was-measuring-two-things-at-once).) The remaining limit is somewhere other than I assumed: below ~1000 marks the
   dominant cost is **resolving anchors** through the block index, not picking a winner, so the
   fix buys nothing there. An interval tree recomputed incrementally would still help, but only
   after that cost.
@@ -820,16 +854,18 @@ solution loses its point if it shows only the limits that still stand. Full reck
   What it does **not** give, and this is worth stating plainly: nothing checks whether the
   declared capability is the **right** one. The system now guarantees a decision was made, not
   that it was correct.
-- **Authorization looks inside the frame body.** The `commenter` role requires telling a comment
+- <a id="authorization-body"></a>**Authorization looks inside the frame body.** The `commenter` role requires telling a comment
   mark from a formatting mark, and that means parsing the payload in the interceptor. We do it
   **only** for that one role, but it is an authorization layer coupled to a data format — a
   change to the operation format could silently change permissions. In production: the operation
   type in a STOMP header, not in the body.
-- **The performance numbers still come from a single process.** Clients, server, Postgres and
+- <a id="single-process"></a>**The performance numbers still come from a single process.** Clients, server, Postgres and
   Redis share ten cores, so the harness is itself a serious CPU consumer and network latency is
   zero. The numbers describe the cost of the system, not the experience of a user over the
   internet — for that they would have to be increased by the link's RTT and the rig split across
   separate machines.
+
+</details>
 
 ---
 
