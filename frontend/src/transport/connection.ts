@@ -7,21 +7,21 @@ import { offlineStore } from './offlineStore'
 import { NetworkSimulator } from './simulator'
 
 /**
- * Połączenie z serwerem: STOMP nad WebSocketem (ADR-0002).
+ * The connection to the server: STOMP over WebSocket (ADR-0002).
  *
- * Trzy rzeczy, za które ta klasa odpowiada i które warto nazwać:
+ * Three things this class is responsible for, worth naming:
  *
- * 1. **Bufor niezapotwierdzonych operacji.** Operacja opuszcza bufor dopiero po odebraniu
- *    potwierdzenia z `serverSeq`, czyli po TRWAŁYM ZAPISIE, a nie po rozesłaniu. Gdyby
- *    zwalniać ją wcześniej, pad instancji między rozesłaniem a zapisem zostawiłby operację,
- *    którą inni widzą, a której nikt nie potrafi odtworzyć (ADR-0003).
+ * 1. **The buffer of unacknowledged operations.** An operation leaves the buffer only once an
+ *    acknowledgement carrying `serverSeq` arrives, that is, after a DURABLE WRITE and not after the
+ *    broadcast. Releasing it earlier would mean an instance crash between broadcast and write left
+ *    an operation others can see and nobody can reproduce (ADR-0003).
  *
- * 2. **Kursor resynchronizacji.** `lastServerSeq` mówi, dokąd klient na pewno doszedł.
- *    Po ponownym połączeniu prosi o wszystko powyżej. Ostrożność jest tania: dosłane
- *    duplikaty są nieszkodliwe (idempotencja z ADR-0001), a zgubiona operacja nie.
+ * 2. **The resynchronisation cursor.** `lastServerSeq` says how far the client definitely got.
+ *    After reconnecting it asks for everything above that. Caution is cheap: duplicates sent back
+ *    are harmless (the idempotence from ADR-0001), a lost operation is not.
  *
- * 3. **Wpięcie symulatora sieci** na ścieżce wychodzącej, żeby demo i testy chaosu
- *    korzystały z tego samego mechanizmu.
+ * 3. **Wiring in the network simulator** on the outbound path, so that the demo and the chaos tests
+ *    use the same mechanism.
  */
 
 export type ConnectionState = 'connecting' | 'online' | 'offline' | 'resyncing'
@@ -39,12 +39,12 @@ export interface PresenceEntry {
 }
 
 export interface ConnectionHandlers {
-  /** Identyfikator repliki nadany przez serwer — przychodzi zanim padnie pierwsza operacja. */
+  /** The replica identifier assigned by the server — it arrives before the first operation. */
   onSession: (replicaId: number) => void
-  /** Czy replika ma już operację o podanym identyfikatorze — do wykrywania luk. */
+  /** Whether the replica already holds the operation with the given identifier — for gap detection. */
   hasOperation: (replicaId: number, lamport: number) => boolean
   onRemoteOps: (ops: Op[]) => void
-  /** Aktualny version vector repliki — raportowany serwerowi na potrzeby GC (ADR-0005). */
+  /** The replica's current version vector — reported to the server for GC (ADR-0005). */
   versionVector: () => Map<number, number>
   onPresence: (entries: PresenceEntry[]) => void
   onStateChange: (state: ConnectionState, pendingCount: number) => void
@@ -66,10 +66,10 @@ export class DocumentConnection {
   private client: Client | null = null
   private subscriptions: StompSubscription[] = []
 
-  /** Operacje wysłane, ale jeszcze niepotwierdzone zapisem. Klucz: replicaId@lamport. */
+  /** Operations sent but not yet acknowledged as written. Key: replicaId@lamport. */
   private readonly unacknowledged = new Map<string, Op>()
   private lastServerSeq = 0
-  /** Uczestnicy wg replicaId — scalane z delt, patrz onPresence. */
+  /** Participants by replicaId — merged from deltas, see onPresence. */
   private readonly presence = new Map<number, PresenceEntry>()
   private state: ConnectionState = 'connecting'
   private reconnectAttempt = 0
@@ -77,9 +77,9 @@ export class DocumentConnection {
 
   private readonly handleBrowserOffline = () => this.setState('offline')
   private readonly handleBrowserOnline = () => {
-    // Nie ustawiamy tu „online" — połączenie STOMP musi się dopiero podnieść.
-    // Deklarowanie gotowości przed faktycznym połączeniem byłoby tym samym błędem
-    // co pokazywanie „Zapisano" po utracie sieci, tylko w drugą stronę.
+    // We do not set "online" here — the STOMP connection still has to come up. Declaring
+    // readiness before actually connecting would be the same mistake as showing "Saved" after
+    // losing the network, only in the other direction.
     if (this.state === 'offline') {
       this.setState('connecting')
     }
@@ -105,10 +105,10 @@ export class DocumentConnection {
   }
 
   /**
-   * Wczytuje operacje niepotwierdzone z poprzedniej sesji przeglądarki.
+   * Loads the unacknowledged operations from the previous browser session.
    *
-   * Wywoływane przed połączeniem: operacje z zamkniętej karty muszą trafić do bufora,
-   * zanim ruszy resynchronizacja, inaczej pierwszy przebieg ich nie wyśle.
+   * Called before connecting: operations from a closed tab have to reach the buffer before
+   * resynchronisation starts, otherwise the first pass will not send them.
    */
   async restoreOfflineBuffer(): Promise<Op[]> {
     const stored = await offlineStore.pending(this.documentId)
@@ -120,10 +120,10 @@ export class DocumentConnection {
   }
 
   connect(): void {
-    // Przeglądarka wie o utracie łączności NATYCHMIAST, a wygaśnięcie heartbeatu zajmuje
-    // kilkanaście sekund (ADR-0002: 10 s interwału, 2,5× tolerancji). Przez ten czas
-    // wskaźnik pokazywałby „Zapisano", mimo że nic już nie dociera do serwera — czyli
-    // kłamałby dokładnie w tej jednej sytuacji, w której użytkownik musi wiedzieć prawdę.
+    // The browser knows about a lost connection IMMEDIATELY, whereas the heartbeat takes a dozen
+    // or so seconds to expire (ADR-0002: a 10 s interval, 2.5× tolerance). For that whole time the
+    // indicator would show "Saved" even though nothing is reaching the server any more — that is,
+    // it would lie in the one situation where the user has to know the truth.
     window.addEventListener('offline', this.handleBrowserOffline)
     window.addEventListener('online', this.handleBrowserOnline)
 
@@ -134,14 +134,14 @@ export class DocumentConnection {
       brokerURL: WS_URL,
       connectHeaders: { token: this.token },
 
-      // Wartości z ADR-0002. Heartbeat 10 s jest wyraźnie krótszy niż typowy idle timeout
-      // pośredników (nginx 60 s), więc połączenie nie zostanie zerwane jako bezczynne.
+      // Values from ADR-0002. A 10 s heartbeat is comfortably shorter than intermediaries' typical
+      // idle timeout (nginx 60 s), so the connection will not be torn down as idle.
       heartbeatIncoming: 10_000,
       heartbeatOutgoing: 10_000,
 
-      // Odstęp między próbami wyliczamy sami (patrz nextReconnectDelay). Stały krótki
-      // odstęp przy awarii serwera zamieniłby wszystkich klientów w źródło obciążenia
-      // dokładnie wtedy, gdy serwer najmniej może je znieść.
+      // We compute the interval between attempts ourselves (see nextReconnectDelay). A fixed short
+      // interval during a server outage would turn every client into a source of load exactly when
+      // the server can least bear it.
       reconnectDelay: 1000,
       beforeConnect: () => {
         client.reconnectDelay = this.nextReconnectDelay()
@@ -149,16 +149,15 @@ export class DocumentConnection {
 
       onConnect: () => {
         this.reconnectAttempt = 0
-        // Nowe połączenie zaczyna z czystym licznikiem odmów. Bez tego klient, który
-        // wcześniej zdążył się rozpędzić do maksymalnego odstępu, wracałby po rozłączeniu
-        // z sekundowym opóźnieniem pierwszego ponowienia — karany za sytuację, która
-        // już nie istnieje.
+        // A new connection starts with a clean refusal counter. Without this, a client that had
+        // previously wound up to the maximum interval would come back from a disconnect with a
+        // one-second delay on its first retry — punished for a situation that no longer exists.
         this.throttleRounds = 0
         this.onConnected()
       },
       onWebSocketClose: () => this.setState('offline'),
       onStompError: (frame) =>
-        this.handlers.onError('STOMP_ERROR', frame.headers['message'] ?? 'błąd protokołu'),
+        this.handlers.onError('STOMP_ERROR', frame.headers['message'] ?? 'protocol error'),
     })
 
     this.client = client
@@ -193,10 +192,10 @@ export class DocumentConnection {
           retryAfterMillis?: number
         }
         if (error.code === 'RATE_LIMITED') {
-          // Serwer odrzucił operację z powodu tempa. Nie jest to błąd wymagający uwagi
-          // użytkownika — operacja czeka w buforze niepotwierdzonych i wystarczy ją ponowić
-          // po chwili. BEZ tego ponowienia sygnał byłby bezużyteczny, a operacja przepadłaby
-          // po cichu: dokładnie to wykrył harness w CP15.
+          // The server refused the operation on rate. This is not an error needing the user's
+          // attention — the operation is waiting in the unacknowledged buffer and only has to be
+          // retried shortly. WITHOUT that retry the signal would be useless and the operation would
+          // be lost silently: exactly what the harness found in CP15.
           this.scheduleRetryAfterThrottling(error.retryAfterMillis)
           return
         }
@@ -207,10 +206,10 @@ export class DocumentConnection {
     client.publish({ destination: `/app/doc/${this.documentId}/join`, body: '{}' })
     this.resynchronize()
 
-    // Okresowy raport postępu. Bez niego serwer nie ma skąd wiedzieć, dokąd doszła ta
-    // replika, a stableVersion — a więc i GC tombstone'ów — stoi w miejscu (ADR-0005).
-    // 15 s jest krótsze niż 60-sekundowy próg uznania repliki za niereagującą, więc
-    // aktywny klient nigdy nie zostanie wykluczony z rachunku przez samo milczenie.
+    // The periodic progress report. Without it the server has no way of knowing how far this
+    // replica has got, and stableVersion — and therefore tombstone GC — stands still (ADR-0005).
+    // 15 s is shorter than the 60-second threshold for treating a replica as unresponsive, so an
+    // active client is never excluded from the computation by silence alone.
     this.progressTimer = window.setInterval(() => this.reportProgress(), 15_000)
   }
 
@@ -218,8 +217,8 @@ export class DocumentConnection {
     if (!this.client?.connected) return
     if (this.gapDetected) {
       this.gapDetected = false
-      // Prosimy od zera: duplikaty są nieszkodliwe (idempotencja z ADR-0001), a wyliczanie
-      // dokładnego punktu startu wymagałoby wiedzy, której właśnie nam brakuje.
+      // We ask from zero: duplicates are harmless (the idempotence from ADR-0001), and computing
+      // the exact starting point would need the very knowledge we are missing.
       this.setState('resyncing')
       this.client.publish({
         destination: `/app/doc/${this.documentId}/sync`,
@@ -236,77 +235,75 @@ export class DocumentConnection {
   }
 
   /**
-   * Odstęp do kolejnej próby połączenia: wykładniczy, z losowym rozrzutem.
+   * The interval before the next connection attempt: exponential, with random spread.
    *
-   * Wykładniczy, bo awaria serwera zwykle trwa dłużej niż sekundę i dobijanie się co
-   * sekundę tylko ją przedłuża. Z rozrzutem, bo bez niego wszyscy klienci rozłączeni
-   * tym samym zdarzeniem wracają DOKŁADNIE w tej samej chwili — i sami wywołują drugą
-   * awarię tuż po tym, jak serwer wstał. Rozrzut ±30% rozkłada ich w czasie.
+   * Exponential, because a server outage usually lasts longer than a second and hammering every
+   * second only prolongs it. With spread, because without it every client disconnected by the same
+   * event comes back at EXACTLY the same instant — and causes a second outage right after the
+   * server came up. A ±30% spread distributes them in time.
    *
-   * Górna granica 30 s: powyżej użytkownik zdąży uznać, że aplikacja jest zepsuta,
-   * a zysk dla serwera jest już znikomy.
+   * An upper bound of 30 s: above that the user has time to conclude the application is broken, and
+   * the gain for the server is already negligible.
    */
   private throttleRetryTimer: number | null = null
 
   /**
-   * Zapas doliczany do czasu podanego przez serwer.
+   * The headroom added to the time the server advertises.
    *
-   * Zegary klienta i serwera nie są zsynchronizowane, a wiadro napełnia się w sposób ciągły —
-   * ponowienie milisekundę za wcześnie jest odrzucane po raz drugi. 25 ms jest niezauważalne
-   * dla użytkownika i z zapasem pokrywa jitter przejścia przez sieć.
+   * The client's and server's clocks are not synchronised and the bucket refills continuously — a
+   * retry a millisecond too early is refused a second time. 25 ms is imperceptible to the user and
+   * comfortably covers the jitter of a network hop.
    */
   private static readonly THROTTLE_GRACE_MS = 25
 
   /**
-   * Odstęp używany, gdy serwer nie podał własnego (starszy serwer bez `retryAfterMillis`).
+   * The interval used when the server advertised none (an older server without `retryAfterMillis`).
    */
   private static readonly THROTTLE_FALLBACK_MS = 1000
 
   /**
-   * Górna granica odstępu przy kolejnych odmowach pod rząd.
+   * The upper bound on the interval under consecutive refusals.
    *
-   * Sekunda — czyli dokładnie to, co robił kod sprzed CP20. Wykładnicze wydłużanie ma dojść
-   * do tej wartości, a nie ją przekroczyć: powyżej użytkownik zaczyna widzieć, że jego tekst
-   * nie dociera.
+   * One second — exactly what the pre-CP20 code did. The exponential backoff is meant to reach this
+   * value, not exceed it: above it the user starts to see that their text is not getting through.
    */
   private static readonly THROTTLE_MAX_MS = 1000
 
   /**
-   * Ile razy pod rząd serwer odmówił z powodu tempa.
+   * How many times in a row the server refused on rate.
    *
-   * Istnieje, bo sam czas podany przez serwer NIE WYSTARCZA, i zostało to zmierzone.
-   * Serwer podaje czas do JEDNEGO żetonu (~17 ms przy 60/s), a klient ma w buforze
-   * kilkadziesiąt operacji — więc ponowienie po tym czasie wysyła cały bufor, dostaje
-   * kolejną odmowę i powtarza to w kółko. Efekt zmierzony harnessem: p99 przy 50 klientach
-   * i dokumencie 100 tys. znaków wzrosło z 872 ms do 1352 ms, a liczba odmów z 1523 do 1614.
-   * Klient odpytywał w pętli, a żetonów od tego nie przybywało.
+   * It exists because the server's advertised time alone is NOT ENOUGH, and that was measured. The
+   * server advertises the time to ONE token (~17 ms at 60/s), while the client has dozens of
+   * operations buffered — so retrying after that time sends the whole buffer, gets another refusal,
+   * and repeats indefinitely. The effect measured by the harness: p99 at 50 clients on a
+   * 100k-character document rose from 872 ms to 1352 ms, and the refusal count from 1523 to 1614.
+   * The client was polling in a loop, and that produced no extra tokens.
    *
-   * Wydłużanie wykładnicze rozwiązuje to bez zgadywania po żadnej ze stron: pierwsze
-   * ponowienie idzie po czasie podanym przez serwer, a każda kolejna odmowa podwaja odstęp,
-   * aż tempo klienta samo zejdzie do tempa napełniania wiadra.
+   * Exponential backoff solves it without either side guessing: the first retry goes out after the
+   * time the server advertised, and every further refusal doubles the interval until the client's
+   * rate drops to the bucket's refill rate on its own.
    */
   private throttleRounds = 0
 
   /**
-   * Górna granica wykładnika.
+   * The upper bound on the exponent.
    *
-   * Nie jest to mikrooptymalizacja: bez niej długa sesja doprowadza {@code throttleRounds}
-   * do wartości, przy której {@code 2 ** rounds} to {@code Infinity}. Samo w sobie jeszcze
-   * nie szkodzi (minimum z {@code THROTTLE_MAX_MS} to naprawia), ale {@code 0 * Infinity}
-   * daje {@code NaN}, a {@code setTimeout(fn, NaN)} odpala NATYCHMIAST — czyli dokładnie
-   * pętlę odpytywania, przed którą to wydłużanie broni.
+   * Not a micro-optimisation: without it a long session drives `throttleRounds` to a value where
+   * `2 ** rounds` is `Infinity`. That alone is still harmless (the minimum with `THROTTLE_MAX_MS`
+   * fixes it), but `0 * Infinity` gives `NaN`, and `setTimeout(fn, NaN)` fires IMMEDIATELY — that
+   * is, exactly the polling loop this backoff exists to prevent.
    */
   private static readonly THROTTLE_MAX_ROUNDS = 8
 
   /**
-   * Ponawia operacje niepotwierdzone po odrzuceniu z powodu tempa.
+   * Retries the unacknowledged operations after a rate-limit refusal.
    *
-   * Jeden timer na całą serię, nie jeden na operację: przy przekroczeniu limitu odrzuconych
-   * ramek jest zwykle wiele naraz, a każda z osobna planująca własne ponowienie dałaby
-   * dokładnie ten zryw, który limit właśnie odrzucił.
+   * One timer per run of refusals, not one per operation: when the limit is exceeded, many frames
+   * are usually refused at once, and each scheduling its own retry would produce exactly the burst
+   * the limit just refused.
    *
-   * Czas oczekiwania pochodzi od SERWERA, bo tylko on go zna — wiadro żetonów potrafi
-   * powiedzieć co do milisekundy, kiedy będzie następny.
+   * The wait comes from the SERVER, because only it knows it — a token bucket can say to the
+   * millisecond when the next one arrives.
    */
   private scheduleRetryAfterThrottling(retryAfterMillis?: number): void {
     if (this.throttleRetryTimer !== null) return
@@ -339,12 +336,11 @@ export class DocumentConnection {
   }
 
   /**
-   * Prosi o operacje, których klient mógł nie widzieć, i retransmituje własne
-   * niepotwierdzone.
+   * Asks for operations the client may not have seen, and retransmits its own unacknowledged ones.
    *
-   * Kolejność jest istotna: najpierw pobieramy cudze, potem wysyłamy swoje. Odwrotna
-   * kolejność też dałaby poprawny wynik (scalanie jest przemienne), ale ta pozwala serwerowi
-   * odrzucić nasze operacje jako duplikaty, jeśli w rzeczywistości doszły przed rozłączeniem.
+   * The order matters: fetch other people's first, then send our own. The reverse order would also
+   * give a correct result (merging is commutative), but this one lets the server reject our
+   * operations as duplicates if they did in fact arrive before the disconnect.
    */
   private resynchronize(): void {
     const client = this.client
@@ -371,23 +367,22 @@ export class DocumentConnection {
 
   private onAcks(message: IMessage): void {
     const acks = JSON.parse(message.body) as { r: number; l: number; serverSeq: number }[]
-    // Cokolwiek przeszło — tempo znów jest w normie, więc wydłużanie odstępu zaczyna się
-    // od nowa. Bez tego jedna seria odmów spowalniałaby klienta do końca sesji.
+    // Something got through — the rate is back to normal, so the backoff starts over. Without
+    // this, one run of refusals would slow the client down for the rest of the session.
     if (acks.length > 0) {
       this.throttleRounds = 0
     }
     for (const ack of acks) {
-      // WYKRYWANIE LUK.
+      // GAP DETECTION.
       //
-      // Rozgłoszenie przez WebSocket potrafi zawieść przy błędzie transportu albo
-      // przepełnieniu bufora, a klient, który jest POŁĄCZONY, nie ma skąd o tym wiedzieć —
-      // resynchronizuje się tylko przy ponownym połączeniu, którego wtedy nie ma. Wykryte
-      // harnessem obciążeniowym: przy 25+ klientach serwer miał komplet operacji, a część
-      // klientów była trwale w tyle i nigdy nie nadrabiała.
+      // A WebSocket broadcast can fail on a transport error or a buffer overflow, and a client
+      // that is CONNECTED has no way of knowing — it only resynchronises on reconnect, which does
+      // not happen then. Found by the load harness: at 25+ clients the server held the complete
+      // set of operations while some clients were permanently behind and never caught up.
       //
-      // Potwierdzenie niesie TOŻSAMOŚĆ operacji, więc jej brak u nas jest jednoznacznym
-      // sygnałem, że rozgłoszenie do nas nie dotarło. Kursor `lastServerSeq` do niczego
-      // by się tu nie przydał — rośnie od potwierdzeń, więc byłby „na bieżąco" mimo luki.
+      // An acknowledgement carries the operation's IDENTITY, so not holding it is an unambiguous
+      // signal that the broadcast never reached us. The `lastServerSeq` cursor would be no help
+      // here — it advances on acknowledgements, so it would look "up to date" despite the gap.
       if (!this.handlers.hasOperation(ack.r, ack.l)) {
         this.gapDetected = true
       }
@@ -398,23 +393,24 @@ export class DocumentConnection {
       if (acknowledged !== undefined) {
         void offlineStore.forget(this.documentId, acknowledged)
       }
-      // Kursor przesuwamy na podstawie POTWIERDZEŃ, nie rozgłoszeń, bo tylko potwierdzenie
-      // niesie server_seq. Rozgłoszenia z zasady go nie mają — patrz Messages.java.
+      // The cursor advances on ACKNOWLEDGEMENTS, not broadcasts, because only an acknowledgement
+      // carries server_seq. Broadcasts deliberately do not — see Messages.java.
       this.lastServerSeq = Math.max(this.lastServerSeq, ack.serverSeq)
     }
     this.setState(this.state)
   }
 
   /**
-   * Obecność: pełna lista albo delta pojedynczego uczestnika.
+   * Presence: either the full list or a delta for a single participant.
    *
-   * Ruch kursora jest najczęstszym zdarzeniem w systemie (każdy klawisz, a przy trzymanej
-   * strzałce ~30 na sekundę), więc serwer odsyła wtedy JEDEN zmieniony wpis zamiast
-   * wszystkich uczestników. Dołączenie i odejście przychodzą jako pełna lista, bo odejście
-   * znaczy „tego wpisu już nie ma" i deltą wyrazić się nie da.
+   * Cursor movement is the most frequent event in the system (every keystroke, and ~30 per second
+   * with an arrow key held), so the server sends back ONE changed entry rather than every
+   * participant. Joins and leaves arrive as a full list, because a leave means "this entry is gone"
+   * and cannot be expressed as a delta.
    *
-   * Stan trzymamy tutaj, a nie w komponencie, bo scalanie delt jest własnością PROTOKOŁU —
-   * warstwa widoku ma dostawać gotową listę i nie wiedzieć, że protokół w ogóle zna delty.
+   * The state lives here rather than in the component, because merging deltas is a property of the
+   * PROTOCOL — the view layer should receive a finished list and not know the protocol has deltas
+   * at all.
    */
   private onPresence(message: IMessage): void {
     const update = JSON.parse(message.body) as { full: boolean; entries: PresenceEntry[] }
@@ -433,12 +429,12 @@ export class DocumentConnection {
     return payload.map((entry) => decodeOp(entry.op))
   }
 
-  /** Wysyła operację lokalną. Trafia do bufora do czasu potwierdzenia zapisu. */
+  /** Sends a local operation. It stays in the buffer until the write is acknowledged. */
   send(op: Op): void {
     this.unacknowledged.set(keyOf(op.id), op)
-    // Zapis do IndexedDB jest asynchroniczny i CELOWO nie blokuje wysyłki: operacja ma
-    // polecieć natychmiast, a trwałość bufora jest zabezpieczeniem na wypadek zamknięcia
-    // karty, nie warunkiem wysłania.
+    // The IndexedDB write is asynchronous and DELIBERATELY does not block the send: the operation
+    // should go out immediately, and the buffer's durability is a safeguard against the tab being
+    // closed, not a precondition for sending.
     void offlineStore.remember(this.documentId, op)
     this.setState(this.state)
     this.simulator.transmit(op)
@@ -446,13 +442,13 @@ export class DocumentConnection {
 
   private publishOp(op: Op): void {
     if (!this.client?.connected) {
-      // Brak połączenia nie jest błędem: operacja została już zastosowana lokalnie
-      // i czeka w buforze. Wyśle się przy ponownym połączeniu.
+      // Being disconnected is not an error: the operation has already been applied locally and is
+      // waiting in the buffer. It will go out on reconnect.
       return
     }
-    // Kontekst śledzenia wędruje NAGŁÓWKIEM RAMKI, nie w treści operacji. Dzięki temu
-    // format przewodowy operacji pozostaje niezależny od tego, czy śledzenie jest włączone
-    // (ADR-0002: nagłówki STOMP są jedynym miejscem na metadane per wiadomość).
+    // The trace context travels in a FRAME HEADER, not in the operation's body. That keeps the
+    // operation's wire format independent of whether tracing is enabled (ADR-0002: STOMP headers
+    // are the only place for per-message metadata).
     traceOperation(
       'edit.submit',
       { 'collabedit.op.type': op.kind, 'collabedit.op.lamport': op.id.lamport },
@@ -490,11 +486,11 @@ export class DocumentConnection {
   }
 
   /**
-   * Porzuca bufor po odmowie scalenia (ADR-0005).
+   * Abandons the buffer after a refused merge (ADR-0005).
    *
-   * Wywoływane wyłącznie po `RESYNC_REQUIRED`. Treść tych operacji jest wtedy ratowana
-   * osobno, jako odzyskany szkic — bufor czyścimy dopiero potem, żeby nie próbowały
-   * w nieskończoność.
+   * Called only after `RESYNC_REQUIRED`. The content of those operations is rescued separately at
+   * that point, as a recovered draft — the buffer is cleared only afterwards, so they do not retry
+   * forever.
    */
   async abandonBuffer(): Promise<void> {
     this.unacknowledged.clear()
@@ -509,10 +505,10 @@ export class DocumentConnection {
       window.clearInterval(this.progressTimer)
       this.progressTimer = null
     }
-    // Ponowienie po ograniczeniu tempa też jest zaplanowane w oknie przeglądarki i też
-    // musi zniknąć razem z połączeniem. Dziś zatrzymałby je warunek w publishOp, ale
-    // opieranie się na tym znaczy, że pierwsza zmiana kolejkująca operacje przy braku
-    // połączenia zaczęłaby wpychać je do połączenia, którego już nie ma.
+    // The rate-limit retry is also scheduled on the browser window and also has to disappear with
+    // the connection. Today the guard in publishOp would stop it, but relying on that means the
+    // first change that queues operations while disconnected would start pushing them into a
+    // connection that no longer exists.
     if (this.throttleRetryTimer !== null) {
       window.clearTimeout(this.throttleRetryTimer)
       this.throttleRetryTimer = null

@@ -1,30 +1,31 @@
 /**
- * Symulator warunków sieciowych.
+ * A network conditions simulator.
  *
- * Pochodzi wprost z `idea.md` („symulator konfliktów") i jest jedną z dwóch rzeczy, które
- * ten projekt naprawdę sprzedają na rozmowie — bo pozwala **pokazać na żywo**, że algorytm
- * działa, zamiast o tym zapewniać.
+ * It comes straight from `idea.md` ("the conflict simulator") and is one of the two things that
+ * really sell this project in an interview — because it lets you **show live** that the algorithm
+ * works, rather than assert it.
  *
- * Świadoma decyzja projektowa: to jest jeden mechanizm o dwóch zastosowaniach.
- *  - w interfejsie napędza panel demo (suwaki opóźnienia, jitteru, utraty pakietów),
- *  - w testach chaosu (CP8) napędza scenariusze zrywania i opóźniania łączności.
- * Dwie osobne implementacje rozjechałyby się, a wtedy demo pokazywałoby co innego niż testy.
+ * A deliberate design decision: this is one mechanism with two uses.
+ *  - in the interface it drives the demo panel (latency, jitter and packet-loss sliders),
+ *  - in the chaos tests (CP8) it drives the disconnect and delay scenarios.
+ * Two separate implementations would drift apart, and then the demo would show something other
+ * than the tests.
  *
- * Symulator działa NAD warstwą transportu, na poziomie pojedynczych wiadomości. Nie udaje
- * utraty pakietów TCP — udaje utratę i opóźnienie *operacji*, czyli dokładnie to, co widzi
- * algorytm. To jest właściwy poziom abstrakcji dla tego, co chcemy zademonstrować.
+ * The simulator operates ABOVE the transport layer, at the level of individual messages. It does
+ * not fake TCP packet loss — it fakes the loss and delay of *operations*, which is exactly what the
+ * algorithm sees. That is the right level of abstraction for what we want to demonstrate.
  */
 
 export interface NetworkConditions {
-  /** Stałe opóźnienie w milisekundach, dodawane w obie strony. */
+  /** A fixed delay in milliseconds, added in both directions. */
   latencyMs: number
-  /** Losowy rozrzut opóźnienia, ± tej wartości. Modeluje niestabilne łącze. */
+  /** Random spread of the delay, ± this value. Models an unstable link. */
   jitterMs: number
-  /** Udział wiadomości gubionych, 0–1. */
+  /** The fraction of messages lost, 0–1. */
   packetLoss: number
   /**
-   * Całkowite odcięcie. Wiadomości nie giną — czekają w kolejce i zostaną wysłane
-   * po przywróceniu łączności, dokładnie tak jak bufor offline (CP6).
+   * A total cut. Messages are not lost — they wait in a queue and are sent once connectivity
+   * returns, exactly like the offline buffer (CP6).
    */
   partitioned: boolean
 }
@@ -44,13 +45,12 @@ export class NetworkSimulator {
   private listeners = new Set<(conditions: NetworkConditions) => void>()
 
   /**
-   * Funkcja wysyłająca jest podawana RAZ, przy tworzeniu.
+   * The send function is supplied ONCE, at construction.
    *
-   * Wcześniej przyjmowały ją `send` i `update` jako argument — i to był realny błąd
-   * projektowy, nie stylistyka: interfejs pozwalał podać przy `update` inną funkcję
-   * (albo pustą), przez co operacje wstrzymane na czas odcięcia sieci były po przywróceniu
-   * łączności wypuszczane donikąd. Wykryte testem end-to-end. Jedno źródło wysyłki czyni
-   * ten błąd niewyrażalnym.
+   * It used to be taken as an argument by `send` and `update` — and that was a real design bug, not
+   * a matter of style: the interface allowed a different function (or an empty one) to be passed at
+   * `update`, so operations held during a network cut were released into nothing once connectivity
+   * returned. Found by an end-to-end test. A single send source makes the bug inexpressible.
    */
   private readonly send: Send
 
@@ -75,9 +75,9 @@ export class NetworkSimulator {
     const wasPartitioned = this.conditions.partitioned
     this.conditions = { ...this.conditions, ...patch }
 
-    // Wyjście z partycji: wypuszczamy wszystko, co czekało. To jest miniatura tego,
-    // co przy prawdziwym ponownym połączeniu robi bufor offline — i powód, dla którego
-    // demo z odcięciem sieci wygląda przekonująco, a nie jak zresetowanie stanu.
+    // Leaving the partition: everything that was waiting is released. This is a miniature of what
+    // the offline buffer does on a real reconnect — and the reason the network-cut demo looks
+    // convincing rather than like a state reset.
     if (wasPartitioned && !this.conditions.partitioned) {
       const queued = this.held
       this.held = []
@@ -87,12 +87,11 @@ export class NetworkSimulator {
   }
 
   /**
-   * Przepuszcza wiadomość przez zadane warunki sieciowe.
+   * Passes a message through the configured network conditions.
    *
-   * Zwraca natychmiast — opóźnienie jest realizowane przez `setTimeout`, więc kolejność
-   * dostarczenia przy niezerowym jitterze może się ZMIENIĆ. To jest zamierzone: przestawienie
-   * kolejności to jedna z rzeczy, które CRDT ma znosić, i chcemy ją realnie wywoływać,
-   * a nie tylko zakładać.
+   * Returns immediately — the delay is realised with `setTimeout`, so with non-zero jitter the
+   * delivery order can CHANGE. That is intended: reordering is one of the things a CRDT is supposed
+   * to tolerate, and we want to actually induce it rather than merely assume it.
    */
   transmit(payload: unknown): void {
     if (this.conditions.partitioned) {
@@ -101,8 +100,8 @@ export class NetworkSimulator {
       return
     }
     if (this.conditions.packetLoss > 0 && Math.random() < this.conditions.packetLoss) {
-      // Wiadomość przepada bez śladu. Odzyskanie jej to zadanie potwierdzeń i mechanizmu
-      // resynchronizacji (CP6) — symulator celowo nie pomaga.
+      // The message is gone without a trace. Recovering it is the job of the acknowledgements and
+      // the resynchronisation mechanism (CP6) — the simulator deliberately does not help.
       return
     }
     this.deliver(payload)

@@ -2,20 +2,19 @@ import { encodeOp, decodeOp, type WireOp } from '../crdt/codec'
 import type { Op } from '../crdt/types'
 
 /**
- * Trwały bufor operacji niepotwierdzonych zapisem.
+ * A durable buffer of operations not yet acknowledged as written.
  *
- * <p>Bufor w pamięci wystarcza na utratę sieci. Nie wystarcza na to, co użytkownik robi
- * naprawdę: zamyka kartę, usypia laptopa, przeładowuje stronę bo „coś się zawiesiło".
- * We wszystkich tych przypadkach operacje wysłane, ale niepotwierdzone, przepadłyby —
- * mimo że użytkownik widział je na ekranie.
+ * An in-memory buffer is enough for losing the network. It is not enough for what a user actually
+ * does: closes the tab, puts the laptop to sleep, reloads the page because "something froze". In
+ * all of those cases operations that were sent but not acknowledged would be lost — even though the
+ * user had seen them on screen.
  *
- * Dlatego IndexedDB, a nie `localStorage`: ten drugi jest synchroniczny i blokuje wątek
- * interfejsu przy każdym zapisie, czyli przy każdym naciśnięciu klawisza. Na dokumencie
- * z długim buforem byłoby to odczuwalne dokładnie wtedy, gdy sieć nie działa i wszystko
- * i tak jest irytujące.
+ * Hence IndexedDB rather than `localStorage`: the latter is synchronous and blocks the UI thread on
+ * every write, that is, on every keystroke. On a document with a long buffer that would be
+ * noticeable exactly when the network is down and everything is irritating anyway.
  *
- * Wpis znika dopiero po potwierdzeniu TRWAŁEGO ZAPISU przez serwer (ADR-0003) — nigdy
- * po samym rozesłaniu.
+ * An entry disappears only once the server acknowledges a DURABLE WRITE (ADR-0003) — never on the
+ * broadcast alone.
  */
 
 const DATABASE = 'inkline'
@@ -78,10 +77,10 @@ export const offlineStore = {
   },
 
   /**
-   * Operacje zapamiętane dla dokumentu, od najstarszej.
+   * The operations remembered for a document, oldest first.
    *
-   * Kolejność nie ma znaczenia dla poprawności (scalanie jest przemienne — ADR-0001),
-   * ale ma dla czytelności logów i dla tego, co widać przy debugowaniu.
+   * The order does not matter for correctness (merging is commutative — ADR-0001), but it does
+   * matter for legible logs and for what you see while debugging.
    */
   async pending(documentId: string): Promise<Op[]> {
     const all = await transact<StoredEntry[]>('readonly', (store) =>
@@ -91,11 +90,11 @@ export const offlineStore = {
   },
 
   /**
-   * Czyści bufor dokumentu.
+   * Clears a document's buffer.
    *
-   * Używane wyłącznie przy `RESYNC_REQUIRED` (ADR-0005): operacje, których serwer nie
-   * potrafi już scalić, nie mają po co zajmować miejsca i próbować w nieskończoność.
-   * Ich treść jest wtedy ratowana osobno, jako odzyskany szkic.
+   * Used only on `RESYNC_REQUIRED` (ADR-0005): operations the server can no longer merge have no
+   * reason to occupy space and retry forever. Their content is rescued separately at that point, as
+   * a recovered draft.
    */
   async clear(documentId: string): Promise<void> {
     const all = await transact<StoredEntry[]>('readonly', (store) =>
