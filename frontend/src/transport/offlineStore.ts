@@ -27,7 +27,27 @@ const STORE = 'unacknowledged'
  * browser knows about a document that is not on the server yet") and an upgrade path.
  */
 const UNDO_STORE = 'undo'
-const VERSION = 2
+
+/**
+ * Comments written without a connection (CP27).
+ *
+ * The buffer above holds CRDT operations, which travel the WebSocket. A comment travels REST, so
+ * before CP27 one written offline simply disappeared — the README listed it as a limit of CP14.
+ */
+const COMMENT_STORE = 'comments'
+const VERSION = 3
+
+/** A comment waiting for a connection (CP27). */
+export interface QueuedComment {
+  clientId: string
+  documentId: string
+  /** A new conversation, or a reply to an existing one. */
+  kind: 'thread' | 'reply'
+  threadId?: string
+  quotedText?: string
+  body: string
+  queuedAt: number
+}
 
 interface StoredEntry {
   key: string
@@ -50,6 +70,10 @@ function openDatabase(): Promise<IDBDatabase> {
       // exactly the work this whole mechanism exists to protect.
       if (!database.objectStoreNames.contains(UNDO_STORE)) {
         database.createObjectStore(UNDO_STORE, { keyPath: 'documentId' })
+      }
+      if (!database.objectStoreNames.contains(COMMENT_STORE)) {
+        const store = database.createObjectStore(COMMENT_STORE, { keyPath: 'clientId' })
+        store.createIndex('byDocument', 'documentId')
       }
     }
     request.onsuccess = () => resolve(request.result)
@@ -130,6 +154,31 @@ export const offlineStore = {
    */
   async saveUndo(documentId: string, state: unknown): Promise<void> {
     await transact('readwrite', (store) => store.put({ documentId, state }), UNDO_STORE)
+  },
+
+  /**
+   * Remembers a comment that could not be posted (CP27).
+   *
+   * The `clientId` is generated here and travels with every retry, so the server can recognise
+   * an attempt that already arrived. That is the whole mechanism: what an offline comment needs
+   * is not merging but exactly-once, and exactly-once is a key rather than a data structure
+   * (ADR-0011 held).
+   */
+  async queueComment(entry: QueuedComment): Promise<void> {
+    await transact('readwrite', (store) => store.put(entry), COMMENT_STORE)
+  },
+
+  async pendingComments(documentId: string): Promise<QueuedComment[]> {
+    const all = await transact<QueuedComment[]>(
+      'readonly',
+      (store) => store.index('byDocument').getAll(documentId),
+      COMMENT_STORE,
+    )
+    return all.sort((a, b) => a.queuedAt - b.queuedAt)
+  },
+
+  async forgetComment(clientId: string): Promise<void> {
+    await transact('readwrite', (store) => store.delete(clientId), COMMENT_STORE)
   },
 
   async loadUndo<T>(documentId: string): Promise<T | null> {

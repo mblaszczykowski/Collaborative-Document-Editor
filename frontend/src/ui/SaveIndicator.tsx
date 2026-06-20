@@ -1,8 +1,8 @@
 /**
- * Stan zapisu — jedyny element interfejsu, który mówi użytkownikowi, czy jego praca jest
- * bezpieczna. Kolejność warunków nie jest dowolna: „offline" wygrywa z „zapisywanie",
- * bo obietnica trwającego zapisu przy braku łączności jest kłamstwem dokładnie w tej
- * sytuacji, w której użytkownik musi znać prawdę.
+ * The save state — the one element of the interface that tells the user whether their work is safe.
+ * The order of the conditions is not arbitrary: "offline" beats "saving", because promising a save
+ * in progress while disconnected is a lie in exactly the situation where the user has to know the
+ * truth.
  */
 import type { ConnectionState } from '../transport/connection'
 
@@ -11,7 +11,7 @@ export function SaveIndicator({ state, pending }: { state: ConnectionState; pend
     return (
       <span className="save-state offline">
         <span className="save-dot" />
-        Praca offline
+        Working offline
       </span>
     )
   }
@@ -19,7 +19,7 @@ export function SaveIndicator({ state, pending }: { state: ConnectionState; pend
     return (
       <span className="save-state pending">
         <span className="save-dot" />
-        Zapisywanie…
+        Saving…
       </span>
     )
   }
@@ -27,7 +27,7 @@ export function SaveIndicator({ state, pending }: { state: ConnectionState; pend
     return (
       <span className="save-state pending">
         <span className="save-dot" />
-        Łączenie…
+        Connecting…
       </span>
     )
   }
@@ -36,7 +36,7 @@ export function SaveIndicator({ state, pending }: { state: ConnectionState; pend
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
         <polyline points="20 6 9 17 4 12" />
       </svg>
-      Zapisano
+      Saved
     </span>
   )
 }

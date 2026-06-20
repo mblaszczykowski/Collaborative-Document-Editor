@@ -638,3 +638,10 @@ button { font-family: inherit; cursor: pointer; }
 .suggest-accept:hover { border-color: var(--ok); color: var(--ok); }
 .suggest-reject:hover { border-color: var(--bad); color: var(--bad); }
 .suggest-accept:disabled, .suggest-reject:disabled { opacity: 0.5; cursor: default; }
+
+/* Comments waiting for a connection (CP27) — the same language as the save indicator:
+   work that exists only in this browser must not look like work that is on the server. */
+.rp-queued {
+  margin-left: auto; font-size: 10.5px; padding: 1px 6px; border-radius: 8px;
+  border: 1px solid var(--warn); color: var(--warn); white-space: nowrap;
+}

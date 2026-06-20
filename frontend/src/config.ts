@@ -37,9 +37,21 @@ const configured = import.meta.env.VITE_API_BASE as string | undefined
 const VITE_DEV_PORT = '5173'
 
 function backendOrigin(): string {
-  if (configured !== undefined && configured !== '') {
-    // Trailing slash removed so that callers can always concatenate "/api" and get one slash.
-    return configured.replace(/\/+$/, '')
+  // UNSET and SET-TO-EMPTY are different answers, and conflating them had a consequence.
+  //
+  // The first version treated `''` as "not configured" and fell through to the dev-port check.
+  // docker-compose builds the image with VITE_API_BASE: "" meaning "same origin, go through the
+  // proxy", and publishes the frontend on 5173 — so the check fired, traffic went straight to
+  // :8080, and the nginx proxy was never exercised by the one command the README tells people to
+  // run. It still worked, because compose also publishes 8080; what it stopped doing was testing
+  // the arrangement a real deployment uses.
+  //
+  // That also made the compose build argument a no-op that looks like configuration, which is the
+  // same species of problem as a tuning value nothing reads.
+  if (configured !== undefined) {
+    // Empty means same origin. Trailing slash removed so callers can concatenate "/api" and get
+    // exactly one.
+    return configured === '' ? window.location.origin : configured.replace(/\/+$/, '')
   }
   if (window.location.port === VITE_DEV_PORT) {
     return `${window.location.protocol}//${window.location.hostname}:8080`

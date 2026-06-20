@@ -1,23 +1,23 @@
 /**
- * Tożsamość zapamiętana na czas życia KARTY przeglądarki oraz przełącznik diagnostyki.
+ * The identity remembered for the lifetime of a browser TAB, plus the diagnostics toggle.
  *
- * Wydzielone z App.tsx, bo są to jedyne miejsca sięgające do `sessionStorage` i do adresu
- * strony — czyli do stanu spoza aplikacji. Trzymanie ich razem sprawia, że da się na jeden
- * rzut oka powiedzieć, co ta aplikacja czyta z otoczenia.
+ * Split out of App.tsx, because these are the only places that reach into `sessionStorage` and the
+ * page address — that is, into state from outside the application. Keeping them together means one
+ * can say at a glance what this application reads from its environment.
  */
 import type { Session } from '../api'
 
 export const SESSION_KEY = 'inkline.session'
 
-/** Tryb diagnostyczny — wyłącznie do pracy nad projektem i testów chaosu. */
+/** Diagnostics mode — only for working on the project and for the chaos tests. */
 export const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 /**
- * Sesja przeżywa przeładowanie strony.
+ * The session survives a page reload.
  *
- * `sessionStorage`, nie `localStorage`: tożsamość ma być związana z KARTĄ, nie z przeglądarką.
- * Przy `localStorage` dwie karty otwarte obok siebie dzieliłyby konto — czyli scenariusz
- * „dwie osoby w dwóch oknach" przestałby działać.
+ * `sessionStorage`, not `localStorage`: the identity is meant to be tied to a TAB, not to the
+ * browser. With `localStorage` two tabs open side by side would share an account — so the "two
+ * people in two windows" scenario would stop working.
  */
 export function loadSession(): Session | null {
   const stored = sessionStorage.getItem(SESSION_KEY)

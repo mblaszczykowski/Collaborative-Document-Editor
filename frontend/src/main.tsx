@@ -4,8 +4,8 @@ import App from './App'
 import { initialiseTracing } from './observability/tracing'
 import './styles.css'
 
-// Śledzenie startuje PRZED zamontowaniem aplikacji, żeby objąć również pierwsze
-// operacje — te przy otwarciu dokumentu, które są najczęściej najwolniejsze.
+// Tracing starts BEFORE the application mounts, so it also covers the first operations — the ones
+// when a document opens, which are usually the slowest.
 initialiseTracing()
 
 createRoot(document.getElementById('root')!).render(

@@ -1,22 +1,21 @@
 import { expect, type APIRequestContext, type Browser, type Page } from '@playwright/test'
 
 /**
- * Wspólne przygotowanie scenariuszy end-to-end.
+ * Shared setup for the end-to-end scenarios.
  *
- * Wydzielone, gdy doszedł drugi plik testów (lista dokumentów, CP11) — do tego momentu
- * te funkcje żyły w jedynym istniejącym scenariuszu i nie było czego dzielić.
+ * Split out when the second test file arrived (the document list, CP11) — until then these
+ * functions lived in the only scenario there was and there was nothing to share.
  */
 
 export const APP = 'http://localhost:5173'
 export const API = 'http://localhost:8080/api'
 
 /**
- * Świeży dokument na każdy test.
+ * A fresh document per test.
  *
- * Bez tego wszystkie testy otwierają pierwszy dokument z listy, widzą nawzajem swoje
- * zmiany i padają z powodów niemających nic wspólnego z tym, co sprawdzają. Izolacja
- * przez osobny dokument jest tańsza niż czyszczenie bazy między testami i nie wymaga
- * dostępu do niej z poziomu testu.
+ * Without it every test opens the first document on the list, sees the others' changes, and fails
+ * for reasons unrelated to what it checks. Isolation by way of a separate document is cheaper than
+ * clearing the database between tests and needs no database access from a test.
  */
 export async function freshDocument(request: APIRequestContext, title: string): Promise<string> {
   // Log in BEFORE creating the document (CP16 + CP21).
@@ -45,12 +44,11 @@ export async function freshDocument(request: APIRequestContext, title: string): 
 }
 
 /**
- * Otwiera dokument w świeżej przeglądarce.
+ * Opens a document in a fresh browser.
  *
- * `waitForEditor: false` dla scenariuszy, w których edytor NIE MA się pojawić — dokument
- * usunięty albo bez dostępu. Domyślne czekanie na `.editor-host` byłoby tam gwarantowanym
- * przekroczeniem czasu, i to takim, które wygląda jak awaria stanowiska zamiast jak
- * sprawdzane zachowanie.
+ * `waitForEditor: false` for scenarios where the editor is NOT supposed to appear — a deleted
+ * document, or one without access. The default wait for `.editor-host` would be a guaranteed
+ * timeout there, and one that looks like a rig failure rather than the behaviour under test.
  */
 export async function joinAs(
   browser: Browser,
@@ -61,8 +59,8 @@ export async function joinAs(
   const context = await browser.newContext()
   const page = await context.newPage()
   await page.goto(`${APP}/?doc=${documentId}`)
-  await page.getByPlaceholder('Twoje imię').fill(name)
-  await page.getByRole('button', { name: 'Rozpocznij' }).click()
+  await page.getByPlaceholder('Your name').fill(name)
+  await page.getByRole('button', { name: 'Get started' }).click()
   if (options.waitForEditor !== false) {
     await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
   }
@@ -70,18 +68,18 @@ export async function joinAs(
 }
 
 /**
- * Usuwa dokument spoza przeglądarki.
+ * Deletes a document from outside the browser.
  *
- * Wymaga zalogowania: od CP12 usuwanie potrzebuje prawa zapisu, a żądanie bez tokenu
- * nie ma żadnej roli i dostaje 404 — czyli po cichu nic by nie skasowało.
+ * It requires a login: since CP12 deletion needs write permission, and a request with no token has
+ * no role at all and gets a 404 — that is, it would silently delete nothing.
  */
 export async function deleteDocument(request: APIRequestContext, documentId: string): Promise<void> {
-  const login = await request.post(`${API}/login`, { data: { displayName: 'Sprzątacz' } })
+  const login = await request.post(`${API}/login`, { data: { displayName: 'Cleaner' } })
   const { token } = (await login.json()) as { token: string }
   const response = await request.delete(`${API}/documents/${documentId}`, {
     headers: { Authorization: `Bearer ${token}` },
   })
-  expect(response.status(), 'nie udało się usunąć dokumentu — test sprawdzałby coś innego')
+  expect(response.status(), 'the document could not be deleted — the test would be checking something else')
     .toBe(204)
 }
 

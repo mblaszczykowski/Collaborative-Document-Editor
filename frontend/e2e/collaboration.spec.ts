@@ -2,35 +2,24 @@ import { expect, test, type Page } from '@playwright/test'
 import { freshDocument, joinAs, typeInto } from './helpers'
 
 /**
- * Test end-to-end na prawdziwych przeglądarkach.
+ * The end-to-end test on real browsers.
  *
- * Testy integracyjne po stronie serwera (CP3) dowodzą, że backend scala poprawnie.
- * Property testy (CP2) dowodzą, że algorytm jest zbieżny. Żadne z nich nie odpowiada
- * na pytanie, czy **to, co widzi użytkownik**, zgadza się z tym, co jest w modelu —
- * a między CRDT a DOM-em jest jeszcze CodeMirror i cała warstwa mostkująca (ADR-0006).
+ * The server-side integration tests (CP3) prove the backend merges correctly. The property tests
+ * (CP2) prove the algorithm converges. Neither answers the question of whether **what the user
+ * sees** matches what is in the model — and between the CRDT and the DOM sit CodeMirror and the
+ * whole bridging layer (ADR-0006).
  *
- * Ten sam scenariusz napędza nagranie demo w CP9. Jedna implementacja, dwa zastosowania:
- * dzięki temu GIF w README pokazuje dokładnie to, co jest sprawdzane w CI, a nie ręcznie
- * odtworzoną wersję zdarzeń.
+ * The same scenario drives the demo recording in CP9. One implementation, two uses: that way the
+ * GIF in the README shows exactly what CI checks rather than a hand-reconstructed version of
+ * events.
  */
 
 /**
- * Świeży dokument na każdy test.
+ * The document's text alone, without the cursor flags.
  *
- * Bez tego wszystkie testy otwierają pierwszy dokument z listy, widzą nawzajem swoje
- * zmiany i padają z powodów niemających nic wspólnego z tym, co sprawdzają. Izolacja
- * przez osobny dokument jest tańsza niż czyszczenie bazy między testami i nie wymaga
- * dostępu do niej z poziomu testu.
- */
-
-
-
-/**
- * Sam tekst dokumentu, bez chorągiewek kursorów.
- *
- * Kursory innych osób są widgetami WEWNĄTRZ `.cm-content`, więc `innerText` zwraca również
- * ich imiona. Pierwsza wersja tego testu porównywała surowy `innerText` i padała, mimo że
- * dokument po obu stronach był identyczny — porównywała rozmieszczenie kursorów, a nie treść.
+ * Other people's cursors are widgets INSIDE `.cm-content`, so `innerText` returns their names too.
+ * The first version of this test compared raw `innerText` and failed even though the document was
+ * identical on both sides — it was comparing cursor placement, not content.
  */
 async function documentText(page: Page): Promise<string> {
   return page.locator('.cm-content').evaluate((root) => {
@@ -41,39 +30,38 @@ async function documentText(page: Page): Promise<string> {
 }
 
 /**
- * Liczba znaków według CRDT (z paska stanu), a nie według DOM-u.
+ * The character count according to the CRDT (from the status bar), not according to the DOM.
  *
- * Porównanie tej wartości między przeglądarkami sprawdza zbieżność o poziom głębiej niż
- * porównanie tekstu: gdyby model i widok się rozjechały, tekst mógłby wyglądać tak samo,
- * a modele już nie.
+ * Comparing this value between browsers checks convergence one level deeper than comparing text: if
+ * the model and the view diverged, the text could look the same while the models no longer did.
  */
 async function crdtCharacters(page: Page): Promise<string> {
-  // `data-testid`, nie klasa CSS: licznik jest odczytem ze stanu CRDT, więc test ma się
-  // trzymać jego tożsamości, a nie stylowania — inaczej każda zmiana wyglądu paska stanu
-  // psuje testy z powodów niemających nic wspólnego z zachowaniem.
+  // `data-testid`, not a CSS class: the counter is a read of the CRDT state, so the test should
+  // hold on to its identity rather than its styling — otherwise every restyle of the status bar
+  // breaks tests for reasons unrelated to behaviour.
   return (await page.getByTestId('char-count').innerText()).trim()
 }
 
-test('dwie osoby piszą jednocześnie i widzą ten sam tekst', async ({ browser, request }) => {
-  const documentId = await freshDocument(request, 'Zbieżność')
+test('two people type at once and see the same text', async ({ browser, request }) => {
+  const documentId = await freshDocument(request, 'Convergence')
   const anna = await joinAs(browser, 'Anna', documentId)
   const marek = await joinAs(browser, 'Marek', documentId)
 
-  await typeInto(anna, 'Cel na ten kwartal')
+  await typeInto(anna, 'Goal for this quarter')
 
-  // Marek musi zobaczyć tekst Anny bez odświeżania strony.
-  await expect(marek.locator('.cm-content')).toContainText('Cel na ten kwartal', {
+  // Marek has to see Anna's text without reloading the page.
+  await expect(marek.locator('.cm-content')).toContainText('Goal for this quarter', {
     timeout: 10_000,
   })
 
-  // Teraz obie osoby dopisują — do RÓŻNYCH miejsc, ale w tym samym akapicie.
+  // Now both people append — to DIFFERENT places, but in the same paragraph.
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('End')
-  await marek.keyboard.type(' i nastepny', { delay: 25 })
+  await marek.keyboard.type(' and the next', { delay: 25 })
 
-  await expect(anna.locator('.cm-content')).toContainText('i nastepny', { timeout: 10_000 })
+  await expect(anna.locator('.cm-content')).toContainText('and the next', { timeout: 10_000 })
 
-  // Sedno: obie strony mają IDENTYCZNY tekst. Nie „podobny", nie „zawierający obie zmiany".
+  // The crux: both sides have IDENTICAL text. Not "similar", not "containing both changes".
   expect(await documentText(anna)).toBe(await documentText(marek))
   expect(await crdtCharacters(anna)).toBe(await crdtCharacters(marek))
 
@@ -81,26 +69,26 @@ test('dwie osoby piszą jednocześnie i widzą ten sam tekst', async ({ browser,
   await marek.context().close()
 })
 
-test('kursor drugiej osoby jest widoczny w tekście', async ({ browser, request }) => {
-  const documentId = await freshDocument(request, 'Kursory')
+test("the other person's cursor is visible in the text", async ({ browser, request }) => {
+  const documentId = await freshDocument(request, 'Cursors')
   const anna = await joinAs(browser, 'Anna', documentId)
   const marek = await joinAs(browser, 'Marek', documentId)
 
-  await typeInto(anna, 'tekst wspolny')
-  await expect(marek.locator('.cm-content')).toContainText('tekst wspolny', { timeout: 10_000 })
+  await typeInto(anna, 'shared text')
+  await expect(marek.locator('.cm-content')).toContainText('shared text', { timeout: 10_000 })
 
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('Home')
   await marek.keyboard.press('ArrowRight')
 
-  // Chorągiewka z imieniem — to jest ta część demo, którą widać na pierwszy rzut oka.
+  // The name flag — the part of the demo you notice at a glance.
   await expect(anna.locator('.remote-caret-flag')).toContainText('Marek', { timeout: 10_000 })
 
   await anna.context().close()
   await marek.context().close()
 })
 
-test('odcięcie sieci nie blokuje pisania, a po powrocie zmiany się scalają', async ({
+test('cutting the network does not block typing, and the changes merge on return', async ({
   browser,
   request,
 }) => {
@@ -108,11 +96,11 @@ test('odcięcie sieci nie blokuje pisania, a po powrocie zmiany się scalają', 
   const anna = await joinAs(browser, 'Anna', documentId)
   const marek = await joinAs(browser, 'Marek', documentId)
 
-  await typeInto(anna, 'baza. ')
-  await expect(marek.locator('.cm-content')).toContainText('baza.', { timeout: 10_000 })
+  await typeInto(anna, 'base. ')
+  await expect(marek.locator('.cm-content')).toContainText('base.', { timeout: 10_000 })
 
-  // PRAWDZIWE odcięcie sieci przeglądarce — zrywa też WebSocket, więc test obejmuje
-  // ponowne połączenie i resynchronizację, a nie tylko wstrzymanie wysyłki.
+  // A REAL network cut on the browser — it also tears down the WebSocket, so the test covers
+  // reconnection and resynchronisation, not just a paused send.
   await marek.context().setOffline(true)
   await expect(marek.locator('.save-state.offline')).toBeVisible({ timeout: 20_000 })
   await marek.locator('.cm-content').click()
@@ -120,11 +108,11 @@ test('odcięcie sieci nie blokuje pisania, a po powrocie zmiany się scalają', 
   await marek.keyboard.type('offline', { delay: 25 })
 
   await expect(marek.locator('.cm-content')).toContainText('offline')
-  // Anna NIE widzi jeszcze zmian Marka — to jest dowód, że odcięcie faktycznie działa,
-  // a nie że symulator jest atrapą.
+  // Anna does NOT see Marek's changes yet — proof that the cut actually works, rather than the
+  // simulator being a stub.
   await expect(anna.locator('.cm-content')).not.toContainText('offline')
 
-  // Anna pisze w tym czasie swoje, więc po powrocie łączności trzeba scalić OBIE strony.
+  // Anna types her own meanwhile, so once connectivity returns BOTH sides have to be merged.
   await anna.locator('.cm-content').click()
   await anna.keyboard.press('End')
   await anna.keyboard.type('online', { delay: 25 })
@@ -141,85 +129,85 @@ test('odcięcie sieci nie blokuje pisania, a po powrocie zmiany się scalają', 
   await marek.context().close()
 })
 
-test('historia pozwala cofnąć dokument do wcześniejszej wersji', async ({ browser, request }) => {
-  const documentId = await freshDocument(request, 'Historia')
+test('history lets the document be rewound to an earlier version', async ({ browser, request }) => {
+  const documentId = await freshDocument(request, 'History')
   const anna = await joinAs(browser, 'Anna', documentId)
-  // DWÓCH autorów, nie jeden: oś czasu grupuje kolejne zmiany tego samego autora w jeden
-  // wpis (okno 2 minut), więc gdyby oba fragmenty napisała Anna, powstałaby JEDNA wersja
-  // i „cofnięcie do poprzedniej" nie miałoby do czego wrócić. Pierwsza wersja tego testu
-  // właśnie tak wyglądała i przechodziła obok sedna.
+  // TWO authors, not one: the timeline groups an author's consecutive changes into one entry (a
+  // 2-minute window), so if Anna wrote both fragments there would be ONE version and "rewind to
+  // the previous one" would have nothing to return to. The first version of this test looked
+  // exactly like that and missed the point.
   const marek = await joinAs(browser, 'Marek', documentId)
 
-  await typeInto(anna, 'wersja dobra')
-  // Odczekanie na potwierdzenie zapisu: historia czyta log operacji, więc wpis pojawi się
-  // dopiero po zapisie, a nie po samym rozgłoszeniu (ADR-0003).
-  await expect(anna.getByTestId('char-count')).toContainText('12 znaków')
+  await typeInto(anna, 'good version')
+  // Waiting for the write acknowledgement: history reads the operation log, so an entry appears
+  // only after the write and not after the broadcast alone (ADR-0003).
+  await expect(anna.getByTestId('char-count')).toContainText('12 characters')
   await marek.waitForTimeout(500)
 
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('End')
-  await marek.keyboard.type(' ZEPSUTA', { delay: 25 })
-  await expect(anna.getByTestId('char-count')).toContainText('20 znaków')
+  await marek.keyboard.type(' SPOILED', { delay: 25 })
+  await expect(anna.getByTestId('char-count')).toContainText('20 characters')
   await anna.waitForTimeout(500)
 
-  // Historia jest widoczna od razu — panel boczny nie ma zakładek, bo nie ma już czego
-  // przełączać: podgląd stanu CRDT zniknął z interfejsu użytkownika.
+  // History is visible straight away — the side panel has no tabs, because there is nothing left
+  // to switch between: the CRDT state view has left the user interface.
   const entries = anna.locator('.history-entry')
   await expect(entries.first()).toBeVisible({ timeout: 10_000 })
 
-  // Wpisy są od najnowszych; ostatni to najstarszy stan.
+  // The entries are newest first; the last one is the oldest state.
   await entries.last().click()
-  await expect(anna.locator('.history-preview')).not.toContainText('Odtwarzam', {
+  await expect(anna.locator('.history-preview')).not.toContainText('Loading…', {
     timeout: 10_000,
   })
 
   await anna.getByRole('button', { name: 'Restore this version' }).click()
 
-  // Przywrócenie wraca zwykłym kanałem operacji — edytor ma się zaktualizować sam,
-  // bez przeładowania strony. To jest sedno decyzji z ADR-0003 pkt 6.
-  await expect(anna.locator('.cm-content')).not.toContainText('ZEPSUTA', { timeout: 15_000 })
-  expect(await documentText(anna)).toContain('wersja dobra')
+  // The restore comes back over the ordinary operation channel — the editor should update itself
+  // without a page reload. That is the crux of the decision in ADR-0003, point 6.
+  await expect(anna.locator('.cm-content')).not.toContainText('SPOILED', { timeout: 15_000 })
+  expect(await documentText(anna)).toContain('good version')
 
-  // Przywrócenie wraca zwykłym kanałem operacji, więc DRUGA przeglądarka też ma je
-  // zobaczyć bez odświeżania — to jest cała teza ADR-0003 pkt 6.
-  await expect(marek.locator('.cm-content')).not.toContainText('ZEPSUTA', { timeout: 15_000 })
+  // The restore comes back over the ordinary operation channel, so the SECOND browser should see
+  // it without a reload too — that is the whole thesis of ADR-0003, point 6.
+  await expect(marek.locator('.cm-content')).not.toContainText('SPOILED', { timeout: 15_000 })
   expect(await documentText(marek)).toBe(await documentText(anna))
 
   await anna.context().close()
   await marek.context().close()
 })
 
-test('operacje przeżywają przeładowanie strony i docierają po powrocie', async ({
+test('operations survive a page reload and arrive once it is back', async ({
   browser,
   request,
 }) => {
-  const documentId = await freshDocument(request, 'Bufor trwały')
+  const documentId = await freshDocument(request, 'Durable buffer')
   const anna = await joinAs(browser, 'Anna', documentId)
   const marek = await joinAs(browser, 'Marek', documentId)
 
-  await typeInto(anna, 'poczatek ')
-  await expect(marek.locator('.cm-content')).toContainText('poczatek', { timeout: 10_000 })
+  await typeInto(anna, 'beginning ')
+  await expect(marek.locator('.cm-content')).toContainText('beginning', { timeout: 10_000 })
 
-  // PRAWDZIWE odcięcie sieci przeglądarce, nie symulator w aplikacji.
-  // Symulator wstrzymywał tylko wysyłkę operacji; `setOffline` zrywa też połączenie
-  // WebSocket, więc test obejmuje pełną ścieżkę: utrata łączności → praca lokalna →
-  // ponowne połączenie → resynchronizacja. To jest ta sama droga, którą przechodzi
-  // użytkownik z padniętym wi-fi.
+  // A REAL network cut on the browser, not the in-app simulator. The simulator only held back the
+  // sending of operations; `setOffline` also tears down the WebSocket, so the test covers the full
+  // path: connectivity lost -> local work -> reconnect -> resynchronisation. That is the same road
+  // a user with dead wi-fi travels.
   await marek.context().setOffline(true)
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('Control+End')
-  await marek.keyboard.type('zbuforowane', { delay: 25 })
-  await expect(anna.locator('.cm-content')).not.toContainText('zbuforowane')
+  await marek.keyboard.type('buffered', { delay: 25 })
+  await expect(anna.locator('.cm-content')).not.toContainText('buffered')
 
-  // ...i ZAMYKA KARTĘ przeładowaniem. Bufor w pamięci przepadłby w tym momencie razem
-  // z całym stanem strony — dlatego niepotwierdzone operacje są też w IndexedDB.
+  // ...and CLOSES THE TAB by reloading. An in-memory buffer would be lost at that moment along
+  // with the whole page state — which is why unacknowledged operations are also in IndexedDB.
   await marek.context().setOffline(false)
   await marek.reload()
   await expect(marek.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
 
-  // Po odtworzeniu strony bufor jest wczytywany PRZED resynchronizacją, więc operacje
-  // dolatują do serwera i stamtąd do Anny — mimo że powstały w innej sesji przeglądarki.
-  await expect(anna.locator('.cm-content')).toContainText('zbuforowane', { timeout: 20_000 })
+  // Once the page is rebuilt the buffer is loaded BEFORE resynchronisation, so the operations
+  // reach the server and from there Anna — even though they were created in another browser
+  // session.
+  await expect(anna.locator('.cm-content')).toContainText('buffered', { timeout: 20_000 })
   expect(await documentText(marek)).toBe(await documentText(anna))
 
   await anna.context().close()
@@ -227,35 +215,35 @@ test('operacje przeżywają przeładowanie strony i docierają po powrocie', asy
 })
 
 
-test('cofnięcie zdejmuje własną zmianę, ale nie cudzą', async ({ browser, request }) => {
-  const documentId = await freshDocument(request, 'Cofanie')
+test("undo takes back one's own change but not somebody else's", async ({ browser, request }) => {
+  const documentId = await freshDocument(request, 'Undo')
   const anna = await joinAs(browser, 'Anna', documentId)
   const marek = await joinAs(browser, 'Marek', documentId)
 
-  await typeInto(anna, 'zdanie Anny. ')
-  await expect(marek.locator('.cm-content')).toContainText('Anny', { timeout: 10_000 })
+  await typeInto(anna, "Anna's sentence. ")
+  await expect(marek.locator('.cm-content')).toContainText("Anna's", { timeout: 10_000 })
 
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('ControlOrMeta+a')
   await marek.keyboard.press('ArrowRight')
-  await marek.keyboard.type('zdanie Marka.', { delay: 25 })
-  await expect(anna.locator('.cm-content')).toContainText('Marka', { timeout: 10_000 })
+  await marek.keyboard.type("Marek's sentence.", { delay: 25 })
+  await expect(anna.locator('.cm-content')).toContainText("Marek's", { timeout: 10_000 })
 
-  // Anna cofa. Zdejmuje SWOJE zdanie, a zdanie Marka musi zostać nietknięte —
-  // undo na tekście (historia CodeMirrora) zdjęłoby oba i skasowało cudzą pracę.
+  // Anna undoes. It takes back HER sentence, and Marek's has to stay untouched — an undo on the
+  // text (CodeMirror's history) would take back both and delete somebody else's work.
   await anna.locator('.cm-content').click()
   await anna.keyboard.press('ControlOrMeta+z')
 
-  await expect(anna.locator('.cm-content')).not.toContainText('Anny', { timeout: 10_000 })
-  await expect(anna.locator('.cm-content')).toContainText('Marka')
+  await expect(anna.locator('.cm-content')).not.toContainText("Anna's", { timeout: 10_000 })
+  await expect(anna.locator('.cm-content')).toContainText("Marek's")
 
-  // Cofnięcie jest zwykłą operacją, więc dociera też do drugiej przeglądarki.
-  await expect(marek.locator('.cm-content')).not.toContainText('Anny', { timeout: 10_000 })
+  // An undo is an ordinary operation, so it reaches the other browser too.
+  await expect(marek.locator('.cm-content')).not.toContainText("Anna's", { timeout: 10_000 })
   expect(await documentText(marek)).toBe(await documentText(anna))
 
-  // Ponowienie przywraca zdjęty tekst.
+  // Redo brings the removed text back.
   await anna.keyboard.press('ControlOrMeta+Shift+z')
-  await expect(anna.locator('.cm-content')).toContainText('Anny', { timeout: 10_000 })
+  await expect(anna.locator('.cm-content')).toContainText("Anna's", { timeout: 10_000 })
 
   await anna.context().close()
   await marek.context().close()

@@ -2,20 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type DocumentSummary } from '../api'
 
 /**
- * Lista dokumentów z wyszukiwaniem, zmianą nazwy i koszem (CP11).
+ * The document list, with search, renaming and a bin (CP11).
  *
- * **Podgląd treści przychodzi z serwera gotowy**, materializowany przy snapshotowaniu.
- * Alternatywą byłoby otwarcie każdego dokumentu, żeby pokazać jego pierwszą linijkę —
- * czyli koszt rosnący z liczbą dokumentów razy ich rozmiar, płacony przy każdym
- * wejściu na listę.
+ * **The content preview arrives from the server ready-made**, materialised at snapshot time. The
+ * alternative would be opening every document to show its first line — a cost growing with the
+ * number of documents times their size, paid on every visit to the list.
  *
- * **Usunięcie jest miękkie i tak jest opisane w interfejsie.** „Usuń" chowa dokument
- * do kosza; log operacji zostaje nietknięty, bo jest źródłem prawdy (ADR-0003). Gdyby
- * przycisk kasował naprawdę, kasowałby też całą historię dokumentu — i użytkownik nie
- * miałby jak się o tym dowiedzieć przed faktem.
+ * **Deletion is soft, and the interface says so.** "Delete" moves a document to the bin; the
+ * operation log is left untouched, because it is the source of truth (ADR-0003). If the button
+ * really deleted, it would also erase the document's entire history — and the user would have no
+ * way of learning that beforehand.
  */
 
-/** Odstęp między naciśnięciem klawisza a zapytaniem do serwera. */
+/** The interval between a keystroke and a query to the server. */
 const SEARCH_DEBOUNCE_MS = 200
 
 export function DocumentList(props: {
@@ -32,9 +31,9 @@ export function DocumentList(props: {
   const [renaming, setRenaming] = useState<string | null>(null)
   const debounce = useRef<number | null>(null)
 
-  // Zapytanie dopiero po ustaniu pisania. Bez tego każdy klawisz w polu wyszukiwania
-  // to osobne zapytanie pełnotekstowe — czyli dokładnie ten wzorzec, który przy
-  // rozgłaszaniu kursorów kosztował nas ruch rosnący z kwadratem liczby osób.
+  // The query goes out only once typing stops. Without this, every keystroke in the search box is
+  // a separate full-text query — exactly the pattern that, in cursor broadcasting, cost us traffic
+  // growing with the square of the number of people.
   useEffect(() => {
     if (debounce.current !== null) window.clearTimeout(debounce.current)
     if (query.trim() === '') {
@@ -82,18 +81,18 @@ export function DocumentList(props: {
       <input
         className="sb-search"
         type="search"
-        placeholder="Szukaj w dokumentach"
+        placeholder="Search documents"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
       />
 
       <div className="sb-section-label">
-        {results === null ? 'Dokumenty' : `Znaleziono: ${results.length}`}
+        {results === null ? 'Documents' : `Found: ${results.length}`}
       </div>
 
       {visible.length === 0 && (
         <div className="sb-empty">
-          {results === null ? 'Brak dokumentów.' : 'Nic nie pasuje.'}
+          {results === null ? 'No documents.' : 'Nothing matches.'}
         </div>
       )}
 
@@ -115,7 +114,7 @@ export function DocumentList(props: {
               className={`sb-item${entry.id === props.openId ? ' active' : ''}`}
               onClick={() => props.onSelect(entry.id)}
               onDoubleClick={() => setRenaming(entry.id)}
-              title="Kliknij dwukrotnie, żeby zmienić nazwę"
+              title="Double-click to rename"
             >
               <span className="sb-title">{entry.title}</span>
               {entry.preview !== '' && <span className="sb-preview">{entry.preview}</span>}
@@ -124,8 +123,8 @@ export function DocumentList(props: {
           <button
             className="sb-delete"
             onClick={() => void remove(entry.id)}
-            title="Przenieś do kosza"
-            aria-label={`Usuń ${entry.title}`}
+            title="Move to the bin"
+            aria-label={`Delete ${entry.title}`}
           >
             ×
           </button>
@@ -133,32 +132,32 @@ export function DocumentList(props: {
       ))}
 
       <button className="sb-item sb-new" onClick={props.onCreate}>
-        + Nowy dokument
+        + New document
       </button>
 
       <button className="sb-trash-toggle" onClick={() => setShowTrash((on) => !on)}>
-        {showTrash ? 'Ukryj kosz' : 'Kosz'}
+        {showTrash ? 'Hide the bin' : 'Bin'}
       </button>
 
       {showTrash && (
         <>
-          <div className="sb-section-label">Kosz</div>
-          {trash.length === 0 && <div className="sb-empty">Kosz jest pusty.</div>}
+          <div className="sb-section-label">Bin</div>
+          {trash.length === 0 && <div className="sb-empty">The bin is empty.</div>}
           {trash.map((entry) => (
             <div key={entry.id} className="sb-row">
               <span className="sb-item deleted">{entry.title}</span>
               <button
                 className="sb-restore"
                 onClick={() => void restore(entry.id)}
-                title="Przywróć"
-                aria-label={`Przywróć ${entry.title}`}
+                title="Restore"
+                aria-label={`Restore ${entry.title}`}
               >
                 ↺
               </button>
             </div>
           ))}
           <div className="sb-note">
-            Usunięcie chowa dokument. Historia zmian zostaje nienaruszona.
+            Deleting hides a document. Its change history is left intact.
           </div>
         </>
       )}

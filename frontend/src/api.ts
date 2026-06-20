@@ -1,10 +1,10 @@
 /**
- * Klient REST — rzeczy, które nie muszą być w czasie rzeczywistym.
+ * The REST client — the things that need not be real time.
  *
- * Podział z serwerem jest celowy (patrz DocumentRestController): kanałem WebSocket idą
- * wyłącznie zmiany przyrostowe, a stan początkowy pobieramy zwykłym HTTP. Dzięki temu
- * otwarcie dużego dokumentu nie przepycha kilkuset kilobajtów przez kanał zoptymalizowany
- * pod komunikaty rzędu stu bajtów (ADR-0002 ustala limit 64 KiB na ramkę).
+ * The split with the server is deliberate (see DocumentRestController): the WebSocket channel
+ * carries only incremental changes, and the initial state is fetched over ordinary HTTP. That way,
+ * opening a large document does not push several hundred kilobytes through a channel optimised for
+ * messages of about a hundred bytes (ADR-0002 sets a 64 KiB per-frame limit).
  */
 
 import { API_BASE as BASE } from './config'
@@ -21,11 +21,11 @@ export interface DocumentSummary {
   title: string
   workspaceId: string | null
   /**
-   * Pierwsze znaki treści, materializowane po stronie serwera przy snapshotowaniu.
+   * The first characters of the content, materialised on the server at snapshot time.
    *
-   * Pusty, dopóki dokument nie doczekał się pierwszego snapshotu — i to jest w porządku:
-   * alternatywą byłoby ładowanie repliki CRDT dla każdej pozycji listy, czyli koszt rosnący
-   * z liczbą dokumentów razy ich rozmiar.
+   * Empty until the document has had its first snapshot — and that is fine: the alternative would
+   * be loading a CRDT replica per list entry, that is, a cost growing with the number of documents
+   * times their size.
    */
   preview: string
   updatedAt: string
@@ -37,26 +37,26 @@ export interface DocumentState {
   text: string
   headServerSeq: number
   /**
-   * Rola pytającego w tym dokumencie: `owner` | `editor` | `commenter` | `viewer`.
+   * The caller's role in this document: `owner` | `editor` | `commenter` | `viewer`.
    *
-   * Nie służy do autoryzacji — ta jest po stronie serwera i pozostaje tam w całości.
-   * Służy do tego, żeby nie POZWOLIĆ na gest, który i tak zostanie odrzucony: czytelnik,
-   * który o swojej roli nie wie, pisze u siebie, widzi swój tekst, a serwer go odrzuca.
-   * Jego replika już nigdy nie zgadza się z resztą i nic mu tego nie mówi.
+   * Not used for authorization — that lives on the server and stays there entirely. It exists so
+   * the interface does not ALLOW a gesture that will be refused anyway: a reader who does not know
+   * their role types, sees their own text, and the server rejects it. Their replica never agrees
+   * with the rest again, and nothing tells them so.
    */
   role: 'owner' | 'editor' | 'commenter' | 'viewer'
 }
 
 /**
- * Token bieżącej sesji, doklejany do każdego żądania.
+ * The current session's token, attached to every request.
  *
- * Trzymany w module, a nie przekazywany do każdego wywołania: REST jest w tej aplikacji
- * pomocniczy wobec WebSocketa, więc przeciąganie tokenu przez wszystkie wywołania
- * zaszumiłoby je szczegółem, który nigdy się nie zmienia w trakcie sesji.
+ * Held in the module rather than passed to every call: REST is auxiliary to the WebSocket in this
+ * application, so threading the token through every call would clutter them with a detail that
+ * never changes during a session.
  *
- * Do CP12 endpointy REST były NIEUWIERZYTELNIONE — `GET /api/documents/{id}` zwracał treść
- * dowolnego dokumentu każdemu, kto znał identyfikator. Autoryzacja WebSocketa bez tego
- * nagłówka byłaby ozdobą, bo te same dane wychodziły jednym żądaniem GET.
+ * Before CP12 the REST endpoints were UNAUTHENTICATED — `GET /api/documents/{id}` returned the
+ * content of any document to anyone who knew the identifier. WebSocket authorization without this
+ * header would be decoration, because the same data left through one GET.
  */
 let authToken: string | null = null
 
@@ -80,11 +80,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
- * Żądanie bez treści w odpowiedzi (204).
+ * A request with no response body (204).
  *
- * Osobna funkcja, bo `request` bezwarunkowo woła `response.json()` — a to na pustej
- * odpowiedzi rzuca wyjątkiem parsowania. Objawiałoby się jako „zmiana nazwy nie działa",
- * mimo że serwer wykonał ją poprawnie.
+ * A separate function, because `request` calls `response.json()` unconditionally — and on an empty
+ * response that throws a parse error. It would manifest as "renaming does not work" even though the
+ * server had done it correctly.
  */
 async function requestNoContent(path: string, init: RequestInit): Promise<void> {
   const response = await fetch(`${BASE}${path}`, {
@@ -136,9 +136,9 @@ export interface CommentThread {
   createdBy: string
   createdAt: string
   resolvedAt: string | null
-  /** Tekst, którego wątek dotyczył w chwili założenia — jedyne, co zostaje po odłączeniu. */
+  /** The text the thread was about when it was opened — all that remains once it detaches. */
   quotedText: string
-  /** Czy zakotwiczony tekst nadal istnieje. Wyliczane z warstwy CRDT, nie z bazy. */
+  /** Whether the anchored text still exists. Computed from the CRDT layer, not from the database. */
   anchored: boolean
   messages: CommentMessage[]
 }
@@ -205,11 +205,11 @@ export const api = {
     ),
 
   /**
-   * Przywraca stan z przeszłości.
+   * Restores a past state.
    *
-   * Nie ma tu nic do zrobienia po stronie klienta poza wywołaniem — przywrócenie wraca
-   * do wszystkich podłączonych przeglądarek zwykłym kanałem operacji, bo jest zwykłą
-   * zmianą (ADR-0003 pkt 6). Ten sam mechanizm, ten sam kod, żadnej ścieżki specjalnej.
+   * There is nothing for the client to do here beyond the call — the restore comes back to every
+   * connected browser over the ordinary operation channel, because it is an ordinary change
+   * (ADR-0003, point 6). The same mechanism, the same code, no special path.
    */
   restore: (documentId: string, throughServerSeq: number) =>
     request<{ operationsGenerated: number; text: string }>(
@@ -244,12 +244,11 @@ export const api = {
   listDocuments: () => request<DocumentSummary[]>('/documents'),
 
   /**
-   * Wyszukiwanie po tytule i treści.
+   * Search over title and content.
    *
-   * Po stronie serwera to ten sam endpoint co lista — z punktu widzenia interfejsu
-   * „pokaż dokumenty" i „pokaż dokumenty pasujące do X" to jedna rzecz, różniąca się
-   * zawężeniem. Dwa osobne wejścia znaczyłyby dwa miejsca do utrzymania tej samej
-   * kolejności i tego samego limitu.
+   * On the server this is the same endpoint as the list — from the interface's point of view "show
+   * documents" and "show documents matching X" are one thing differing by a filter. Two separate
+   * entry points would mean two places maintaining the same ordering and the same limit.
    */
   searchDocuments: (query: string) =>
     request<DocumentSummary[]>(`/documents?q=${encodeURIComponent(query)}`),
@@ -259,13 +258,13 @@ export const api = {
   renameDocument: (id: string, title: string) =>
     requestNoContent(`/documents/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
 
-  /** Chowa dokument. Log operacji zostaje nietknięty — patrz DocumentCatalog. */
+  /** Hides a document. The operation log is left untouched — see DocumentCatalog. */
   deleteDocument: (id: string) => requestNoContent(`/documents/${id}`, { method: 'DELETE' }),
 
   restoreDocument: (id: string) =>
     requestNoContent(`/documents/${id}/restore`, { method: 'POST' }),
 
-  /** Ratunkowy zapis lokalnej wersji po odmowie scalenia (ADR-0005). */
+  /** The rescue save of a local version after a refused merge (ADR-0005). */
   createRecovered: (title: string, text: string) =>
     request<DocumentSummary>('/documents/recovered', {
       method: 'POST',
@@ -277,27 +276,27 @@ export const api = {
 
   openDocument: (id: string) => request<DocumentState>(`/documents/${id}`),
 
-  // --- komentarze (CP14) ---
+  // --- comments (CP14) ---
   //
-  // REST, a nie WebSocket: komentarz powstaje raz, w całości, i nikt nie oczekuje,
-  // że pojawi się u innych w tej samej klatce co naciśnięcie klawisza. KOTWICA idzie
-  // WebSocketem, bo jest zwykłym znacznikiem CRDT — patrz CommentController.
+  // REST, not WebSocket: a comment is created once, whole, and nobody expects it to appear for
+  // others in the same frame as a keystroke. The ANCHOR goes over the WebSocket, because it is an
+  // ordinary CRDT mark — see CommentController.
 
   listComments: (documentId: string, includeResolved = false) =>
     request<CommentThread[]>(
       `/documents/${documentId}/comments?resolved=${includeResolved}`,
     ),
 
-  openThread: (documentId: string, quotedText: string, body: string) =>
+  openThread: (documentId: string, quotedText: string, body: string, clientId?: string) =>
     request<CommentThread>(`/documents/${documentId}/comments`, {
       method: 'POST',
-      body: JSON.stringify({ quotedText, body }),
+      body: JSON.stringify({ quotedText, body, clientId }),
     }),
 
-  replyToThread: (threadId: string, body: string) =>
+  replyToThread: (threadId: string, body: string, clientId?: string) =>
     requestNoContent(`/comments/${threadId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body, clientId }),
     }),
 
   resolveThread: (threadId: string) =>

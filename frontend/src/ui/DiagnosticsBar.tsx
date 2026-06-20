@@ -2,12 +2,12 @@ import type { RgaDocument } from '../crdt/document'
 import type { NetworkConditions } from '../transport/simulator'
 
 /**
- * Pasek diagnostyczny — WYŁĄCZNIE przy `?debug=1`.
+ * The diagnostics bar — ONLY under `?debug=1`.
  *
- * Symulator sieci napędza demo i testy chaosu, a podgląd stanu CRDT był nieoceniony przy
- * pracy nad algorytmem. Żadna z tych rzeczy nie ma prawa pojawić się przed użytkownikiem:
- * pierwsza sprawia, że produkt wygląda na stanowisko laboratoryjne, druga posługuje się
- * pojęciami, których nie ma obowiązku znać.
+ * The network simulator drives the demo and the chaos tests, and the CRDT state view was invaluable
+ * while working on the algorithm. Neither has any business appearing in front of a user: the first
+ * makes the product look like a laboratory rig, the second uses concepts the user has no obligation
+ * to know.
  */
 export function DiagnosticsBar(props: {
   network: NetworkConditions
@@ -18,10 +18,10 @@ export function DiagnosticsBar(props: {
   const { network, onChange, document: model } = props
   return (
     <div className="diagnostics">
-      <span className="diag-label">DIAGNOSTYKA</span>
+      <span className="diag-label">DIAGNOSTICS</span>
 
       <label className="diag-slider">
-        opóźnienie
+        latency
         <input
           type="range"
           min={0}
@@ -34,7 +34,7 @@ export function DiagnosticsBar(props: {
       </label>
 
       <label className="diag-slider">
-        strata
+        loss
         <input
           type="range"
           min={0}
@@ -50,12 +50,12 @@ export function DiagnosticsBar(props: {
         className={`diag-btn${network.partitioned ? ' on' : ''}`}
         onClick={() => onChange({ partitioned: !network.partitioned })}
       >
-        {network.partitioned ? 'Przywróć łączność' : 'Odetnij sieć'}
+        {network.partitioned ? 'Restore connectivity' : 'Cut the network'}
       </button>
 
       {model && (
         <span className="diag-stats">
-          bloki {model.blockCount} · tombstony {model.tombstoneCount} · bez przyczyny{' '}
+          blocks {model.blockCount} · tombstones {model.tombstoneCount} · without cause{' '}
           {model.pendingCount}
         </span>
       )}

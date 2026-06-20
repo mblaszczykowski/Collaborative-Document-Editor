@@ -1,31 +1,31 @@
 import { useCallback, useEffect, useState } from 'react'
+import { offlineStore } from '../transport/offlineStore'
 import { api, type CommentThread } from '../api'
 import { formatTime, initials } from './format'
 
 /**
- * Panel komentarzy (CP14).
+ * The comments panel (CP14).
  *
- * **Wątek odłączony nie znika.** Gdy zakotwiczony tekst zostanie skasowany, kotwica przestaje
- * cokolwiek obejmować — ale rozmowa zostaje, pokazana z zacytowanym fragmentem z chwili
- * założenia. Kasowanie rozmowy w reakcji na edycję tekstu jest zachowaniem, którego nikt
- * się nie spodziewa, a kontekst decyzji jest zwykle jedyną rzeczą, dla której ktoś wraca
- * do komentarzy po miesiącach.
+ * **A detached thread does not disappear.** When the anchored text is deleted, the anchor stops
+ * covering anything — but the conversation stays, shown with the fragment quoted at the time it was
+ * opened. Deleting a conversation in response to a text edit is behaviour nobody expects, and the
+ * context behind a decision is usually the only reason anyone comes back to comments months later.
  *
- * **Rozwiązanie też nie jest usunięciem** — wątek schodzi z listy domyślnej i wraca
- * po przełączeniu widoku.
+ * **Resolving is not deletion either** — the thread leaves the default list and comes back when the
+ * view is toggled.
  */
 export function CommentsPanel(props: {
   documentId: string
-  /** Zaznaczony fragment tekstu; pusty, gdy nic nie jest zaznaczone. */
+  /** The selected fragment of text; empty when nothing is selected. */
   selection: string
-  /** Rośnie przy każdej zmianie dokumentu — wymusza odświeżenie stanu zakotwiczenia. */
+  /** Increments on every document change — forces the anchoring state to refresh. */
   revision: number
   onAnchor: (threadId: string) => void
   /**
-   * Rola nie pozwala komentować (`viewer`).
+   * The role does not permit commenting (`viewer`).
    *
-   * Panel zostaje widoczny — czytelnik ma prawo CZYTAĆ rozmowę, tylko nie dopisywać do niej.
-   * Ukrycie panelu odbierałoby mu kontekst, dla którego zwykle się go otwiera.
+   * The panel stays visible — a reader is entitled to READ the conversation, just not add to it.
+   * Hiding the panel would take away the context it is usually opened for.
    */
   readOnly?: boolean
 }) {
@@ -34,6 +34,8 @@ export function CommentsPanel(props: {
   const [draft, setDraft] = useState('')
   const [replyTo, setReplyTo] = useState<string | null>(null)
   const [replyDraft, setReplyDraft] = useState('')
+  /** Comments written with no connection, waiting in the outbox (CP27). */
+  const [queued, setQueued] = useState(0)
 
   const reload = useCallback(async () => {
     setThreads(await api.listComments(props.documentId, showResolved))
@@ -43,23 +45,112 @@ export function CommentsPanel(props: {
     void reload()
   }, [reload, props.revision])
 
+  /**
+   * Posts a comment, or keeps it until there is a connection (CP27).
+   *
+   * The offline buffer built in CP6 covers CRDT operations, because those travel the WebSocket.
+   * A comment travels REST, so before CP27 one written with no connection simply vanished —
+   * a limit the README named and nobody had hit in a demo, because demos have a network.
+   *
+   * The `clientId` is generated here and repeated on every retry, which is the whole mechanism:
+   * what an offline comment needs is not merging but exactly-once, and the server turns a
+   * repeated key into a no-op (ADR-0011 holds — comments still are not a CRDT).
+   */
   async function open() {
     if (draft.trim() === '') return
-    const created = await api.openThread(props.documentId, props.selection, draft.trim())
+    const clientId = crypto.randomUUID()
+    const body = draft.trim()
+    const quotedText = props.selection
     setDraft('')
-    // Kotwica powstaje PO wątku, bo potrzebuje jego identyfikatora jako wartości znacznika.
-    // Idzie osobną drogą — WebSocketem, jako zwykła operacja CRDT.
-    props.onAnchor(created.id)
+    try {
+      const created = await api.openThread(props.documentId, quotedText, body, clientId)
+      // The anchor is created AFTER the thread, because it needs the thread's identifier as the
+      // mark's value. It travels by a different route — the WebSocket, as an ordinary CRDT
+      // operation.
+      props.onAnchor(created.id)
+    } catch {
+      // The anchor is deliberately NOT placed here. It would need a thread identifier that does
+      // not exist yet, and inventing one would put a mark in the document pointing at a
+      // conversation that may never be created.
+      await offlineStore.queueComment({
+        clientId,
+        documentId: props.documentId,
+        kind: 'thread',
+        quotedText,
+        body,
+        queuedAt: Date.now(),
+      })
+      setQueued((current) => current + 1)
+    }
     await reload()
   }
 
   async function reply(threadId: string) {
     if (replyDraft.trim() === '') return
-    await api.replyToThread(threadId, replyDraft.trim())
+    const clientId = crypto.randomUUID()
+    const body = replyDraft.trim()
     setReplyDraft('')
     setReplyTo(null)
+    try {
+      await api.replyToThread(threadId, body, clientId)
+    } catch {
+      await offlineStore.queueComment({
+        clientId,
+        documentId: props.documentId,
+        kind: 'reply',
+        threadId,
+        body,
+        queuedAt: Date.now(),
+      })
+      setQueued((current) => current + 1)
+    }
     await reload()
   }
+
+  /**
+   * Sends what is waiting, oldest first.
+   *
+   * Retried on every panel refresh and when the browser reports it is back online. A comment that
+   * already arrived is recognised by its key and does not become a duplicate, so retrying costs
+   * nothing and missing an opportunity to retry costs a comment.
+   */
+  const flush = useCallback(async () => {
+    const waiting = await offlineStore.pendingComments(props.documentId).catch(() => [])
+    if (waiting.length === 0) {
+      setQueued(0)
+      return
+    }
+    let sent = 0
+    for (const entry of waiting) {
+      try {
+        if (entry.kind === 'thread') {
+          const created = await api.openThread(
+            entry.documentId,
+            entry.quotedText ?? '',
+            entry.body,
+            entry.clientId,
+          )
+          void created
+        } else if (entry.threadId !== undefined) {
+          await api.replyToThread(entry.threadId, entry.body, entry.clientId)
+        }
+        await offlineStore.forgetComment(entry.clientId)
+        sent++
+      } catch {
+        // Still no connection. Stop rather than hammering the rest of the queue.
+        break
+      }
+    }
+    setQueued(waiting.length - sent)
+    if (sent > 0) await reload()
+  }, [props.documentId, reload])
+
+  useEffect(() => {
+    void flush()
+    const onOnline = () => void flush()
+    window.addEventListener('online', onOnline)
+    return () => window.removeEventListener('online', onOnline)
+  }, [flush])
 
   async function toggleResolved(thread: CommentThread) {
     if (thread.resolvedAt === null) {
@@ -73,35 +164,42 @@ export function CommentsPanel(props: {
   return (
     <aside className="rightpanel">
       <div className="rp-header">
-        Komentarze
+        Comments
+        {queued > 0 && (
+          // Said out loud, like the save indicator: work that is only in this browser has to
+          // look different from work that is on the server.
+          <span className="rp-queued" title="Waiting for a connection">
+            {queued} unsent
+          </span>
+        )}
         <button className="rp-toggle" onClick={() => setShowResolved((on) => !on)}>
-          {showResolved ? 'Ukryj rozwiązane' : 'Pokaż rozwiązane'}
+          {showResolved ? 'Hide resolved' : 'Show resolved'}
         </button>
       </div>
 
       <div className="rp-body">
         <div className="comment-new">
           {props.readOnly ? (
-            <div className="rp-empty">Twoja rola pozwala czytać komentarze, ale nie dodawać.</div>
+            <div className="rp-empty">Your role lets you read comments, but not add them.</div>
           ) : props.selection === '' ? (
-            <div className="rp-empty">Zaznacz fragment tekstu, żeby go skomentować.</div>
+            <div className="rp-empty">Select a fragment of text to comment on it.</div>
           ) : (
             <>
               <div className="comment-quote">„{props.selection}"</div>
               <textarea
                 className="comment-draft"
                 value={draft}
-                placeholder="Twój komentarz"
+                placeholder="Your comment"
                 onChange={(event) => setDraft(event.target.value)}
               />
               <button className="comment-submit" onClick={() => void open()} disabled={draft.trim() === ''}>
-                Skomentuj
+                Comment
               </button>
             </>
           )}
         </div>
 
-        {threads.length === 0 && <div className="rp-empty">Brak komentarzy.</div>}
+        {threads.length === 0 && <div className="rp-empty">No comments.</div>}
 
         {threads.map((thread) => (
           <div
@@ -113,8 +211,8 @@ export function CommentsPanel(props: {
             <div className="comment-quote">
               „{thread.quotedText}"
               {!thread.anchored && (
-                <span className="comment-detached-mark" title="Zakotwiczony tekst został usunięty">
-                  odłączony
+                <span className="comment-detached-mark" title="The anchored text was deleted">
+                  detached
                 </span>
               )}
             </div>
@@ -141,7 +239,7 @@ export function CommentsPanel(props: {
                     className="comment-reply"
                     value={replyDraft}
                     autoFocus
-                    placeholder="Odpowiedz"
+                    placeholder="Reply"
                     onChange={(event) => setReplyDraft(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') void reply(thread.id)
@@ -151,12 +249,12 @@ export function CommentsPanel(props: {
                 </>
               ) : (
                 <button className="comment-action" onClick={() => setReplyTo(thread.id)}>
-                  Odpowiedz
+                  Reply
                 </button>
               )}
               {!props.readOnly && (
                 <button className="comment-action" onClick={() => void toggleResolved(thread)}>
-                  {thread.resolvedAt === null ? 'Rozwiąż' : 'Otwórz ponownie'}
+                  {thread.resolvedAt === null ? 'Resolve' : 'Reopen'}
                 </button>
               )}
             </div>

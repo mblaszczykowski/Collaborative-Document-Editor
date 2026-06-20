@@ -2,44 +2,42 @@ import { expect, test } from '@playwright/test'
 import { deleteDocument, freshDocument, joinAs, typeInto } from './helpers'
 
 /**
- * Lista dokumentów (CP11) na prawdziwej przeglądarce.
+ * The document list (CP11) on a real browser.
  *
- * Testy integracyjne po stronie serwera sprawdzają, że katalog zwraca właściwe dane.
- * Tutaj chodzi o coś innego: czy użytkownik potrafi tymi danymi POSŁUŻYĆ SIĘ — czyli
- * czy zmiana nazwy trafia na listę, czy usunięty dokument znika, i czy da się go
- * odzyskać, gdy usunięcie było pomyłką.
+ * The server-side integration tests check that the catalog returns the right data. This is about
+ * something else: whether a user can USE that data — whether a rename reaches the list, whether a
+ * deleted document disappears, and whether it can be recovered when the deletion was a mistake.
  *
- * <b>Tytuły muszą być unikalne między przebiegami.</b> W odróżnieniu od scenariuszy
- * współbieżności, gdzie izolację daje świeży dokument, tutaj testowanym elementem jest
- * LISTA — a ta pokazuje wszystko, co kiedykolwiek powstało. Pierwsza wersja tych testów
- * używała stałych tytułów i przechodziła dokładnie raz: przy drugim przebiegu selektor
- * trafiał na dwa wiersze o tej samej nazwie i padał na niejednoznaczności.
+ * <b>Titles have to be unique between runs.</b> Unlike the concurrency scenarios, where a fresh
+ * document provides isolation, here the thing under test is the LIST — and it shows everything ever
+ * created. The first version of these tests used fixed titles and passed exactly once: on the
+ * second run the selector hit two rows with the same name and failed on ambiguity.
  */
 
-/** Znacznik unikalny dla przebiegu — patrz komentarz nad plikiem. */
+/** A per-run unique marker — see the comment above the file. */
 function unique(name: string): string {
   return `${name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 }
 
-test('nowy dokument pojawia się na liście i daje się otworzyć', async ({ browser, request }) => {
-  const documentId = await freshDocument(request, unique('Punkt wyjścia'))
+test('a new document appears on the list and can be opened', async ({ browser, request }) => {
+  const documentId = await freshDocument(request, unique('Starting point'))
   const page = await joinAs(browser, 'Anna', documentId)
 
-  await page.getByRole('button', { name: '+ Nowy dokument' }).click()
+  await page.getByRole('button', { name: '+ New document' }).click()
 
   await expect(page.locator('.sb-item.active')).toContainText('Untitled document', {
     timeout: 10_000,
   })
-  // Adres musi odpowiadać temu, co jest otwarte — inaczej odświeżenie strony
-  // wraca do innego dokumentu niż ten, który użytkownik widzi.
+  // The address has to match what is open — otherwise reloading the page returns to a different
+  // document from the one the user is looking at.
   await expect(page).toHaveURL(/\?doc=/)
 
   await page.context().close()
 })
 
-test('zmiana nazwy z listy jest widoczna od razu', async ({ browser, request }) => {
-  const before = unique('Stara nazwa')
-  const after = unique('Nowa nazwa')
+test('renaming from the list is visible immediately', async ({ browser, request }) => {
+  const before = unique('Old name')
+  const after = unique('New name')
   const documentId = await freshDocument(request, before)
   const page = await joinAs(browser, 'Anna', documentId)
 
@@ -55,31 +53,31 @@ test('zmiana nazwy z listy jest widoczna od razu', async ({ browser, request }) 
   await page.context().close()
 })
 
-test('usunięty dokument znika z listy, a kosz pozwala go przywrócić', async ({
+test('a deleted document disappears from the list, and the bin restores it', async ({
   browser,
   request,
 }) => {
-  const doomedTitle = unique('Do kosza')
+  const doomedTitle = unique('For the bin')
   const doomed = await freshDocument(request, doomedTitle)
   const page = await joinAs(browser, 'Anna', doomed)
 
   const row = page.locator('.sb-row', { hasText: doomedTitle })
   await row.hover()
-  await row.getByRole('button', { name: /Usuń/ }).click()
+  await row.getByRole('button', { name: /Delete/ }).click()
 
   await expect(page.locator('.sidebar')).not.toContainText(doomedTitle, { timeout: 10_000 })
 
-  // Selektor po klasie, nie po nazwie dostępnej: `name: 'Kosz'` dopasowuje się PO FRAGMENCIE,
-  // więc trafiał też w dokumenty nazwane „Do kosza" i wywalał się na niejednoznaczności.
+  // A class selector rather than an accessible name: `name: 'Bin'` matches BY SUBSTRING, so it
+  // also hit documents named "For the bin" and failed on ambiguity.
   await page.locator('.sb-trash-toggle').click()
   const trashed = page.locator('.sb-row', { hasText: doomedTitle })
   await expect(trashed).toBeVisible({ timeout: 10_000 })
 
   await trashed.hover()
-  await trashed.getByRole('button', { name: /Przywróć/ }).click()
+  await trashed.getByRole('button', { name: /Restore/ }).click()
 
-  // Po przywróceniu dokument wraca na listę główną. Sprawdzamy pozycję NIEprzekreśloną,
-  // bo wpis w koszu też zawiera ten tytuł.
+  // After a restore the document returns to the main list. We check the NOT struck-through entry,
+  // because the bin entry contains the same title.
   await expect(
     page.locator('.sb-item:not(.deleted)', { hasText: doomedTitle }),
   ).toBeVisible({ timeout: 10_000 })
@@ -87,17 +85,17 @@ test('usunięty dokument znika z listy, a kosz pozwala go przywrócić', async (
   await page.context().close()
 })
 
-test('wyszukiwanie znajduje dokument po treści, nie tylko po tytule', async ({
+test('search finds a document by content, not only by title', async ({
   browser,
   request,
 }) => {
-  const marker = unique('heksadecymalny').replace(/-/g, '')
-  const title = unique('Tytuł bez znacznika')
+  const marker = unique('hexadecimal').replace(/-/g, '')
+  const title = unique('Title with no marker')
   const documentId = await freshDocument(request, title)
   const page = await joinAs(browser, 'Anna', documentId)
 
-  // Treść trafia do indeksu przez podgląd, a ten powstaje przy snapshotowaniu — stąd
-  // ponawianie zapytania zamiast pojedynczego sprawdzenia.
+  // Content enters the index through the preview, and that is created at snapshot time — hence
+  // retrying the query rather than checking once.
   await typeInto(page, `${marker} `.repeat(12))
 
   const search = page.locator('.sb-search')
@@ -110,24 +108,24 @@ test('wyszukiwanie znajduje dokument po treści, nie tylko po tytule', async ({
   await page.context().close()
 })
 
-test('dokument, którego nie da się otworzyć, mówi o tym wprost', async ({ browser, request }) => {
-  const title = unique('Zniknie')
+test('a document that cannot be opened says so plainly', async ({ browser, request }) => {
+  const title = unique('Will vanish')
   const documentId = await freshDocument(request, title)
   const page = await joinAs(browser, 'Anna', documentId)
   await expect(page.locator('.cm-content')).toBeVisible({ timeout: 15_000 })
 
-  // Kasujemy dokument POZA przeglądarką i wchodzimy na jego adres z czystej karty.
-  // Serwer odpowiada 404 — tak samo, jak odpowiada na dokument cudzy i prywatny.
+  // Delete the document OUTSIDE the browser and visit its address from a clean tab. The server
+  // answers 404 — the same as it answers for somebody else's private document.
   await deleteDocument(request, documentId)
 
-  const wracający = await joinAs(browser, 'Anna', documentId, { waitForEditor: false })
+  const returning = await joinAs(browser, 'Anna', documentId, { waitForEditor: false })
 
-  // Zanim powstał ten komunikat, odmowa kończyła się PUSTĄ STRONĄ: cała reszta interfejsu
-  // się rysowała, edytor nie pojawiał się nigdy, a jedynym śladem było odrzucone Promise
-  // w konsoli. Objaw nieodróżnialny od awarii — i regresja wprowadzona razem z autoryzacją.
-  await expect(wracający.locator('.unavailable-banner')).toBeVisible({ timeout: 15_000 })
-  await expect(wracający.locator('.cm-content')).toHaveCount(0)
+  // Before this message existed, a refusal ended in a BLANK PAGE: the rest of the interface drew
+  // itself, the editor never appeared, and the only trace was a rejected Promise in the console. A
+  // symptom indistinguishable from a crash — and a regression introduced along with authorization.
+  await expect(returning.locator('.unavailable-banner')).toBeVisible({ timeout: 15_000 })
+  await expect(returning.locator('.cm-content')).toHaveCount(0)
 
   await page.context().close()
-  await wracający.context().close()
+  await returning.context().close()
 })

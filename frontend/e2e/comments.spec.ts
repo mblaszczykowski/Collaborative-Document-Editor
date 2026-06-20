@@ -2,14 +2,14 @@ import { expect, test } from '@playwright/test'
 import { freshDocument, joinAs, typeInto } from './helpers'
 
 /**
- * Komentarze (CP14) na prawdziwych przeglądarkach.
+ * Comments (CP14) on real browsers.
  *
- * Testy integracyjne po stronie serwera sprawdzają uprawnienia i trwałość wątków.
- * Tutaj chodzi o to, czego one sprawdzić nie mogą: czy komentarz da się założyć gestem,
- * czy widzi go druga osoba i czy rozmowa zostaje, gdy zakotwiczony tekst zniknie.
+ * The server-side integration tests cover permissions and thread durability. This is about what
+ * they cannot cover: whether a comment can be created by a gesture, whether the other person sees
+ * it, and whether the conversation stays when the anchored text disappears.
  */
 
-/** Zaznacza `count` znaków od początku dokumentu. */
+/** Selects `count` characters from the start of the document. */
 async function selectFromStart(page: import('@playwright/test').Page, count: number) {
   await page.locator('.cm-content').click()
   await page.keyboard.press('Home')
@@ -17,97 +17,97 @@ async function selectFromStart(page: import('@playwright/test').Page, count: num
 }
 
 async function openCommentsPanel(page: import('@playwright/test').Page) {
-  // Celujemy w PASEK NARZĘDZI, nie w nazwę dostępną: `getByRole` dopasowuje nazwę
-  // po fragmencie, więc trafiał również w dokumenty o tytule zawierającym to słowo.
-  // Ten sam błąd wyszedł już raz przy przycisku „Kosz" w documents.spec.ts.
-  await page.locator('.editor-toolbar button[aria-label="Komentarze"]').click()
-  await expect(page.locator('.rp-header')).toContainText('Komentarze')
+  // We target the TOOLBAR, not the accessible name: `getByRole` matches a name by substring, so it
+  // also hit documents whose title contained that word. The same bug already showed up once with
+  // the "Bin" button in documents.spec.ts.
+  await page.locator('.editor-toolbar button[aria-label="Comments"]').click()
+  await expect(page.locator('.rp-header')).toContainText('Comments')
 }
 
-test('komentarz założony przez jedną osobę jest widoczny dla drugiej', async ({
+test('a comment created by one person is visible to the other', async ({
   browser,
   request,
 }) => {
-  const documentId = await freshDocument(request, `Rozmowa-${Date.now()}`)
+  const documentId = await freshDocument(request, `Conversation-${Date.now()}`)
   const ania = await joinAs(browser, 'Ania', documentId)
   const bartek = await joinAs(browser, 'Bartek', documentId)
 
-  await typeInto(ania, 'zdanie do omowienia')
-  await expect(bartek.locator('.cm-content')).toContainText('zdanie do omowienia', {
+  await typeInto(ania, 'a sentence to discuss')
+  await expect(bartek.locator('.cm-content')).toContainText('a sentence to discuss', {
     timeout: 10_000,
   })
 
   await openCommentsPanel(ania)
-  await selectFromStart(ania, 6)
+  await selectFromStart(ania, 10)
 
-  await expect(ania.locator('.comment-quote')).toContainText('zdanie', { timeout: 10_000 })
-  await ania.locator('.comment-draft').fill('Czy to jest jasne?')
-  await ania.getByRole('button', { name: 'Skomentuj' }).click()
+  await expect(ania.locator('.comment-quote')).toContainText('a sentence', { timeout: 10_000 })
+  await ania.locator('.comment-draft').fill('Is this clear?')
+  await ania.getByRole('button', { name: 'Comment' }).click()
 
-  await expect(ania.locator('.comment-thread')).toContainText('Czy to jest jasne?', {
+  await expect(ania.locator('.comment-thread')).toContainText('Is this clear?', {
     timeout: 10_000,
   })
 
-  // Druga osoba widzi rozmowę po otwarciu panelu — treść idzie REST-em, więc pojawia się
-  // przy odświeżeniu listy, a nie natychmiast.
+  // The other person sees the conversation once the panel is open — the content travels over REST,
+  // so it appears when the list refreshes rather than immediately.
   await openCommentsPanel(bartek)
-  await expect(bartek.locator('.comment-thread')).toContainText('Czy to jest jasne?', {
+  await expect(bartek.locator('.comment-thread')).toContainText('Is this clear?', {
     timeout: 15_000,
   })
 
-  // Kotwica idzie WebSocketem jako znacznik CRDT, więc podświetlenie musi dotrzeć
-  // do drugiej przeglądarki bez żadnego odświeżania.
+  // The anchor travels over the WebSocket as a CRDT mark, so the highlight has to reach the other
+  // browser without any refresh.
   await expect(bartek.locator('.cm-content .cm-mark-comment')).toBeVisible({ timeout: 10_000 })
 
   await ania.context().close()
   await bartek.context().close()
 })
 
-test('wątek zostaje po skasowaniu zakotwiczonego tekstu i jest oznaczony jako odłączony', async ({
+test('a thread stays after its anchored text is deleted and is marked detached', async ({
   browser,
   request,
 }) => {
-  const documentId = await freshDocument(request, `Kotwica-${Date.now()}`)
+  const documentId = await freshDocument(request, `Anchor-${Date.now()}`)
   const page = await joinAs(browser, 'Ania', documentId)
 
-  await typeInto(page, 'fragment do usuniecia')
+  await typeInto(page, 'fragment to be deleted')
   await openCommentsPanel(page)
   await selectFromStart(page, 8)
-  await page.locator('.comment-draft').fill('Czy to zostaje?')
-  await page.getByRole('button', { name: 'Skomentuj' }).click()
-  await expect(page.locator('.comment-thread')).toContainText('Czy to zostaje?', { timeout: 10_000 })
+  await page.locator('.comment-draft').fill('Does this stay?')
+  await page.getByRole('button', { name: 'Comment' }).click()
+  await expect(page.locator('.comment-thread')).toContainText('Does this stay?', { timeout: 10_000 })
 
-  // Kasujemy zakotwiczony fragment.
+  // Delete the anchored fragment.
   await selectFromStart(page, 8)
   await page.keyboard.press('Backspace')
-  await expect(page.locator('.cm-content')).toContainText('do usuniecia', { timeout: 10_000 })
+  await expect(page.locator('.cm-content')).toContainText('to be deleted', { timeout: 10_000 })
 
-  // Rozmowa ZOSTAJE, z zacytowanym fragmentem i oznaczeniem — kasowanie rozmowy
-  // w reakcji na edycję tekstu jest zachowaniem, którego nikt się nie spodziewa.
-  await expect(page.locator('.comment-thread')).toContainText('Czy to zostaje?')
+  // The conversation STAYS, with its quoted fragment and a marker — deleting a conversation in
+  // response to a text edit is behaviour nobody expects.
+  await expect(page.locator('.comment-thread')).toContainText('Does this stay?')
   await expect(page.locator('.comment-thread.detached')).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.comment-quote').last()).toContainText('fragment')
 
   await page.context().close()
 })
 
-test('rozwiązanie wątku chowa go z listy, ale rozmowa zostaje', async ({ browser, request }) => {
-  const documentId = await freshDocument(request, `Watek-${Date.now()}`)
+test('resolving a thread hides it from the list, but the conversation stays', async ({ browser, request }) => {
+  const documentId = await freshDocument(request, `Thread-${Date.now()}`)
   const page = await joinAs(browser, 'Ania', documentId)
 
-  await typeInto(page, 'tekst do skomentowania')
+  await typeInto(page, 'text to comment on')
   await openCommentsPanel(page)
-  await selectFromStart(page, 5)
-  await page.locator('.comment-draft').fill('Do rozwiązania')
-  await page.getByRole('button', { name: 'Skomentuj' }).click()
-  await expect(page.locator('.comment-thread')).toContainText('Do rozwiązania', { timeout: 10_000 })
+  await selectFromStart(page, 4)
+  await page.locator('.comment-draft').fill('To be resolved')
+  await page.getByRole('button', { name: 'Comment' }).click()
+  await expect(page.locator('.comment-thread')).toContainText('To be resolved', { timeout: 10_000 })
 
-  await page.getByRole('button', { name: 'Rozwiąż' }).click()
+  await page.getByRole('button', { name: 'Resolve' }).click()
   await expect(page.locator('.comment-thread')).toHaveCount(0, { timeout: 10_000 })
 
-  // …ale rozmowa nie zniknęła — jest pod przełącznikiem.
-  await page.getByRole('button', { name: 'Pokaż rozwiązane' }).click()
-  await expect(page.locator('.comment-thread.resolved')).toContainText('Do rozwiązania', {
+  // ...but the conversation has not disappeared — it is behind the toggle.
+  await page.getByRole('button', { name: 'Show resolved' }).click()
+  await expect(page.locator('.comment-thread.resolved')).toContainText('To be resolved', {
     timeout: 10_000,
   })
 

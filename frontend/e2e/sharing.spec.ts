@@ -21,8 +21,8 @@ async function ownerWithDocument(browser: Parameters<typeof joinAs>[0], name: st
   const context = await browser.newContext()
   const page = await context.newPage()
   await page.goto(APP)
-  await page.getByPlaceholder('Twoje imię').fill(name)
-  await page.getByRole('button', { name: 'Rozpocznij' }).click()
+  await page.getByPlaceholder('Your name').fill(name)
+  await page.getByRole('button', { name: 'Get started' }).click()
   // An empty document list ends with the first one being created — and since CP21 it is private.
   await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
   return page
@@ -32,7 +32,7 @@ test('an invitation lets somebody in with exactly the role it carries', async ({
   const anna = await ownerWithDocument(browser, 'Anna')
   await typeInto(anna, "Anna's text. ")
 
-  await anna.getByRole('button', { name: 'Udostępnij' }).click()
+  await anna.getByRole('button', { name: 'Share' }).click()
   const panel = anna.getByRole('dialog', { name: 'Share this document' })
   await expect(panel).toBeVisible()
 
@@ -48,15 +48,15 @@ test('an invitation lets somebody in with exactly the role it carries', async ({
   const bartek = await browser.newContext()
   const bartekPage = await bartek.newPage()
   await bartekPage.goto(link)
-  await bartekPage.getByPlaceholder('Twoje imię').fill('Bartek')
-  await bartekPage.getByRole('button', { name: 'Rozpocznij' }).click()
+  await bartekPage.getByPlaceholder('Your name').fill('Bartek')
+  await bartekPage.getByRole('button', { name: 'Get started' }).click()
 
   // The access is real: he can see Anna's text.
   await expect(bartekPage.locator('.cm-content')).toContainText("Anna's text.", {
     timeout: 15_000,
   })
   // And it is EXACTLY the role the invitation carried — commenter, not editor.
-  await expect(bartekPage.locator('.role-badge')).toHaveText('Możesz komentować')
+  await expect(bartekPage.locator('.role-badge')).toHaveText('You can comment')
 
   await anna.context().close()
   await bartek.close()
@@ -69,8 +69,8 @@ test('without an invitation the address alone lets nobody in', async ({ browser 
   const stranger = await browser.newContext()
   const strangerPage = await stranger.newPage()
   await strangerPage.goto(url)
-  await strangerPage.getByPlaceholder('Twoje imię').fill('Stranger')
-  await strangerPage.getByRole('button', { name: 'Rozpocznij' }).click()
+  await strangerPage.getByPlaceholder('Your name').fill('Stranger')
+  await strangerPage.getByRole('button', { name: 'Get started' }).click()
 
   // The same screen as for a deleted document — the server answers 404 to "no access" and to
   // "does not exist" identically, on purpose.
@@ -83,7 +83,7 @@ test('without an invitation the address alone lets nobody in', async ({ browser 
 test('raising a role takes effect without a reload', async ({ browser }) => {
   const anna = await ownerWithDocument(browser, 'Anna')
 
-  await anna.getByRole('button', { name: 'Udostępnij' }).click()
+  await anna.getByRole('button', { name: 'Share' }).click()
   const panel = anna.getByRole('dialog', { name: 'Share this document' })
   await panel.getByRole('combobox').first().selectOption('viewer')
   await panel.getByRole('button', { name: 'Create link' }).click()
@@ -93,16 +93,16 @@ test('raising a role takes effect without a reload', async ({ browser }) => {
   const bartek = await browser.newContext()
   const bartekPage = await bartek.newPage()
   await bartekPage.goto(link)
-  await bartekPage.getByPlaceholder('Twoje imię').fill('Bartek')
-  await bartekPage.getByRole('button', { name: 'Rozpocznij' }).click()
-  await expect(bartekPage.locator('.role-badge')).toHaveText('Tylko do odczytu', {
+  await bartekPage.getByPlaceholder('Your name').fill('Bartek')
+  await bartekPage.getByRole('button', { name: 'Get started' }).click()
+  await expect(bartekPage.locator('.role-badge')).toHaveText('Read-only', {
     timeout: 15_000,
   })
 
   // Anna raises his role. This is the thing the README listed as open: the role arrived once,
   // with the initial state, so granting permissions did NOTHING until a reload — which is to
   // say a working feature looked broken.
-  await anna.getByRole('button', { name: 'Udostępnij' }).click()
+  await anna.getByRole('button', { name: 'Share' }).click()
   const reopened = anna.getByRole('dialog', { name: 'Share this document' })
   const member = reopened.locator('.share-list li', { hasText: 'Bartek' })
   await member.getByRole('combobox').selectOption('editor')
