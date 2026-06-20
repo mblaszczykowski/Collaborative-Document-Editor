@@ -11,49 +11,49 @@ import { remoteCursorsField, setRemoteCursors, type RemoteCursor } from './remot
 import type { Span } from '../crdt/marks'
 
 /**
- * Edytor: CodeMirror jako **warstwa widoku**, model dokumentu własny (ADR-0006).
+ * The editor: CodeMirror as a **view layer**, with our own document model (ADR-0006).
  *
- * Przepływ jest jednokierunkowy i to jest jedyna rzecz, którą trzeba tu rozumieć:
+ * The flow is one-directional, and that is the only thing to understand here:
  *
- *   klawisz → transakcja CM → operacja CRDT → scalenie → tekst CRDT → z powrotem do CM
+ *   keystroke -> CM transaction -> CRDT operation -> merge -> CRDT text -> back into CM
  *
- * Nigdy „zmieniamy CM i osobno CRDT". Gdyby oba modele były aktualizowane niezależnie,
- * ich rozjazd byłby kwestią czasu i objawiłby się jako tekst na ekranie niezgodny ze
- * stanem wysyłanym do innych — czyli błąd, którego użytkownik nie umie zgłosić.
+ * Never "change CM and separately the CRDT". If both models were updated independently, their
+ * divergence would be a matter of time and would manifest as text on screen inconsistent with the
+ * state sent to others — a bug the user cannot report.
  *
- * Historia CodeMirrora (`history()`) jest **wyłączona**. Cofanie musi działać na operacjach
- * CRDT, bo undo na tekście zdejmowałoby również zmiany innych osób.
+ * CodeMirror's history (`history()`) is **disabled**. Undo has to operate on CRDT operations,
+ * because undo on the text would also take back other people's changes.
  */
 
-/** Znacznik transakcji pochodzącej ze scalenia zdalnego — nie wolno z niej robić operacji. */
+/** Marks a transaction originating from a remote merge — it must not produce operations. */
 const remoteChange = Annotation.define<boolean>()
 
-/** Najkrótszy odstęp między raportami pozycji kursora — uzasadnienie przy scheduleCursor. */
+/** The shortest interval between cursor position reports — justified at scheduleCursor. */
 const CURSOR_REPORT_INTERVAL_MS = 100
 
 export interface EditorProps {
   document: RgaDocument
   undo: UndoManager
   remoteCursors: RemoteCursor[]
-  /** Odcinki formatowania wyliczone przez warstwę CRDT (CP13). */
+  /** The formatting runs computed by the CRDT layer (CP13). */
   formatting: Span[]
   onLocalOps: (ops: Op[]) => void
-  /** Nadanie albo zdjęcie formatowania na aktualnym zaznaczeniu. */
+  /** Applying or removing formatting on the current selection. */
   onToggleMark: (type: string, from: number, to: number) => void
   /**
-   * Zmiana zaznaczenia, w OFFSETACH widocznego tekstu.
+   * A selection change, in OFFSETS into the visible text.
    *
-   * Osobno od `onCursorMove`, które niesie identyfikatory CRDT. Powód jest konkretny:
-   * identyfikator nie potrafi wyrazić pozycji ZERO — nie ma znaku, na którym mógłby
-   * siedzieć — więc zaznaczenie od początku dokumentu wyglądało jak brak zaznaczenia.
-   * Panel komentarzy potrzebuje zakresu, nie kotwic, więc dostaje offsety.
+   * Separate from `onCursorMove`, which carries CRDT identifiers. The reason is concrete: an
+   * identifier cannot express position ZERO — there is no character for it to sit on — so a
+   * selection from the start of the document looked like no selection at all. The comment panel
+   * needs a range, not anchors, so it gets offsets.
    */
   onSelectionChange: (from: number, to: number, text: string) => void
   onCursorMove: (head: Id | null, anchor: Id | null) => void
-  /** Cofnięcie i ponowienie — obsługiwane wyżej, bo generują operacje do rozesłania. */
+  /** Undo and redo — handled a layer up, because they produce operations to broadcast. */
   onUndo: () => void
   onRedo: () => void
-  /** Rejestruje funkcję, którą warstwa wyżej wywoła po scaleniu operacji zdalnych. */
+  /** Registers the function the layer above calls after merging remote operations. */
   registerRemoteApply: (apply: () => void) => void
   readOnly?: boolean
 }
@@ -67,17 +67,17 @@ export function Editor(props: EditorProps) {
   useEffect(() => {
     if (!host.current) return
 
-    // Ograniczenie tempa raportowania kursora.
+    // Throttling of cursor reporting.
     //
-    // Bez tego pozycja leci przy KAŻDYM zdarzeniu edytora: każdym klawiszu, a przy trzymanej
-    // strzałce ~30 razy na sekundę (auto-powtarzanie systemu). Serwer odsyła to wszystkim
-    // uczestnikom, więc ruch rośnie z kwadratem liczby osób — i to na zdarzeniu, które nie
-    // niesie żadnej treści.
+    // Without it the position goes out on EVERY editor event: every keystroke, and ~30 times a
+    // second with an arrow key held (the system's auto-repeat). The server relays that to every
+    // participant, so traffic grows with the square of the number of people — for an event that
+    // carries no content at all.
     //
-    // 100 ms, bo kursor innego użytkownika nie musi być płynniejszy niż 10 klatek na sekundę,
-    // żeby wyglądać na żywy; poniżej tego progu dokładamy ruchu bez różnicy widocznej gołym
-    // okiem. Wariant TRAILING, nie leading: ostatnia pozycja zawsze zostaje wysłana, więc
-    // kursor nie zatrzymuje się w miejscu, w którym akurat wypadł koniec okna.
+    // 100 ms, because another user's cursor does not have to be smoother than 10 frames per second
+    // to look alive; below that threshold we add traffic with no difference visible to the naked
+    // eye. The TRAILING variant, not leading: the last position is always sent, so the cursor does
+    // not stop wherever the end of the window happened to fall.
     let cursorTimer: number | null = null
     let pendingCursor: { head: Id | null; anchor: Id | null } | null = null
 
@@ -97,11 +97,11 @@ export function Editor(props: EditorProps) {
     }
 
     /**
-     * Przełącza formatowanie na zaznaczeniu.
+     * Toggles formatting on the selection.
      *
-     * Zwraca `true` również wtedy, gdy nie ma czego formatować — bo skrót ma być OBSŁUŻONY
-     * niezależnie od tego, czy coś zmienił. Zwrócenie `false` przekazałoby Ctrl+B dalej,
-     * do przeglądarki, która ma na to własną obsługę.
+     * Returns `true` even when there is nothing to format — because the shortcut is to be HANDLED
+     * regardless of whether it changed anything. Returning `false` would pass Ctrl+B on to the
+     * browser, which has its own handling for it.
      */
     const toggleMark = (type: string): boolean => {
       const selection = view.current?.state.selection.main
@@ -111,16 +111,15 @@ export function Editor(props: EditorProps) {
     }
 
     const state = EditorState.create({
-      // Dokument startuje pusty i wypełnia się z operacji przysłanych przez serwer.
+      // The document starts empty and fills up from the operations the server sends.
       doc: '',
       extensions: [
-        // history() świadomie POMINIĘTE (patrz komentarz nad komponentem), ale skróty
-        // MUSZĄ działać — edytor, w którym Ctrl+Z nic nie robi, jest zepsuty.
-        // Kierujemy je do UndoManagera, który cofa WYŁĄCZNIE własne operacje użytkownika.
+        // history() deliberately OMITTED (see the comment above the component), but the shortcuts
+        // MUST work — an editor where Ctrl+Z does nothing is broken. They are routed to the
+        // UndoManager, which undoes ONLY the user's own operations.
         keymap.of([
-          // Skróty formatowania. Bez nich pasek narzędzi jest jedyną drogą, a edytor tekstu,
-          // w którym Ctrl+B nic nie robi, sprawia wrażenie zepsutego niezależnie od tego,
-          // ile przycisków ma na wierzchu.
+          // The formatting shortcuts. Without them the toolbar is the only route, and a text
+          // editor where Ctrl+B does nothing feels broken no matter how many buttons it shows.
           { key: 'Mod-b', run: () => toggleMark('bold'), preventDefault: true },
           { key: 'Mod-i', run: () => toggleMark('italic'), preventDefault: true },
           { key: 'Mod-u', run: () => toggleMark('underline'), preventDefault: true },
@@ -140,15 +139,15 @@ export function Editor(props: EditorProps) {
           if (update.docChanged && !update.transactions.some((t) => t.annotation(remoteChange))) {
             const ops = changesToOps(current.document, update.changes, current.undo)
 
-            // Niezmiennik: po każdej zmianie lokalnej tekst w CodeMirrorze i tekst w CRDT
-            // muszą być identyczne. To jest ASERCJA, nie nadzieja — bez niej rozjazd obu
-            // modeli objawiłby się dopiero u innego użytkownika, jako „widzę co innego".
+            // The invariant: after every local change the text in CodeMirror and the text in the
+            // CRDT have to be identical. This is an ASSERTION, not a hope — without it, the two
+            // models diverging would only surface for another user, as "I see something else".
             if (import.meta.env.DEV) {
               const inEditor = update.state.doc.toString()
               const inCrdt = current.document.text
               if (inEditor !== inCrdt) {
                 console.error(
-                  'ROZJAZD modeli po zmianie lokalnej:\n  CodeMirror: %o\n  CRDT:       %o',
+                  'MODEL DIVERGENCE after a local change:\n  CodeMirror: %o\n  CRDT:       %o',
                   inEditor,
                   inCrdt,
                 )
@@ -175,9 +174,9 @@ export function Editor(props: EditorProps) {
     const editor = new EditorView({ state, parent: host.current })
     view.current = editor
 
-    // Scalenie zdalne: przenosimy do CodeMirrora MINIMALNĄ zmianę, a nie cały dokument.
-    // Podmiana całości byłaby poprawna, ale zrzucałaby kursor i zaznaczenie użytkownika —
-    // czyli psułaby pisanie dokładnie wtedy, gdy ktoś inny edytuje ten sam akapit.
+    // A remote merge: we move the MINIMAL change into CodeMirror, not the whole document.
+    // Replacing everything would be correct, but it would drop the user's cursor and selection —
+    // that is, break typing exactly when somebody else is editing the same paragraph.
     props.registerRemoteApply(() => {
       const current = latest.current
       const target = current.document.text
@@ -191,7 +190,7 @@ export function Editor(props: EditorProps) {
       editor.destroy()
       view.current = null
     }
-    // Edytor tworzymy raz na dokument; zmiany propsów obsługuje `latest`.
+    // The editor is created once per document; prop changes are handled by `latest`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -207,11 +206,11 @@ export function Editor(props: EditorProps) {
 }
 
 /**
- * Zgłasza pozycję kursora jako **identyfikatory znaków CRDT**, nie offsety (ADR-0006).
+ * Reports the cursor position as **CRDT character identifiers**, not offsets (ADR-0006).
  *
- * Kursor na końcu dokumentu nie ma znaku, na którym mógłby siedzieć — wtedy zgłaszamy
- * null i druga strona rysuje go na końcu. To jedyny przypadek, w którym pozycja kursora
- * nie jest zakotwiczona w tekście i może „odpłynąć" przy zdalnej edycji.
+ * A cursor at the end of the document has no character to sit on — we report null then, and the
+ * other side draws it at the end. That is the only case where a cursor position is not anchored in
+ * the text and can "drift" under remote editing.
  */
 function reportCursor(
   state: EditorState,
@@ -224,9 +223,9 @@ function reportCursor(
   const toId = (position: number): Id | null =>
     position > 0 && position <= documentLength ? props.document.idAtVisible(position - 1) : null
 
-  // Mapowanie offsetu na identyfikator dzieje się TUTAJ, przed ograniczeniem tempa,
-  // a nie w momencie wysyłki. Gdyby odłożyć je do końca okna, dokument mógłby się w tym
-  // czasie zmienić i ten sam offset wskazywałby już inny znak — czyli kursor lądowałby
-  // w cudzym tekście. To jest dokładnie ten błąd, przed którym chroni ADR-0006.
+  // The offset-to-identifier mapping happens HERE, before the throttle, not at send time. Deferred
+  // to the end of the window, the document could change in the meantime and the same offset would
+  // point at a different character — that is, the cursor would land in somebody else's text. That
+  // is exactly the bug ADR-0006 guards against.
   emit(toId(selection.head), selection.empty ? null : toId(selection.anchor))
 }

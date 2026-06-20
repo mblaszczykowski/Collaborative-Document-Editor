@@ -4,28 +4,28 @@ import { RgaDocument } from '../crdt/document'
 import { changesToOps, minimalChange } from './bridge'
 
 describe('minimalChange', () => {
-  it('wstawienie w środku dotyka tylko wstawionego fragmentu', () => {
+  it('an insertion in the middle touches only the inserted fragment', () => {
     expect(minimalChange('abcdef', 'abcXYdef')).toEqual({ from: 3, to: 3, insert: 'XY' })
   })
 
-  it('usunięcie w środku nie rusza otoczenia', () => {
+  it('a deletion in the middle leaves its surroundings alone', () => {
     expect(minimalChange('abcdef', 'abef')).toEqual({ from: 2, to: 4, insert: '' })
   })
 
-  it('identyczny tekst nie generuje zmiany', () => {
+  it('identical text produces no change', () => {
     expect(minimalChange('abc', 'abc')).toBeNull()
   })
 
-  it('powtarzające się znaki nie mylą wyliczenia przyrostka', () => {
-    // Klasyczna pułapka: naiwne liczenie wspólnego przyrostka potrafi "przejechać"
-    // przez przedrostek i wyprodukować ujemny zakres.
+  it('repeated characters do not confuse the suffix computation', () => {
+    // The classic trap: a naive common-suffix computation can run back through the prefix and
+    // produce a negative range.
     const change = minimalChange('aaa', 'aa')!
     expect(change.to - change.from).toBe(1)
     expect(change.insert).toBe('')
     expect('aaa'.slice(0, change.from) + change.insert + 'aaa'.slice(change.to)).toBe('aa')
   })
 
-  it('zamiana całości gdy nie ma nic wspólnego', () => {
+  it('a whole-text replacement when nothing is in common', () => {
     expect(minimalChange('abc', 'xyz')).toEqual({ from: 0, to: 3, insert: 'xyz' })
   })
 })
@@ -38,20 +38,20 @@ describe('changesToOps', () => {
     return document
   }
 
-  it('pojedyncze wstawienie', () => {
+  it('a single insertion', () => {
     const changes = ChangeSet.of([{ from: 3, insert: 'XY' }], 6)
     expect(applyLocal('abcdef', changes).text).toBe('abcXYdef')
   })
 
-  it('pojedyncze usunięcie', () => {
+  it('a single deletion', () => {
     const changes = ChangeSet.of([{ from: 2, to: 4 }], 6)
     expect(applyLocal('abcdef', changes).text).toBe('abef')
   })
 
-  it('KILKA zmian naraz — wielokrotne zaznaczenie', () => {
-    // To jest przypadek, dla którego zmiany muszą być przetwarzane OD KOŃCA.
-    // Przy przetwarzaniu od początku druga zmiana trafiłaby w pozycję przesuniętą
-    // przez pierwszą — i test dałby "aXbcdYef" albo coś jeszcze gorszego.
+  it('SEVERAL changes at once — a multiple selection', () => {
+    // This is the case that forces changes to be processed FROM THE END. Processing forwards, the
+    // second change would land at a position shifted by the first — and the test would give
+    // something other than "aXbcdYef", or worse.
     const changes = ChangeSet.of(
       [
         { from: 1, insert: 'X' },
@@ -62,7 +62,7 @@ describe('changesToOps', () => {
     expect(applyLocal('abcdef', changes).text).toBe('aXbcdYef')
   })
 
-  it('zamiana zaznaczonego tekstu w kilku miejscach', () => {
+  it('replacing selected text in several places', () => {
     const changes = ChangeSet.of(
       [
         { from: 0, to: 2, insert: 'Z' },
@@ -73,10 +73,10 @@ describe('changesToOps', () => {
     expect(applyLocal('abcdef', changes).text).toBe('ZcdW')
   })
 
-  it('wynik zgadza się z tym, co wyliczył sam CodeMirror', () => {
-    // Najmocniejsza forma tego testu: nie sprawdzamy oczekiwanego stringa z głowy,
-    // tylko porównujemy z wynikiem, jaki daje własna implementacja CodeMirrora.
-    // Rozjazd między nimi to dokładnie ten błąd, który psuje edytor w praktyce.
+  it('the result agrees with what CodeMirror itself computed', () => {
+    // The strongest form of this test: rather than checking an expected string from memory, we
+    // compare against what CodeMirror's own implementation produces. Divergence between the two is
+    // exactly the bug that breaks the editor in practice.
     const before = 'The quick brown fox'
     const changes = ChangeSet.of(
       [

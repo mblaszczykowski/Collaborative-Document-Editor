@@ -4,22 +4,22 @@ import type { UndoManager } from '../crdt/undo'
 import type { Op } from '../crdt/types'
 
 /**
- * Most między CodeMirrorem a CRDT.
+ * The bridge between CodeMirror and the CRDT.
  *
- * ADR-0006 ustala granicę: **źródłem prawdy jest CRDT, CodeMirror jest projekcją.**
- * Każda zmiana lokalna idzie drogą `CM → operacja CRDT → scalenie → z powrotem do CM`,
- * nigdy „zmieniamy CM i osobno CRDT". Ten plik jest jedynym miejscem, w którym te dwa
- * modele się spotykają — celowo, żeby rozjazd miał tylko jedno możliwe źródło.
+ * ADR-0006 sets the boundary: **the CRDT is the source of truth, CodeMirror is a projection.**
+ * Every local change follows the path `CM -> CRDT operation -> merge -> back to CM`, never "change
+ * CM and separately the CRDT". This file is the only place the two models meet — deliberately, so
+ * that divergence has exactly one possible source.
  */
 
 /**
- * Zamienia zestaw zmian CodeMirrora na operacje CRDT.
+ * Turns a CodeMirror change set into CRDT operations.
  *
- * **Zmiany są przetwarzane OD KOŃCA.** Powód: `iterChanges` podaje pozycje w dokumencie
- * *sprzed* zmiany, a każda zastosowana operacja przesuwa wszystko, co jest za nią.
- * Idąc od początku, drugie i kolejne zmiany trafiałyby w przesunięte miejsca — błąd,
- * który przy pojedynczej zmianie (czyli przy zwykłym pisaniu) w ogóle się nie ujawnia
- * i wychodzi dopiero przy wklejeniu z wielokrotnym zaznaczeniem albo przy „zamień wszystko".
+ * **The changes are processed FROM THE END.** The reason: `iterChanges` reports positions in the
+ * document *before* the change, and every applied operation shifts everything after it. Going
+ * forwards, the second and subsequent changes would land in shifted places — a bug that with a
+ * single change (that is, ordinary typing) never manifests at all and only surfaces on a paste with
+ * a multiple selection or on "replace all".
  */
 export function changesToOps(
   document: RgaDocument,
@@ -36,8 +36,8 @@ export function changesToOps(
     const change = collected[i]
 
     if (change.toA > change.fromA) {
-      // Tekst i kotwicę trzeba odczytać PRZED usunięciem — potem jednego nie ma,
-      // a drugie ma inną pozycję.
+      // The text and the anchor have to be read BEFORE the deletion — afterwards one is gone and
+      // the other is at a different position.
       const removed = document.text.slice(change.fromA, change.toA)
       const anchor = change.fromA > 0 ? document.idAtVisible(change.fromA - 1) : null
       ops.push(document.delete(change.fromA, change.toA - change.fromA))
@@ -54,21 +54,21 @@ export function changesToOps(
 }
 
 /**
- * Minimalna zmiana zamieniająca `current` na `target`.
+ * The minimal change turning `current` into `target`.
  *
- * Po scaleniu operacji zdalnych mamy nowy tekst CRDT i chcemy przenieść go do CodeMirrora
- * tak, żeby **kursor użytkownika nie skoczył**. Podmiana całego dokumentu jest poprawna,
- * ale ustawiłaby kursor na końcu i zrzuciła zaznaczenie — czyli psułaby pisanie dokładnie
- * wtedy, gdy ktoś inny edytuje ten sam akapit.
+ * After merging remote operations we have new CRDT text and want to move it into CodeMirror in a
+ * way that **does not make the user's cursor jump**. Replacing the whole document is correct, but
+ * it would put the cursor at the end and drop the selection — that is, it would break typing
+ * exactly when somebody else is editing the same paragraph.
  *
- * Wspólny przedrostek i przyrostek wystarczają, bo operacja zdalna to zwykle jedna zwarta
- * zmiana. Przy kilku rozrzuconych zmianach naraz wyliczony zakres jest szerszy niż konieczny —
- * poprawnie, ale mniej oszczędnie.
+ * A common prefix and suffix are enough, because a remote operation is usually one contiguous
+ * change. With several scattered changes at once the computed range is wider than necessary —
+ * correct, but less economical.
  *
- * Koszt to O(długość dokumentu) na paczkę operacji zdalnych. **Do zmierzenia w CP8**:
- * przy dokumencie rzędu 100 tys. znaków i intensywnej edycji przez wiele osób to może
- * przestać wystarczać, a wtedy właściwą odpowiedzią jest wyliczanie pozycji wprost
- * z identyfikatorów operacji, a nie porównywanie tekstu.
+ * The cost is O(document length) per batch of remote operations. **To be measured in CP8**: on a
+ * document of ~100k characters under heavy multi-user editing this may stop being enough, and the
+ * right answer then is computing positions directly from operation identifiers rather than
+ * comparing text.
  */
 export function minimalChange(
   current: string,

@@ -2,24 +2,25 @@ import { StateEffect, StateField } from '@codemirror/state'
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view'
 
 /**
- * Kursory i zaznaczenia innych użytkowników.
+ * Other users' cursors and selections.
  *
- * Kluczowa decyzja jest gdzie indziej — w tym, że presence przenosi **identyfikatory znaków
- * CRDT, a nie offsety** (ADR-0006). Gdyby kursor Marka był „kolumną 42", wstawienie znaku
- * przez Annę przed tą pozycją przesunęłoby tekst, ale nie kursor, i Marek pokazywałby cudzy
- * znak. Identyfikator przesuwa się razem z tekstem, bo jest przyczepiony do znaku.
+ * The key decision lives elsewhere — in the fact that presence carries **CRDT character
+ * identifiers, not offsets** (ADR-0006). If Marek's cursor were "column 42", Anna inserting a
+ * character before that position would move the text but not the cursor, and Marek would be
+ * pointing at someone else's character. An identifier moves with the text, because it is attached
+ * to a character.
  *
- * Tutaj identyfikatory są już zamienione na offsety — na ostatnią możliwą chwilę, tuż przed
- * rysowaniem, na podstawie aktualnego stanu CRDT.
+ * Here the identifiers have already been turned into offsets — at the last possible moment, just
+ * before drawing, from the current CRDT state.
  */
 
 export interface RemoteCursor {
   replicaId: number
   displayName: string
   color: string
-  /** Pozycja kursora w widocznym tekście; null gdy znak został właśnie usunięty. */
+  /** The cursor's position in the visible text; null when its character has just been deleted. */
   head: number | null
-  /** Początek zaznaczenia; null gdy brak zaznaczenia. */
+  /** The selection's start; null when there is no selection. */
   anchor: number | null
   typing: boolean
 }
@@ -27,8 +28,8 @@ export interface RemoteCursor {
 export const setRemoteCursors = StateEffect.define<RemoteCursor[]>()
 
 /**
- * Chorągiewka z imieniem nad kursorem — wygląd wprost z mockupu
- * (`docs/design/mockup-inkline.html`, klasa `.cursor-caret`).
+ * The name flag above the caret — the look comes straight from the mockup
+ * (`docs/design/mockup-inkline.html`, the `.cursor-caret` class).
  */
 class CaretWidget extends WidgetType {
   private readonly name: string
@@ -45,11 +46,11 @@ class CaretWidget extends WidgetType {
   }
 
   /**
-   * Pozycja JEST częścią tożsamości widgetu.
+   * The position IS part of the widget's identity.
    *
-   * Gdyby jej tu nie było, CodeMirror uznałby przesunięty kursor za ten sam widget
-   * i użył ponownie tego samego węzła DOM — a wtedy animacja pojawienia się imienia
-   * nie zaczęłaby się od nowa i chorągiewka nie pokazywałaby się przy ruchu kursora.
+   * Without it here, CodeMirror would treat a moved caret as the same widget and reuse the same DOM
+   * node — and then the name's appearance animation would not restart and the flag would not show
+   * when the cursor moves.
    */
   eq(other: CaretWidget): boolean {
     return (
@@ -63,7 +64,7 @@ class CaretWidget extends WidgetType {
   toDOM(): HTMLElement {
     const caret = document.createElement('span')
     caret.className = 'remote-caret'
-    // Własność niestandardowa, nie `color` — patrz komentarz przy .remote-caret w styles.css.
+    // A custom property, not `color` — see the comment at .remote-caret in styles.css.
     caret.style.setProperty('--caret', this.color)
     const flag = document.createElement('span')
     flag.className = 'remote-caret-flag'
@@ -99,15 +100,15 @@ function buildDecorations(cursors: RemoteCursor[], documentLength: number): Deco
     decorations.push(
       Decoration.widget({
         widget: new CaretWidget(cursor.displayName, cursor.color, cursor.typing, cursor.head),
-        // side: 1 stawia widget PO pozycji, dzięki czemu kursor własny użytkownika
-        // i cudzy w tym samym miejscu nie nachodzą na siebie wizualnie.
+        // side: 1 places the widget AFTER the position, so that the user's own caret and someone
+        // else's in the same place do not overlap visually.
         side: 1,
       }).range(cursor.head),
     )
   }
 
-  // Dekoracje muszą być posortowane rosnąco po pozycji — CodeMirror tego wymaga
-  // i przy naruszeniu rzuca wyjątkiem dopiero w czasie renderowania.
+  // The decorations have to be sorted ascending by position — CodeMirror requires it and throws
+  // only at render time when it is violated.
   decorations.sort((a, b) => a.from - b.from || a.value.startSide - b.value.startSide)
   return Decoration.set(decorations, true)
 }

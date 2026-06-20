@@ -6,22 +6,21 @@ import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
 import { TRACE_ENDPOINT } from '../config'
 
 /**
- * Śledzenie zaczynające się w przeglądarce (CP7).
+ * Tracing that starts in the browser (CP7).
  *
- * <p>Bez tego trace zaczynałby się dopiero na serwerze, a najciekawsza część drogi —
- * od naciśnięcia klawisza do wysłania ramki — byłaby niewidoczna. `CLAUDE.md` §4 wymaga
- * trace'u obejmującego całą drogę pojedynczej edycji, więc kontekst musi powstać tutaj.
+ * Without this a trace would only begin at the server, and the most interesting part of the path —
+ * from keystroke to frame — would be invisible. `CLAUDE.md` §4 calls for a trace covering the whole
+ * path of a single edit, so the context has to be created here.
  *
- * <p>Kontekst jest przenoszony nagłówkiem ramki STOMP, nie nagłówkiem HTTP. Uścisk dłoni
- * WebSocketa zdarza się raz na sesję, więc kontekst w nagłówku HTTP opisywałby całą sesję
- * zamiast pojedynczej operacji.
+ * The context travels in a STOMP frame header, not an HTTP header. The WebSocket handshake happens
+ * once per session, so a context in an HTTP header would describe the whole session rather than a
+ * single operation.
  *
- * <p><b>Świadome ograniczenie:</b> śledzimy tylko wysyłanie operacji, nie odbieranie.
- * Powiązanie „operacja pojawiła się u odbiorcy" z pierwotnym trace'em wymagałoby przenoszenia
- * kontekstu wraz z każdą rozesłaną operacją, co powiększyłoby ramkę o ~55 bajtów przy jej
- * typowym rozmiarze rzędu stu — narzut nieproporcjonalny do korzyści. Latencję po stronie
- * odbiorcy mierzymy zamiast tego w harnessie benchmarkowym (CP8), gdzie obie strony dzielą
- * jeden zegar.
+ * **A deliberate limitation:** we trace only sending operations, not receiving them. Linking "the
+ * operation appeared at the receiver" to the original trace would require carrying the context with
+ * every broadcast operation, growing a frame by ~55 bytes against a typical size of about a hundred
+ * — overhead out of proportion to the benefit. The receiver-side latency is measured instead in the
+ * benchmark harness (CP8), where both sides share one clock.
  */
 
 let provider: WebTracerProvider | null = null
@@ -50,8 +49,8 @@ export function initialiseTracing(): void {
         // The collector accepts OTLP over HTTP on 4318 (gRPC does not work from a browser).
         new OTLPTraceExporter({ url: `${TRACE_ENDPOINT}/v1/traces` }),
         {
-          // Krótkie okno: przy demo i przy diagnozowaniu chcemy zobaczyć trace niemal
-          // od razu, a nie po domyślnych pięciu sekundach.
+          // A short window: for a demo and for diagnosis we want to see a trace almost
+          // immediately, not after the default five seconds.
           scheduledDelayMillis: 1000,
         },
       ),
@@ -63,11 +62,11 @@ export function initialiseTracing(): void {
 const tracer = () => trace.getTracer('inkline')
 
 /**
- * Wykonuje wysłanie operacji wewnątrz spanu i zwraca kontekst do przekazania serwerowi.
+ * Performs the send of an operation inside a span and returns the context to hand to the server.
  *
- * Zwracany `traceparent` jest formatem W3C Trace Context — tym samym, który rozumie
- * propagator po stronie Javy, więc obie strony nie muszą nic o sobie wiedzieć poza
- * nazwą nagłówka.
+ * The returned `traceparent` is in the W3C Trace Context format — the same one the propagator on
+ * the Java side understands, so neither side needs to know anything about the other beyond the
+ * header's name.
  */
 export function traceOperation<T>(
   name: string,

@@ -3,27 +3,26 @@ import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import type { Span } from '../crdt/marks'
 
 /**
- * Rysowanie formatowania tekstu (CP13).
+ * Drawing text formatting (CP13).
  *
- * Ta warstwa jest **wyłącznie widokiem**, dokładnie jak reszta integracji z CodeMirrorem
- * (ADR-0006). Nie decyduje, co jest pogrubione — dostaje gotowe odcinki wyliczone przez
- * warstwę CRDT i zamienia je na dekoracje. Gdyby decydowała sama, byłby to trzeci model
- * dokumentu obok CRDT i CodeMirrora, czyli trzecia rzecz do rozjechania się.
+ * This layer is **purely a view**, exactly like the rest of the CodeMirror integration (ADR-0006).
+ * It does not decide what is bold — it receives finished runs computed by the CRDT layer and turns
+ * them into decorations. If it decided for itself, it would be a third model of the document beside
+ * the CRDT and CodeMirror, that is, a third thing to drift apart.
  *
- * Odcinki przychodzą w widocznych współrzędnych, przeliczone na ostatnią chwilę przed
- * rysowaniem — z tego samego powodu, dla którego tak działają kursory: dokument mógł się
- * zmienić między wyliczeniem a narysowaniem.
+ * The runs arrive in visible coordinates, computed at the last moment before drawing — for the same
+ * reason cursors work that way: the document may have changed between computation and paint.
  */
 
 export const setFormatting = StateEffect.define<Span[]>()
 
 /**
- * Klasa CSS na typ znacznika.
+ * A CSS class per mark type.
  *
- * Nieznany typ dostaje klasę ogólną zamiast być pomijany. Znacznik nadany przez nowszą
- * wersję klienta ma być widoczny jako COŚ — brak wyróżnienia sprawiłby, że użytkownik
- * starszej wersji nie wie, że tekst jest sformatowany, i skasowałby formatowanie,
- * nie wiedząc o jego istnieniu.
+ * An unknown type gets a generic class rather than being skipped. A mark applied by a newer client
+ * version should be visible as SOMETHING — no distinction at all would mean a user on an older
+ * version does not know the text is formatted, and would delete the formatting without knowing it
+ * existed.
  */
 function classOf(type: string): string {
   switch (type) {
@@ -40,8 +39,8 @@ function classOf(type: string): string {
     case 'link':
       return 'cm-mark-link'
     case 'comment':
-      // Kotwica komentarza jest znacznikiem jak każdy inny — cała różnica jest w tym,
-      // że jej wartością jest identyfikator wątku, a nie treść formatowania.
+      // A comment anchor is a mark like any other — the only difference is that its value is a
+      // thread identifier rather than formatting content.
       return 'cm-mark-comment'
     // Suggestions (CP23) are the third thing built out of this layer, and they need nothing
     // here beyond a class: the proposed text is ordinary text, and the mark is what says it is
@@ -59,9 +58,9 @@ function classOf(type: string): string {
 function decorationsFor(spans: Span[], documentLength: number): DecorationSet {
   const ranges = []
   for (const span of spans) {
-    // Przycinanie do długości dokumentu: odcinek wyliczony przed ostatnią zmianą mógłby
-    // wystawać poza tekst, a CodeMirror rzuca wtedy wyjątkiem przy rysowaniu. To jest
-    // ten sam wyścig, przed którym chroni przycinanie pozycji kursorów.
+    // Clamping to the document length: a run computed before the latest change could extend past
+    // the text, and CodeMirror then throws while painting. It is the same race that clamping
+    // cursor positions guards against.
     const from = Math.max(0, Math.min(span.from, documentLength))
     const to = Math.max(0, Math.min(span.to, documentLength))
     if (from >= to) continue
@@ -71,9 +70,9 @@ function decorationsFor(spans: Span[], documentLength: number): DecorationSet {
     ranges.push(
       Decoration.mark({
         class: classes,
-        // Adres linku jako atrybut, nie jako element <a>: dokument jest edytowalny,
-        // a klikalny link wewnątrz pola edycji przechwytywałby kliknięcia zamiast
-        // ustawiać kursor. Adres jest widoczny w podpowiedzi.
+        // The link address as an attribute rather than an <a> element: the document is editable,
+        // and a clickable link inside an editing surface would capture clicks instead of placing
+        // the cursor. The address is visible in the tooltip.
         attributes: href ? { title: href } : undefined,
       }).range(from, to),
     )
@@ -87,9 +86,9 @@ export const formattingField = StateField.define<DecorationSet>({
   },
 
   update(decorations, transaction) {
-    // Najpierw przesuwamy istniejące dekoracje wraz ze zmianami w dokumencie. Bez tego
-    // formatowanie „migałoby" przy każdym naciśnięciu klawisza: znikało na jedną klatkę
-    // i wracało dopiero po przeliczeniu odcinków przez warstwę CRDT.
+    // First map the existing decorations through the document's changes. Without this the
+    // formatting would "flicker" on every keystroke: disappearing for one frame and coming back
+    // only once the CRDT layer had recomputed the runs.
     let updated = decorations.map(transaction.changes)
     for (const effect of transaction.effects) {
       if (effect.is(setFormatting)) {
