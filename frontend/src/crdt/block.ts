@@ -1,26 +1,26 @@
 import { compareIds, id, idEquals, idPlus, type Id } from './types'
 
 /**
- * Ciągły przebieg znaków od jednej repliki — jednostka przechowywania.
+ * A contiguous run of characters from one replica — the unit of storage.
  *
- * Dokument nie jest listą znaków, tylko listą bloków: wpisanie 20 znaków pod rząd to jeden
- * obiekt, a nie 20. Uzasadnienie i niezmienniki w `docs/crdt-design.md` sekcja 3.
+ * A document is not a list of characters but a list of blocks: typing 20 characters in a row is one
+ * object, not 20. The justification and the invariants are in `docs/crdt-design.md` section 3.
  *
- * NIEZMIENNIK: blok jest w całości żywy albo w całości usunięty. Usunięcie fragmentu
- * najpierw dzieli blok.
+ * INVARIANT: a block is either entirely alive or entirely deleted. Deleting part of one splits the
+ * block first.
  */
 export class Block {
   readonly start: Id
   readonly text: string
-  /** Lewy origin PIERWSZEGO znaku bloku; null oznacza początek dokumentu. */
+  /** The left origin of the block's FIRST character; null means the start of the document. */
   readonly originLeft: Id | null
-  /** Jedyne pole mutowalne — oznaczenie tombstone'em to jedyna zmiana, jaka może
-      spotkać istniejący blok bez jego podziału. */
+  /** The only mutable field — marking a tombstone is the only change an existing block can
+      undergo without being split. */
   deleted: boolean
 
   constructor(start: Id, text: string, originLeft: Id | null, deleted: boolean) {
     if (text.length === 0) {
-      throw new Error('blok nie może być pusty')
+      throw new Error('a block cannot be empty')
     }
     this.start = start
     this.text = text
@@ -57,15 +57,15 @@ export class Block {
   }
 
   /**
-   * Dzieli blok na [0, offset) oraz [offset, length).
+   * Splits the block into [0, offset) and [offset, length).
    *
-   * Origin prawej części to ostatni znak lewej — dzięki temu podział jest operacją czysto
-   * techniczną i nie zmienia struktury logicznej dokumentu. To jest kluczowy niezmiennik:
-   * gdyby podział zmieniał znaczenie, wynik zależałby od tego, KIEDY blok został podzielony.
+   * The right part's origin is the left part's last character — which makes a split a purely
+   * technical operation that does not change the document's logical structure. This is a key
+   * invariant: if splitting changed meaning, the result would depend on WHEN a block was split.
    */
   splitAt(offset: number): [Block, Block] {
     if (offset <= 0 || offset >= this.text.length) {
-      throw new Error(`podział poza wnętrzem bloku: offset=${offset}, długość=${this.text.length}`)
+      throw new Error(`split outside the block's interior: offset=${offset}, length=${this.text.length}`)
     }
     return [
       new Block(this.start, this.text.slice(0, offset), this.originLeft, this.deleted),
@@ -79,10 +79,10 @@ export class Block {
   }
 
   /**
-   * Czy `other` da się dopisać na końcu tego bloku bez zmiany znaczenia.
+   * Whether `other` can be appended to the end of this block without changing meaning.
    *
-   * To jest szybka ścieżka zwykłego pisania — bez niej każdy naciśnięty klawisz tworzyłby
-   * osobny blok i kompresja run-length nie dawałaby nic.
+   * This is the fast path for ordinary typing — without it every keystroke would create a separate
+   * block and run-length compression would gain nothing.
    */
   canAppend(other: Block): boolean {
     return (
@@ -98,7 +98,7 @@ export class Block {
     return new Block(this.start, this.text + more, this.originLeft, this.deleted)
   }
 
-  /** Reprezentacja zgodna z Block.toString() w Javie — używana przy diagnostyce rozjazdów. */
+  /** A representation matching Block.toString() in Java — used when diagnosing divergence. */
   describe(): string {
     const origin = this.originLeft === null ? 'null' : `${this.originLeft.replicaId}@${this.originLeft.lamport}`
     return `${this.deleted ? '~' : ''}${this.start.replicaId}@${this.start.lamport}:"${this.text}"←${origin}`

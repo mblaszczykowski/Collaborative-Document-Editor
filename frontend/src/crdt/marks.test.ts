@@ -3,15 +3,15 @@ import { decodeOp, encodeOp } from './codec'
 import { RgaDocument } from './document'
 
 /**
- * Formatowanie po stronie klienta (CP13) — bliźniak `MarkTest.java`.
+ * Client-side formatting (CP13) — the twin of `MarkTest.java`.
  *
- * Te same scenariusze co w Javie i to jest celowe: obie implementacje muszą zachowywać się
- * identycznie, a korpus konformancyjny pilnuje tego dla operacji już utworzonych. Nie pilnuje
- * natomiast decyzji podejmowanych przy TWORZENIU operacji — wyboru stron kotwic — bo te
- * dzieją się przed powstaniem czegokolwiek, co dałoby się porównać. Stąd te testy.
+ * The same scenarios as in Java, deliberately: the two implementations have to behave identically,
+ * and the conformance corpus enforces that for operations that already exist. What it does not
+ * enforce is the decisions made when an operation is CREATED — the choice of anchor sides — because
+ * those happen before anything comparable exists. Hence these tests.
  */
 
-/** Formatowanie znaku na danej pozycji — wygodniejsze w asercjach niż lista odcinków. */
+/** The formatting of the character at a given position — easier to assert on than a list of runs. */
 function marksAt(document: RgaDocument, index: number): ReadonlyMap<string, string | null> {
   for (const span of document.formatting()) {
     if (index >= span.from && index < span.to) return span.marks
@@ -19,8 +19,8 @@ function marksAt(document: RgaDocument, index: number): ReadonlyMap<string, stri
   return new Map()
 }
 
-describe('formatowanie', () => {
-  test('tekst wpisany w środek pogrubienia dziedziczy je, mimo że autor go nie widział', () => {
+describe('formatting', () => {
+  test('text typed inside a bold range inherits it, even though its author had not seen it', () => {
     const ania = new RgaDocument(1)
     const bartek = new RgaDocument(2)
 
@@ -28,7 +28,7 @@ describe('formatowanie', () => {
     bartek.apply(base)
 
     const bold = ania.addMark(1, 5, 'bold', null)
-    // Bartek NIE widział jeszcze pogrubienia.
+    // Bartek had NOT seen the bold mark yet.
     const inserted = bartek.insert(3, 'XY')
 
     ania.apply(inserted)
@@ -40,7 +40,7 @@ describe('formatowanie', () => {
     expect(bartek.formatting()).toEqual(ania.formatting())
   })
 
-  test('pogrubienie rośnie przy pisaniu na jego końcu', () => {
+  test('bold grows when typing at its end', () => {
     const document = new RgaDocument(1)
     document.insert(0, 'abcdef')
     document.addMark(1, 3, 'bold', null)
@@ -51,7 +51,7 @@ describe('formatowanie', () => {
     expect(marksAt(document, 3).has('bold')).toBe(true)
   })
 
-  test('link NIE rośnie przy pisaniu na jego końcu', () => {
+  test('a link does NOT grow when typing at its end', () => {
     const document = new RgaDocument(1)
     document.insert(0, 'abcdef')
     document.addMark(1, 3, 'link', 'https://example.test')
@@ -62,7 +62,7 @@ describe('formatowanie', () => {
     expect(marksAt(document, 3).has('link')).toBe(false)
   })
 
-  test('formatowanie nie rośnie wstecz', () => {
+  test('formatting does not grow backwards', () => {
     const document = new RgaDocument(1)
     document.insert(0, 'abcdef')
     document.addMark(2, 4, 'bold', null)
@@ -74,7 +74,7 @@ describe('formatowanie', () => {
     expect(marksAt(document, 3).has('bold')).toBe(true)
   })
 
-  test('współbieżne nadanie i zdjęcie zbiegają się niezależnie od kolejności', () => {
+  test('a concurrent add and remove converge regardless of order', () => {
     const ania = new RgaDocument(1)
     const bartek = new RgaDocument(2)
     const base = ania.insert(0, 'abcdef')
@@ -88,14 +88,14 @@ describe('formatowanie', () => {
 
     expect(bartek.formatting()).toEqual(ania.formatting())
 
-    const trzeci = new RgaDocument(3)
-    trzeci.apply(base)
-    trzeci.apply(unbold)
-    trzeci.apply(bold)
-    expect(trzeci.formatting()).toEqual(ania.formatting())
+    const third = new RgaDocument(3)
+    third.apply(base)
+    third.apply(unbold)
+    third.apply(bold)
+    expect(third.formatting()).toEqual(ania.formatting())
   })
 
-  test('znacznik czeka w buforze na swoje kotwice', () => {
+  test('a mark waits in the buffer for its anchors', () => {
     const ania = new RgaDocument(1)
     const bartek = new RgaDocument(2)
 
@@ -111,7 +111,7 @@ describe('formatowanie', () => {
     expect(bartek.pendingCount).toBe(0)
   })
 
-  test('formatowanie przeżywa skasowanie sąsiedniego tekstu', () => {
+  test('formatting survives deletion of the neighbouring text', () => {
     const document = new RgaDocument(1)
     document.insert(0, 'abcdef')
     document.addMark(2, 4, 'bold', null)
@@ -123,7 +123,7 @@ describe('formatowanie', () => {
     expect(marksAt(document, 2).has('bold')).toBe(false)
   })
 
-  test('powtórzony znacznik jest rozpoznawany jako duplikat', () => {
+  test('a repeated mark is recognised as a duplicate', () => {
     const ania = new RgaDocument(1)
     const bartek = new RgaDocument(2)
     bartek.apply(ania.insert(0, 'abcdef'))
@@ -134,7 +134,7 @@ describe('formatowanie', () => {
     expect(bartek.markCount).toBe(1)
   })
 
-  test('sąsiadujące odcinki o tym samym formatowaniu są sklejane', () => {
+  test('adjacent runs with the same formatting are merged', () => {
     const document = new RgaDocument(1)
     document.insert(0, 'abcdef')
     document.addMark(0, 3, 'bold', null)
@@ -146,7 +146,7 @@ describe('formatowanie', () => {
     expect(spans[0].to).toBe(6)
   })
 
-  test('format przewodowy znacznika przechodzi w obie strony', () => {
+  test('a mark round-trips through the wire format', () => {
     const document = new RgaDocument(1)
     document.insert(0, 'abcdef')
 
@@ -157,13 +157,13 @@ describe('formatowanie', () => {
     expect(decodeOp(encodeOp(removed))).toEqual(removed)
   })
 
-  test('pole wartości jest POMIJANE, gdy nieużywane — musi zgadzać się z Javą', () => {
+  test('the value field is OMITTED when unused — it has to match Java', () => {
     const document = new RgaDocument(1)
     document.insert(0, 'abcdef')
     const bold = document.addMark(1, 4, 'bold', null)
 
-    // Java pomija pole `v` dla znacznika bez wartości. Wysłanie `"v":null` dałoby inny
-    // bajt na drucie przy tej samej operacji, a wektory konformancyjne porównują tekst.
+    // Java omits the `v` field for a mark with no value. Sending `"v":null` would give different
+    // bytes on the wire for the same operation, and the conformance vectors compare text.
     expect(Object.keys(encodeOp(bold))).not.toContain('v')
   })
 })

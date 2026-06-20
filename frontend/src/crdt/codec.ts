@@ -11,27 +11,27 @@ import {
 } from './types'
 
 /**
- * Format przewodowy operacji — musi być IDENTYCZNY z `OpCodec` w Javie.
+ * The wire format for operations — it must be IDENTICAL to `OpCodec` in Java.
  *
- * Nazwy pól są jednoliterowe celowo (ADR-0002): przy operacji niosącej jeden znak
- * `"originLeft"` kosztuje w ramce więcej niż sama treść.
+ * The field names are single letters deliberately (ADR-0002): for an operation carrying one
+ * character, `"originLeft"` costs more in the frame than the content itself.
  *
- *   wstawienie: {"t":"i","r":1,"l":7,"or":2,"ol":3,"s":"abc"}
- *   usunięcie:  {"t":"d","r":1,"l":9,"g":[[2,3,5]]}
- *   znacznik+:  {"t":"m","r":1,"l":11,"k":"bold","v":"…","a":[2,3,0],"b":[2,7,1]}
- *   znacznik−:  {"t":"x","r":1,"l":13,"k":"bold","a":[2,3,0],"b":[2,7,1]}
+ *   insert:  {"t":"i","r":1,"l":7,"or":2,"ol":3,"s":"abc"}
+ *   delete:  {"t":"d","r":1,"l":9,"g":[[2,3,5]]}
+ *   mark+:   {"t":"m","r":1,"l":11,"k":"bold","v":"…","a":[2,3,0],"b":[2,7,1]}
+ *   mark−:   {"t":"x","r":1,"l":13,"k":"bold","a":[2,3,0],"b":[2,7,1]}
  *
- * Kotwica jest zapisana jako `[replika, lamport, strona]`, gdzie strona 0 = przed, 1 = za.
- * Trójelementowa tablica zamiast obiektu z nazwami pól z tego samego powodu, dla którego
- * pola są jednoliterowe: operacji znacznikowych jest dużo, a nazwy pól powtarzałyby się
- * w każdej z nich.
+ * An anchor is written as `[replica, lamport, side]`, where side 0 = before, 1 = after. A
+ * three-element array rather than an object with field names, for the same reason the fields are
+ * single letters: mark operations are numerous, and the field names would repeat in every one of
+ * them.
  *
- * Ten plik i `OpCodec.java` są parą, którą trzeba zmieniać razem. Wektory konformancyjne
- * są zapisane w tym formacie, więc rozbieżność wychodzi natychmiast w testach — to jest
- * jedyny powód, dla którego dwie ręcznie utrzymywane implementacje formatu są do obrony.
+ * This file and `OpCodec.java` are a pair that has to change together. The conformance vectors are
+ * written in this format, so a discrepancy shows up immediately in the tests — which is the only
+ * reason two hand-maintained implementations of a format are defensible.
  */
 
-/** Kotwica na drucie: [replika, lamport, strona] — strona 0 = przed, 1 = za. */
+/** An anchor on the wire: [replica, lamport, side] — side 0 = before, 1 = after. */
 type WireAnchor = [number, number, number]
 
 export interface WireOp {
@@ -82,9 +82,9 @@ export function encodeOp(op: Op): WireOp {
         a: encodeAnchor(op.start),
         b: encodeAnchor(op.end),
       }
-      // Pole wartości POMIJANE, gdy nieużywane — musi zgadzać się z wersją w Javie,
-      // która też je pomija. Wysłanie `"v":null` dałoby inny bajt na drucie przy tej samej
-      // operacji, a wektory konformancyjne porównują ciąg znaków.
+      // The value field is OMITTED when unused — it has to match the Java version, which omits
+      // it too. Sending `"v":null` would give different bytes on the wire for the same operation,
+      // and the conformance vectors compare strings.
       if (op.value !== null) {
         wire.v = op.value
       }

@@ -28,33 +28,33 @@ interface Locator {
 }
 
 /**
- * Replika dokumentu po stronie klienta.
+ * The client-side document replica.
  *
- * Zachowanie musi być IDENTYCZNE z `RgaDocument` w Javie — nie „równoważne", tylko takie
- * samo znak w znak, łącznie ze znanym ograniczeniem RGA (przeplot przy pisaniu wstecz).
- * Pilnuje tego korpus wektorów konformancyjnych.
+ * Its behaviour has to be IDENTICAL to `RgaDocument` in Java — not "equivalent", but the same
+ * character for character, including RGA's known limitation (interleaving when typing backwards).
+ * The corpus of conformance vectors enforces that.
  *
- * INDEKS JEST NAIWNY (skanowanie liniowe), w przeciwieństwie do wersji serwerowej, która
- * używa treapa. To jest świadoma decyzja, a nie przeoczenie: po stronie serwera zmierzyliśmy
- * benchmarkiem, że skanowanie liniowe boli, i dopiero wtedy je zastąpiliśmy. Po stronie
- * klienta odpowiedniego pomiaru (opóźnienie pisania w przeglądarce przy dokumencie
- * o 100 tys. znaków) jeszcze nie ma — więc nie optymalizujemy w ciemno.
- * DO ZMIERZENIA W CP8; jeśli wyjdzie źle, port treapa jest mechaniczny.
+ * THE INDEX IS NAIVE (a linear scan), unlike the server version, which uses a treap. That is a
+ * deliberate decision rather than an oversight: on the server we measured with a benchmark that a
+ * linear scan hurts, and only then replaced it. On the client the corresponding measurement (typing
+ * latency in the browser on a 100k-character document) does not exist yet — so we do not optimise
+ * blind. TO BE MEASURED IN CP8; if it turns out badly, porting the treap is mechanical.
  */
 export class RgaDocument {
   private blocks: Block[] = []
-  /** Zegar Lamporta — wartość, którą dostanie następna operacja lokalna. */
+  /** The Lamport clock — the value the next local operation will receive. */
   private clock = 0
-  /** Najwyższy zastosowany lamport per replika. Do GC i resynchronizacji, NIE do dedup. */
+  /** The highest applied lamport per replica. For GC and resynchronisation, NOT for dedup. */
   private readonly maxSeen = new Map<number, number>()
-  /** Operacje, których nie da się jeszcze zastosować (brakuje originu albo celu usunięcia). */
+  /** Operations that cannot be applied yet (a missing origin or deletion target). */
   private pending: Op[] = []
 
   /**
-   * Formatowanie jako osobna warstwa nad sekwencją znaków (CP13).
+   * Formatting as a separate layer over the character sequence (CP13).
    *
-   * Osobna, bo nie jest atrybutem znaku i nie może nim być — uzasadnienie w `marks.ts`
-   * i po stronie Javy. Widać to w tym, że `Block` nie zmienił się w CP13 ani o jedno pole.
+   * Separate, because it is not an attribute of a character and cannot be one — the justification
+   * is in `marks.ts` and on the Java side. It shows in the fact that `Block` did not change by a
+   * single field in CP13.
    */
   private readonly marks = new MarkSet()
 
@@ -69,37 +69,37 @@ export class RgaDocument {
   }
 
   /**
-   * Przyjmuje identyfikator repliki nadany przez serwer.
+   * Adopts the replica identifier assigned by the server.
    *
-   * Identyfikatory MUSZĄ być globalnie unikalne — kolizja sprawia, że algorytm uzna
-   * dwa różne znaki za ten sam i po cichu zgubi tekst jednego z autorów. Dlatego nadaje
-   * je jeden licznik w Redisie, a nie klient (ReplicaIdAllocator po stronie serwera).
+   * Identifiers MUST be globally unique — a collision makes the algorithm treat two different
+   * characters as the same one and silently lose one author's text. That is why a single counter in
+   * Redis hands them out rather than the client (ReplicaIdAllocator on the server).
    *
-   * Rzuca, gdy replika zdążyła już cokolwiek wygenerować: zmiana identyfikatora po
-   * wygenerowaniu operacji rozspójniłaby strukturę, bo istniejące znaki nadal
-   * wskazywałyby na stary. Warunek jest asercją projektową, a nie obsługą błędu —
-   * jeśli kiedykolwiek zadziała, znaczy że kolejność inicjalizacji się zepsuła.
+   * Throws when the replica has already generated anything: changing the identifier after
+   * generating operations would diverge the structure, because the existing characters would still
+   * point at the old one. The condition is a design assertion rather than error handling — if it
+   * ever fires, the initialisation order has broken.
    */
   adoptReplicaId(replicaId: number): void {
     if (this.clock > 0) {
       throw new Error(
-        `próba zmiany identyfikatora repliki po wygenerowaniu ${this.clock} operacji`,
+        `attempt to change the replica identifier after generating ${this.clock} operations`,
       )
     }
     this.replicaIdValue = replicaId
   }
 
   // ------------------------------------------------------------------
-  // Operacje lokalne
+  // Local operations
   // ------------------------------------------------------------------
 
   insert(visibleIndex: number, text: string): InsertOp {
     const length = this.visibleLength
     if (visibleIndex < 0 || visibleIndex > length) {
-      throw new RangeError(`pozycja ${visibleIndex} poza tekstem o długości ${length}`)
+      throw new RangeError(`position ${visibleIndex} is outside text of length ${length}`)
     }
-    // Origin to widoczny poprzednik punktu wstawienia. Gdy przed pozycją stoją tombstone'y,
-    // nowy tekst ląduje przed nimi — zachowanie standardowe dla RGA.
+    // The origin is the visible predecessor of the insertion point. When tombstones sit before
+    // the position, the new text lands before them — standard RGA behaviour.
     const originLeft = visibleIndex === 0 ? null : this.idAtVisible(visibleIndex - 1)
 
     const op: InsertOp = { kind: 'insert', id: id(this.replicaIdValue, this.clock), originLeft, text }
@@ -111,20 +111,20 @@ export class RgaDocument {
 
   delete(visibleIndex: number, count: number): DeleteOp {
     if (count <= 0) {
-      throw new RangeError('liczba znaków do usunięcia musi być dodatnia')
+      throw new RangeError('the number of characters to delete must be positive')
     }
     const length = this.visibleLength
     if (visibleIndex < 0 || visibleIndex + count > length) {
       throw new RangeError(
-        `zakres [${visibleIndex}, ${visibleIndex + count}) poza tekstem o długości ${length}`,
+        `range [${visibleIndex}, ${visibleIndex + count}) is outside text of length ${length}`,
       )
     }
 
     const targets: Range[] = []
     let remaining = count
     while (remaining > 0) {
-      // Po oznaczeniu bloku tombstone'em przestaje on być widoczny, więc visibleIndex
-      // wskazuje już na kolejny znak do usunięcia — dlatego nie jest zwiększany.
+      // Once a block is marked as a tombstone it stops being visible, so visibleIndex already
+      // points at the next character to delete — which is why it is not incremented.
       const found = this.locateVisible(visibleIndex)!
       let index = found.blockIndex
       if (found.offset > 0) {
@@ -148,20 +148,20 @@ export class RgaDocument {
   }
 
   // ------------------------------------------------------------------
-  // Operacje zdalne
+  // Remote operations
   // ------------------------------------------------------------------
 
   // ------------------------------------------------------------------
-  // Formatowanie (CP13)
+  // Formatting (CP13)
   // ------------------------------------------------------------------
 
   /**
-   * Nadaje formatowanie zakresowi widocznego tekstu [from, to).
+   * Applies formatting to a range of visible text [from, to).
    *
-   * Wybór stron kotwic decyduje o zachowaniu przy pisaniu — początek zawsze `before`
-   * (formatowanie nie rośnie wstecz), koniec zależnie od typu znacznika. Pełne uzasadnienie
-   * przy `addMark` w wersji Javy; tutaj musi zgadzać się co do znaku, bo obie strony
-   * tworzą operacje niezależnie.
+   * The choice of anchor sides decides the behaviour while typing — the start is always `before`
+   * (formatting does not grow backwards), the end depends on the mark type. The full justification
+   * is at `addMark` in the Java version; here it has to agree character for character, because both
+   * sides create operations independently.
    */
   addMark(from: number, to: number, type: string, value: string | null): AddMarkOp {
     const op: AddMarkOp = {
@@ -195,7 +195,7 @@ export class RgaDocument {
   private anchorStart(from: number): Anchor {
     const length = this.visibleLength
     if (from < 0 || from >= length) {
-      throw new RangeError(`początek zakresu ${from} poza tekstem o długości ${length}`)
+      throw new RangeError(`range start ${from} is outside text of length ${length}`)
     }
     return anchorBefore(this.idAtVisible(from))
   }
@@ -203,16 +203,16 @@ export class RgaDocument {
   private anchorEnd(to: number, type: string): Anchor {
     const length = this.visibleLength
     if (to <= 0 || to > length) {
-      throw new RangeError(`koniec zakresu ${to} poza tekstem o długości ${length}`)
+      throw new RangeError(`range end ${to} is outside text of length ${length}`)
     }
-    // Zakres sięgający końca dokumentu nie ma znaku, o który zaczepić kotwicę
-    // rozszerzającą — znane ograniczenie, opisane po stronie Javy.
+    // A range reaching the end of the document has no character to anchor an expanding anchor to
+    // — a known limitation, documented on the Java side.
     return markExpandsAtEnd(type) && to < length
       ? anchorBefore(this.idAtVisible(to))
       : anchorAfter(this.idAtVisible(to - 1))
   }
 
-  /** Formatowanie widocznego tekstu jako rozłączne odcinki, w kolejności. */
+  /** The visible text's formatting as disjoint runs, in order. */
   formatting(): Span[] {
     return this.marks.spans((anchor) => this.anchorPosition(anchor))
   }
@@ -222,11 +222,11 @@ export class RgaDocument {
   }
 
   /**
-   * Pozycja kotwicy w widocznych współrzędnych.
+   * An anchor's position in visible coordinates.
    *
-   * Kotwica na tombstonie nie znika — wskazuje szczelinę między widocznymi znakami, które
-   * go otaczają. Dzięki temu skasowanie sformatowanego tekstu i wpisanie nowego w to samo
-   * miejsce zachowuje formatowanie zamiast je gubić.
+   * An anchor on a tombstone does not disappear — it points at the gap between the visible
+   * characters surrounding it. That is what makes deleting formatted text and typing new text in
+   * the same place preserve the formatting instead of losing it.
    */
   private anchorPosition(anchor: Anchor): number | null {
     let seen = 0
@@ -243,8 +243,8 @@ export class RgaDocument {
   }
 
   apply(op: Op): ApplyResult {
-    // Zegar podbijamy nawet dla operacji zbuforowanej: reguła Lamporta dotyczy odbioru,
-    // nie zastosowania.
+    // The clock advances even for a buffered operation: the Lamport rule concerns receipt, not
+    // application.
     this.clock = Math.max(this.clock, opMaxLamport(op) + 1)
 
     if (this.isAlreadyKnown(op)) {
@@ -267,9 +267,8 @@ export class RgaDocument {
     if (op.kind === 'insert') {
       return this.locateId(op.id) !== null
     }
-    // Operacje znacznikowe są kluczowane własnym identyfikatorem, więc rozpoznanie
-    // duplikatu jest dokładne — w odróżnieniu od usunięcia, gdzie wnioskujemy
-    // z zawartości struktury.
+    // Mark operations are keyed by their own identifier, so duplicate detection is exact —
+    // unlike deletion, where we infer it from the structure's contents.
     if (isMarkOp(op)) {
       return this.marks.has(op.id)
     }
@@ -298,14 +297,14 @@ export class RgaDocument {
       return true
     }
     if (isMarkOp(op)) {
-      // Znacznik czeka na OBIE kotwice. Zastosowany wcześniej dałby formatowanie
-      // w przypadkowym miejscu — cichą korupcję wyglądu dokumentu.
+      // A mark waits for BOTH anchors. Applied earlier it would put formatting in a random
+      // place — silent corruption of the document's appearance.
       if (this.locateId(op.start.charId) === null) return false
       if (this.locateId(op.end.charId) === null) return false
       this.marks.apply(op)
       return true
     }
-    // Wszystko albo nic — patrz komentarz przy tryApplyDelete w wersji Javy.
+    // All or nothing — see the comment at tryApplyDelete in the Java version.
     for (const range of op.targets) {
       if (!this.isRangeFullyPresent(range)) return false
     }
@@ -348,16 +347,16 @@ export class RgaDocument {
   }
 
   // ------------------------------------------------------------------
-  // Serce algorytmu
+  // The heart of the algorithm
   // ------------------------------------------------------------------
 
   /**
-   * Reguła RGA: znajdź origin, idź w prawo dopóki napotykane bloki mają WYŻSZY znacznik
-   * czasu niż wstawiany, wstaw w pierwszym miejscu o niższym.
+   * The RGA rule: find the origin, walk right while the blocks encountered have a HIGHER timestamp
+   * than the one being inserted, insert at the first place with a lower one.
    *
-   * Skan jest gruboziarnisty (po blokach, nie po znakach) i jest to poprawne, bo znaki
-   * w bloku mają rosnące lamporty: jeśli pierwszy znak bloku ma wyższy znacznik niż
-   * wstawiany, to wszystkie pozostałe też.
+   * The scan is coarse-grained (over blocks, not characters), and that is correct because the
+   * characters in a block have increasing lamports: if a block's first character has a higher
+   * timestamp than the one being inserted, so do all the rest.
    */
   private integrate(op: InsertOp): void {
     let position: number
@@ -366,8 +365,8 @@ export class RgaDocument {
     } else {
       const found = this.locateId(op.originLeft)!
       const originBlock = this.blocks[found.blockIndex]
-      // Origin musi być ostatnim znakiem swojego bloku, żeby "zaraz za originem"
-      // było granicą bloków.
+      // The origin has to be the last character of its block, so that "immediately after the
+      // origin" is a block boundary.
       if (found.offset < originBlock.length - 1) {
         this.splitBlock(found.blockIndex, found.offset + 1)
       }
@@ -380,7 +379,7 @@ export class RgaDocument {
 
     const block = new Block(op.id, op.text, op.originLeft, false)
 
-    // Szybka ścieżka zwykłego pisania.
+    // The fast path for ordinary typing.
     if (position > 0) {
       const previous = this.blocks[position - 1]
       if (previous.canAppend(block)) {
@@ -414,7 +413,7 @@ export class RgaDocument {
   }
 
   // ------------------------------------------------------------------
-  // Odczyt stanu
+  // Reading the state
   // ------------------------------------------------------------------
 
   get text(): string {
@@ -449,22 +448,23 @@ export class RgaDocument {
     return new Map(this.maxSeen)
   }
 
-  /** Identyfikator znaku na podanej pozycji widocznego tekstu — pozycja kursora (ADR-0006). */
+  /** The identifier of the character at the given visible position — a cursor position (ADR-0006). */
   idAtVisible(visibleIndex: number): Id {
     const found = this.locateVisible(visibleIndex)
     if (found === null) {
-      throw new RangeError(`brak widocznego znaku na pozycji ${visibleIndex}`)
+      throw new RangeError(`no visible character at position ${visibleIndex}`)
     }
     return this.blocks[found.blockIndex].idAt(found.offset)
   }
 
   /**
-   * Odwrotność `idAtVisible` — pozycja w tekście dla znaku o podanym identyfikatorze.
+   * The inverse of `idAtVisible` — the position in the text of the character with a given
+   * identifier.
    *
-   * Potrzebne do rysowania kursorów innych użytkowników: presence niesie identyfikatory
-   * (bo te przesuwają się razem z tekstem), a CodeMirror rysuje po offsetach.
-   * Zwraca null, gdy znak jest tombstone'em albo go nie ma — kursor osoby, której znak
-   * ktoś właśnie skasował, po prostu znika, zamiast wskazywać przypadkowe miejsce.
+   * Needed to draw other users' cursors: presence carries identifiers (because those move with the
+   * text), whereas CodeMirror draws by offsets. Returns null when the character is a tombstone or
+   * absent — the cursor of someone whose character has just been deleted simply disappears instead
+   * of pointing at a random place.
    */
   visibleIndexOf(target: Id): number | null {
     let seen = 0
@@ -478,16 +478,16 @@ export class RgaDocument {
   }
 
   /**
-   * Czy znak o podanym identyfikatorze jest w strukturze — również jako tombstone.
+   * Whether the character with the given identifier is in the structure — including as a tombstone.
    *
-   * Używane do wykrywania luk: potwierdzenie zapisu niesie tożsamość operacji, więc brak
-   * tej operacji u nas oznacza, że jej rozgłoszenie nie dotarło.
+   * Used for gap detection: a write acknowledgement carries the operation's identity, so not
+   * holding that operation means its broadcast never arrived.
    */
   contains(target: Id): boolean {
     return this.locateId(target) !== null
   }
 
-  /** Kopia bloków w kolejności dokumentu — do diagnostyki i porównań z wersją w Javie. */
+  /** A copy of the blocks in document order — for diagnostics and comparison with the Java version. */
   describeBlocks(): string[] {
     return this.blocks.map((block) => block.describe())
   }

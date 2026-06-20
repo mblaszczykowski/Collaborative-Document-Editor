@@ -1,28 +1,28 @@
 import { compareIds, idToString, type Anchor, type Id, type Op } from './types'
 
 /**
- * Warstwa formatowania — bliźniak `MarkSet.java` (CP13).
+ * The formatting layer — the twin of `MarkSet.java` (CP13).
  *
- * Model: znacznik NIE jest atrybutem znaku, tylko zakresem między dwiema kotwicami.
- * Pełne uzasadnienie po stronie Javy; tutaj skrótowo, bo powtarzanie go w dwóch miejscach
- * znaczy, że rozjadą się dwa opisy zamiast jednego.
+ * The model: a mark is NOT an attribute of a character but a range between two anchors. The full
+ * justification lives on the Java side; here it is abbreviated, because repeating it in two places
+ * means two descriptions drift apart instead of one.
  *
- * Rozstrzyganie konfliktów: dla danego znaku i typu wygrywa operacja o najwyższym
- * `(lamport, replicaId)` spośród obejmujących ten znak — ten sam porządek totalny, którego
- * używa reguła wstawiania RGA.
+ * Conflict resolution: for a given character and type, the operation with the highest
+ * `(lamport, replicaId)` among those covering that character wins — the same total order RGA's
+ * insertion rule uses.
  *
- * Kod trzymany blisko struktury wersji w Javie (te same nazwy, ta sama kolejność), żeby
- * porównanie przy zmianie było mechaniczne.
+ * The code is kept close to the structure of the Java version (the same names, the same order), so
+ * that comparing them on a change is mechanical.
  */
 
-/** Rozwiązany znacznik na odcinku widocznego tekstu [from, to). */
+/** A resolved mark over a run of visible text [from, to). */
 export interface Span {
   readonly from: number
   readonly to: number
   readonly marks: ReadonlyMap<string, string | null>
 }
 
-/** Pozycja kotwicy w widocznych współrzędnych; null gdy znaku nie ma w strukturze. */
+/** An anchor's position in visible coordinates; null when the character is not in the structure. */
 export type AnchorResolver = (anchor: Anchor) => number | null
 
 interface Resolved {
@@ -36,16 +36,16 @@ interface Resolved {
 
 export class MarkSet {
   /**
-   * Operacje znacznikowe, kluczowane identyfikatorem.
+   * The mark operations, keyed by identifier.
    *
-   * `Map` zachowuje kolejność wstawiania, ale wynik od niej nie zależy — porządek
-   * rozstrzygania jest jawny i wyliczany przy każdym renderowaniu.
+   * `Map` preserves insertion order, but the result does not depend on it — the resolution order is
+   * explicit and computed on every render.
    */
   private readonly operations = new Map<string, Op>()
 
   apply(op: Op): boolean {
     if (op.kind !== 'addMark' && op.kind !== 'removeMark') {
-      throw new Error(`to nie jest operacja znacznikowa: ${op.kind}`)
+      throw new Error(`not a mark operation: ${op.kind}`)
     }
     const key = idToString(op.id)
     if (this.operations.has(key)) return false
@@ -66,17 +66,16 @@ export class MarkSet {
   }
 
   /**
-   * Formatowanie widocznego tekstu jako rozłączne, uporządkowane odcinki.
+   * The visible text's formatting as disjoint, ordered runs.
    *
-   * Odcinki bez żadnego formatowania są pomijane — warstwa widoku dostaje wyłącznie to,
-   * co ma narysować.
+   * Runs with no formatting at all are omitted — the view layer receives only what it has to draw.
    */
   spans(resolve: AnchorResolver): Span[] {
     const resolved = this.resolveAll(resolve)
     if (resolved.length === 0) return []
 
-    // Granice: początek i koniec każdego zakresu. Między dwiema kolejnymi granicami
-    // formatowanie jest z definicji stałe.
+    // The boundaries: the start and end of every range. Between two consecutive boundaries the
+    // formatting is constant by definition.
     const boundaries = new Set<number>()
     for (const entry of resolved) {
       boundaries.add(entry.from)
@@ -84,7 +83,7 @@ export class MarkSet {
     }
     const points = [...boundaries].sort((a, b) => a - b)
 
-    // Malejąco po (lamport, replicaId): pierwsza pasująca operacja danego typu wygrywa.
+    // Descending by (lamport, replicaId): the first matching operation of a given type wins.
     const byPriority = [...resolved].sort((a, b) => compareIds(b.op.id, a.op.id))
 
     const spans: Span[] = []
@@ -114,8 +113,8 @@ export class MarkSet {
       const from = resolve(op.start)
       const to = resolve(op.end)
       if (from === null || to === null || from >= to) {
-        // Kotwica poza strukturą albo zakres pusty po skasowaniu zawartości.
-        // Znacznik nic nie obejmuje — nie jest to błąd.
+        // The anchor is outside the structure, or the range is empty after its content was
+        // deleted. The mark covers nothing — which is not an error.
         continue
       }
       resolved.push({
@@ -132,11 +131,11 @@ export class MarkSet {
 }
 
 /**
- * Skleja sąsiadujące odcinki o identycznym formatowaniu.
+ * Merges adjacent runs with identical formatting.
  *
- * Granice pochodzą od WSZYSTKICH zakresów, więc dwa pogrubienia stykające się końcami dałyby
- * dwa odcinki o tej samej treści — czyli dwa elementy DOM tam, gdzie wystarczy jeden.
- * Przy renderowaniu na każde naciśnięcie klawisza to jest różnica.
+ * The boundaries come from EVERY range, so two bold marks meeting end to end would give two runs
+ * with the same content — that is, two DOM elements where one suffices. When rendering on every
+ * keystroke, that is a difference.
  */
 function mergeAdjacent(spans: Span[]): Span[] {
   if (spans.length < 2) return spans

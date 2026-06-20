@@ -2,42 +2,42 @@ import type { RgaDocument } from './document'
 import type { Id, Op } from './types'
 
 /**
- * Cofanie i ponawianie zmian — świadome CRDT.
+ * Undo and redo — CRDT-aware.
  *
- * Historia CodeMirrora jest wyłączona ([ADR-0006](../../docs/adr/0006-warstwa-edytora.md)),
- * bo działa na tekście: cofnięcie zdejmowałoby również zmiany innych osób, które wpadły
- * w międzyczasie. W edytorze współdzielonym to nie jest niedogodność, tylko kasowanie
- * cudzej pracy.
+ * CodeMirror's history is disabled ([ADR-0006](../../docs/adr/0006-warstwa-edytora.md)) because it
+ * works on the text: an undo would also take back other people's changes that landed in the
+ * meantime. In a shared editor that is not an inconvenience but the deletion of somebody else's
+ * work.
  *
- * Cofanie musi więc działać na **własnych operacjach**, i to jest cała trudność:
- * w CRDT nie da się „odwrócić" operacji. Usunięty znak ma tombstone i nie wraca do życia;
- * przywrócenie tekstu oznacza wstawienie **nowych** znaków o nowych identyfikatorach.
- * Widoczny efekt jest ten sam, tożsamość znaków — nie. Tak samo robi to Yjs.
+ * Undo therefore has to operate on **one's own operations**, and that is the whole difficulty: in a
+ * CRDT an operation cannot be "inverted". A deleted character has a tombstone and does not come
+ * back to life; restoring text means inserting **new** characters with new identifiers. The visible
+ * effect is the same, the characters' identity is not. Yjs does the same.
  *
- * ### Kotwice, nie pozycje
+ * ### Anchors, not positions
  *
- * Wpis w stosie pamięta **identyfikator znaku**, nie offset. Offset zapisany przy edycji
- * jest nieaktualny w chwili cofania, bo inni w międzyczasie pisali. Identyfikator przesuwa
- * się razem z tekstem.
+ * A stack entry remembers a **character identifier**, not an offset. An offset recorded at edit
+ * time is stale by the time of the undo, because others have been typing. An identifier moves with
+ * the text.
  *
- * ### Czego ta implementacja NIE robi
+ * ### What this implementation does NOT do
  *
- * Jeśli kotwica została w międzyczasie usunięta przez kogoś innego, wpis jest **pomijany**,
- * a nie zgadywany. Wstawienie tekstu „mniej więcej tam" byłoby gorsze niż nierobienie nic:
- * użytkownik zobaczyłby swój tekst w przypadkowym miejscu i nie wiedziałby dlaczego.
+ * If the anchor has meanwhile been deleted by somebody else, the entry is **skipped**, not guessed
+ * at. Inserting the text "roughly there" would be worse than doing nothing: the user would see
+ * their text in a random place with no idea why.
  */
 
 interface UndoableInsert {
   kind: 'insert'
-  /** Pierwszy wstawiony znak — kotwica do odnalezienia fragmentu przy cofaniu. */
+  /** The first inserted character — the anchor for finding the fragment when undoing. */
   first: Id
-  /** Rośnie przy scalaniu kolejnych naciśnięć klawisza w jeden krok. */
+  /** Grows as consecutive keystrokes are coalesced into one step. */
   length: number
 }
 
 interface UndoableDelete {
   kind: 'delete'
-  /** Znak bezpośrednio PRZED usuniętym fragmentem; null gdy usuwano od początku dokumentu. */
+  /** The character immediately BEFORE the deleted fragment; null when deleting from the document's start. */
   after: Id | null
   text: string
 }
@@ -50,20 +50,19 @@ export class UndoManager {
   private applying = false
 
   /**
-   * Głębokość stosu.
+   * The stack depth.
    *
-   * Ograniczona, bo stos rośnie z każdą edycją, a dokument redagowany godzinami
-   * trzymałby w pamięci całą sesję. 200 kroków to wyraźnie więcej, niż ktokolwiek
-   * cofa w praktyce.
+   * Bounded, because the stack grows with every edit and a document edited for hours would keep the
+   * whole session in memory. 200 steps is well beyond what anyone undoes in practice.
    */
   private static readonly LIMIT = 200
 
   /**
-   * Okno scalania kolejnych naciśnięć klawisza w jeden krok cofania.
+   * The window for coalescing consecutive keystrokes into one undo step.
    *
-   * Bez tego każda litera jest osobnym wpisem i Ctrl+Z zdejmuje po jednym znaku — zachowanie,
-   * którego nie ma żaden edytor i które użytkownik odbiera jako zepsute. Sekunda przerwy
-   * kończy grupę, bo mniej więcej tyle trwa pauza między „myślami" przy pisaniu.
+   * Without it every letter is a separate entry and Ctrl+Z removes one character at a time —
+   * behaviour no editor has and which a user reads as broken. A second's pause ends a group,
+   * because that is roughly how long the pause between "thoughts" lasts while writing.
    */
   private static readonly COALESCE_WINDOW_MS = 1000
 
@@ -84,17 +83,16 @@ export class UndoManager {
   }
 
   /**
-   * Zapamiętuje zmianę lokalną.
+   * Records a local change.
    *
-   * Wywoływane WYŁĄCZNIE dla własnych operacji. Zapamiętanie cudzych oznaczałoby, że
-   * Ctrl+Z cofa czyjąś pracę — dokładnie to, przed czym broni wyłączenie historii
-   * CodeMirrora.
+   * Called ONLY for one's own operations. Recording other people's would mean Ctrl+Z undoing
+   * somebody else's work — exactly what disabling CodeMirror's history protects against.
    */
   recordInsert(first: Id, length: number): void {
     if (this.applying) return
 
-    // Scalanie z poprzednim wpisem, gdy to jest kontynuacja tego samego pisania:
-    // ta sama replika, bezpośrednio kolejne wartości zegara, krótka przerwa.
+    // Coalesce with the previous entry when this is a continuation of the same typing: the same
+    // replica, immediately consecutive clock values, a short pause.
     const previous = this.undoStack.at(-1)
     if (
       previous !== undefined &&
@@ -115,9 +113,9 @@ export class UndoManager {
   recordDelete(after: Id | null, text: string): void {
     if (this.applying) return
 
-    // Analogicznie dla kasowania backspace'em: kolejne znaki znikają od prawej do lewej,
-    // więc nowy fragment doklejamy PRZED poprzednio zapamiętany, a kotwicą staje się
-    // ta z nowszego usunięcia.
+    // Likewise for deleting with backspace: successive characters disappear right to left, so the
+    // new fragment is prepended BEFORE the previously recorded one, and the anchor becomes the one
+    // from the more recent deletion.
     const previous = this.undoStack.at(-1)
     if (previous !== undefined && previous.kind === 'delete' && this.withinWindow()) {
       previous.text = text + previous.text
@@ -140,7 +138,7 @@ export class UndoManager {
     if (this.undoStack.length > UndoManager.LIMIT) {
       this.undoStack.shift()
     }
-    // Nowa zmiana unieważnia gałąź ponawiania — standardowe zachowanie każdego edytora.
+    // A new change invalidates the redo branch — standard behaviour for any editor.
     this.redoStack.length = 0
   }
 
@@ -160,8 +158,8 @@ export class UndoManager {
     try {
       const result = entry.kind === 'insert' ? this.revertInsert(entry) : this.revertDelete(entry)
       if (result === null) {
-        // Kotwica zniknęła — pomijamy wpis i próbujemy następny. Bez tego jeden
-        // nieodwracalny krok blokowałby cofanie wszystkiego, co pod nim.
+        // The anchor is gone — skip the entry and try the next one. Without this, one
+        // irreversible step would block undoing everything beneath it.
         return this.step(from, to)
       }
       to.push(result.inverse)
@@ -171,13 +169,13 @@ export class UndoManager {
     }
   }
 
-  /** Cofnięcie wstawienia = usunięcie tych znaków, które jeszcze żyją. */
+  /** Undoing an insertion = deleting the characters that are still alive. */
   private revertInsert(entry: UndoableInsert): { ops: Op[]; inverse: UndoEntry } | null {
     const start = this.document.visibleIndexOf(entry.first)
     if (start === null) {
       return null
     }
-    // Ktoś mógł już usunąć część tego fragmentu — cofamy tylko to, co zostało.
+    // Somebody may already have deleted part of this fragment — we undo only what is left.
     const available = Math.min(entry.length, this.document.visibleLength - start)
     if (available <= 0) {
       return null
@@ -189,7 +187,7 @@ export class UndoManager {
     return { ops: [op], inverse: { kind: 'delete', after: anchor, text } }
   }
 
-  /** Cofnięcie usunięcia = wstawienie tekstu z powrotem, jako NOWYCH znaków. */
+  /** Undoing a deletion = inserting the text back, as NEW characters. */
   private revertDelete(entry: UndoableDelete): { ops: Op[]; inverse: UndoEntry } | null {
     let position: number
     if (entry.after === null) {
