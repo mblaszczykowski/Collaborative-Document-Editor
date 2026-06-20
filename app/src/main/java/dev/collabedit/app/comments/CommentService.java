@@ -61,18 +61,71 @@ public class CommentService implements ThreadDocumentResolver {
      */
     @Transactional
     public UUID openThread(UUID documentId, String authorId, String quotedText, String body) {
+        return openThread(documentId, authorId, quotedText, body, null);
+    }
+
+    /**
+     * Opens a thread, at most once per {@code clientId} (CP27).
+     *
+     * <h2>Why an idempotency key rather than a CRDT</h2>
+     * A comment written without a connection waits in a client-side outbox and is retried on
+     * reconnect — and the client cannot tell whether the first attempt reached the server before
+     * the connection dropped. What it needs is not merging but <b>exactly once</b>, and that is a
+     * unique column rather than a data structure.
+     *
+     * <p>ADR-0011 claimed comments do not need to be a CRDT because a message has one author, is
+     * written in one go and is never edited concurrently character by character. This is where
+     * that claim is tested by use instead of by argument, and it holds: the offline path needed a
+     * key, not a merge.
+     *
+     * @param clientId the caller's own identifier for this comment, or {@code null} when it does
+     *                 not have one — an unkeyed call keeps the old behaviour of always inserting
+     */
+    @Transactional
+    public UUID openThread(UUID documentId, String authorId, String quotedText, String body,
+                           String clientId) {
+        if (clientId != null) {
+            UUID existing = threadByClientId(clientId);
+            if (existing != null) {
+                // The retry of an attempt that DID arrive. Returning the original rather than
+                // reporting a conflict: from the writer's point of view their comment is posted,
+                // which is true, and it is the answer that lets them stop retrying.
+                return existing;
+            }
+        }
         UUID threadId = UUID.randomUUID();
-        jdbc.update("INSERT INTO comment_threads (id, doc_id, created_by, quoted_text) "
-            + "VALUES (?, ?, ?, ?)", threadId, documentId, authorId, quotedText);
-        addMessage(threadId, authorId, body);
+        jdbc.update("INSERT INTO comment_threads (id, doc_id, created_by, quoted_text, client_id) "
+            + "VALUES (?, ?, ?, ?, ?)", threadId, documentId, authorId, quotedText, clientId);
+        addMessage(threadId, authorId, body, clientId == null ? null : clientId + ":first");
         return threadId;
     }
 
     public UUID addMessage(UUID threadId, String authorId, String body) {
+        return addMessage(threadId, authorId, body, null);
+    }
+
+    /** As above, at most once per {@code clientId}. */
+    public UUID addMessage(UUID threadId, String authorId, String body, String clientId) {
+        if (clientId != null) {
+            UUID existing = messageByClientId(clientId);
+            if (existing != null) {
+                return existing;
+            }
+        }
         UUID messageId = UUID.randomUUID();
-        jdbc.update("INSERT INTO comment_messages (id, thread_id, author_id, body) "
-            + "VALUES (?, ?, ?, ?)", messageId, threadId, authorId, body);
+        jdbc.update("INSERT INTO comment_messages (id, thread_id, author_id, body, client_id) "
+            + "VALUES (?, ?, ?, ?, ?)", messageId, threadId, authorId, body, clientId);
         return messageId;
+    }
+
+    private UUID threadByClientId(String clientId) {
+        return jdbc.query("SELECT id FROM comment_threads WHERE client_id = ?",
+            (rs, rowNum) -> (UUID) rs.getObject("id"), clientId).stream().findFirst().orElse(null);
+    }
+
+    private UUID messageByClientId(String clientId) {
+        return jdbc.query("SELECT id FROM comment_messages WHERE client_id = ?",
+            (rs, rowNum) -> (UUID) rs.getObject("id"), clientId).stream().findFirst().orElse(null);
     }
 
     /**

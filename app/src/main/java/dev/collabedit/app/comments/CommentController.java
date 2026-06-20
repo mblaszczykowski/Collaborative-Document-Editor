@@ -52,10 +52,15 @@ public class CommentController {
         return TokenAuthFilter.principalOf(request).map(p -> p.userId()).orElse(null);
     }
 
-    public record OpenThreadRequest(String quotedText, String body) {
+    /**
+     * @param clientId the caller's own identifier for this comment, so a retry after an
+     *                 uncertain connection does not post it twice (CP27). Optional — a client
+     *                 that does not send one gets the old always-insert behaviour
+     */
+    public record OpenThreadRequest(String quotedText, String body, String clientId) {
     }
 
-    public record MessageRequest(String body) {
+    public record MessageRequest(String body, String clientId) {
     }
 
     /**
@@ -113,7 +118,8 @@ public class CommentController {
         UUID threadId = comments.openThread(
             documentId, caller,
             body.quotedText() == null ? "" : body.quotedText(),
-            body.body().trim());
+            body.body().trim(),
+            body.clientId());
 
         return comments.threadsOf(documentId, true).stream()
             .filter(thread -> thread.id().equals(threadId))
@@ -135,7 +141,7 @@ public class CommentController {
         if (body.body() == null || body.body().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
-        comments.addMessage(threadId, caller, body.body().trim());
+        comments.addMessage(threadId, caller, body.body().trim(), body.clientId());
         return ResponseEntity.noContent().build();
     }
 

@@ -141,6 +141,49 @@ class CommentIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("the same comment sent twice is posted once")
+    void retryingAnUncertainCommentDoesNotDuplicateIt() {
+        User ania = newUser("Ania");
+        UUID document = privateDocument(ania);
+
+        // What a client that lost its connection mid-request does on reconnect: it repeats the
+        // attempt, because it cannot tell whether the first one arrived. Before CP27 that was a
+        // second conversation about the same sentence, and nobody could tell which was which.
+        String clientId = UUID.randomUUID().toString();
+        UUID first = comments.openThread(document, ania.id(), "fragment", "Is this clear?",
+            clientId);
+        UUID second = comments.openThread(document, ania.id(), "fragment", "Is this clear?",
+            clientId);
+
+        assertThat(second)
+            .as("the retry created a second conversation instead of recognising the first")
+            .isEqualTo(first);
+        assertThat(comments.threadsOf(document, true)).hasSize(1);
+        assertThat(comments.threadsOf(document, true).getFirst().messages())
+            .as("and the message inside it must not be doubled either")
+            .hasSize(1);
+
+        String replyKey = UUID.randomUUID().toString();
+        comments.addMessage(first, ania.id(), "Yes.", replyKey);
+        comments.addMessage(first, ania.id(), "Yes.", replyKey);
+        assertThat(comments.threadsOf(document, true).getFirst().messages()).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("a comment with no key is still inserted every time")
+    void anUnkeyedCommentKeepsTheOldBehaviour() {
+        User ania = newUser("Ania");
+        UUID document = privateDocument(ania);
+
+        // Two people writing the same words is not a duplicate — it is two comments. Only a
+        // repeated KEY means "this is the same attempt".
+        comments.openThread(document, ania.id(), "fragment", "Agreed");
+        comments.openThread(document, ania.id(), "fragment", "Agreed");
+
+        assertThat(comments.threadsOf(document, true)).hasSize(2);
+    }
+
+    @Test
     @DisplayName("a read-only role cannot comment")
     void viewerCannotComment() {
         User ania = newUser("Ania");
