@@ -217,6 +217,27 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ throughServerSeq }) },
     ),
 
+  /**
+   * The document's state as a CRDT snapshot (CP24).
+   *
+   * Bytes rather than JSON, and a header rather than a field, because the whole point is how
+   * much crosses the wire — see DocumentSnapshotController. A failure here is not an error to
+   * report: a snapshot is a cache, so the caller falls back to replaying the log, which is
+   * slower and always correct (ADR-0003).
+   */
+  snapshot: async (
+    documentId: string,
+  ): Promise<{ bytes: Uint8Array; throughServerSeq: number } | null> => {
+    const response = await fetch(`${BASE}/documents/${documentId}/snapshot`, {
+      headers: authHeaders(),
+    })
+    if (!response.ok) {
+      return null
+    }
+    const throughServerSeq = Number(response.headers.get('X-Through-Server-Seq') ?? '0')
+    return { bytes: new Uint8Array(await response.arrayBuffer()), throughServerSeq }
+  },
+
   login: (displayName: string) =>
     request<Session>('/login', { method: 'POST', body: JSON.stringify({ displayName }) }),
 

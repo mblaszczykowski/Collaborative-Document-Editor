@@ -1,4 +1,5 @@
 import { Block } from './block'
+import type { DecodedSnapshot } from './snapshot'
 import { MarkSet, type Span } from './marks'
 import {
   anchorAfter,
@@ -60,6 +61,9 @@ export class RgaDocument {
 
   private replicaIdValue: number
 
+  /** How many operations this replica has CREATED — see adoptReplicaId. */
+  private locallyGenerated = 0
+
   constructor(replicaId: number) {
     this.replicaIdValue = replicaId
   }
@@ -81,12 +85,42 @@ export class RgaDocument {
    * ever fires, the initialisation order has broken.
    */
   adoptReplicaId(replicaId: number): void {
-    if (this.clock > 0) {
+    // The guard is about OPERATIONS CREATED HERE, not about the clock's value, and the
+    // difference started to matter in CP24: restoring a server snapshot sets the clock to the
+    // document's, without this replica having produced anything. Keying the check on the clock
+    // made a document opened from a snapshot refuse the identifier the server had just assigned
+    // it — leaving the replica on id 0, the one identifier guaranteed to collide.
+    if (this.locallyGenerated > 0) {
       throw new Error(
-        `attempt to change the replica identifier after generating ${this.clock} operations`,
+        `attempt to change the replica identifier after generating ${this.locallyGenerated} operations`,
       )
     }
     this.replicaIdValue = replicaId
+  }
+
+  /**
+   * Loads a snapshot from the server in place of replaying the log (CP24).
+   *
+   * Everything the replica knows is replaced: the blocks in document order (so the integration
+   * algorithm does not have to run again — that is what a snapshot is for), the Lamport clock,
+   * the version vector, and the marks.
+   *
+   * The marks go straight into the MarkSet rather than through `apply`, and that is not a
+   * shortcut: `apply` would compare each of them against the version vector loaded a line
+   * earlier, conclude it has seen them, and drop every one — leaving a document with the right
+   * text and no formatting at all.
+   */
+  restoreFrom(snapshot: DecodedSnapshot): void {
+    this.blocks = snapshot.blocks
+    this.clock = snapshot.clock
+    this.maxSeen.clear()
+    for (const [replicaId, lamport] of snapshot.maxSeen) {
+      this.maxSeen.set(replicaId, lamport)
+    }
+    for (const mark of snapshot.marks) {
+      this.marks.apply(mark)
+    }
+    this.pending = []
   }
 
   // ------------------------------------------------------------------
@@ -104,6 +138,7 @@ export class RgaDocument {
 
     const op: InsertOp = { kind: 'insert', id: id(this.replicaIdValue, this.clock), originLeft, text }
     this.clock += opSpan(op)
+    this.locallyGenerated++
     this.integrate(op)
     this.observeVersion(op)
     return op
@@ -143,6 +178,7 @@ export class RgaDocument {
 
     const op: DeleteOp = { kind: 'delete', id: id(this.replicaIdValue, this.clock), targets }
     this.clock += opSpan(op)
+    this.locallyGenerated++
     this.observeVersion(op)
     return op
   }
@@ -173,6 +209,7 @@ export class RgaDocument {
       end: this.anchorEnd(to, type),
     }
     this.clock += opSpan(op)
+    this.locallyGenerated++
     this.marks.apply(op)
     this.observeVersion(op)
     return op
@@ -187,6 +224,7 @@ export class RgaDocument {
       end: this.anchorEnd(to, type),
     }
     this.clock += opSpan(op)
+    this.locallyGenerated++
     this.marks.apply(op)
     this.observeVersion(op)
     return op
