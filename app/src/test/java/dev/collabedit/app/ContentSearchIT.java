@@ -78,11 +78,11 @@ class ContentSearchIT extends IntegrationTestBase {
     @DisplayName("a word past the preview boundary is found")
     void aWordDeepInTheDocumentIsFound() throws Exception {
         UUID document = newDocument("Report");
-        String needle = "kaczmarski" + System.nanoTime();
+        String needle = "needle" + System.nanoTime();
 
         // The preview is 200 characters. The needle sits well beyond it, which is where every
         // word of a real document sits.
-        String filler = "wypelniacz ".repeat(40);
+        String filler = "filler ".repeat(40);
         try (TestStompClient author = new TestStompClient(port, tokenFor("Anna"), document, 961)) {
             author.insert(0, filler);
             author.awaitCondition(() -> author.lastAckSeq() >= 1, PATIENCE, "filler");

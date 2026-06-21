@@ -147,25 +147,25 @@ class SuggestionIT extends IntegrationTestBase {
     @DisplayName("a commenter may propose a change and may not decide on one")
     void commenterMayProposeAndMayNotDecide() throws Exception {
         User anna = newUser("Anna");
-        User krytyk = newUser("Krytyk");
-        User widz = newUser("Widz");
+        User critic = newUser("Critic");
+        User watcher = newUser("Watcher");
         UUID document = privateDocument(anna, "Suggestions");
-        permissions.grant(document, krytyk.id(), Role.COMMENTER);
-        permissions.grant(document, widz.id(), Role.VIEWER);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
+        permissions.grant(document, watcher.id(), Role.VIEWER);
 
-        Op seedOp = seed(document, anna, 811, "Ala ma kota");
+        Op seedOp = seed(document, anna, 811, "The cat sat");
 
-        String id = proposeInsertion(document, krytyk, seedOp, 10, " i psa");
+        String id = proposeInsertion(document, critic, seedOp, 10, " on the mat");
 
         assertThat(send("POST",
             "/api/documents/" + document + "/suggestions/" + id + "/accept",
-            krytyk.token(), null).statusCode())
+            critic.token(), null).statusCode())
             .as("deciding is an edit; a commenter who could accept their own suggestion would "
                 + "simply be an editor with extra steps")
             .isEqualTo(404);
 
         assertThat(send("POST", "/api/documents/" + document + "/suggestions",
-            widz.token(), "{\"kind\":\"insert\",\"text\":\"x\",\"after\":"
+            watcher.token(), "{\"kind\":\"insert\",\"text\":\"x\",\"after\":"
                 + wireId(seedOp, 1) + "}").statusCode())
             .as("a viewer may read and nothing else")
             .isEqualTo(404);
@@ -179,24 +179,24 @@ class SuggestionIT extends IntegrationTestBase {
     @DisplayName("accepting an insertion keeps the text and drops the proposal")
     void acceptingAnInsertionKeepsTheText() throws Exception {
         User anna = newUser("Anna");
-        User krytyk = newUser("Krytyk");
+        User critic = newUser("Critic");
         UUID document = privateDocument(anna, "Accept insert");
-        permissions.grant(document, krytyk.id(), Role.COMMENTER);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
 
-        Op seedOp = seed(document, anna, 812, "Ala ma kota");
-        String id = proposeInsertion(document, krytyk, seedOp, 10, " i psa");
+        Op seedOp = seed(document, anna, 812, "The cat sat");
+        String id = proposeInsertion(document, critic, seedOp, 10, " on the mat");
 
         assertThat(documents.textOf(document))
             .as("a proposed insertion is real text from the moment it is proposed — that is what "
                 + "lets everybody see it merge like any other change")
-            .isEqualTo("Ala ma kota i psa");
+            .isEqualTo("The cat sat on the mat");
         assertThat(suggestions.openFor(document)).hasSize(1);
 
         send("POST", "/api/documents/" + document + "/suggestions/" + id + "/accept",
             anna.token(), null);
         Thread.sleep(300);
 
-        assertThat(documents.textOf(document)).isEqualTo("Ala ma kota i psa");
+        assertThat(documents.textOf(document)).isEqualTo("The cat sat on the mat");
         assertThat(suggestions.openFor(document)).isEmpty();
     }
 
@@ -204,18 +204,18 @@ class SuggestionIT extends IntegrationTestBase {
     @DisplayName("rejecting an insertion removes the proposed text")
     void rejectingAnInsertionRemovesIt() throws Exception {
         User anna = newUser("Anna");
-        User krytyk = newUser("Krytyk");
+        User critic = newUser("Critic");
         UUID document = privateDocument(anna, "Reject insert");
-        permissions.grant(document, krytyk.id(), Role.COMMENTER);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
 
-        Op seedOp = seed(document, anna, 813, "Ala ma kota");
-        String id = proposeInsertion(document, krytyk, seedOp, 10, " i psa");
+        Op seedOp = seed(document, anna, 813, "The cat sat");
+        String id = proposeInsertion(document, critic, seedOp, 10, " on the mat");
 
         send("POST", "/api/documents/" + document + "/suggestions/" + id + "/reject",
             anna.token(), null);
         Thread.sleep(300);
 
-        assertThat(documents.textOf(document)).isEqualTo("Ala ma kota");
+        assertThat(documents.textOf(document)).isEqualTo("The cat sat");
         assertThat(suggestions.openFor(document)).isEmpty();
     }
 
@@ -223,44 +223,44 @@ class SuggestionIT extends IntegrationTestBase {
     @DisplayName("accepting a deletion removes the text; rejecting one leaves it alone")
     void decidingOnADeletion() throws Exception {
         User anna = newUser("Anna");
-        User krytyk = newUser("Krytyk");
+        User critic = newUser("Critic");
         UUID document = privateDocument(anna, "Deletions");
-        permissions.grant(document, krytyk.id(), Role.COMMENTER);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
 
-        Op seedOp = seed(document, anna, 814, "Ala ma kota");
+        Op seedOp = seed(document, anna, 814, "The cat sat");
 
-        String rejected = proposeDeletion(document, krytyk, seedOp, 0, 2);
+        String rejected = proposeDeletion(document, critic, seedOp, 0, 2);
         send("POST", "/api/documents/" + document + "/suggestions/" + rejected + "/reject",
             anna.token(), null);
         Thread.sleep(300);
         assertThat(documents.textOf(document))
             .as("nothing is deleted until somebody accepts it")
-            .isEqualTo("Ala ma kota");
+            .isEqualTo("The cat sat");
 
-        String accepted = proposeDeletion(document, krytyk, seedOp, 7, 10);
+        String accepted = proposeDeletion(document, critic, seedOp, 7, 10);
         send("POST", "/api/documents/" + document + "/suggestions/" + accepted + "/accept",
             anna.token(), null);
         Thread.sleep(300);
-        assertThat(documents.textOf(document)).isEqualTo("Ala ma ");
+        assertThat(documents.textOf(document)).isEqualTo("The cat");
     }
 
     @Test
     @DisplayName("a proposal moves with the text around it")
     void aProposalMovesWithTheTextAroundIt() throws Exception {
         User anna = newUser("Anna");
-        User krytyk = newUser("Krytyk");
+        User critic = newUser("Critic");
         UUID document = privateDocument(anna, "Anchored proposals");
-        permissions.grant(document, krytyk.id(), Role.COMMENTER);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
 
-        Op seedOp = seed(document, anna, 815, "Ala ma kota");
-        String id = proposeDeletion(document, krytyk, seedOp, 7, 10);
+        Op seedOp = seed(document, anna, 815, "The cat sat");
+        String id = proposeDeletion(document, critic, seedOp, 7, 10);
 
         var before = suggestions.openFor(document).getFirst();
         assertThat(before.range().from()).isEqualTo(7);
 
         // Somebody types BEFORE the proposal. An offset would now point four characters short.
         try (TestStompClient anna2 = new TestStompClient(port, anna.token(), document, 816)) {
-            anna2.insert(0, "Tak: ");
+            anna2.insert(0, "Yes: ");
             anna2.awaitCondition(() -> anna2.lastAckSeq() > 1, PATIENCE, "insertion");
         }
         Thread.sleep(200);
@@ -277,7 +277,7 @@ class SuggestionIT extends IntegrationTestBase {
         Thread.sleep(300);
         assertThat(documents.textOf(document))
             .as("and it deletes the words it was attached to, not the ones at the old offset")
-            .isEqualTo("Tak: Ala ma ");
+            .isEqualTo("Yes: The cat");
     }
 
     @Test
@@ -286,8 +286,8 @@ class SuggestionIT extends IntegrationTestBase {
         User anna = newUser("Anna");
         UUID document = privateDocument(anna, "Idempotence");
 
-        Op seedOp = seed(document, anna, 817, "Ala ma kota");
-        String id = proposeInsertion(document, anna, seedOp, 10, " i psa");
+        Op seedOp = seed(document, anna, 817, "The cat sat");
+        String id = proposeInsertion(document, anna, seedOp, 10, " on the mat");
 
         assertThat(send("POST",
             "/api/documents/" + document + "/suggestions/" + id + "/accept",
@@ -300,19 +300,19 @@ class SuggestionIT extends IntegrationTestBase {
             .as("the second decision must not re-open a settled one — two editors pressing at "
                 + "the same moment is the ordinary case, not the exotic one")
             .isEqualTo(404);
-        assertThat(documents.textOf(document)).isEqualTo("Ala ma kota i psa");
+        assertThat(documents.textOf(document)).isEqualTo("The cat sat on the mat");
     }
 
     @Test
     @DisplayName("a proposal whose text somebody deleted resolves without pretending")
     void aProposalWhoseTextIsGoneResolvesWithoutPretending() throws Exception {
         User anna = newUser("Anna");
-        User krytyk = newUser("Krytyk");
+        User critic = newUser("Critic");
         UUID document = privateDocument(anna, "Vanished");
-        permissions.grant(document, krytyk.id(), Role.COMMENTER);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
 
-        Op seedOp = seed(document, anna, 818, "Ala ma kota");
-        String id = proposeDeletion(document, krytyk, seedOp, 7, 10);
+        Op seedOp = seed(document, anna, 818, "The cat sat");
+        String id = proposeDeletion(document, critic, seedOp, 7, 10);
 
         // An editor deletes the anchored fragment the ordinary way, without touching the
         // suggestion.
@@ -320,7 +320,7 @@ class SuggestionIT extends IntegrationTestBase {
             // Sync first: a delete is expressed against the local replica, and a client that has
             // not caught up would be describing a range of a document it has not got.
             anna2.requestSync(0);
-            anna2.awaitCondition(() -> anna2.text().equals("Ala ma kota"), PATIENCE, "caught up");
+            anna2.awaitCondition(() -> anna2.text().equals("The cat sat"), PATIENCE, "caught up");
             anna2.delete(7, 4);
             anna2.awaitCondition(() -> anna2.lastAckSeq() > 1, PATIENCE, "deletion");
         }
@@ -334,13 +334,13 @@ class SuggestionIT extends IntegrationTestBase {
         assertThat(open.getFirst().quotedText())
             .as("what it was about survives in the row, for the same reason a detached comment "
                 + "keeps its quotation")
-            .isEqualTo("kota");
+            .isEqualTo(" sat");
 
         assertThat(send("POST",
             "/api/documents/" + document + "/suggestions/" + id + "/accept",
             anna.token(), null).statusCode()).isEqualTo(204);
         Thread.sleep(200);
-        assertThat(documents.textOf(document)).isEqualTo("Ala ma ");
+        assertThat(documents.textOf(document)).isEqualTo("The cat");
         assertThat(suggestions.openFor(document)).isEmpty();
     }
 }

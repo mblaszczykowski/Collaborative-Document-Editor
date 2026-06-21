@@ -74,12 +74,12 @@ class PresenceClusterIT extends IntegrationTestBase {
     void somebodyOnAnotherInstanceIsVisible() throws Exception {
         UUID document = UUID.randomUUID();
 
-        announce("other-instance", document, "Zdalna", 4242);
+        announce("other-instance", document, "Remote", 4242);
         awaitParticipants(document, 1);
 
         List<dev.collabedit.app.ws.Messages.PresenceBroadcast> everybody =
             presence.everybody(document);
-        assertThat(everybody.getFirst().displayName()).isEqualTo("Zdalna");
+        assertThat(everybody.getFirst().displayName()).isEqualTo("Remote");
         assertThat(everybody.getFirst().replicaId()).isEqualTo(4242);
     }
 
@@ -88,7 +88,7 @@ class PresenceClusterIT extends IntegrationTestBase {
     void anInstanceThatGoesQuietDisappears() throws Exception {
         UUID document = UUID.randomUUID();
 
-        announce("dying-instance", document, "Duch", 4343);
+        announce("dying-instance", document, "Ghost", 4343);
         awaitParticipants(document, 1);
 
         // No further announcements. Nothing repairs this and nothing needs to: the entry expires,
@@ -107,7 +107,7 @@ class PresenceClusterIT extends IntegrationTestBase {
     void ourOwnAnnouncementIsIgnored() throws Exception {
         UUID document = UUID.randomUUID();
 
-        announce(bus.instanceId(), document, "Ja", 4444);
+        announce(bus.instanceId(), document, "Me", 4444);
         Thread.sleep(500);
 
         assertThat(presence.everybody(document))

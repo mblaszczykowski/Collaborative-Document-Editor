@@ -96,7 +96,7 @@ class VersionComparisonIT extends IntegrationTestBase {
 
         long formatted;
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 771)) {
-            anna.insert(0, "Ala ma kota");
+            anna.insert(0, "The cat sat");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 1, PATIENCE, "text");
 
             anna.markReturningOp(0, 3, "bold", null);
@@ -125,7 +125,7 @@ class VersionComparisonIT extends IntegrationTestBase {
         assertThat(live.stream().anyMatch(span -> span.marks().containsKey("italic")))
             .as("italics were added AFTER the target version, so restoring must remove them")
             .isFalse();
-        assertThat(documents.textOf(document)).isEqualTo("Ala ma kota");
+        assertThat(documents.textOf(document)).isEqualTo("The cat sat");
     }
 
     @Test
@@ -135,14 +135,14 @@ class VersionComparisonIT extends IntegrationTestBase {
 
         long beforeTheComment;
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 772)) {
-            anna.insert(0, "Ala ma kota");
+            anna.insert(0, "The cat sat");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 1, PATIENCE, "text");
             beforeTheComment = anna.lastAckSeq();
 
             anna.markReturningOp(7, 11, "comment", "thread-1");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 2, PATIENCE, "comment anchor");
 
-            anna.insert(11, " i psa");
+            anna.insert(11, " on the mat");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 3, PATIENCE, "more text");
         }
 
@@ -150,7 +150,7 @@ class VersionComparisonIT extends IntegrationTestBase {
 
         assertThat(documents.textOf(document))
             .as("the text goes back")
-            .isEqualTo("Ala ma kota");
+            .isEqualTo("The cat sat");
         assertThat(liveFormatting(document).stream()
             .anyMatch(span -> span.marks().containsKey("comment")))
             .as("the conversation was started after the target version, and a rollback of the "
@@ -166,13 +166,13 @@ class VersionComparisonIT extends IntegrationTestBase {
 
         long before;
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 773)) {
-            anna.insert(0, "Ala ma kota");
+            anna.insert(0, "The cat sat");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 1, PATIENCE, "text");
             before = anna.lastAckSeq();
 
             anna.delete(7, 4);
             anna.awaitCondition(() -> anna.lastAckSeq() >= 2, PATIENCE, "deletion");
-            anna.insert(7, "kota");
+            anna.insert(7, " sat");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 3, PATIENCE, "retyped");
         }
         long after = history.timeline(document).getFirst().throughServerSeq();
@@ -182,11 +182,11 @@ class VersionComparisonIT extends IntegrationTestBase {
             .isEqualTo(history.textAt(document, after));
 
         var segments = history.diff(document, before, after);
-        assertThat(segments.stream().anyMatch(s -> s.kind().equals("removed") && s.text().equals("kota")))
+        assertThat(segments.stream().anyMatch(s -> s.kind().equals("removed") && s.text().equals(" sat")))
             .as("the old characters are gone — a text diff reports nothing here, because it has "
                 + "nothing to compare but the letters")
             .isTrue();
-        assertThat(segments.stream().anyMatch(s -> s.kind().equals("added") && s.text().equals("kota")))
+        assertThat(segments.stream().anyMatch(s -> s.kind().equals("added") && s.text().equals(" sat")))
             .as("and different characters, with different identifiers, took their place")
             .isTrue();
     }
@@ -198,15 +198,15 @@ class VersionComparisonIT extends IntegrationTestBase {
 
         long before;
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 774)) {
-            anna.insert(0, "Pierwsze zdanie dokumentu.");
+            anna.insert(0, "The first sentence of the document.");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 1, PATIENCE, "text");
             before = anna.lastAckSeq();
 
             anna.delete(0, 9);
             anna.awaitCondition(() -> anna.lastAckSeq() >= 2, PATIENCE, "deletion");
-            anna.insert(0, "Drugie ");
+            anna.insert(0, "Second ");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 3, PATIENCE, "insertion");
-            anna.insert(anna.text().length(), " I jeszcze jedno.");
+            anna.insert(anna.text().length(), " And one more.");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 4, PATIENCE, "insertion at the end");
         }
         long after = history.timeline(document).getFirst().throughServerSeq();
@@ -235,7 +235,7 @@ class VersionComparisonIT extends IntegrationTestBase {
 
         long seq;
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 775)) {
-            anna.insert(0, "Bez zmian");
+            anna.insert(0, "No change");
             anna.awaitCondition(() -> anna.lastAckSeq() >= 1, PATIENCE, "text");
             seq = anna.lastAckSeq();
         }
@@ -243,6 +243,6 @@ class VersionComparisonIT extends IntegrationTestBase {
         var segments = history.diff(document, seq, seq);
         assertThat(segments).hasSize(1);
         assertThat(segments.getFirst().kind()).isEqualTo("same");
-        assertThat(segments.getFirst().text()).isEqualTo("Bez zmian");
+        assertThat(segments.getFirst().text()).isEqualTo("No change");
     }
 }

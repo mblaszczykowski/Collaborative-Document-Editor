@@ -170,7 +170,7 @@ class AccessIT extends IntegrationTestBase {
     void memberListRequiresManageAccess() throws Exception {
         User anna = newUser("Anna");
         User marek = newUser("Marek");
-        User obcy = newUser("Obcy");
+        User stranger = newUser("Stranger");
         UUID document = createDocument(anna, "Notes");
         send("PUT", "/api/documents/" + document + "/access/members/" + marek.id(),
             anna.token(), "{\"role\":\"editor\"}");
@@ -180,7 +180,7 @@ class AccessIT extends IntegrationTestBase {
             .as("who has access is a different question from what the document says")
             .isEqualTo(404);
 
-        assertThat(send("PUT", "/api/documents/" + document + "/access/members/" + obcy.id(),
+        assertThat(send("PUT", "/api/documents/" + document + "/access/members/" + stranger.id(),
             marek.token(), "{\"role\":\"editor\"}").statusCode())
             .as("an editor granting access would make every role equal to owner")
             .isEqualTo(404);

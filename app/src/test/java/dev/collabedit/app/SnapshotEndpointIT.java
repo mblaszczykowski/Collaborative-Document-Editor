@@ -101,7 +101,7 @@ class SnapshotEndpointIT extends IntegrationTestBase {
         UUID document = privateDocument(anna, "Snapshot");
 
         try (TestStompClient client = new TestStompClient(port, anna.token(), document, 901)) {
-            client.insert(0, "Ala ma kota i psa");
+            client.insert(0, "The cat sat on the mat");
             client.awaitCondition(() -> client.lastAckSeq() >= 1, PATIENCE, "text");
             client.markReturningOp(0, 3, "bold", null);
             client.awaitCondition(() -> client.lastAckSeq() >= 2, PATIENCE, "mark");
@@ -116,7 +116,7 @@ class SnapshotEndpointIT extends IntegrationTestBase {
         assertThat(decoded).isNotNull();
         RgaDocument rebuilt = RgaDocument.restore(0, new TreapBlockList(), decoded);
 
-        assertThat(rebuilt.text()).isEqualTo("Ala ma kota");
+        assertThat(rebuilt.text()).isEqualTo("The cat sat");
         assertThat(rebuilt.formatting())
             .as("a snapshot without the marks would open every document unformatted, and the "
                 + "first edit would merge that back to everybody")
@@ -153,7 +153,7 @@ class SnapshotEndpointIT extends IntegrationTestBase {
     @DisplayName("somebody without access gets nothing, on this route as well")
     void aStrangerGetsNothing() throws Exception {
         User anna = newUser("Anna");
-        User obcy = newUser("Obcy");
+        User stranger = newUser("Stranger");
         UUID document = privateDocument(anna, "Private");
 
         try (TestStompClient client = new TestStompClient(port, anna.token(), document, 903)) {
@@ -161,7 +161,7 @@ class SnapshotEndpointIT extends IntegrationTestBase {
             client.awaitCondition(() -> client.lastAckSeq() >= 1, PATIENCE, "text");
         }
 
-        assertThat(fetchSnapshot(document, obcy.token()).statusCode()).isEqualTo(404);
+        assertThat(fetchSnapshot(document, stranger.token()).statusCode()).isEqualTo(404);
         assertThat(fetchSnapshot(document, null).statusCode()).isEqualTo(404);
     }
 
@@ -182,8 +182,8 @@ class SnapshotEndpointIT extends IntegrationTestBase {
         // 200 identical letters would report a ratio of several hundred and mean nothing. Real
         // text compresses about two- or threefold, and the number below is about the format
         // rather than about the compressor.
-        String prose = "Kolejne zdanie dokumentu, pisane znak po znaku, jak przy prawdziwym "
-            + "pisaniu w edytorze wspoldzielonym przez kilka osob naraz. ";
+        String prose = "Another sentence of the document, typed one character at a time, the way real "
+            + "writing goes in an editor several people share at once. ";
         try (TestStompClient client = new TestStompClient(port, anna.token(), document, 904)) {
             for (int i = 0; i < 200; i++) {
                 client.insert(i, String.valueOf(prose.charAt(i % prose.length())));
