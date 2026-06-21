@@ -1,7 +1,7 @@
 {
   "uid": "collabedit-main",
-  "title": "Inkline — edycja współbieżna",
-  "description": "Panele dobrane pod pytania, na które trzeba umieć odpowiedzieć o TYM systemie, a nie pod listę 'co zwykle się mierzy'. Każdy wiersz ma opis mówiący, co zła wartość oznacza.",
+  "title": "Inkline — collaborative editing",
+  "description": "Panels chosen for the questions one has to be able to answer about THIS system, rather than for a list of 'what people usually measure'. Every row carries a description saying what a bad value means.",
   "tags": ["collabedit", "crdt"],
   "timezone": "browser",
   "refresh": "5s",
@@ -10,13 +10,13 @@
   "panels": [
     {
       "type": "row",
-      "title": "Czy system nadąża",
+      "title": "Is the system keeping up",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
     },
     {
       "type": "timeseries",
       "title": "Latencja serwerowa operacji (p50 / p95 / p99)",
-      "description": "Przyjęcie operacji → rozesłanie do klientów tej instancji. JEDEN zegar, więc jedyna latencja, której liczbę można podać bez zastrzeżeń. Latencja klient→klient jest mierzona wyłącznie w harnessie benchmarkowym (CP8) i tu jej NIE MA — celowo, bo wymagałaby porównania dwóch różnych zegarów.",
+      "description": "Operation intake -> broadcast to this instance's clients. ONE clock, so the only latency whose number can be quoted without caveats. Client-to-client latency is measured solely in the benchmark harness (CP8) and is NOT here — deliberately, because it would require comparing two different clocks.",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 5 } } },
       "targets": [
@@ -37,7 +37,7 @@
     {
       "type": "timeseries",
       "title": "Czas scalenia CRDT (p95)",
-      "description": "Sam algorytm, bez transportu i zapisu. To jest miejsce, w którym widać różnicę między indeksem O(n) a O(log n) — wartość rosnąca wraz z rozmiarem dokumentu oznacza, że struktura indeksująca przestała nadążać.",
+      "description": "The algorithm alone, without transport or persistence. This is where the difference between an O(n) and an O(log n) index shows — a value growing with document size means the indexing structure has stopped keeping up.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
       "fieldConfig": { "defaults": { "unit": "s" } },
       "targets": [
@@ -53,7 +53,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Operacje na sekundę",
+      "title": "Operations per second",
       "gridPos": { "h": 7, "w": 8, "x": 0, "y": 9 },
       "fieldConfig": { "defaults": { "unit": "ops" } },
       "targets": [
@@ -62,8 +62,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Aktywne sesje i dokumenty w pamięci",
-      "description": "Liczba dokumentów w pamięci jest istotna, bo ADR-0004 świadomie mnoży zużycie pamięci przez liczbę instancji trzymających ten sam dokument.",
+      "title": "Active sessions and in-memory documents",
+      "description": "The number of in-memory documents matters, because ADR-0004 deliberately multiplies memory use by the number of instances holding the same document.",
       "gridPos": { "h": 7, "w": 8, "x": 8, "y": 9 },
       "targets": [
         { "expr": "sum(ws_sessions_active)", "legendFormat": "sesje" },
@@ -73,7 +73,7 @@
     {
       "type": "stat",
       "title": "Operacje bez przyczyny",
-      "description": "Operacje czekające na swój origin. Chwilowe wartości > 0 są normalne (sieć zmienia kolejność). Wartość UTRZYMUJĄCA SIĘ powyżej zera oznacza trwale brakującą operację, czyli uszkodzenie logu — patrz ADR-0004.",
+      "description": "Operations waiting for their origin. Transient values > 0 are normal (the network reorders). A value that STAYS above zero means a permanently missing operation, that is, a corrupt log — see ADR-0004.",
       "gridPos": { "h": 7, "w": 8, "x": 16, "y": 9 },
       "fieldConfig": {
         "defaults": {
@@ -90,13 +90,13 @@
     },
     {
       "type": "row",
-      "title": "Czy mechanizmy naprawcze działają",
+      "title": "Are the repair mechanisms working",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
     },
     {
       "type": "timeseries",
-      "title": "Naprawy luk w numeracji (zgubione wiadomości Redis)",
-      "description": "ADR-0004: Redis pub/sub gubi wiadomości i to jest przewidziane, a nie awaryjne. UWAGA — wartość stale zerowa NIE jest dobrą wiadomością: znaczy, że mechanizm naprawczy nigdy się nie uruchomił, czyli nie wiadomo, czy w ogóle działa. Test chaosu z CP8 wywołuje go celowo.",
+      "title": "Gap repairs in the numbering (messages lost by Redis)",
+      "description": "ADR-0004: Redis pub/sub loses messages, and that is expected rather than exceptional. NOTE — a permanently zero value is NOT good news: it means the repair mechanism has never fired, so there is no telling whether it works at all. The CP8 chaos test triggers it on purpose.",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
       "targets": [
         { "expr": "sum(rate(cluster_gap_repairs_total[5m]))", "legendFormat": "naprawy/s" }
@@ -104,8 +104,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Udział tombstone'ów",
-      "description": "Znaki usunięte, ale nadal obecne w strukturze. Wartość rosnąca monotonicznie oznacza, że GC nie działa — najczęściej dlatego, że jeden zawieszony klient blokuje stabilność przyczynową całemu dokumentowi (ADR-0005). Uwaga: nawet działający GC nie zejdzie do zera, bo tombstone w środku tekstu jest originem następnego bloku i nie wolno go usunąć.",
+      "title": "Tombstone share",
+      "description": "Characters deleted but still present in the structure. A monotonically rising value means GC is not working — usually because one hung client is blocking causal stability for the whole document (ADR-0005). Note: even a working GC will not reach zero, because a tombstone in the middle of the text is the origin of the next block and must not be removed.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
       "fieldConfig": {
         "defaults": {
@@ -122,7 +122,7 @@
         }
       },
       "targets": [
-        { "expr": "max(doc_tombstone_ratio)", "legendFormat": "udział tombstonów" }
+        { "expr": "max(doc_tombstone_ratio)", "legendFormat": "tombstone share" }
       ]
     },
     {
@@ -139,7 +139,7 @@
     {
       "type": "stat",
       "title": "Operacje odrzucone (RESYNC_REQUIRED)",
-      "description": "Klienci offline dłużej niż okno GC, których zmian nie dało się scalić (ADR-0005). Każde takie zdarzenie oznacza użytkownika, który zobaczył komunikat o odzyskanym szkicu — czyli realną, choć kontrolowaną, niedogodność.",
+      "description": "Clients offline for longer than the GC window whose changes could not be merged (ADR-0005). Every such event means a user who saw the recovered-draft message — a real, if controlled, inconvenience.",
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 25 },
       "fieldConfig": {
         "defaults": {
@@ -156,13 +156,13 @@
     },
     {
       "type": "row",
-      "title": "Czy klienci nadążają za rozgłoszeniami",
+      "title": "Are the clients keeping up with the broadcasts",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 }
     },
     {
       "type": "timeseries",
-      "title": "Rozłączenia sesji wg powodu",
-      "description": "Panel istnieje po to, żeby zamknąć otwarte pytanie z README (sekcja 'Punkt degradacji'): dlaczego powyżej ~10 klientów w jednym dokumencie część z nich zostaje trwale w tyle, mimo że serwer ma komplet operacji. ZŁĄ WARTOŚCIĄ jest rosnące slow_client_buffer_overflow — klient nie nadąża z odbiorem, jego kolejka wysyłkowa przekracza send-buffer-size-bytes (ADR-0002) i serwer zrywa mu sesję. Klient wraca ścieżką reconnect+resync, więc z zewnątrz wygląda to na chwilowy przestój, a nie na utratę dostaw. Jeśli ta seria rośnie wraz z liczbą klientów, wąskim gardłem jest ROZGŁASZANIE, a nie scalanie CRDT. UWAGA: wartość stale zerowa przy jednoczesnym rozjeżdżaniu się klientów NIE znaczy, że jest dobrze — znaczy, że przyczyna leży gdzie indziej i hipotezę trzeba odrzucić.",
+      "title": "Session disconnects by reason",
+      "description": "This panel exists to close an open question in the README (the 'Degradation point' section): why, above ~10 clients in one document, some of them fall permanently behind even though the server holds the complete set of operations. The BAD VALUE is a rising slow_client_buffer_overflow — the client cannot keep up with delivery, its send queue exceeds send-buffer-size-bytes (ADR-0002), and the server tears down its session. The client comes back through reconnect+resync, so from the outside it looks like a brief hiccup rather than lost deliveries. If this series grows with the client count, the bottleneck is BROADCASTING rather than CRDT merging. NOTE: a permanently zero value while clients are diverging does NOT mean all is well — it means the cause lies elsewhere and the hypothesis has to be rejected.",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
       "fieldConfig": { "defaults": { "custom": { "fillOpacity": 5 } } },
       "targets": [

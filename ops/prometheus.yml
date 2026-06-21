@@ -1,29 +1,29 @@
 global:
-  # 5 s zamiast domyślnych 15 s. Powód: benchmarki w CP8 trwają rzędu 1–3 minut,
-  # a przy 15 s scrape'u dostalibyśmy kilkanaście punktów na cały przebieg — za mało,
-  # żeby zobaczyć kształt degradacji, a nie tylko wartość średnią.
+  # 5 s instead of the default 15 s. The reason: the CP8 benchmarks run for 1–3 minutes, and at a
+  # 15 s scrape we would get a dozen or so points for a whole run — not enough to see the shape of
+  # the degradation rather than just an average.
   scrape_interval: 5s
   evaluation_interval: 15s
 
 scrape_configs:
   - job_name: collabedit-app
     metrics_path: /actuator/prometheus
-    # Exemplars — bez tego przeskok z histogramu latencji do konkretnego trace'u
-    # (CP7) nie działa.
+    # Exemplars — without them the jump from a latency histogram to a specific trace (CP7) does
+    # not work.
     scrape_protocols:
       - PrometheusProto
       - OpenMetricsText1.0.0
       - PrometheusText0.0.4
     static_configs:
-      # host.docker.internal: aplikacja startuje z IDE/Gradle na hoście, nie w compose.
-      # Świadomie — cykl edycja→restart jest wtedy o rząd wielkości krótszy niż
-      # przy przebudowie obrazu, a to jest środowisko deweloperskie.
+      # host.docker.internal: the application starts from an IDE or Maven on the host, not in
+      # compose. Deliberately — the edit-restart cycle is then an order of magnitude shorter than
+      # rebuilding an image, and this is a development environment.
       - targets: ["host.docker.internal:8080"]
         labels:
           instance: app-local
 
-      # Instancje uruchamiane w compose przy teście skalowania poziomego (ADR-0004).
-      # Nieaktywne cele po prostu pokazują się jako "down" — to nie jest błąd konfiguracji.
+      # The instances started in compose for the horizontal scaling test (ADR-0004). Inactive
+      # targets simply show up as "down" — that is not a configuration error.
       - targets: ["host.docker.internal:8081"]
         labels:
           instance: app-2

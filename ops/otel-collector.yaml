@@ -5,9 +5,9 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
-        # CORS potrzebny, bo trace zaczyna się w przeglądarce (ADR-0002 / CP7):
-        # span `edit.submit` jest tworzony po stronie klienta i wysyłany bezpośrednio
-        # do kolektora. Bez tego pierwszy span łańcucha end-to-end by nie dotarł.
+        # CORS is needed because a trace starts in the browser (ADR-0002 / CP7): the
+        # `edit.submit` span is created on the client and sent straight to the collector. Without
+        # it the first span of the end-to-end chain would never arrive.
         cors:
           allowed_origins:
             - "http://localhost:5173"
@@ -15,8 +15,8 @@ receivers:
 
 processors:
   batch:
-    # Bufor 1 s. Przy demo z ręcznym klikaniem chcę zobaczyć trace niemal natychmiast;
-    # domyślne 5 s sprawia, że podczas nagrywania GIF-a (CP9) trzeba czekać na Grafanę.
+    # A 1 s buffer. During a hands-on demo I want to see a trace almost immediately; the default
+    # 5 s means waiting on Grafana while recording the GIF (CP9).
     timeout: 1s
     send_batch_size: 512
 

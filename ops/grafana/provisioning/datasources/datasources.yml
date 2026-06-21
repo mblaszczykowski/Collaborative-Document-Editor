@@ -7,9 +7,9 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     jsonData:
-      # Powiązanie exemplarów z Tempo: kliknięcie w punkt na histogramie latencji
-      # otwiera trace, który go wygenerował. To jest cała wartość exemplarów —
-      # bez tego mapowania są martwym polem w metryce.
+      # Linking exemplars to Tempo: clicking a point on the latency histogram opens the trace
+      # that produced it. That is the entire value of exemplars — without this mapping they are a
+      # dead field in the metric.
       exemplarTraceIdDestinations:
         - name: trace_id
           datasourceUid: tempo

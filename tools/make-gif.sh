@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# Zamienia nagranie z Playwrighta na GIF do README.
+# Turns a Playwright recording into the GIF for the README.
 #
-# Nagranie powstaje ze skryptu (frontend/e2e/demo.spec.ts), nie z ręcznego klikania —
-# dzięki temu da się je odtworzyć po każdej zmianie interfejsu, a GIF w README nie
-# zestarzeje się po cichu.
+# The recording comes from a script (frontend/e2e/demo.spec.ts) rather than manual clicking — so it
+# can be reproduced after every interface change, and the GIF in the README does not silently go
+# stale.
 #
 #   cd frontend && npm run demo && cd .. && ./tools/make-gif.sh
 #
-# Scen jest dwie i każda ma własny GIF — jeden byłby albo za długi, żeby ktokolwiek
-# obejrzał go do końca, albo za pobieżny, żeby cokolwiek pokazać:
+# There are two scenes and each has its own GIF — one would be either too long for anyone to watch
+# to the end, or too cursory to show anything:
 #
-#   ./tools/make-gif.sh core    docs/demo.gif      # edycja współbieżna, offline, historia
-#   ./tools/make-gif.sh product docs/demo-v2.gif   # formatowanie, komentarze, kosz
+#   ./tools/make-gif.sh core    docs/demo.gif      # concurrent editing, offline, history
+#   ./tools/make-gif.sh product docs/demo-v2.gif   # formatting, comments, the bin
 #
 set -euo pipefail
 
@@ -20,24 +20,24 @@ SCENE="${1:-core}"
 OUTPUT="${2:-docs/demo.gif}"
 RECORDINGS="frontend/demo-recordings/$SCENE"
 
-command -v ffmpeg >/dev/null || { echo "brak ffmpeg — brew install ffmpeg"; exit 1; }
-command -v gifski >/dev/null || { echo "brak gifski — brew install gifski"; exit 1; }
+command -v ffmpeg >/dev/null || { echo "ffmpeg is missing — brew install ffmpeg"; exit 1; }
+command -v gifski >/dev/null || { echo "gifski is missing — brew install gifski"; exit 1; }
 
-# Playwright nagrywa jedno wideo na kontekst przeglądarki. Bierzemy NAJWIĘKSZE —
-# to nagranie Anny, która wykonuje pełny scenariusz łącznie z panelem historii.
+# Playwright records one video per browser context. We take the LARGEST — that is Anna's
+# recording, which runs the full scenario including the history panel.
 VIDEO=$(find "$RECORDINGS" -name '*.webm' -type f -exec ls -S {} + 2>/dev/null | head -1)
-[ -n "$VIDEO" ] || { echo "brak nagrań w $RECORDINGS — uruchom najpierw: cd frontend && npm run demo"; exit 1; }
-echo "nagranie: $VIDEO"
+[ -n "$VIDEO" ] || { echo "no recordings in $RECORDINGS — run first: cd frontend && npm run demo"; exit 1; }
+echo "recording: $VIDEO"
 
 FRAMES=$(mktemp -d)
 trap 'rm -rf "$FRAMES"' EXIT
 
-# 12 klatek na sekundę i szerokość 1000 px: kompromis między czytelnością tekstu
-# a rozmiarem pliku. Przy 24 fps GIF przekracza 10 MB i GitHub przestaje go pokazywać
-# w podglądzie, a przy szerokości 800 px tekst w edytorze robi się nieczytelny.
+# 12 frames per second and a width of 1000 px: a compromise between legible text and file size. At
+# 24 fps the GIF exceeds 10 MB and GitHub stops showing it in the preview, and at a width of 800 px
+# the text in the editor becomes unreadable.
 ffmpeg -loglevel error -i "$VIDEO" -vf "fps=12,scale=1000:-1:flags=lanczos" "$FRAMES/%05d.png"
 
 mkdir -p "$(dirname "$OUTPUT")"
 gifski --fps 12 --width 1000 --quality 80 -o "$OUTPUT" "$FRAMES"/*.png
 
-echo "gotowe: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
+echo "done: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"

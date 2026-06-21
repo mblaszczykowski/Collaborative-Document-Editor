@@ -1,17 +1,17 @@
-name: Nightly — głębokie property testy i benchmarki
+name: Nightly — deep property tests and benchmarks
 
 on:
   schedule:
-    # 03:00 UTC. Ten przebieg istnieje po to, żeby SZUKAĆ nowych kontrprzykładów,
-    # a nie potwierdzać stare: CI na pull requestach chodzi ze stałym ziarnem
-    # (determinizm), tutaj prób jest 10× więcej. Kontrprzykład znaleziony nocą
-    # trafia do repo jako zwykły test regresyjny.
+    # 03:00 UTC. This run exists to SEARCH for new counterexamples rather than confirm old ones:
+    # CI on pull requests runs with a fixed seed (determinism), while here there are 10× the
+    # tries. A counterexample found overnight goes into the repository as an ordinary regression
+    # test.
     - cron: '0 3 * * *'
   workflow_dispatch:
 
 jobs:
   thorough-property-tests:
-    name: Property testy — 10 000 prób
+    name: Property tests — 10 000 tries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Głębokie property testy
+      - name: Deep property tests
         run: ./mvnw -B -pl crdt-core -Pthorough test
 
       - uses: actions/upload-artifact@v4
@@ -31,7 +31,7 @@ jobs:
           path: crdt-core/target/surefire-reports/
 
   benchmarks:
-    name: Benchmarki JMH
+    name: JMH benchmarks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,10 +41,10 @@ jobs:
           java-version: '21'
           cache: maven
 
-      # Liczby z runnera GitHuba służą do wykrywania REGRESJI między przebiegami,
-      # a nie do cytowania w README. Runner jest współdzielony i zmienny, więc jego
-      # wyniki nie są porównywalne między dniami w sposób, który da się obronić.
-      # Liczby do README pochodzą z jednej, opisanej maszyny — patrz sekcja Wydajność.
+      # Numbers from a GitHub runner exist to detect REGRESSIONS between runs, not to be quoted
+      # in the README. The runner is shared and variable, so its results are not comparable
+      # between days in any defensible way. The README's numbers come from one described machine
+      # — see the Performance section.
       - name: JMH
         run: ./mvnw -B -pl crdt-core test-compile exec:exec@run-benchmarks
 
@@ -91,20 +91,19 @@ jobs:
           path: app/target/surefire-reports/
 
   chaos:
-    name: Chaos klastra — 10 przebiegów pod rząd
+    name: Cluster chaos — 10 consecutive runs
     runs-on: ubuntu-latest
-    # ClusterChaosIT wykonuje się już przy KAŻDYM pull requeście, bo job `app` w ci.yml
-    # woła `mvnw install`, a to uruchamia wszystkie testy modułu. Powtarzanie tego samego
-    # tutaj byłoby duplikatem bez wartości.
+    # ClusterChaosIT already runs on EVERY pull request, because the `app` job in ci.yml calls
+    # `mvnw install`, which runs all of the module's tests. Repeating the same thing here would be
+    # a duplicate with no value.
     #
-    # Ten job robi coś, czego pojedynczy przebieg zrobić nie może: szuka NIEDETERMINIZMU.
-    # Test chaosu zatrzymuje Redisa w trakcie pisania i polega na przeglądzie anti-entropy,
-    # więc jego wynik zależy od uszeregowania zdarzeń w czasie. Test, który przechodzi
-    # raz, mógł przejść przypadkiem; test, który przechodzi dziesięć razy pod rząd przy
-    # różnym obciążeniu runnera, jest przesłanką znacznie mocniejszą.
+    # This job does something a single run cannot: it searches for NON-DETERMINISM. The chaos test
+    # stops Redis mid-write and relies on the anti-entropy sweep, so its outcome depends on how
+    # events line up in time. A test that passes once may have passed by chance; a test that passes
+    # ten times in a row under varying runner load is much stronger evidence.
     #
-    # To jest ta sama zasada, co przy property testach powyżej — nocny przebieg SZUKA
-    # kontrprzykładów, zamiast potwierdzać te już znalezione.
+    # The same principle as the property tests above — the nightly run SEARCHES for
+    # counterexamples rather than confirming the ones already found.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -113,28 +112,28 @@ jobs:
           java-version: '21'
           cache: maven
 
-      # Testcontainers podnosi Postgresa i Redisa sam (IntegrationTestBase), więc ten job
-      # nie potrzebuje `services:` — w odróżnieniu od joba e2e, gdzie stack musi żyć
-      # poza JVM, bo używa go przeglądarka.
+      # Testcontainers brings up Postgres and Redis itself (IntegrationTestBase), so this job
+      # needs no `services:` — unlike the e2e job, where the stack has to live outside the JVM
+      # because a browser uses it.
       - run: ./mvnw -B install -DskipTests
 
-      - name: Chaos klastra ×10
+      - name: Cluster chaos ×10
         run: |
           failed=0
           for run in $(seq 1 10); do
-            echo "::group::przebieg $run/10"
+            echo "::group::run $run/10"
             if ! ./mvnw -B -pl app test -Dtest=ClusterChaosIT; then
               failed=$((failed + 1))
-              echo "::error::Przebieg $run nie przeszedł"
-              # Raporty nadpisują się między przebiegami, więc odkładamy ten nieudany.
+              echo "::error::Run $run failed"
+              # The reports overwrite each other between runs, so we set the failed one aside.
               mkdir -p failed-runs
               cp -r app/target/surefire-reports "failed-runs/run-$run"
             fi
             echo "::endgroup::"
           done
-          echo "Nieudane przebiegi: $failed/10"
-          # Jedna porażka na dziesięć to NIE jest szum — to jest dokładnie ten
-          # niedeterminizm, którego ten job szuka. Nie tolerujemy żadnej.
+          echo "Failed runs: $failed/10"
+          # One failure in ten is NOT noise — it is precisely the non-determinism this job is
+          # looking for. We tolerate none.
           [ "$failed" -eq 0 ]
 
       - uses: actions/upload-artifact@v4

@@ -9,8 +9,8 @@ distributor:
           endpoint: 0.0.0.0:4317
 
 ingester:
-  # Krótkie okno, żeby trace był wyszukiwalny szybko po zakończeniu — przy demo
-  # i przy debugowaniu w CP7 czekanie minutę na pojawienie się trace'u jest bez sensu.
+  # A short window so a trace becomes searchable soon after it ends — during a demo and while
+  # debugging in CP7, waiting a minute for a trace to appear makes no sense.
   max_block_duration: 5m
 
 storage:
@@ -23,6 +23,6 @@ storage:
 
 compactor:
   compaction:
-    # 24 h retencji. Projekt portfolio — trace'y sprzed doby nie są do niczego potrzebne,
-    # a lokalny dysk nie jest z gumy.
+    # 24 h of retention. A portfolio project — traces from more than a day ago are needed for
+    # nothing, and the local disk is not infinite.
     block_retention: 24h
