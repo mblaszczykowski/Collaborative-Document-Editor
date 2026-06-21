@@ -422,10 +422,9 @@ public class DocumentService {
                 log.debug("GC of document {}: reclaimed {} tombstone characters",
                     replica.documentId(), reclaimed);
             }
-            String preview = document.visibleLength() <= DocumentCatalog.PREVIEW_LENGTH
-                ? document.text()
-                : document.text().substring(0, DocumentCatalog.PREVIEW_LENGTH);
-            return new Captured(document.snapshot(), preview, seq);
+            // The whole text, not just the preview: since CP29 the same call also builds the
+            // search vector, and searching the first 200 characters is what CP29 exists to stop.
+            return new Captured(document.snapshot(), document.text(), seq);
         });
 
         if (maybeCaptured.isEmpty()) {
@@ -439,7 +438,7 @@ public class DocumentService {
         // The preview for the document list. Materialised HERE, because this is the only moment
         // the content is already in hand — the list cannot afford to load a replica for every entry
         // (CP11).
-        catalog.updatePreview(replica.documentId(), captured.preview());
+        catalog.updatePreview(replica.documentId(), captured.text());
         replica.snapshotTaken();
         if (!stable.isEmpty()) {
             replica.recordGc(stable);
@@ -547,8 +546,14 @@ public class DocumentService {
     // Reads
     // ------------------------------------------------------------------
 
-    /** State taken under one lock: the snapshot to store and the preview for the document list. */
-    private record Captured(dev.collabedit.crdt.DocumentSnapshot snapshot, String preview,
+    /**
+     * State taken under one lock: the snapshot to store, and the content the document list and the
+     * search index are cut from.
+     *
+     * @param text the whole content — the preview is its first 200 characters and the search
+     *             vector is built from all of it (CP29)
+     */
+    private record Captured(dev.collabedit.crdt.DocumentSnapshot snapshot, String text,
                             long seq) {
     }
 

@@ -93,6 +93,16 @@ public class DocumentCatalog {
     /**
      * Full-text search over the title and the content preview.
      *
+     * <h2>The content, since CP29</h2>
+     * This used to search {@code title || ' ' || preview_text}, and the preview is the first 200
+     * characters — so it worked exactly as far as the opening sentence and then stopped. A search
+     * that answers, looks like it searched, and does not return the document containing the word
+     * is worse than no search at all.
+     *
+     * <p>The vector is built on the snapshot path, so <b>the index lags</b>: a document is
+     * searchable as of its last snapshot. Stated rather than hidden — see V9 for why that is the
+     * right side of this trade.
+     *
      * <p>The {@code simple} configuration rather than a language-specific one — the latter needs
      * ispell dictionaries that the stock Postgres image does not carry, so the migration would fail
      * at startup. No stemming means "documents" will not be found by searching for "document". A
@@ -106,10 +116,15 @@ public class DocumentCatalog {
         return jdbc.query(
             "SELECT " + SUMMARY_COLUMNS + " FROM documents "
                 + "WHERE deleted_at IS NULL "
-                + "AND to_tsvector('simple', title || ' ' || preview_text) "
-                + "    @@ websearch_to_tsquery('simple', ?) "
+                + "AND (search_vector @@ websearch_to_tsquery('simple', ?) "
+                // The title, separately, for two reasons that are both about staleness rather
+                // than about titles being special. A document that has never been snapshotted has
+                // no vector at all — a document created a second ago is exactly the one somebody
+                // is most likely to look for. And renaming does not rebuild the vector, so
+                // between a rename and the next snapshot the new title exists only here.
+                + "  OR to_tsvector('simple', title) @@ websearch_to_tsquery('simple', ?)) "
                 + "ORDER BY updated_at DESC LIMIT ?",
-            SUMMARY, query, limit);
+            SUMMARY, query, query, limit);
     }
 
     // ------------------------------------------------------------------
@@ -153,7 +168,17 @@ public class DocumentCatalog {
      */
     public void updatePreview(UUID documentId, String text) {
         String preview = text.length() <= PREVIEW_LENGTH ? text : text.substring(0, PREVIEW_LENGTH);
-        jdbc.update("UPDATE documents SET preview_text = ? WHERE id = ?", preview, documentId);
+        // The search vector is built HERE for the same reason the preview is: this is the one
+        // moment the content is in hand. It covers the title as well, so one index answers both
+        // halves of the question people actually ask (CP29).
+        //
+        // The vector, not the text. Storing the content beside the document would duplicate what
+        // the operation log owns; a tsvector is what search needs, nothing else can be read back
+        // out of it, and that also stops this column from quietly becoming a second source of
+        // truth for the text.
+        jdbc.update("UPDATE documents SET preview_text = ?, "
+                + "search_vector = to_tsvector('simple', title || ' ' || ?) WHERE id = ?",
+            preview, text, documentId);
     }
 
     public static final int PREVIEW_LENGTH = 200;
