@@ -11,14 +11,14 @@
     </parent>
 
     <artifactId>crdt-core</artifactId>
-    <name>crdt-core — algorytm RGA</name>
+    <name>crdt-core — the RGA algorithm</name>
 
     <!--
-      ŚWIADOME OGRANICZENIE: ten moduł nie ma i nie będzie miał zależności od Springa
-      ani od czegokolwiek z warstwy aplikacyjnej (ADR-0001). Jedyna zależność produkcyjna
-      to Jackson, i tylko do serializacji operacji na potrzeby transportu i persystencji.
-      Jeśli kiedykolwiek pojawi się tu org.springframework, to znaczy, że granica przeciekła
-      i trzeba się cofnąć, a nie dopisać wyjątek.
+      A DELIBERATE CONSTRAINT: this module has no dependency on Spring or on anything from the
+      application layer, and never will (ADR-0001). The only production dependency is Jackson, and
+      only for serialising operations for transport and persistence. If org.springframework ever
+      appears here, the boundary has leaked and the right move is to back out, not to add an
+      exception.
     -->
     <dependencies>
         <dependency>
@@ -43,7 +43,7 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- JMH w zakresie testowym: benchmarki są częścią weryfikacji, a nie artefaktu. -->
+        <!-- JMH in test scope: the benchmarks are part of verification, not of the artifact. -->
         <dependency>
             <groupId>org.openjdk.jmh</groupId>
             <artifactId>jmh-core</artifactId>
@@ -61,18 +61,19 @@
     <build>
         <plugins>
             <!--
-              src/jmh/java jako dodatkowy katalog źródeł testowych.
-              Osobny katalog, a nie src/test/java, bo benchmarki to inny rodzaj kodu niż
-              testy: nie mają asercji, trwają minuty i nie mają się uruchamiać w CI przy
-              każdym pushu. Surefire ich nie podnosi, bo nie pasują do wzorca *Test.
+              src/jmh/java as an additional test source directory.
+              A separate directory rather than src/test/java, because benchmarks are a different
+              kind of code from tests: they have no assertions, take minutes, and are not meant to
+              run in CI on every push. Surefire does not pick them up, because they do not match
+              the *Test pattern.
             -->
             <!--
               Procesor adnotacji JMH zadeklarowany JAWNIE.
 
-              Od JDK 23 javac nie uruchamia procesorów znalezionych na ścieżce klas bez
-              wyraźnego wskazania. Objaw jest mylący: kompilacja przechodzi, benchmarki się
-              budują, a dopiero uruchomienie kończy się „Unable to find the resource:
-              /META-INF/BenchmarkList" — czyli komunikatem, który nic nie mówi o przyczynie.
+              Since JDK 23, javac does not run processors found on the class path without being
+              told explicitly. The symptom is misleading: compilation passes, the benchmarks
+              build, and only running them ends with "Unable to find the resource:
+              /META-INF/BenchmarkList" — a message that says nothing about the cause.
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -113,8 +114,8 @@
             </plugin>
 
             <!--
-              Uruchomienie benchmarków:  mvn -pl crdt-core -Pbenchmark test-compile exec:exec
-              Wynik trafia do crdt-core/target/jmh-result.json i stamtąd do README.
+              Running the benchmarks:  mvn -pl crdt-core -Pbenchmark test-compile exec:exec
+              The result lands in crdt-core/target/jmh-result.json and from there in the README.
             -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
@@ -132,16 +133,16 @@
                                 <argument>-classpath</argument>
                                 <classpath/>
                                 <argument>org.openjdk.jmh.Main</argument>
-                                <!-- 3 iteracje rozgrzewki: JIT na strukturach z dużą liczbą
-                                     obiektów potrzebuje chwili, zanim wynik przestaje dryfować. -->
+                                <!-- 3 warm-up iterations: the JIT on structures with many
+                                     objects needs a moment before the result stops drifting. -->
                                 <argument>-wi</argument><argument>3</argument>
                                 <argument>-i</argument><argument>5</argument>
-                                <!-- 2 s na iterację zamiast domyślnych 10 s. Pełna macierz
-                                     to 24 kombinacje (2 implementacje × 3 rozmiary × 4 operacje);
-                                     przy domyślnych ustawieniach przebieg trwa pół godziny,
-                                     a przy tych ~7 minut przy tej samej stabilności wyniku —
-                                     mierzone operacje trwają mikrosekundy, więc 2 s to i tak
-                                     setki tysięcy powtórzeń. -->
+                                <!-- 2 s per iteration instead of the default 10 s. The full
+                                     matrix is 24 combinations (2 implementations × 3 sizes × 4
+                                     operations); at the defaults a run takes half an hour, at
+                                     these ~7 minutes with the same result stability — the
+                                     measured operations take microseconds, so 2 s is still
+                                     hundreds of thousands of repetitions. -->
                                 <argument>-r</argument><argument>2s</argument>
                                 <argument>-w</argument><argument>2s</argument>
                                 <argument>-f</argument><argument>1</argument>

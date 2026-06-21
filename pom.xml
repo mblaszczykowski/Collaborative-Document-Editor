@@ -11,15 +11,15 @@
     <name>Collaborative Document Editor</name>
 
     <!--
-      ŚWIADOMA DECYZJA: projekt NIE dziedziczy po spring-boot-starter-parent.
+      A DELIBERATE DECISION: the project does NOT inherit from spring-boot-starter-parent.
 
-      Powód wynika wprost z ADR-0001: crdt-core ma nie mieć nic wspólnego ze Springiem.
-      Gdyby parentem był starter Boota, każdy moduł — łącznie z rdzeniem algorytmu —
-      dziedziczyłby zarządzanie zależnościami Springa, jego wtyczki i konwencje.
-      Granica architektoniczna, którą deklarujemy w ADR-ze, byłaby wtedy tylko deklaracją.
+      The reason follows directly from ADR-0001: crdt-core is to have nothing to do with Spring.
+      With the Boot starter as parent, every module — including the algorithm's core — would
+      inherit Spring's dependency management, its plugins and its conventions. The architectural
+      boundary declared in the ADR would then be only a declaration.
 
-      Zamiast tego importujemy spring-boot-dependencies jako BOM w dependencyManagement,
-      więc wersje są spójne, ale zależność jest w jedną stronę i dotyczy tylko modułu app.
+      Instead we import spring-boot-dependencies as a BOM in dependencyManagement, so the versions
+      stay consistent while the dependency runs one way and touches only the app module.
     -->
 
     <modules>
@@ -39,11 +39,11 @@
         <jmh.version>1.37</jmh.version>
 
         <!--
-          Nadpisanie wersji zarządzanej przez spring-boot-dependencies.
-          Powód konkretny: Testcontainers 1.20.x negocjuje Docker API 1.32, a Docker 29+
-          (m.in. w colimie) odrzuca wszystko poniżej 1.40. Objawia się to komunikatem
-          "Could not find a valid Docker environment", który sugeruje brak Dockera,
-          choć Docker działa — stąd ten komentarz, żeby nie diagnozować tego drugi raz.
+          Overriding a version managed by spring-boot-dependencies.
+          A concrete reason: Testcontainers 1.20.x negotiates Docker API 1.32, and Docker 29+
+          (in colima among others) rejects anything below 1.40. It manifests as
+          "Could not find a valid Docker environment", which suggests Docker is missing while
+          Docker is running — hence this comment, so nobody diagnoses it a second time.
         -->
         <testcontainers.version>1.21.3</testcontainers.version>
         <otel.version>2.13.3</otel.version>
@@ -54,11 +54,11 @@
         <exec-plugin.version>3.5.0</exec-plugin.version>
 
         <!--
-          Liczba prób w testach property-based.
-          Domyślnie 1000 ze STAŁYM ziarnem: determinizm w CI, kontrprzykład odtwarzalny
-          jednym poleceniem. Nocny build uruchamia `mvn test -Pthorough`, który podnosi
-          to do 10 000 i losuje ziarno — bo jego zadaniem jest SZUKAĆ nowych kontrprzykładów,
-          a nie powtarzać te same tysiąc przypadków.
+          The number of tries in the property-based tests.
+          1000 by default with a FIXED seed: determinism in CI, and a counterexample reproducible
+          with one command. The nightly build runs `mvn test -Pthorough`, which raises this to
+          10 000 and randomises the seed — because its job is to SEARCH for new counterexamples,
+          not to repeat the same thousand cases.
         -->
         <jqwik.tries>1000</jqwik.tries>
     </properties>
@@ -103,20 +103,19 @@
                     <version>${compiler-plugin.version}</version>
                     <configuration>
                         <!--
-                          KONSEKWENCJA rezygnacji ze spring-boot-starter-parent: to on
-                          domyślnie włącza -parameters. Bez tej flagi nazwy parametrów
-                          metod nie trafiają do bajtkodu, a Spring nie potrafi powiązać
-                          @DestinationVariable ani @PathVariable z argumentem — wywala się
-                          dopiero W CZASIE DZIAŁANIA, komunikatem "Name for argument of
-                          type [java.util.UUID] not specified".
-                          Kompilacja przechodzi, testy jednostkowe przechodzą, psuje się
-                          wyłącznie warstwa webowa i to w runtime.
+                          A CONSEQUENCE of doing without spring-boot-starter-parent: it is what
+                          enables -parameters by default. Without that flag, method parameter
+                          names do not reach the bytecode and Spring cannot bind
+                          @DestinationVariable or @PathVariable to an argument — it fails only AT
+                          RUN TIME, with "Name for argument of type [java.util.UUID] not
+                          specified". Compilation passes, the unit tests pass, and only the web
+                          layer breaks, at run time.
                         -->
                         <parameters>true</parameters>
                         <compilerArgs>
                             <arg>-Xlint:all</arg>
-                            <!-- serial: nie serializujemy nic przez Serializable.
-                                 processing: generatory JMH i tak sypią szumem. -->
+                            <!-- serial: we serialise nothing through Serializable.
+                                 processing: the JMH generators produce noise regardless. -->
                             <arg>-Xlint:-serial,-processing</arg>
                         </compilerArgs>
                     </configuration>
@@ -129,13 +128,12 @@
                                     <arg>-Xlint:all</arg>
                                     <arg>-Xlint:-serial,-processing</arg>
                                     <!--
-                                      Ostrzeżenia jako błędy TYLKO w kodzie produkcyjnym.
-                                      W projekcie portfolio "build przechodzi, ale wypluwa
-                                      czterdzieści warningów" to zły sygnał, a zero jest
-                                      łatwiej utrzymać od początku niż posprzątać na końcu.
-                                      Kod testowy jest wyłączony celowo: tam pojawia się
-                                      kod generowany (JMH) i konstrukcje, w których warning
-                                      bywa zamierzony.
+                                      Warnings as errors ONLY in production code.
+                                      In a portfolio project "the build passes but emits forty
+                                      warnings" is a bad signal, and zero is easier to maintain
+                                      from the start than to clean up at the end. Test code is
+                                      exempt deliberately: that is where generated code (JMH) and
+                                      constructs whose warnings are intentional live.
                                     -->
                                     <arg>-Werror</arg>
                                 </compilerArgs>
@@ -150,17 +148,18 @@
                     <version>${surefire.version}</version>
                     <configuration>
                         <!--
-                          UWAGA, PUŁAPKA: domyślne wzorce Surefire to *Test, Test*, *Tests,
-                          *TestCase. Klasy property testów nazywają się *Properties, więc bez
-                          tej listy NIE URUCHAMIAJĄ SIĘ — a build i tak jest zielony.
-                          Wykryte przy migracji z Gradle'a: liczba testów spadła z 15 do 5,
-                          bez jednego błędu. Najgroźniejszy rodzaj regresji w konfiguracji
-                          buildu to ten, który niczego nie psuje, tylko przestaje sprawdzać.
+                          BEWARE, A TRAP: Surefire's default patterns are *Test, Test*, *Tests,
+                          *TestCase. The property test classes are named *Properties, so without
+                          this list they DO NOT RUN — and the build is green regardless.
+                          Discovered during the migration from Gradle: the test count dropped from
+                          15 to 5 without a single failure. The most dangerous kind of regression
+                          in a build configuration is the one that breaks nothing and merely stops
+                          checking.
 
-                          DRUGI RAZ, CP15: klasa `MarkCostMeasurement` przechodziła
-                          uruchamiana wprost (`-Dtest=...`) i NIE uruchamiała się w buildzie,
-                          bo `*Measurement` nie było na tej liście. Ta sama pułapka, ten sam
-                          objaw — zielony build, który czegoś nie sprawdza. Stąd czwarty wzorzec.
+                          A SECOND TIME, CP15: the `MarkCostMeasurement` class passed when run
+                          directly (`-Dtest=...`) and did NOT run in the build, because
+                          `*Measurement` was not on this list. The same trap, the same symptom — a
+                          green build that checks nothing. Hence the fourth pattern.
                         -->
                         <includes>
                             <include>**/*Test.java</include>
@@ -198,8 +197,8 @@
 
     <profiles>
         <!--
-          Nocny build: losowe ziarno i 10x więcej prób. Kontrprzykład znaleziony nocą
-          trafia do repo jako zwykły test regresyjny.
+          The nightly build: a random seed and 10× the tries. A counterexample found overnight
+          goes into the repository as an ordinary regression test.
         -->
         <profile>
             <id>thorough</id>

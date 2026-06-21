@@ -1,18 +1,18 @@
-# Lokalne środowisko deweloperskie i demo.
+# The local development environment and the demo.
 #
-# Zasada dla tego pliku: żadnej wartości bez komentarza, dlaczego akurat taka
-# (CLAUDE.md, "Czego unikać"). Jeśli wartość jest domyślna — też to piszę, wraz z tym,
-# kiedy przestanie wystarczać.
+# The rule for this file: no value without a comment saying why that one (CLAUDE.md, "What to
+# avoid"). If a value is the default, that is written down too, along with when it will stop being
+# enough.
 #
-# Sama infrastruktura (do pracy nad kodem):  docker compose up -d
-#     backend uruchamiasz wtedy z IDE albo przez ./mvnw -pl app spring-boot:run
-# Cała aplikacja, bez instalowania czegokolwiek poza Dockerem:
-#     docker compose --profile app up -d      → frontend na http://localhost:5173
-# Stack obserwowalności (CP7):                docker compose --profile observability up -d
+# Infrastructure only (for working on the code):  docker compose up -d
+#     you then start the backend from your IDE or with ./mvnw -pl app spring-boot:run
+# The whole application, with nothing installed but Docker:
+#     docker compose --profile app up -d      -> the frontend on http://localhost:5173
+# The observability stack (CP7):                  docker compose --profile observability up -d
 #
-# Poprzednia wersja tego nagłówka obiecywała, że `docker compose up -d` podnosi "pełny
-# stack", podczas gdy w pliku były wyłącznie postgres i redis, a Dockerfile'i nie było
-# wcale. Komentarz opisujący nieistniejące zachowanie jest gorszy niż jego brak.
+# A previous version of this header promised that `docker compose up -d` brought up the "full
+# stack", while the file contained only postgres and redis and there were no Dockerfiles at all.
+# A comment describing behaviour that does not exist is worse than no comment.
 
 services:
 
@@ -22,36 +22,37 @@ services:
     environment:
       POSTGRES_DB: collabedit
       POSTGRES_USER: collabedit
-      # Hasło jawnie w repo, bo to środowisko wyłącznie lokalne i nigdy nie wychodzi
-      # poza sieć compose'a. W produkcji: sekret z zewnętrznego magazynu — patrz sekcja
-      # "co zrobiłbym inaczej w produkcji" w README.
+      # The password is in the repository in plain text, because this environment is purely
+      # local and never leaves the compose network. In production: a secret from an external
+      # store — see the README's "what I would do differently in production" section.
       POSTGRES_PASSWORD: collabedit
     ports:
-      # NIE 5432. Port domyślny bardzo często jest już zajęty przez Postgresa
-      # zainstalowanego lokalnie, a wtedy aplikacja łączy się do CUDZEJ bazy i wywala się
-      # komunikatem 'role "collabedit" does not exist' — mylącym, bo rola w kontenerze
-      # istnieje. Wykryte przy pierwszym uruchomieniu całości. Przesunięcie portu jest
-      # tańsze niż tłumaczenie tego każdemu, kto sklonuje repo.
+      # NOT 5432. The default port is very often already taken by a locally installed Postgres,
+      # and then the application connects to SOMEBODY ELSE'S database and fails with
+      # 'role "collabedit" does not exist' — a confusing message, because the role does exist in
+      # the container. Found on the first end-to-end run. Shifting the port is cheaper than
+      # explaining this to everyone who clones the repository.
       - "55432:5432"
     command:
-      # Log wolnych zapytań powyżej 200 ms. Wartość dobrana pod ADR-0003: odczyt
-      # "stan dokumentu na czas T" (snapshot + replay ogona) to najcięższe zapytanie
-      # w systemie i chcę zobaczyć w logu, kiedy zaczyna przekraczać ten próg,
-      # zamiast dowiadywać się o tym dopiero z benchmarków w CP8.
+      # Log slow queries above 200 ms. The value is chosen for ADR-0003: reading "the document's
+      # state at time T" (a snapshot plus a tail replay) is the heaviest query in the system, and
+      # I want the log to show when it starts crossing that threshold rather than finding out
+      # from the CP8 benchmarks.
       - "postgres"
       - "-c"
       - "log_min_duration_statement=200"
       - "-c"
-      # max_connections domyślnie 100. Pula HikariCP w aplikacji to 10 na instancję
-      # (patrz application.yml), więc 100 pokrywa kilka instancji + testy + psql
-      # z zapasem. Podnoszę świadomie, żeby test chaosu z wieloma instancjami
-      # nie wywalał się na wyczerpaniu połączeń zamiast na tym, co testuje.
+      # max_connections defaults to 100. The application's HikariCP pool is 10 per instance (see
+      # application.yml), so 100 covers several instances + the tests + psql with room to spare.
+      # Raised deliberately, so that the multi-instance chaos test fails on what it tests rather
+      # than on exhausted connections.
       - "max_connections=200"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U collabedit -d collabedit"]
-      # 5 s to kompromis: szybki start w CI, bez zalewania logów przy długim życiu kontenera.
+      # 5 s is a compromise: a fast start in CI without flooding the logs over a long-lived
+      # container.
       interval: 5s
       timeout: 3s
       retries: 10
@@ -60,21 +61,20 @@ services:
     image: redis:7-alpine
     container_name: collabedit-redis
     ports:
-      # Jak wyżej — port przesunięty, żeby nie kolidować z lokalną instalacją.
+      # As above — the port is shifted so it does not collide with a local installation.
       - "56379:6379"
     command:
       - "redis-server"
-      # BRAK persystencji (--save "") celowo. Redis jest u nas wyłącznie zawodną
-      # ścieżką szybką dla pub/sub (ADR-0004) — nie trzyma nic, czego utrata
-      # miałaby znaczenie. Źródłem prawdy jest Postgres. Włączenie AOF/RDB dawałoby
-      # fałszywe poczucie, że te dane są ważne.
+      # NO persistence (--save "") deliberately. Redis is purely the unreliable fast path for
+      # pub/sub here (ADR-0004) — it holds nothing whose loss would matter. The source of truth
+      # is Postgres. Enabling AOF/RDB would give a false sense that this data is important.
       - "--save"
       - ""
       - "--appendonly"
       - "no"
-      # Limit pamięci — przy zapchaniu Redis odrzuca zapisy zamiast rosnąć w nieskończoność.
-      # To jest DOKŁADNIE ten scenariusz utraty wiadomości, który anti-entropy z ADR-0004
-      # ma naprawiać, więc chcę móc go wywołać w teście chaosu (CP8).
+      # A memory limit — when full, Redis rejects writes rather than growing without bound. That
+      # is EXACTLY the message-loss scenario the anti-entropy from ADR-0004 exists to repair, so I
+      # want to be able to induce it in the chaos test (CP8).
       - "--maxmemory"
       - "256mb"
       - "--maxmemory-policy"
@@ -86,10 +86,10 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
-  # Aplikacja. Osobny profil `app`, bo przy pracy nad kodem uruchamia się backend
-  # z IDE albo przez `mvnw spring-boot:run` — obraz jest wtedy zbędnym krokiem
-  # przebudowy przy każdej zmianie. Profil istnieje dla kogoś, kto chce ZOBACZYĆ
-  # działającą aplikację, nie nad nią pracować.
+  # The application. A separate `app` profile, because when working on the code the backend is
+  # started from an IDE or with `mvnw spring-boot:run` — an image is then a redundant rebuild step
+  # on every change. The profile exists for somebody who wants to SEE the application working, not
+  # to work on it.
   # ---------------------------------------------------------------------------
 
   app:
@@ -99,25 +99,25 @@ services:
     container_name: collabedit-app
     profiles: ["app"]
     environment:
-      # Adresy WEWNĄTRZ sieci compose'a — nazwy usług i porty domyślne, nie te
-      # przesunięte z myślą o hoście. Kontener nie ma konfliktu z lokalnym Postgresem,
-      # bo nie widzi hosta.
+      # Addresses INSIDE the compose network — service names and default ports, not the ones
+      # shifted for the host's benefit. The container has no conflict with a local Postgres,
+      # because it cannot see the host.
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/collabedit
       SPRING_DATASOURCE_USERNAME: collabedit
       SPRING_DATASOURCE_PASSWORD: collabedit
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
-      # Kolektor jest w osobnym profilu, więc domyślnie go nie ma. Bez wyłączenia
-      # aplikacja zasypuje log ostrzeżeniami o nieudanym eksporcie trace'ów —
-      # hałasem, który wygląda jak awaria, a jest brakiem opcjonalnej usługi.
+      # The collector is in a separate profile, so by default it is absent. Without disabling
+      # this, the application buries the log in trace export warnings — noise that looks like a
+      # failure and is the absence of an optional service.
       OTEL_SDK_DISABLED: "true"
-      # Sekret jawnie w repo z tego samego powodu co hasło Postgresa: środowisko jest
-      # wyłącznie lokalne, a nazwa mówi wprost, czym to nie jest.
+      # The secret is in the repository in plain text for the same reason as the Postgres
+      # password: the environment is purely local, and the name says outright what this is not.
       #
-      # Od CP16 TokenService NIE MA wartości domyślnej i odmawia startu bez sekretu —
-      # wcześniej ten wiersz można było pominąć i dostać serwer podpisujący tokeny
-      # kluczem znanym każdemu, kto przeczytał repozytorium. Instancja publiczna musi
-      # dostać tę wartość ze środowiska, nigdy z pliku w obrazie.
+      # Since CP16 TokenService HAS no default and refuses to start without a secret — before
+      # that, this line could be omitted and you would get a server signing tokens with a key
+      # known to everyone who read the repository. A public instance must take this value from
+      # the environment, never from a file in the image.
       COLLABEDIT_AUTH_SECRET: local-development-secret-not-for-production
     ports:
       - "8080:8080"
@@ -144,17 +144,17 @@ services:
     container_name: collabedit-frontend
     profiles: ["app"]
     ports:
-      # 5173 jak w trybie deweloperskim Vite — dzięki temu adres jest ten sam
-      # niezależnie od sposobu uruchomienia, a origin dopuszczony w WebSocketConfig
-      # (`http://localhost:*`) zgadza się bez zmian w kodzie.
+      # 5173, the same as Vite's development mode — so the address is identical however the app
+      # was started, and the origin allowed in the configuration (`http://localhost:*`) matches
+      # with no code changes.
       - "5173:80"
     depends_on:
       app:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # Stack obserwowalności (CP7). Osobny profil, bo do pracy nad samym CRDT
-  # niepotrzebny, a zżera pamięć.
+  # The observability stack (CP7). A separate profile, because it is unnecessary for working on
+  # the CRDT itself and eats memory.
   # ---------------------------------------------------------------------------
 
   otel-collector:
@@ -165,8 +165,8 @@ services:
     volumes:
       - ./ops/otel-collector.yaml:/etc/otel-collector.yaml:ro
     ports:
-      - "4317:4317"   # OTLP gRPC — tym mówi aplikacja
-      - "4318:4318"   # OTLP HTTP — tym mówi przeglądarka (CP7, trace zaczyna się u klienta)
+      - "4317:4317"   # OTLP gRPC — how the application speaks
+      - "4318:4318"   # OTLP HTTP — how the browser speaks (CP7, a trace starts on the client)
 
   prometheus:
     image: prom/prometheus:v3.0.1
@@ -174,12 +174,11 @@ services:
     profiles: ["observability"]
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
-      # Exemplars: pozwalają przeskoczyć z konkretnego bucketu histogramu latencji
-      # wprost do trace'u, który go wygenerował. Bez tego "p99 jest wysokie" nie
-      # prowadzi do żadnego konkretnego żądania.
+      # Exemplars: they let you jump from a specific latency histogram bucket straight to the
+      # trace that produced it. Without them "p99 is high" leads to no particular request.
       - "--enable-feature=exemplar-storage"
-      # 7 dni retencji — projekt portfolio, nie potrzebujemy więcej, a domyślne 15 dni
-      # bez potrzeby zajmuje miejsce.
+      # 7 days of retention — this is a portfolio project, we need no more, and the default 15
+      # days occupies space for nothing.
       - "--storage.tsdb.retention.time=7d"
     volumes:
       - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -203,13 +202,14 @@ services:
     container_name: collabedit-grafana
     profiles: ["observability"]
     environment:
-      # Anonimowy dostęp z rolą Admin — to jest lokalne demo, a logowanie na
-      # ekranie startowym psuje nagranie GIF-a z CP9. W produkcji oczywiście nie.
+      # Anonymous access with the Admin role — this is a local demo, and a login screen ruins the
+      # CP9 GIF recording. Not in production, obviously.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
-      # Dashboardy i źródła danych są provisionowane z repo (./ops/grafana),
-      # nie klikane ręcznie — inaczej nie da się ich odtworzyć ani zrecenzować w PR.
+      # The dashboards and data sources are provisioned from the repository (./ops/grafana)
+      # rather than clicked together by hand — otherwise they cannot be reproduced or reviewed in
+      # a pull request.
       GF_INSTALL_PLUGINS: ""
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro

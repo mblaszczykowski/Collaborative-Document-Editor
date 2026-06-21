@@ -45,8 +45,8 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- Flyway zamiast ddl-auto: kształt tabel wynika wprost z ADR-0003, więc zmiana
-             schematu ma być commitem do zrecenzowania, a nie efektem ubocznym startu. -->
+        <!-- Flyway rather than ddl-auto: the shape of the tables follows directly from ADR-0003,
+             so a schema change should be a commit to review, not a side effect of startup. -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -61,8 +61,8 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Tracing (CP7). Starter instrumentuje HTTP i JDBC automatycznie; spany
-             dla ścieżki CRDT tworzymy ręcznie, bo to ona jest tu interesująca. -->
+        <!-- Tracing (CP7). The starter instruments HTTP and JDBC automatically; the spans for
+             the CRDT path are created by hand, because that is the interesting one here. -->
         <dependency>
             <groupId>io.opentelemetry.instrumentation</groupId>
             <artifactId>opentelemetry-spring-boot-starter</artifactId>
@@ -97,9 +97,8 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- Redis podnosimy zwykłym GenericContainerem zamiast dedykowanego modułu:
-             potrzebujemy wyłącznie portu, a każda dodatkowa zależność w testach to
-             kolejna wersja do pilnowania. -->
+        <!-- Redis comes up in a plain GenericContainer rather than a dedicated module: all we
+             need is a port, and every extra test dependency is another version to track. -->
     </dependencies>
 
     <build>
