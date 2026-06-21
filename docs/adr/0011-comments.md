@@ -25,7 +25,7 @@ tempting and expensive.
 **Option A — offsets in the database** (`from`, `to` in the thread table).
 
 **Against:** offsets drift with every edit by somebody else. It is the same mistake
-[ADR-0006](0006-warstwa-edytora.md) rejected for cursors and [ADR-0010](0010-rich-text.md) rejected
+[ADR-0006](0006-editor-layer.md) rejected for cursors and [ADR-0010](0010-rich-text.md) rejected
 for formatting — **the same mistake a third time, in a third place**.
 
 **Option B — a CRDT mark of type `comment`** with the thread identifier as its value.
@@ -89,7 +89,7 @@ only thing anyone comes back to comments for, months later.
 ### Positive
 - CP14 added **not a single line** to the CRDT layer. The entire anchor is a mark from CP13, which
   is the best proof that the layer was extracted correctly.
-- The `commenter` role from [ADR-0009](0009-model-uprawnien.md) gained substance and confirmed its
+- The `commenter` role from [ADR-0009](0009-permission-model.md) gained substance and confirmed its
   design: authorization had to descend to the **operation type**, because comments travel the same
   channel as editing. Anticipated in CP12, verified in CP14.
 - Conversations can be read with a plain `SELECT`, without rebuilding state from the operation log.

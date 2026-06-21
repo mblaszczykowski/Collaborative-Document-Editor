@@ -4,7 +4,7 @@ import type { Id, Op } from './types'
 /**
  * Undo and redo — CRDT-aware.
  *
- * CodeMirror's history is disabled ([ADR-0006](../../docs/adr/0006-warstwa-edytora.md)) because it
+ * CodeMirror's history is disabled ([ADR-0006](../../docs/adr/0006-editor-layer.md)) because it
  * works on the text: an undo would also take back other people's changes that landed in the
  * meantime. In a shared editor that is not an inconvenience but the deletion of somebody else's
  * work.

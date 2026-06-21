@@ -139,9 +139,9 @@ Estymaty zakładają pracę z Claude Code, nie „ręcznie od zera".
   Konsekwencje negatywne: tombstone growth, anomalia przeplotu, podwójna implementacja
 - `docs/adr/0002-transport.md` — STOMP/WS vs raw WS vs SSE+POST vs WebTransport.
   Uzasadnienie heartbeatu i jego wartości liczbowej (nie „bo default")
-- `docs/adr/0003-historia-zmian.md` — event log vs periodic snapshots (decyzja: oba,
+- `docs/adr/0003-change-history.md` — event log vs periodic snapshots (decyzja: oba,
   snapshot to cache nad logiem; kompromis miejsce/czas odtworzenia)
-- `docs/adr/0004-skalowanie-poziome.md` — instancja jako replika + Redis fast path +
+- `docs/adr/0004-horizontal-scaling.md` — instancja jako replika + Redis fast path +
   anti-entropy z op_log; alternatywa (document affinity) i dlaczego odrzucona
 - `docs/adr/0005-tombstone-gc.md` — causal stability, kiedy wolno skasować tombstone
 - Szkielet Mavena: `pom.xml` (parent) + moduły `crdt-core`, `app`

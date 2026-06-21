@@ -53,6 +53,8 @@ class SnapshotFixtureTest {
      */
     private static RgaDocument sampleDocument() {
         RgaDocument document = new RgaDocument(7, new TreapBlockList());
+        // Deliberately not translated: this string is test DATA, chosen because its Polish
+        // diacritics are multi-byte in UTF-8 — which is the whole point of the case.
         document.insert(0, "Zażółć gęślą jaźń");
         document.insert(17, " and then some ASCII");
         document.delete(6, 6);

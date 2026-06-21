@@ -22,7 +22,7 @@ Record the cost in the final report (see *Working mode* at the bottom of this fi
 - **All new content is written in English** — code, comments, javadoc, tests, ADRs, commit
   messages, README.
 - Existing Polish content is migrated in this order: README → `docs/adr/` → code comments →
-  `docs/architektura.md` and `docs/crdt-design.md` → the plans → configuration and UI strings.
+  `docs/architecture.md` and `docs/crdt-design.md` → the plans → configuration and UI strings.
 - **The migration covers everything, including the plans and this file.** An earlier version of
   this rule exempted the plans as a "historical series". That exemption is withdrawn: a repository
   in two languages reads worse than in either one, and a reader arriving from an English README at
@@ -30,7 +30,7 @@ Record the cost in the final report (see *Working mode* at the bottom of this fi
 - When translating, **do not shorten and do not smooth over**. The value of these comments is that
   they say *why* and admit mistakes. The English has to carry the same bluntness and the same
   specificity, including sentences like "this did not work, and here is why".
-- Filenames keep their original Polish slugs (`0003-historia-zmian.md` and so on). Renaming them
+- Filenames keep their original Polish slugs (`0003-change-history.md` and so on). Renaming them
   would break every link in the README, in the ADRs and in the commit history in exchange for
   cosmetics — and the commit history is part of the artifact here.
 
@@ -104,7 +104,7 @@ your own solution — do not skip this section, even if it "spoils" the impressi
   on them and compare against them in an ADR, but the core logic must be ours
 - Excessive scope **at the cost of depth in the core problem** — better narrow and deep than broad
   and shallow. Up to the close of CP9 this meant plainly: no rich text, no comments, no
-  multi-document. Since [ADR-0008](docs/adr/0008-rozszerzenie-zakresu.md) the scope is wider, but
+  multi-document. Since [ADR-0008](docs/adr/0008-scope-extension.md) the scope is wider, but
   the principle does NOT change — every new feature must bring its own engineering problem (rich
   text: anchors surviving concurrent insertions; permissions: authorization per operation type)
   rather than being work around the core. A feature that adds nothing to the project's thesis is

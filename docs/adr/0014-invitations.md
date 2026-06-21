@@ -5,8 +5,8 @@ Status: **Accepted** · CP21
 ## Context
 
 The role model has been complete since CP12 (`viewer`, `commenter`, `editor`, `owner`), enforced
-in both layers from one rule ([ADR-0009](0009-model-uprawnien.md)), and enforced *structurally*
-since CP16 ([ADR-0012](0012-autoryzacja-strukturalna.md)). Reviewing plan v4 against the code
+in both layers from one rule ([ADR-0009](0009-permission-model.md)), and enforced *structurally*
+since CP16 ([ADR-0012](0012-structural-authorization.md)). Reviewing plan v4 against the code
 found that none of it was reachable from the running product:
 
 - `PermissionService.grant`, `revoke` and `membersOf` were called from `PermissionIT` and

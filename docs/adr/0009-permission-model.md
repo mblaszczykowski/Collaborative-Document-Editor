@@ -132,7 +132,7 @@ work.
 
 The question was whether the "role → operation types" mapping would carry comments with a single
 entry. **It did not.** A comment anchor is a CRDT mark of exactly the same shape as bold
-([ADR-0011](0011-komentarze.md)) — the same operation, the same address, the same channel. What
+([ADR-0011](0011-comments.md)) — the same operation, the same address, the same channel. What
 distinguishes them is the **value of the `type` field**, which means the distinction "a commenter
 may, an editor may, a reader may not" requires looking inside the **frame body**, not at its header.
 
@@ -183,5 +183,5 @@ fix is in the README, in the section on limits.
 **Since CP16 it is no longer only in the README.** The construction described above —
 `@RequiresDocumentAccess` / `@RequiresAuthentication` / `@PublicEndpoint`, a guard that refuses to
 serve an endpoint declaring nothing, and an architecture test that fails the build — is
-[ADR-0012](0012-autoryzacja-strukturalna.md). Writing this one shows why it was needed: a fourth
+[ADR-0012](0012-structural-authorization.md). Writing this one shows why it was needed: a fourth
 hole of the same class was found while planning it.

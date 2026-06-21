@@ -1,6 +1,6 @@
 # ADR-0007 — UI scope: we adopt the mockup's visual language and reject its functional scope
 
-- **Status:** **Superseded by [ADR-0008](0008-rozszerzenie-zakresu.md)** as far as functional scope
+- **Status:** **Superseded by [ADR-0008](0008-scope-extension.md)** as far as functional scope
   is concerned. The decisions about the visual language and about hiding diagnostics remain in
   force, and the document itself was **revised** (see the section at the end).
 
@@ -147,7 +147,7 @@ nothing but cost.
   goes into "what I would do differently in production", together with the fact that the right
   answer is Peritext rather than bolting markers onto RGA.
 - **The sidebar with a document list does after all require a minimal multi-document model** — the
-  `documents` table exists anyway ([ADR-0003](0003-historia-zmian.md)), so the cost is close to
+  `documents` table exists anyway ([ADR-0003](0003-change-history.md)), so the cost is close to
   zero, but formally it is a step towards the "workspace" we were meant to avoid. The boundary:
   listing and choosing a document yes, folders/permissions/sharing no.
 - The "Replicas" panel is an element **no real editor has** — to somebody looking for a product it

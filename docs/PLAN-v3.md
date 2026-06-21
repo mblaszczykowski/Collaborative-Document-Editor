@@ -47,7 +47,7 @@ To jest ta sama zasada, którą projekt zastosował już raz i opisał w README:
 oparte na tym, że ktoś pamięta o punkcie z dokumentu, nie jest zabezpieczeniem"*. v3 rozciąga
 ją z autoryzacji na cały system.
 
-**Czego v3 świadomie nie robi: nie dokłada zakresu.** [ADR-0008](adr/0008-rozszerzenie-zakresu.md)
+**Czego v3 świadomie nie robi: nie dokłada zakresu.** [ADR-0008](adr/0008-scope-extension.md)
 postawił warunek, że każda nowa funkcja ma wnosić własny problem inżynierski. Po CP15 nie
 zostały już funkcje spełniające ten warunek — zostały **domknięcia**, i to jest cały ten plan.
 
@@ -113,7 +113,7 @@ nie dzieje się jednym commitem i w trakcie repozytorium **będzie** niespójne:
 | 1 | `README.md` | Drzwi wejściowe. Czyta je 100 % odwiedzających, resztę — ułamek |
 | 2 | `docs/adr/` | Druga rzecz, do której prowadzi README, i główny dowód na świadomość decyzji |
 | 3 | Komentarze w kodzie i javadoc | Największa objętość, ale czytelnik dochodzi tu dopiero po 1 i 2 |
-| 4 | `docs/architektura.md`, `docs/crdt-design.md` | Jw. |
+| 4 | `docs/architecture.md`, `docs/crdt-design.md` | Jw. |
 | 5 | Plany (`IMPLEMENTATION_PLAN.md`, `PLAN-v2.md`, ten plik) | **Ostatnie i być może wcale.** To jest seria historyczna — zapis tego, co myślano w danym momencie. Tłumaczenie zapisu historycznego niesie ryzyko, że przy okazji „poprawi się" wnioski, które wtedy brzmiały inaczej |
 
 **Nowa treść od tego commita powstaje po angielsku** — kod, testy, ADR-y i komunikaty
@@ -128,7 +128,7 @@ możliwy wynik tej decyzji. Punkt kontrolny: jeśli po CP20 wiersze 1–3 nie s�
 **Dlaczego to nie dostaje ADR-a:** ADR-y w tym projekcie opisują decyzje architektoniczne.
 Język dokumentacji i wybór hostingu to decyzje redakcyjne i operacyjne. Pisanie ADR-a
 dla wszystkiego jest tym samym błędem co stosowanie CRDT tam, gdzie nie ma współbieżnej
-edycji ([ADR-0011](adr/0011-komentarze.md)) — kosztem bez korzyści.
+edycji ([ADR-0011](adr/0011-comments.md)) — kosztem bez korzyści.
 
 ### 0.3 Kondensacja README
 
@@ -427,7 +427,7 @@ bo nie trzeba go usuwać ze struktury, żeby odzyskać miejsce.
 | `conformance/` | korpus do regeneracji; job CI pilnuje, że się nie rozjedzie |
 
 **Migracja danych jest darmowa i to nie przypadek.** `SnapshotCodec` przy niezgodnej wersji
-**ignoruje snapshot zamiast go migrować** ([ADR-0003](adr/0003-historia-zmian.md): snapshot
+**ignoruje snapshot zamiast go migrować** ([ADR-0003](adr/0003-change-history.md): snapshot
 to usuwalny cache), więc stan odtworzy się z logu operacji. Prawdziwy koszt tego checkpointu
 to bliźniak w TS i agregaty treapa, a nie dane — i warto to napisać w ADR-ze, bo decyzja
 z CP5 („snapshot to cache, nie źródło prawdy") **właśnie się tu spłaca po raz drugi**.

@@ -102,7 +102,7 @@ The version vector still exists, but serves **other** purposes: causal stability
 not a correctness mechanism of the core.
 
 This separation is deliberate and worth naming: **detecting gaps in delivery is the transport's job
-(`server_seq`, [ADR-0004](adr/0004-skalowanie-poziome.md)), not the algorithm's.** The CRDT core has
+(`server_seq`, [ADR-0004](adr/0004-horizontal-scaling.md)), not the algorithm's.** The CRDT core has
 to be correct under any order and any repetition — and it is.
 
 ---

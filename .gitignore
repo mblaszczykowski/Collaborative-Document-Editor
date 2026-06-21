@@ -28,9 +28,9 @@ bench/results/
 bench/target/
 
 # Demo recording intermediates (GIF trafia do repo, wideo nie).
-# Ścieżka musi zgadzać się z RECORDINGS w tools/make-gif.sh — poprzednia wersja
-# wskazywała demo/recordings/, katalog który nigdy nie istniał, więc reguła nie
-# obejmowała niczego i 1,5 MB nagrań wylądowało w historii repozytorium.
+# The path has to match RECORDINGS in tools/make-gif.sh — the previous version pointed at
+# demo/recordings/, a directory that never existed, so the rule covered nothing and 1.5 MB of
+# recordings ended up in the repository's history.
 frontend/demo-recordings/
 test-results/
 playwright-report/

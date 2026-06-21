@@ -9,7 +9,7 @@
 
 ## Context
 
-[ADR-0008](0008-rozszerzenie-zakresu.md) widened the scope to include rich text, on the grounds
+[ADR-0008](0008-scope-extension.md) widened the scope to include rich text, on the grounds
 that it is **an algorithmic problem, not a product one**. This document describes what that problem
 is and why the solution that looks obvious is wrong.
 
@@ -46,7 +46,7 @@ replica does not know about the bolding — it will find out in a moment.
 The mark holds the start and end positions.
 
 **Against:** offsets drift with every edit by somebody else. It is the same mistake
-[ADR-0006](0006-warstwa-edytora.md) rejected for cursors, only more dangerous: a cursor in the
+[ADR-0006](0006-editor-layer.md) rejected for cursors, only more dangerous: a cursor in the
 wrong place is visible immediately, whereas formatting in the wrong place looks like the author's
 decision.
 

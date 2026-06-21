@@ -46,7 +46,7 @@
 
 Wersja 1 była **wąskim artefaktem inżynierskim**: jeden dokument, jeden problem (zbieżność
 danych rozproszonych), maksymalna głębia. Zakres produktowy był świadomie odrzucony
-w [ADR-0007](adr/0007-zakres-ui.md), a README zamyka się sekcją „co zrobiłbym inaczej
+w [ADR-0007](adr/0007-ui-scope.md), a README zamyka się sekcją „co zrobiłbym inaczej
 w produkcji", która wymienia dokładnie te cztery braki, które ten plan teraz adresuje.
 
 Wersja 2 zmienia pozycjonowanie: **edytor tekstu bogatego z komentarzami, wieloma dokumentami
@@ -67,7 +67,7 @@ brak dokumentacji — czytelnik przestaje ufać całości.
 | Plik | Co mówi teraz | Co zrobić |
 |---|---|---|
 | `CLAUDE.md`, „Czego unikać" | „Nadmiarowego scope'u (rich text formatting, komentarze, multi-dokument workspace) kosztem głębi w core problemie" | Przepisać: zakres rozszerzony świadomie po zamknięciu CP9, z warunkiem utrzymania głębi rdzenia |
-| [ADR-0007](adr/0007-zakres-ui.md) | Zakres funkcjonalny mockupu odrzucony | Status → **Zastąpiony przez ADR-0008**. Nie kasować — decyzja była słuszna dla v1 |
+| [ADR-0007](adr/0007-ui-scope.md) | Zakres funkcjonalny mockupu odrzucony | Status → **Zastąpiony przez ADR-0008**. Nie kasować — decyzja była słuszna dla v1 |
 | README, „Co zrobiłbym inaczej" | Wymienia te funkcje jako świadome granice | Rozdzielić na „zrobione w v2" i „nadal poza zakresem" |
 
 ### ADR-0008 — rozszerzenie zakresu do produktu
@@ -176,7 +176,7 @@ Kroki:
    przy 10 — pytanie jest odpowiedziane liczbą. To jest wynik sam w sobie, niezależnie
    od tego, czy hipoteza się potwierdzi.
 2. **Skleić rozgłoszenia w okno ~10–15 ms**, tym samym kształtem co `flushAll()`.
-   Wymaga aktualizacji [ADR-0002](adr/0002-transport.md) i [ADR-0004](adr/0004-skalowanie-poziome.md),
+   Wymaga aktualizacji [ADR-0002](adr/0002-transport.md) i [ADR-0004](adr/0004-horizontal-scaling.md),
    bo ADR-0004 mówi „rozgłoszenie natychmiast" i to przestanie być dosłownie prawdą.
    Koszt: ≤15 ms do latencji przy zmierzonym p50 22–553 ms.
 3. **Rozdzielić klientów od serwera** w harnessie — README sam wskazuje to jako warunek
@@ -249,7 +249,7 @@ documents           + workspace_id (FK), + deleted_at (soft delete),
 ```
 
 `preview_text` jest **cachem, nie źródłem prawdy** — dokładnie jak snapshoty w
-[ADR-0003](adr/0003-historia-zmian.md). Lista dokumentów nie może ładować replik CRDT
+[ADR-0003](adr/0003-change-history.md). Lista dokumentów nie może ładować replik CRDT
 do pamięci tylko po to, żeby pokazać trzy pierwsze linijki; to jest ta sama pułapka,
 przed którą chroni istniejący test „skasowanie wszystkich snapshotów nic nie zmienia".
 
@@ -402,7 +402,7 @@ atrybutach per znak nie ma go kto pogrubić, bo w chwili wstawienia operacja Ani
 nie dotarła.
 
 Nie działa też przechowywanie zakresów jako offsetów. Powód jest identyczny jak przy kursorach
-w [ADR-0006](adr/0006-warstwa-edytora.md): offset przestaje wskazywać to samo miejsce po cudzej
+w [ADR-0006](adr/0006-editor-layer.md): offset przestaje wskazywać to samo miejsce po cudzej
 edycji. Projekt rozwiązał to raz — kotwiczeniem kursora w **identyfikatorze znaku CRDT** — i to
 samo rozwiązanie skaluje się na formatowanie.
 
@@ -479,7 +479,7 @@ Decyzja do podjęcia na starcie CP13, nie w trakcie. Zapisać w ADR-0011 z rewiz
 
 `remoteCursors.ts` jest gotowym wzorcem: identyfikatory CRDT → offsety → dekoracje CodeMirrora,
 przeliczane na ostatnią chwilę przed rysowaniem. Znaczniki idą tą samą drogą przez
-`Decoration.mark()`. CodeMirror pozostaje wyłącznie warstwą widoku — [ADR-0006](adr/0006-warstwa-edytora.md)
+`Decoration.mark()`. CodeMirror pozostaje wyłącznie warstwą widoku — [ADR-0006](adr/0006-editor-layer.md)
 nie wymaga rewizji.
 
 Pasek narzędzi, skróty klawiszowe, `bridge.ts` rozszerzony o transakcje formatowania.

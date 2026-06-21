@@ -49,11 +49,11 @@ flowchart TB
 
 All four RGA replicas on the diagram — two in browsers and two in backend instances — are **peers**.
 There is no document owner and no ordering arbiter
-([ADR-0004](adr/0004-skalowanie-poziome.md)).
+([ADR-0004](adr/0004-horizontal-scaling.md)).
 
 Authorization is drawn on only one instance so as not to clutter the picture, but it works on every
 one: **every SUBSCRIBE and SEND frame** goes through a role check
-([ADR-0009](adr/0009-model-uprawnien.md)). It is not a check of "do you have access to the
+([ADR-0009](adr/0009-permission-model.md)). It is not a check of "do you have access to the
 document" but of "does your role permit THIS operation" — comments and edits travel the same
 channel, so the distinction has to descend to the operation type.
 
@@ -96,7 +96,7 @@ sequenceDiagram
 ```
 
 The order of the steps is not arbitrary — each one is justified in
-[ADR-0003](adr/0003-historia-zmian.md) and [ADR-0004](adr/0004-skalowanie-poziome.md).
+[ADR-0003](adr/0003-change-history.md) and [ADR-0004](adr/0004-horizontal-scaling.md).
 
 ---
 
@@ -136,7 +136,7 @@ stateDiagram-v2
 ## A comment — two routes, only one of which is a CRDT
 
 The most common misunderstanding when reading this code is: "you have a CRDT, so the comments must
-be in the CRDT too". They are not — and [ADR-0011](adr/0011-komentarze.md) explains why. The diagram
+be in the CRDT too". They are not — and [ADR-0011](adr/0011-comments.md) explains why. The diagram
 shows what that means for the flow.
 
 ```mermaid

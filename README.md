@@ -41,7 +41,7 @@ If you have three minutes:
    because every scenario shared one blind spot. Along the way I **withdrew a claim from the
    documentation that I could not confirm**: 200 000 random scenarios showed the algorithm
    converges even without a condition I had believed was necessary.
-2. **[ADR-0004](docs/adr/0004-skalowanie-poziome.md) — every backend instance is a CRDT
+2. **[ADR-0004](docs/adr/0004-horizontal-scaling.md) — every backend instance is a CRDT
    replica.** No leader, no distributed lock, no sticky sessions. Redis is an unreliable fast
    path; the operation log in Postgres is the authoritative one. A lost message is therefore a
    latency problem rather than a correctness problem, and a
@@ -123,20 +123,20 @@ rather than manufactured certainty.
 |---|---|
 | [0001](docs/adr/0001-crdt-vs-ot.md) | RGA (CRDT) rather than OT — and why not Logoot, not Fugue, not Yjs |
 | [0002](docs/adr/0002-transport.md) | WebSocket + STOMP; a justification for every heartbeat and buffer-limit value |
-| [0003](docs/adr/0003-historia-zmian.md) | Operation log as the source of truth, snapshots as a disposable cache |
-| [0004](docs/adr/0004-skalowanie-poziome.md) | Backend instance as a CRDT replica + anti-entropy |
+| [0003](docs/adr/0003-change-history.md) | Operation log as the source of truth, snapshots as a disposable cache |
+| [0004](docs/adr/0004-horizontal-scaling.md) | Backend instance as a CRDT replica + anti-entropy |
 | [0005](docs/adr/0005-tombstone-gc.md) | Tombstone GC via causal stability |
-| [0006](docs/adr/0006-warstwa-edytora.md) | CodeMirror 6 as the view; the document model is our own |
-| [0007](docs/adr/0007-zakres-ui.md) | The mockup's visual language accepted; its functional scope rejected — **superseded by 0008** |
-| [0008](docs/adr/0008-rozszerzenie-zakresu.md) | Widening the scope from artifact to product, conditional on keeping the core deep |
-| [0009](docs/adr/0009-model-uprawnien.md) | Ordered roles, enforced in both layers from one rule |
+| [0006](docs/adr/0006-editor-layer.md) | CodeMirror 6 as the view; the document model is our own |
+| [0007](docs/adr/0007-ui-scope.md) | The mockup's visual language accepted; its functional scope rejected — **superseded by 0008** |
+| [0008](docs/adr/0008-scope-extension.md) | Widening the scope from artifact to product, conditional on keeping the core deep |
+| [0009](docs/adr/0009-permission-model.md) | Ordered roles, enforced in both layers from one rule |
 | [0010](docs/adr/0010-rich-text.md) | Formatting as a separate CRDT layer (Peritext), not a character attribute |
-| [0011](docs/adr/0011-komentarze.md) | The comment anchor lives in the CRDT, the conversation does not |
-| [0012](docs/adr/0012-autoryzacja-strukturalna.md) | Authorization declared at the endpoint; an endpoint that declares nothing **is not served** |
-| [0013](docs/adr/0013-symulacja-deterministyczna.md) | Deterministic simulation as a third testing pillar — a seed instead of a thread interleaving |
+| [0011](docs/adr/0011-comments.md) | The comment anchor lives in the CRDT, the conversation does not |
+| [0012](docs/adr/0012-structural-authorization.md) | Authorization declared at the endpoint; an endpoint that declares nothing **is not served** |
+| [0013](docs/adr/0013-deterministic-simulation.md) | Deterministic simulation as a third testing pillar — a seed instead of a thread interleaving |
 
 Diagrams (architecture, the path of a single edit, connection states):
-[`docs/architektura.md`](docs/architektura.md).
+[`docs/architecture.md`](docs/architecture.md).
 Implementation details of the algorithm: [`docs/crdt-design.md`](docs/crdt-design.md).
 Work plans and checkpoints: [v1](docs/IMPLEMENTATION_PLAN.md) (CP1–CP9),
 [v2](docs/PLAN-v2.md) (CP10–CP15), [v3](docs/PLAN-v3.md) (CP16–CP20 — adds no features, trades
@@ -673,7 +673,7 @@ those marked as verified have a test that checks it.
 | Scenario | Behaviour | Verified |
 |---|---|---|
 | **Connection lost mid-edit** | Local editing continues. Operations go into an IndexedDB buffer and survive the tab being closed. On reconnect the client exchanges cursors with the server and sends the backlog. | `e2e: network cut`, `e2e: durable buffer` |
-| **Instance dies between broadcast and write** | The operation is at the other clients but not in the database. The client retransmits it after reconnecting, because the buffer releases only on confirmation of the **write**, not of the broadcast. | [ADR-0003](docs/adr/0003-historia-zmian.md) |
+| **Instance dies between broadcast and write** | The operation is at the other clients but not in the database. The client retransmits it after reconnecting, because the buffer releases only on confirmation of the **write**, not of the broadcast. | [ADR-0003](docs/adr/0003-change-history.md) |
 | **In-memory replica lost / instance restart** | State rebuilt from the operation log: nearest snapshot + tail. Deleting every snapshot does not change the result, only the time. | `stateSurvivesReplicaLoss`, `snapshotsAreOnlyACache` |
 | **Redis outage mid-edit** | Editing and writing continue — Redis is the fast path, not the critical one. Instances diverge for the duration of the outage, and the anti-entropy sweep pulls the difference from the log. | `redisOutageIsRepairedByAntiEntropy` |
 | **Broadcast to a client lost** | The client detects the gap on receiving an acknowledgement for an operation it does not have, and asks for resynchronisation itself. A `server_seq` cursor would not be enough here — it grows from acknowledgements, so it would look "current" despite the gap. | found and fixed in CP8 |
@@ -753,7 +753,7 @@ would point at.
 <summary><strong>Product scope</strong> — what the editor deliberately does not do</summary>
 - **Diagnostics live behind `?debug=1`.** The network simulator and the CRDT state view were
   visible in the interface for a while; that was a mistake about the audience
-  ([ADR-0007](docs/adr/0007-zakres-ui.md), the revision section). A user should see a product,
+  ([ADR-0007](docs/adr/0007-ui-scope.md), the revision section). A user should see a product,
   not a measurement rig.
 - ~~**No text formatting.**~~ **Done (CP13).** The diagnosis on this list was right — rich text
   in a CRDT really is a separate algorithm, not a character attribute. Peritext arrived as a
@@ -761,8 +761,8 @@ would point at.
   ([ADR-0010](docs/adr/0010-rich-text.md)).
 - ~~**No comments and no permissions.**~~ **Done (CP12, CP14).** The comment anchor turned out to
   be the same mechanism as formatting and **added not one line to the CRDT layer**
-  ([ADR-0011](docs/adr/0011-komentarze.md)). Permissions enforced in both layers from one rule
-  ([ADR-0009](docs/adr/0009-model-uprawnien.md)). Remaining limits: comment content does not work
+  ([ADR-0011](docs/adr/0011-comments.md)). Permissions enforced in both layers from one rule
+  ([ADR-0009](docs/adr/0009-permission-model.md)). Remaining limits: comment content does not work
   offline (the buffer covers CRDT operations, not REST), the panel refreshes by polling rather
   than by an event, there are no notifications or mentions, and revoking permissions takes effect
   within the 5 s cache window.
@@ -849,7 +849,7 @@ would point at.
   nothing** — a 500 with the method name in the log. A new controller starts broken and loud
   instead of open and quiet. On top of that an architecture test fails the build, and the list of
   public endpoints is pinned by name, so silencing the guard requires an entry visible in code
-  review ([ADR-0012](docs/adr/0012-autoryzacja-strukturalna.md)).
+  review ([ADR-0012](docs/adr/0012-structural-authorization.md)).
 
   What it does **not** give, and this is worth stating plainly: nothing checks whether the
   declared capability is the **right** one. The system now guarantees a decision was made, not

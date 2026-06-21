@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-15
 - **Applies to checkpoints:** CP10–CP15
-- **Supersedes:** [ADR-0007](0007-zakres-ui.md) as far as functional scope is concerned
+- **Supersedes:** [ADR-0007](0007-ui-scope.md) as far as functional scope is concerned
 
 ---
 
@@ -27,7 +27,7 @@ and the limited effectiveness of GC. The last open question — no repeatable co
 clients — was settled in CP10 and turned out to be a flaw in the measurement rig, not in the
 system.
 
-[ADR-0007](0007-zakres-ui.md) rejected the mockup's product scope: rich text, comments, multiple
+[ADR-0007](0007-ui-scope.md) rejected the mockup's product scope: rich text, comments, multiple
 documents, permissions. The decision was right, and would still be right if the core were unready.
 **It stopped being right at the moment the core was ready** — deepening the same place further has
 diminishing returns, and the four rejected features are the only direction in which that core can

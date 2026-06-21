@@ -284,7 +284,7 @@ class MarkTest {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
 
-        // Kotwica na OSTATNIM znaku dokumentu — i to jest sedno tego testu.
+        // An anchor on the document's LAST character — and that is the crux of this test.
         //
         // The first version anchored in the middle of the text and passed even with anchor
         // protection switched off: a character in the middle is the ORIGIN of the next one, so the
