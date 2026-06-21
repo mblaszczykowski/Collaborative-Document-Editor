@@ -31,17 +31,17 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Bundle Vite ma hash w nazwie pliku, więc jego treść nigdy się nie zmienia pod tym
-    # samym adresem — rok cache'owania jest tu bezpieczny i oszczędza pełne pobranie
-    # aplikacji przy każdym wejściu.
+    # A Vite bundle has a hash in its filename, so its content never changes under the same
+    # address — a year of caching is safe here and saves a full download of the application on
+    # every visit.
     location /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    # index.html jest jedynym plikiem BEZ hasza, więc to on decyduje, którą wersję bundla
-    # dostanie przeglądarka. Cache'owanie go oznaczałoby, że po wdrożeniu użytkownik
-    # dostaje stary index wskazujący na pliki, których już nie ma.
+    # index.html is the only file WITHOUT a hash, so it decides which version of the bundle the
+    # browser gets. Caching it would mean that after a deploy the user receives an old index
+    # pointing at files that no longer exist.
     location = /index.html {
         add_header Cache-Control "no-cache";
     }
@@ -75,8 +75,8 @@ server {
         proxy_send_timeout 3600s;
     }
 
-    # SPA: każda nieznana ścieżka oddaje index.html, bo routing dzieje się po stronie
-    # klienta. Bez tego odświeżenie strony na adresie dokumentu daje 404 od nginxa.
+    # SPA: any unknown path serves index.html, because routing happens on the client. Without
+    # this, reloading the page at a document's address gives a 404 from nginx.
     location / {
         try_files $uri $uri/ /index.html;
     }

@@ -1,17 +1,17 @@
-# Frontend — build Vite, serwowany przez nginx.
+# Frontend — a Vite build, served by nginx.
 #
-# Zasada jak w app/Dockerfile i docker-compose.yml: żadnej wartości bez uzasadnienia.
+# The same principle as in app/Dockerfile and docker-compose.yml: no value without a reason.
 
-# --- Etap 1: budowanie ------------------------------------------------------
+# --- Stage 1: build ---------------------------------------------------------
 FROM node:22-alpine AS build
 WORKDIR /src
 
-# package*.json przed resztą kodu — instalacja zależności trafia do własnej warstwy
-# i nie powtarza się przy każdej zmianie w src/.
+# package*.json before the rest of the code — installing dependencies gets its own layer and does
+# not repeat on every change under src/.
 COPY package.json package-lock.json ./
 
-# `npm ci`, nie `npm install`: instaluje DOKŁADNIE to, co w package-lock.json, i wywala się
-# przy rozjeździe zamiast po cichu go naprawiać. Obraz ma być odtwarzalny.
+# `npm ci`, not `npm install`: it installs EXACTLY what package-lock.json says and fails on a
+# mismatch instead of silently fixing it. The image is meant to be reproducible.
 RUN npm ci
 
 COPY . .
@@ -38,10 +38,10 @@ ENV VITE_OTLP_ENDPOINT=${VITE_OTLP_ENDPOINT}
 
 RUN npm run build
 
-# --- Etap 2: serwowanie -----------------------------------------------------
+# --- Stage 2: serving -------------------------------------------------------
 #
-# nginx zamiast `vite preview`: preview to serwer deweloperski, bez cache'owania,
-# bez kompresji i bez gwarancji stabilności — nie ma powodu używać go jako produkcyjnego.
+# nginx rather than `vite preview`: preview is a development server, with no caching, no
+# compression and no stability guarantees — there is no reason to use it in production.
 FROM nginx:1.27-alpine
 
 COPY --from=build /src/dist /usr/share/nginx/html

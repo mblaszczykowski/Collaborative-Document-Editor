@@ -1,10 +1,10 @@
 /*
-  Język wizualny przejęty z mockupu (docs/design/mockup-inkline.html).
+  The visual language is taken from the mockup (docs/design/mockup-inkline.html).
 
-  ADR-0007 odrzucił jego zakres funkcjonalny — pasek formatowania i panel komentarzy były
-  wtedy atrapami i zostały zastąpione kontrolkami, które faktycznie coś robiły.
-  ADR-0008 zrewidował tamtą decyzję, a CP13 i CP14 zbudowały jedno i drugie na serio.
-  Mockup okazał się więc trafny, tylko o dwa checkpointy za wcześnie.
+  ADR-0007 rejected its functional scope — the formatting bar and the comments panel were
+  dummies at the time and were replaced by controls that actually did something. ADR-0008
+  revised that decision, and CP13 and CP14 built both for real. The mockup turned out to be
+  right, just two checkpoints early.
 */
 
 @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
@@ -48,7 +48,7 @@ button { font-family: inherit; cursor: pointer; }
 
 .app { height: 100vh; display: flex; flex-direction: column; }
 
-/* ===== PASEK GÓRNY ===== */
+/* ===== TOP BAR ===== */
 .menubar {
   height: 34px; flex-shrink: 0;
   display: flex; align-items: center; padding: 0 10px; gap: 10px;
@@ -76,7 +76,7 @@ button { font-family: inherit; cursor: pointer; }
 .menu-divider { width: 1px; height: 16px; background: var(--chrome-line); }
 .doc-title { font-size: 12.5px; color: var(--text-dim); }
 
-/* Wskaźnik zapisu — język produktu, nie protokołu. */
+/* The save indicator — the product's language, not the protocol's. */
 .save-state {
   display: flex; align-items: center; gap: 5px;
   font-size: 11.5px; color: var(--text-faint); white-space: nowrap;
@@ -89,8 +89,8 @@ button { font-family: inherit; cursor: pointer; }
 
 .loading { padding: 24px; color: var(--text-faint); }
 
-/* ===== TOOLBAR — formatowanie (CP13), komentarze (CP14), cofnij/ponów.
-   Nic tu nie jest atrapą: każdy przycisk wykonuje operację CRDT albo zmienia panel. ===== */
+/* ===== TOOLBAR — formatting (CP13), comments (CP14), undo/redo.
+   Nothing here is a dummy: every button performs a CRDT operation or switches a panel. ===== */
 .editor-toolbar {
   height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 2px;
   padding: 0 10px; background: var(--chrome); border-bottom: 1px solid var(--chrome-line);
@@ -119,7 +119,7 @@ button { font-family: inherit; cursor: pointer; }
 .diag-btn.on { background: var(--bad); border-color: var(--bad); color: #fff; }
 .diag-stats { margin-left: auto; color: #8a8a8a; }
 
-/* ===== UKŁAD ===== */
+/* ===== LAYOUT ===== */
 .body-row { flex: 1; display: flex; min-height: 0; }
 
 .sidebar {
@@ -143,15 +143,15 @@ button { font-family: inherit; cursor: pointer; }
 .sb-new { color: var(--text-faint); margin-top: 4px; }
 
 /* --- formatowanie tekstu (CP13) ---
-   Dekoracje nakładają się (pogrubiony link, pochylony kod), więc każda klasa ustawia
-   WYŁĄCZNIE swoją własność. Skrót w rodzaju `font: bold italic` zjadałby sąsiednią. */
+   Decorations overlap (a bold link, italic code), so each class sets ONLY its own property.
+   A shorthand like `font: bold italic` would eat the neighbouring one. */
 
 .cm-mark-bold      { font-weight: 600; }
 .cm-mark-italic    { font-style: italic; }
 .cm-mark-underline { text-decoration-line: underline; }
 .cm-mark-strike    { text-decoration-line: line-through; }
-/* Podkreślenie i przekreślenie naraz muszą dać obie linie — dlatego `text-decoration-line`,
-   a nie `text-decoration`: przy skrócie druga reguła nadpisałaby pierwszą. */
+/* Underline and strikethrough together have to produce both lines — hence
+   `text-decoration-line` rather than `text-decoration`: the shorthand would override. */
 .cm-mark-underline.cm-mark-strike { text-decoration-line: underline line-through; }
 
 .cm-mark-code {
@@ -168,15 +168,15 @@ button { font-family: inherit; cursor: pointer; }
   text-underline-offset: 2px;
 }
 
-/* Znacznik nadany przez NOWSZĄ wersję klienta. Widoczny jako coś, zamiast niewidoczny:
-   użytkownik ma wiedzieć, że tekst jest sformatowany, nawet jeśli jego wersja nie umie
-   tego narysować — inaczej skasowałby formatowanie, nie wiedząc o jego istnieniu. */
+/* A mark applied by a NEWER client version. Visible as something rather than invisible: the
+   user should know the text is formatted even if their version cannot draw it — otherwise they
+   would delete the formatting without knowing it existed. */
 .cm-mark-unknown { border-bottom: 1px dotted var(--text-faint); }
 
-/* Przycisk paska narzędzi w stanie aktywnym — zaznaczenie jest już sformatowane. */
+/* A toolbar button in its active state — the selection is already formatted. */
 .tb-icon.active { background: var(--active); color: var(--text); }
 
-/* --- lista dokumentów: wyszukiwanie, podgląd, kosz (CP11) --- */
+/* --- the document list: search, preview, bin (CP11) --- */
 
 .sb-search {
   width: 100%; box-sizing: border-box; margin-bottom: 8px;
@@ -186,8 +186,8 @@ button { font-family: inherit; cursor: pointer; }
 .sb-search::placeholder { color: var(--text-faint); }
 .sb-search:focus { outline: none; border-color: var(--text-faint); }
 
-/* Wiersz mieści pozycję i przycisk usuwania. Przycisk pojawia się dopiero pod kursorem:
-   lista dokumentów ma pokazywać dokumenty, a nie rząd krzyżyków. */
+/* A row holds the entry and the delete button. The button appears only on hover: a document
+   list should show documents, not a row of crosses. */
 .sb-row { display: flex; align-items: center; gap: 2px; }
 .sb-row .sb-item { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; gap: 1px; }
 
@@ -204,8 +204,8 @@ button { font-family: inherit; cursor: pointer; }
 }
 .sb-row:hover .sb-delete, .sb-row:hover .sb-restore { opacity: 1; }
 .sb-delete:hover, .sb-restore:hover { background: var(--hover); color: var(--text); }
-/* Klawiatura musi widzieć to, co widzi mysz — inaczej usuwanie jest niedostępne
-   dla kogoś, kto nie używa wskaźnika. */
+/* The keyboard has to see what the mouse sees — otherwise deleting is unreachable for anyone
+   not using a pointer. */
 .sb-delete:focus-visible, .sb-restore:focus-visible { opacity: 1; outline: 1px solid var(--text-faint); }
 
 .sb-rename {
@@ -243,14 +243,14 @@ button { font-family: inherit; cursor: pointer; }
 .editor-host .cm-cursor { border-left-color: var(--text); }
 
 /*
-  Kursor innego użytkownika — wygląd z mockupu (.cursor-caret).
+  Another user's cursor — the look comes from the mockup (.cursor-caret).
 
-  Kolor jedzie WŁASNOŚCIĄ NIESTANDARDOWĄ `--caret`, a nie przez `currentColor`.
-  Pierwsza wersja ustawiała na chorągiewce jednocześnie `color: #fff` (tekst) i
-  `background: currentColor` (tło) — a `currentColor` rozwija się do wartości `color`
-  TEGO SAMEGO elementu, więc tło wychodziło białe. Na ciemnym tle byłoby to widać od razu;
-  na białej kartce chorągiewki zamieniały się w niewidoczne prostokąty i błąd przetrwał
-  aż do obejrzenia nagrania.
+  The colour travels in the CUSTOM PROPERTY `--caret` rather than through `currentColor`. The
+  first version set both `color: #fff` (the text) and `background: currentColor` (the
+  background) on the flag — and `currentColor` resolves to the `color` of THE SAME element, so
+  the background came out white. On a dark background that would have been obvious immediately;
+  on a white page the flags became invisible rectangles and the bug survived until somebody
+  watched the recording.
 */
 .remote-caret {
   position: relative; display: inline-block; width: 2px; height: 1.15em;
@@ -259,13 +259,13 @@ button { font-family: inherit; cursor: pointer; }
 }
 @keyframes caret-blink { 50% { opacity: 0.3; } }
 /*
-  Imię pojawia się na chwilę po ruchu kursora i gaśnie — tak jak w Google Docs.
+  The name appears briefly after the cursor moves and fades — just as in Google Docs.
 
-  Chorągiewka wisząca na stałe zasłania tekst LINIJKĘ WYŻEJ: przy interlinii 1,85
-  odstęp między wierszami ma kilka pikseli, a etykieta siedemnaście, więc nie ma jej
-  gdzie zmieścić. Zamiast walczyć z układem, pokazujemy imię wtedy, gdy jest potrzebne
-  (ktoś właśnie się przesunął lub pisze), a poza tym zostaje sama kolorowa kreska.
-  Najechanie myszą przywraca etykietę na żądanie.
+  A permanently visible flag covers the text ONE LINE ABOVE: at a line height of 1.85 the gap
+  between lines is a few pixels while the label is seventeen, so there is nowhere to fit it.
+  Rather than fight the layout, we show the name when it is needed (somebody just moved or is
+  typing), and otherwise leave the coloured caret alone. Hovering brings the label back on
+  demand.
 */
 .remote-caret-flag {
   position: absolute; bottom: 100%; left: -1px; margin-bottom: 3px;
@@ -346,7 +346,7 @@ button { font-family: inherit; cursor: pointer; }
   background: var(--text); color: #fff; font-size: 13px; font-weight: 500;
 }
 
-/* ===== HISTORIA — wygląd wpisu z mockupu (.history-entry) ===== */
+/* ===== HISTORY — the entry look from the mockup (.history-entry) ===== */
 .history-entry {
   padding: 6px 8px; border-radius: 4px; width: 100%; border: none;
   background: transparent; text-align: left; display: block;
@@ -371,8 +371,8 @@ button { font-family: inherit; cursor: pointer; }
 }
 .history-restore:disabled { background: var(--text-faint); }
 
-/* Komunikat o odmowie scalenia (ADR-0005) — celowo widoczny, a nie dyskretny:
-   utrata możliwości scalenia jest istotna dla użytkownika i musi być zauważona. */
+/* The refused-merge message (ADR-0005) — deliberately prominent rather than discreet:
+   losing the ability to merge matters to the user and has to be noticed. */
 .recovery-banner {
   border: 1px solid #e0c4b8; border-left: 3px solid var(--bad);
   background: #fdf6f3; border-radius: 4px; padding: 10px 12px; margin-bottom: 20px;
@@ -390,8 +390,8 @@ button { font-family: inherit; cursor: pointer; }
 
 .comment-new { padding: 8px; border-bottom: 1px solid var(--chrome-line); margin-bottom: 8px; }
 
-/* Cytat jest tym, co zostaje po odłączeniu wątku — więc musi być czytelny sam w sobie,
-   a nie tylko jako etykieta nad rozmową. */
+/* The quote is what remains once a thread detaches — so it has to be legible on its own, not
+   merely as a label above a conversation. */
 .comment-quote {
   font-size: 11.5px; color: var(--text-dim); font-style: italic;
   border-left: 2px solid var(--chrome-line); padding-left: 7px; margin-bottom: 6px;
@@ -415,10 +415,10 @@ button { font-family: inherit; cursor: pointer; }
   padding: 8px; border-radius: 5px; margin-bottom: 8px; background: var(--chrome);
   border: 1px solid transparent;
 }
-/* Rozwiązany wątek jest przygaszony, a nie ukryty — rozmowa zostaje. */
+/* A resolved thread is dimmed rather than hidden — the conversation stays. */
 .comment-thread.resolved { opacity: 0.55; }
-/* Odłączony wątek jest WYRÓŻNIONY, nie schowany: użytkownik ma wiedzieć, że tekst,
-   którego dotyczył, przestał istnieć — inaczej rozmowa wygląda na aktualną. */
+/* A detached thread is HIGHLIGHTED, not hidden: the user should know the text it was about has
+   ceased to exist — otherwise the conversation looks current. */
 .comment-thread.detached { border-color: var(--text-faint); border-style: dashed; }
 
 .comment-detached-mark {
@@ -450,28 +450,28 @@ button { font-family: inherit; cursor: pointer; }
 
 .tb-divider { width: 1px; height: 16px; background: var(--chrome-line); margin: 0 4px; }
 
-/* Zakotwiczony fragment w tekście — podświetlenie, nie ramka: ramka przesuwałaby tekst
-   przy pojawieniu się komentarza, a to wygląda jak błąd renderowania. */
+/* The anchored fragment in the text — a highlight, not a border: a border would shift the text
+   when a comment appears, and that looks like a rendering bug. */
 .cm-mark-comment { background: rgba(184, 134, 46, 0.18); border-bottom: 1px solid rgba(184, 134, 46, 0.5); }
 
 /* --- rola w dokumencie (CP12) --- */
 
-/* Odznaka pojawia się TYLKO wtedy, gdy rola coś ogranicza. Etykieta „Właściciel"
-   przy każdym własnym dokumencie byłaby szumem — informacja przydaje się dopiero
-   w chwili, gdy tłumaczy, dlaczego czegoś nie da się zrobić. */
+/* The badge appears ONLY when the role restricts something. An "Owner" label on every document
+   of one's own would be noise — the information is useful only at the moment it explains why
+   something cannot be done. */
 .role-badge {
   padding: 3px 9px; border-radius: 10px; font-size: 11.5px; white-space: nowrap;
   border: 1px solid var(--chrome-line); background: var(--hover); color: #6a6a6a;
 }
 
-/* Wyłączone gesty są WIDOCZNE, nie ukryte: pasek narzędzi, z którego znikają przyciski,
-   wygląda na zepsuty, a nie na ograniczony uprawnieniami. */
+/* Disabled gestures are VISIBLE, not hidden: a toolbar whose buttons disappear looks broken
+   rather than restricted by permissions. */
 .tb-icon:disabled { opacity: 0.35; cursor: not-allowed; }
 .tb-icon:disabled:hover { background: transparent; }
 
-/* Dokument niedostępny (CP12) — ten sam język co baner odzyskiwania: mówimy, co się stało
-   i co z tym zrobić, a nie jaki kod HTTP wrócił. Bez tego komunikatu odmowa dostępu
-   kończyła się pustą stroną, czyli objawem nieodróżnialnym od awarii. */
+/* An unavailable document (CP12) — the same language as the recovery banner: we say what
+   happened and what to do about it, not which HTTP code came back. Without this message an
+   access refusal ended in a blank page, a symptom indistinguishable from a crash. */
 .unavailable-banner {
   margin: 24px 0; padding: 14px 16px; border-radius: 6px; font-size: 13.5px; line-height: 1.55;
   border: 1px solid var(--chrome-line); background: var(--hover); color: var(--text);

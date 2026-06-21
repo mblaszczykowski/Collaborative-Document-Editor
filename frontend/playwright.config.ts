@@ -1,18 +1,18 @@
 import { defineConfig, devices } from '@playwright/test'
 
 /**
- * Testy E2E zakładają, że backend (:8080) i frontend (:5173) już działają.
+ * The E2E tests assume the backend (:8080) and the frontend (:5173) are already running.
  *
- * Świadomie NIE podnoszę tu backendu przez `webServer`: wymagałby Postgresa i Redisa,
- * czyli całego `docker compose up`, i zamieniłby ten plik w drugi, gorszy compose.
- * Uruchomienie jest opisane w README i w CI jako jawne kroki — widoczne, zamiast ukryte
- * w konfiguracji testów.
+ * The backend is deliberately NOT started here via `webServer`: it would need Postgres and Redis,
+ * that is, the whole `docker compose up`, and would turn this file into a second, worse compose.
+ * Starting up is described in the README and in CI as explicit steps — visible rather than hidden
+ * in a test configuration.
  */
 export default defineConfig({
   testDir: './e2e',
-  // Kolejno, nie równolegle: testy dzielą jeden backend i jedną bazę, a każdy z nich
-  // tworzy dokumenty i sprawdza propagację. Równoległe przebiegi widziałyby swoje
-  // wzajemne zmiany i padały z powodów niemających nic wspólnego z algorytmem.
+  // Sequential, not parallel: the tests share one backend and one database, and each of them
+  // creates documents and checks propagation. Parallel runs would see each other's changes and
+  // fail for reasons unrelated to the algorithm.
   fullyParallel: false,
   workers: 1,
   retries: 0,
@@ -21,7 +21,7 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     baseURL: 'http://localhost:5173',
-    // Wideo z każdego przebiegu — to samo nagranie napędza GIF demo w CP9.
+    // Video from every run — the same recording drives the demo GIF in CP9.
     video: 'retain-on-failure',
     trace: 'retain-on-failure',
   },
