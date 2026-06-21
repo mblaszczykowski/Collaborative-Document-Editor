@@ -21,6 +21,17 @@ import type { Op } from '../crdt/types'
  * single change (that is, ordinary typing) never manifests at all and only surfaces on a paste with
  * a multiple selection or on "replace all".
  */
+/**
+ * The largest number of characters one insert operation may carry (CP28).
+ *
+ * 8192 characters is at most 32 KiB of UTF-8, half the frame limit from ADR-0002 — the same
+ * margin the broadcast and resynchronisation paths use on the server, and for the same reason:
+ * the operation is not the whole frame. Around it come the JSON envelope, the STOMP headers and
+ * whatever the broker prepends, and budgeting to the exact limit means discovering their size in
+ * production.
+ */
+const MAX_INSERT_CHARACTERS = 8192
+
 export function changesToOps(
   document: RgaDocument,
   changes: ChangeSet,
@@ -45,9 +56,26 @@ export function changesToOps(
     }
 
     if (change.inserted.length > 0) {
-      const op = document.insert(change.fromA, change.inserted)
-      ops.push(op)
-      undo?.recordInsert(op.id, change.inserted.length)
+      // Split into pieces, because ONE operation has to fit in ONE frame (CP28).
+      //
+      // Typing produces one character at a time and this loop runs once. Pasting does not: a
+      // pasted chapter is a single change of tens of kilobytes, and as a single operation it
+      // would exceed the 64 KiB frame limit from ADR-0002 — in both directions. On the way out
+      // the send fails; on the way back, a client resynchronising receives a frame it cannot
+      // accept and stalls silently, which is the failure CP8 already found once.
+      //
+      // Nothing downstream can fix this: an operation's identity is what the merge algorithm is
+      // built on, so it cannot be split after the fact. The place to split is here, where the
+      // text is still text.
+      for (let offset = 0; offset < change.inserted.length; offset += MAX_INSERT_CHARACTERS) {
+        const piece = change.inserted.slice(offset, offset + MAX_INSERT_CHARACTERS)
+        const op = document.insert(change.fromA + offset, piece)
+        ops.push(op)
+        // The pieces coalesce into ONE undo step: consecutive Lamport values from the same
+        // replica within the coalescing window is exactly the condition recordInsert already
+        // uses for continuous typing. Undoing a paste in eight steps would be absurd.
+        undo?.recordInsert(op.id, piece.length)
+      }
     }
   }
   return ops

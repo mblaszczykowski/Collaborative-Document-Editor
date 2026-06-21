@@ -35,15 +35,18 @@ public class DocumentStompController {
     private final PresenceService presence;
     private final SimpMessagingTemplate messaging;
     private final EditTracer tracer;
+    private final dev.collabedit.app.config.CollabEditProperties properties;
 
     public DocumentStompController(DocumentService documents, DocumentRegistry registry,
                                    PresenceService presence, SimpMessagingTemplate messaging,
-                                   EditTracer tracer) {
+                                   EditTracer tracer,
+                                   dev.collabedit.app.config.CollabEditProperties properties) {
         this.documents = documents;
         this.registry = registry;
         this.presence = presence;
         this.messaging = messaging;
         this.tracer = tracer;
+        this.properties = properties;
     }
 
     /**
@@ -200,13 +203,28 @@ public class DocumentStompController {
     }
 
     /**
-     * How many operations fit in a single resynchronisation response.
+     * How much of a resynchronisation response fits in one frame — <b>in bytes</b> (CP28).
      *
-     * <p>ADR-0002 sets a 64 KiB limit per message. An operation is on the order of 60–100 bytes, so
-     * 300 operations give a frame safely under the limit even when longer fragments of text are
-     * being inserted.
+     * <h2>What this replaces, and why counting operations was wrong</h2>
+     * This used to be {@code SYNC_CHUNK = 300}, a count, justified by "an operation is on the order
+     * of 60–100 bytes". That assumption holds for typing and fails for the one gesture every user
+     * performs in their first minute: <b>pasting</b>. A pasted chapter is ONE operation of tens of
+     * kilobytes, so three hundred of them is megabytes in a frame limited to 64 KiB — and the
+     * failure mode is the one CP8 already found once, with the client that needs the data most
+     * being the one that cannot receive it, silently.
+     *
+     * <p>The broadcast path moved to a byte budget in CP10 and the resynchronisation path did not.
+     * The README has carried that as an open item ever since; this is it closed.
+     *
+     * <h2>Half the frame limit</h2>
+     * The same margin the broadcast path uses. The budget is measured on the encoded operations,
+     * and the frame adds an envelope on top — a JSON wrapper, STOMP headers, and whatever the
+     * broker prepends. Budgeting to the exact limit means discovering the envelope's size in
+     * production, one dropped session at a time.
      */
-    private static final int SYNC_CHUNK = 300;
+    private int syncBudgetBytes() {
+        return properties.websocket().maxMessageSizeBytes() / 2;
+    }
 
     /**
      * Sends back the missing operations — <b>in chunks</b>.
@@ -228,14 +246,45 @@ public class DocumentStompController {
                 new Messages.SyncResponse(List.of(), head), SessionAttributes.forUser(headers));
             return;
         }
-        for (int from = 0; from < operations.size(); from += SYNC_CHUNK) {
-            List<JsonNode> chunk =
-                operations.subList(from, Math.min(from + SYNC_CHUNK, operations.size())).stream()
-                    .map(stored -> (JsonNode) OpCodec.toJson(stored.op()))
-                    .toList();
+        for (List<JsonNode> chunk : chunkByBytes(operations, syncBudgetBytes())) {
             messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
                 new Messages.SyncResponse(chunk, head), SessionAttributes.forUser(headers));
         }
+    }
+
+    /**
+     * Splits operations into frames that fit a byte budget (CP28).
+     *
+     * <p>Package-private and static so a unit test can look at the chunks directly. That is not
+     * convenience: the integration test cannot catch this, because the test client raises its own
+     * inbound limit to 1 MB — a limit it raises for a good reason (its DEFAULT 8 KiB buffer was
+     * the flaw in the measurement rig that CP8 spent a checkpoint chasing), and which means an
+     * oversized frame arrives there perfectly well and only fails in a browser.
+     *
+     * <p>An operation larger than the whole budget is sent alone and may still exceed the frame
+     * limit. That is a real remaining limit rather than something to pretend about: nothing here
+     * can split an operation, because its identity is what the merge algorithm is built on. The
+     * client is what must not create one — see the paste path in {@code bridge.ts}.
+     */
+    static List<List<JsonNode>> chunkByBytes(List<StoredOperation> operations, int budget) {
+        List<List<JsonNode>> chunks = new java.util.ArrayList<>();
+        List<JsonNode> current = new java.util.ArrayList<>();
+        int bytes = 0;
+
+        for (StoredOperation stored : operations) {
+            int size = OpCodec.encode(stored.op()).length();
+            if (!current.isEmpty() && bytes + size > budget) {
+                chunks.add(current);
+                current = new java.util.ArrayList<>();
+                bytes = 0;
+            }
+            current.add(OpCodec.toJson(stored.op()));
+            bytes += size;
+        }
+        if (!current.isEmpty()) {
+            chunks.add(current);
+        }
+        return chunks;
     }
 
     @MessageMapping("/doc/{documentId}/presence")

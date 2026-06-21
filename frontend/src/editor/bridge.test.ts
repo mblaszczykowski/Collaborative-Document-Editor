@@ -1,6 +1,7 @@
 import { ChangeSet, Text } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
 import { RgaDocument } from '../crdt/document'
+import { UndoManager } from '../crdt/undo'
 import { changesToOps, minimalChange } from './bridge'
 
 describe('minimalChange', () => {
@@ -87,5 +88,36 @@ describe('changesToOps', () => {
     )
     const expected = changes.apply(Text.of([before])).toString()
     expect(applyLocal(before, changes).text).toBe(expected)
+  })
+})
+
+describe('pasting something large', () => {
+  it('splits one paste into operations that each fit in a frame', () => {
+    const document = new RgaDocument(1)
+    const pasted = 'x'.repeat(20_000)
+
+    const ops = changesToOps(document, ChangeSet.of([{ from: 0, insert: pasted }], 0))
+
+    // Three operations, not one. A single 20 000-character insert is ~20 KB of text inside a
+    // JSON envelope, and the frame limit is 64 KiB — one more paste of a long chapter and the
+    // operation stops fitting anywhere, in either direction (CP28).
+    expect(ops).toHaveLength(3)
+    for (const op of ops) {
+      expect(op.kind).toBe('insert')
+      if (op.kind === 'insert') expect(op.text.length).toBeLessThanOrEqual(8192)
+    }
+    expect(document.text).toBe(pasted)
+  })
+
+  it('undoes a paste in one step, not three', () => {
+    const document = new RgaDocument(1)
+    const undo = new UndoManager(document)
+    changesToOps(document, ChangeSet.of([{ from: 0, insert: 'y'.repeat(20_000) }], 0), undo)
+
+    undo.undo()
+
+    // The pieces coalesce, because they are consecutive Lamport values from one replica inside
+    // the coalescing window — the same condition continuous typing already meets.
+    expect(document.text).toBe('')
   })
 })
