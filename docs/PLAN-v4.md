@@ -1,6 +1,6 @@
 # Plan v4 — from a proof into a product that shows its proof
 
-> Status: in progress. Checkpoints CP21–CP30.
+> Status: **closed**. Checkpoints CP21–CP30, all done — see §15 for the audit.
 > Previous plans: [v1](IMPLEMENTATION_PLAN.md) (CP1–CP9), [v2](PLAN-v2.md) (CP10–CP15),
 > [v3](PLAN-v3.md) (CP16–CP20).
 
@@ -317,6 +317,66 @@ taken, the plan says plainly what it does not cover.
 
 ## 15. Final audit — after CP30
 
-To be filled in when the plan closes: what was not done, what was done differently and why, and
-what the measurements did not confirm. Empty until then, on purpose — the v3 audit is worth what
-it is because it was written against the code afterwards, not predicted.
+Written against the code afterwards, like the v3 one, and for the same reason: an audit predicted
+in advance is a plan wearing a different hat.
+
+### 15.1 Done, with the tests that hold each one
+
+| CP | State | The test with teeth |
+|---|---|---|
+| CP21 access API + invitations + role event | done | `AccessIT` (13) — including "a fresh document is private", "ownership cannot be granted", "the owner cannot revoke themselves", "an expired invitation stops working with no sweep having to run" |
+| CP22 history with marks + diff by identity | done | `VersionComparisonIT` (5) — the one that matters is "deleting a word and retyping it identically is a change, and a text diff cannot see it" |
+| CP23 suggestion mode | done | `SuggestionIT` (7) — proposals move with the text around them; deciding twice changes nothing the second time |
+| CP24 snapshot to the client | done | `SnapshotEndpointIT` (4) + `SnapshotFixtureTest` + `snapshot.test.ts` — both sides read the same committed bytes |
+| CP25 mark-aware, durable undo | done | `undo.test.ts` (7) — undo had **no unit test at all** before this |
+| CP26 presence across the cluster | done | `PresenceClusterIT` (3) — a quiet instance stops being believed |
+| CP27 comments offline | done | `CommentIT` — a retry of an uncertain comment does not duplicate it; an unkeyed one still always inserts |
+| CP28 large pastes, resync in bytes | done | `SyncChunkingTest` (5) + `bridge.test.ts` — and see 15.3 for why the integration test alone would not have caught it |
+| CP29 search inside content | done | `ContentSearchIT` (3) — a word past the preview boundary; a document with no snapshot; a rename |
+| CP30 block structure | **done as the cheap variant** | `BlockStructureTest` (4) — including the duplication two concurrent moves produce |
+
+Full suite after CP30: **1386 tests, 0 failures** (`./mvnw test`), plus 80 in vitest.
+
+### 15.2 Done differently from the plan — deliberately
+
+| Plan | What was built | Why |
+|---|---|---|
+| CP21: "an access API" | API **plus invitation links**, and a table for them | Login has no password and mints a new identifier every time, so there is nobody to name in a share box. Without invitations the API is correct and unusable (ADR-0014) |
+| CP23: "authorization by operation type — the debt turns into a requirement" | The debt was **not** extended; the server generates the operations instead | The plan predicted that a commenter sending inserts would force the frame-body parsing into a second place. It would have. Having the server replica generate them — as a history restore already does — removes the need entirely, which is a better answer to the same problem than the one predicted |
+| CP30: "a tree of blocks with a move operation" | Block marks over a line, and the missing move **pinned by a test** | Multi-day rewrite of the layer everything else stands on, arriving last in a plan whose other items are finished. Half a tree is worse than none. What the cheap variant buys that "do nothing" does not: the absence of a move is now demonstrable rather than described (ADR-0016) |
+
+### 15.3 Found while building, not by review
+
+- **A mark's value is `null` for every type that carries no payload.** Two bugs from one root, both
+  in CP22 and both found by a new test rather than by reading: comparing values with `equals()`
+  threw on the commonest mark in the project, and treating `null` as absent made "italic, no value"
+  indistinguishable from "no italic" — so a restore silently kept the formatting it had been asked
+  to remove.
+- **`adoptReplicaId` was keyed on the Lamport clock**, which a snapshot sets without this replica
+  having generated anything. A document opened from a snapshot would have kept replica id 0 — the
+  one identifier guaranteed to collide. Found by CP24, fixed by counting operations created here,
+  which is what the guard always meant.
+- **`LargePasteIT` passes on the pre-CP28 code.** `TestStompClient` raises its inbound limit to
+  1 MB — for the excellent reason that its default 8 KiB buffer was the flaw in the measurement rig
+  CP8 spent a checkpoint chasing. The rig is deliberately more forgiving than a browser, so the
+  rule had to be checked where the rule is, in a unit test. Worth recording as a general lesson:
+  **a harness built to stop lying in one direction can lie in the other.**
+
+### 15.4 What the measurements did not flatter
+
+- **The CP24 snapshot ratio depends entirely on what is in the document.** 200 operations of the
+  same character: 259×. The same 200 operations of prose: **84×**. The second number is the one in
+  the README, because the first measures gzip rather than the format — the same trap the v3 review
+  found in the mark-cost table.
+- **CP29's index lags by design** and the plan called it a trade with one right answer. It is still
+  a lag: a document is findable as of its last snapshot, and a document nobody has typed in has
+  never had one — which is why search falls back to the title.
+
+### 15.5 Not done
+
+| Item | State | Why |
+|---|---|---|
+| **e2e run** | **not run** | Port 8080 is held by an instance somebody else started, and the suite needs a live frontend as well. `sharing.spec.ts` is written and unrun. The helper fix in it is worth naming separately: `freshDocument` created documents **with no token**, which CP16 turned into a 401 — so those scenarios have been red since CP16, and plan v3 §10.1 recorded them as "not run" without connecting the two facts |
+| **CP30 as a tree with a move operation** | not done | Deliberate, see 15.2 |
+| **Retention for `document_invites` and `suggestions`** | not done | Both tables grow without bound. The same class of debt as the snapshot table, named in the README rather than fixed here |
+| **A second measurement rig** | not done | Out of scope in v3 and still out of scope: the numbers here are about the format and the merge, not about a network |

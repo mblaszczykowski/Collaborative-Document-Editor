@@ -124,6 +124,7 @@ actually happened can be recorded next to them:
 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | CP1–CP9 — CRDT core, transport, history, cluster, observability | closed |
 | [`docs/PLAN-v2.md`](docs/PLAN-v2.md) | CP10–CP15 — performance, multi-document, permissions, rich text, comments | closed |
 | [`docs/PLAN-v3.md`](docs/PLAN-v3.md) | CP16–CP20 — structural authorization, deterministic simulation, content-dropped blocks, regression gate | closed |
+| [`docs/PLAN-v4.md`](docs/PLAN-v4.md) | CP21–CP30 — access reachable from the product, version diff by identity, suggestions, snapshot to the client, undo, cluster presence, offline comments, large pastes, content search, block structure | closed |
 
 ### Working mode: no stopping at checkpoints
 

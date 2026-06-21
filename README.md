@@ -687,6 +687,16 @@ those marked as verified have a test that checks it.
 | **Deleting commented text** | The conversation **stays**, marked as detached, with the fragment quoted as of when it was created. Deleting a conversation in response to a text edit is behaviour nobody expects. | `threadSurvivesDeletionOfAnchoredText`, e2e |
 | **A role without write permission** | The editor is read-only, the formatting bar greyed out, the comments panel has no input — because the role arrives together with the initial state. The server checks exactly as before; the client merely stops offering a gesture that would be rejected. Without this, a reader typed locally, saw their own text, and their replica silently diverged from everyone else's. | `openedDocumentCarriesCallersRole` |
 | **Access revoked mid-session** | Works within 5 s (the lifetime of a permission cache entry). Revocation by the owner invalidates the cache immediately on THAT instance; the others wait for expiry. | `revokingAccessTakesEffect` |
+| **A stranger opens a document link** | Nothing. Documents created through the interface are **private** since CP21; getting in needs an invitation that carries a role, or a deliberate switch to "anyone signed in with the link". The refusal is the same 404 as for a document that does not exist. | `AccessIT` |
+| **An invitation link is forwarded** | It works — an invitation is a bearer credential and there is no second factor in a system with no passwords. Mitigated rather than solved: every invite expires, can be revoked, is stored only as a hash, and leaves the address bar the moment it is redeemed. | `AccessIT`, [ADR-0014](docs/adr/0014-invitations.md) |
+| **A commenter proposes a change** | The proposed text enters the document immediately, wearing a `suggest-insert` mark, and an editor accepts or rejects it. The commenter cannot keep it there — rejecting deletes it, and they cannot reject. | `SuggestionIT` |
+| **Two editors accept the same suggestion at once** | One resolution. The second call finds no mark and generates nothing; the row update is conditioned on the suggestion still being open. Idempotence falls out of the model rather than being engineered. | `decidingTwiceChangesNothingTheSecondTime` |
+| **A suggestion's text is deleted by somebody else** | The proposal stays in the list, marked as unanchored, with the fragment it was about. Accepting it applies nothing and says so, rather than reporting success. | `aProposalWhoseTextIsGoneResolvesWithoutPretending` |
+| **A comment written with no connection** | Kept in an outbox and retried on reconnect. A retry of an attempt that did arrive is recognised by its key and does not become a second conversation — what the offline path needs is exactly-once, not merging. | `retryingAnUncertainCommentDoesNotDuplicateIt` |
+| **Pasting a chapter** | Split into operations of at most 8192 characters at the source, because an operation larger than a frame can be neither sent nor received and nothing downstream can split one — its identity is what merging is built on. Resynchronisation budgets by bytes. | `SyncChunkingTest`, `LargePasteIT` |
+| **The cluster channel is unreachable** | Editing and writing continue. The participant list says **"list may be incomplete"** — the one place in this system where best-effort is shown to the user, because a quietly short list looks exactly like a document nobody else is in. | `PresenceClusterIT` |
+| **An instance holding participants dies** | Its people disappear from everybody's list after three missed announcements. Nothing repairs a lost presence message and nothing needs to: presence does not converge, it expires. | `anInstanceThatGoesQuietDisappears` |
+| **Two people move the same paragraph** | **Two copies of it.** The replicas still agree — the algorithm's guarantee is intact — and the result is wrong for the user. A move here is a deletion plus an insertion, because a paragraph has no identity in a flat sequence. Pinned by a test rather than described. | `concurrentMovesOfTheSameParagraphDuplicateIt`, [ADR-0016](docs/adr/0016-block-structure.md) |
 
 ---
 
@@ -762,16 +772,25 @@ would point at.
 - ~~**No comments and no permissions.**~~ **Done (CP12, CP14).** The comment anchor turned out to
   be the same mechanism as formatting and **added not one line to the CRDT layer**
   ([ADR-0011](docs/adr/0011-comments.md)). Permissions enforced in both layers from one rule
-  ([ADR-0009](docs/adr/0009-permission-model.md)). Remaining limits: comment content does not work
-  offline (the buffer covers CRDT operations, not REST), the panel refreshes by polling rather
-  than by an event, there are no notifications or mentions, and revoking permissions takes effect
-  within the 5 s cache window.
-- <a id="undo-limits"></a>**Undo works only within a session and does not cover formatting.** `UndoManager` undoes your
-  own insertions and deletions and merges continuous typing into one step — but the stack lives
-  in the tab's memory and disappears on reload, and mark operations never enter it at all.
-  Ctrl+Z after Ctrl+B therefore undoes **the previous text change**, not the bolding. Predictable
-  but surprising; mark-aware undo requires extending the stack with operations inverse to
-  `AddMark`/`RemoveMark`, which is the same problem as CRDT-aware undo.
+  ([ADR-0009](docs/adr/0009-permission-model.md)). Remaining limits: the panel refreshes by
+  polling rather than by an event, and there are no notifications or mentions.
+  ~~comment content does not work offline~~ **Done (CP27)** — an idempotency key and an outbox,
+  which is what the offline path actually needed: not merging, but exactly-once. That is
+  [ADR-0011](docs/adr/0011-comments.md)'s "comments are not a CRDT" tested by use rather than by
+  argument.
+  ~~revoking permissions takes effect within the 5 s cache window~~ — still true across
+  instances, but the whole model was **unreachable from the product** until CP21: `grant` and
+  `revoke` were called from tests and from nowhere else, and every document created through the
+  interface was editable by anyone signed in. Sharing is now an invitation link that carries a
+  role ([ADR-0014](docs/adr/0014-invitations.md)), new documents are private, and a role change
+  reaches the other person without a reload.
+- <a id="undo-limits"></a>~~**Undo works only within a session and does not cover formatting.**~~
+  **Done (CP25).** Ctrl+Z after Ctrl+B used to undo *the previous text change*, and the stack died
+  with the tab. Both are fixed, and the interesting half is why the inverse of `AddMark` is not
+  `RemoveMark`: there may have been another author's mark of the same type underneath, losing the
+  resolution, so undo restores the previous **state** rather than performing the opposite gesture.
+  `undefined` (absent) and `null` (present, no value) are different states there — conflating them
+  is the same bug CP22 found in the history layer.
 
 </details>
 
@@ -788,11 +807,23 @@ would point at.
   generate a secret. The cost is one environment variable for `spring-boot:run`.
 - **The operation log grows without bound.** It needs archival of old segments to object storage,
   and compaction.
-- **Presence is instance-local** — a client connected to another instance does not appear in the
-  list of people present. Requires a separate channel and entry expiry.
-- <a id="log-replay"></a>**The client replays the whole log when opening a document.** The server uses snapshots
-  internally; the client should receive a serialised CRDT snapshot rather than the full set of
-  operations.
+- ~~**Presence is instance-local**~~ **Done (CP26).** A separate Redis channel with entry expiry,
+  because presence is the one thing here that does not converge — it **expires**. Full lists per
+  instance per second rather than deltas: a self-contained message costs a second of staleness
+  when it is lost, where a delta stream would need ordering and loss detection to be worth
+  anything. Two named limits: a cursor from another instance moves at most once a second (the
+  alternative is publishing ~30 events per second per person across the cluster to smooth a
+  decoration), and when the channel is unreachable the participant list **says so** — the one
+  place in this system where best-effort is shown to the user rather than hidden behind
+  convergence.
+- <a id="log-replay"></a>~~**The client replays the whole log when opening a document.**~~
+  **Done (CP24).** Measured on 200 keystroke-sized operations: **12 158 B of log against 145 B of
+  snapshot, 84×**. The measurement uses prose rather than `"x"` repeated, and that distinction is
+  the difference between a measurement and a compliment — gzip crushes a repeated character and
+  would have reported 259×. It is also the two-implementation debt priced from the other side:
+  the client has no GC and writes no snapshots, and still needs ~120 lines of decoder against
+  ~100 in `SnapshotCodec`, which is roughly what "proportional to how much of the algorithm the
+  client implements" predicts.
 - ~~**No rate limiting**~~ **— there is (CP12), and it taught me something I had not assumed.**
   The first version refused the frame silently, because that is how a refusal for lack of
   permission works. At 100 000 characters and 50 clients that produced 115 rejections and a
@@ -816,11 +847,16 @@ would point at.
 
 <details>
 <summary><strong>Open, unresolved</strong> — the ones still standing</summary>
-- **The resynchronisation chunk limit is counted in operations, not bytes**
-  (`SYNC_CHUNK = 300`). That assumes an operation weighs ~100 B — which stops being true when
-  someone pastes a large fragment of text, because that is **one** operation of tens of
-  kilobytes. The broadcast path moved to a byte budget in CP10; the resynchronisation path did
-  not. A known debt, not an oversight.
+- ~~**The resynchronisation chunk limit is counted in operations, not bytes**~~ **Done (CP28),
+  and it needed two halves.** The server now budgets by encoded bytes; the client splits a paste
+  into operations of at most 8192 characters. The second half is the load-bearing one — nothing
+  downstream can split an operation after the fact, because its identity is what the merge
+  algorithm is built on, so an operation larger than a frame can be neither sent nor received.
+  Worth recording how it is tested: `LargePasteIT` passes on the OLD code, because
+  `TestStompClient` raises its inbound limit to 1 MB — for the excellent reason that its default
+  8 KiB buffer was the flaw in the measurement rig CP8 spent a checkpoint chasing. The rig is
+  deliberately more forgiving than a browser, so the rule is checked by a unit test where the
+  rule is.
 - ~~**Mark resolution grows superlinearly with their number — measured.**~~
   **Done (CP20): a sweep instead of `O(m²)`.** At 6400 marks **62.1 ms → 4.72 ms**. The limit
   moved from hundreds to thousands. (This entry used to add "and growth per fourfold increase in
@@ -859,6 +895,31 @@ would point at.
   **only** for that one role, but it is an authorization layer coupled to a data format — a
   change to the operation format could silently change permissions. In production: the operation
   type in a STOMP header, not in the body.
+
+  CP23 was the moment this could have become a pattern instead of an exception, and deliberately
+  did not. Suggestion mode needs a commenter to cause an **insertion**, and the obvious design —
+  let them send it, and have the interceptor check that a suggestion mark covers it — is a second
+  instance of exactly this debt. Instead the client asks over REST and the server replica
+  generates the operations, as a history restore already does. One instance of a bad pattern is a
+  debt; two is a design.
+- **An invitation is a bearer credential.** Whoever holds the link gets the role named in it, and
+  there is no second factor — there cannot be one in a system with no passwords. Expiry,
+  revocation, hashed storage and stripping the token from the address bar narrow it; nothing
+  closes it without accounts ([ADR-0014](docs/adr/0014-invitations.md)).
+- **A proposed insertion is real text in the document from the moment it is proposed.** It reads
+  as a proposal and counts as content: to the search index, to the timeline's character counts and
+  to anything else that reads the document as a string. That is the price of not keeping a second
+  CRDT state per document, and it is a real one.
+- **The search index lags.** The vector is built on the snapshot path, so a document is findable
+  as of its last snapshot — at most 500 operations or 30 seconds behind. Making it exact means
+  recomputing a `tsvector` per keystroke, which puts the cost of a rare read on the most frequent
+  write in the system.
+- **A paragraph has no identity, so there is no move operation.** Two people moving the same
+  paragraph end up with two copies of it — the replicas agree and the result is wrong. This is the
+  problem Kleppmann's *Moving Elements in List CRDTs* (2020) exists for; a real fix is a rewrite
+  of the layer everything else here stands on ([ADR-0016](docs/adr/0016-block-structure.md)).
+- **`document_invites` and `suggestions` grow without bound.** The same class of debt as the
+  snapshot table before CP-review, and the same fix: a retention policy.
 - <a id="single-process"></a>**The performance numbers still come from a single process.** Clients, server, Postgres and
   Redis share ten cores, so the harness is itself a serious CPU consumer and network latency is
   zero. The numbers describe the cost of the system, not the experience of a user over the
@@ -929,10 +990,22 @@ tools/         helper scripts (demo recording, data cleanup)
 
 ## Project status
 
-Every checkpoint of three plans is closed: nine from [plan v1](docs/IMPLEMENTATION_PLAN.md)
+Every checkpoint of four plans is closed: nine from [plan v1](docs/IMPLEMENTATION_PLAN.md)
 (CRDT core, transport, history, cluster, observability), six from
 [plan v2](docs/PLAN-v2.md) (broadcast performance, multi-document, permissions, formatting,
-comments, re-measurement), and five from [plan v3](docs/PLAN-v3.md).
+comments, re-measurement), five from [plan v3](docs/PLAN-v3.md), and ten from
+[plan v4](docs/PLAN-v4.md).
+
+**v4 began with a finding rather than a feature.** The role model was complete, enforced
+structurally by CP16, described by two ADRs — and unreachable from the running product: `grant`
+and `revoke` were called from tests and from nowhere else, `MANAGE_ACCESS` was required by no
+endpoint, and every document created through the interface was editable by anybody who typed a
+name into the login box. Four documented roles, two the product could produce. That is what set
+the order of the plan, and the rest of it follows the same rule: every item had to bring a problem
+the project had not already solved — a version diff computed from character **identity** rather
+than from text, suggestions as the third use of a mark layer that never anticipated them, an
+offline path that needed exactly-once rather than merging, and a block structure that arrives with
+the operation it deliberately does not provide.
 
 **v3 added not a single feature**, and that is its thesis: everywhere the system relied on
 somebody remembering, noticing, or getting lucky, a construction takes over that does not allow
@@ -948,12 +1021,11 @@ to be false.
 
 | Layer | Tests |
 |---|---:|
-| `crdt-core` — property, invariants, conformance, snapshots, marks, content-dropped blocks, complexity shape | 53 |
-| `app` — integration against a real Postgres and Redis, including cluster chaos, permissions and the architecture test | 108 |
-| `frontend` — agreement with the Java implementation, the bridge to CodeMirror | 51 |
-| end-to-end — two real browsers | 17 |
-| **total** | **229** |
-| *separately:* `app` — **deterministic simulation** of the cluster | *806* |
+| `crdt-core` — property, invariants, conformance, snapshots, marks, content-dropped blocks, complexity shape, block structure | 63 |
+| `app` — integration against a real Postgres and Redis, including cluster chaos, permissions, access, suggestions, presence across instances and the architecture test | 173 |
+| `frontend` — agreement with the Java implementation, the bridge to CodeMirror, the snapshot decoder, undo | 80 |
+| end-to-end — two real browsers | 22 |
+| **total** | **338** |
 
 **The simulation is listed separately and outside the total, because otherwise this table lies.**
 806 is a count of **seeds**, not of distinct assertions: four scenarios multiplied by two hundred
