@@ -74,6 +74,8 @@ export interface CollaborativeDocument {
   recovery: { title: string; id: string } | null
 
   toggleMark: (type: string, from: number, to: number) => void
+  /** Turns the current line into a heading, quotation or list item — or back (CP30). */
+  toggleBlock: (type: string, value: string | null) => void
   anchorComment: (threadId: string) => void
   /**
    * Suggestion mode (CP23): propose a change instead of making it.
@@ -135,6 +137,7 @@ export function useCollaborativeDocument(
    */
   const [selection, setSelection] = useState('')
   const selectionRange = useRef<{ from: number; to: number } | null>(null)
+  const caret = useRef(0)
 
   const document = useRef<RgaDocument | null>(null)
   const undo = useRef<UndoManager | null>(null)
@@ -323,6 +326,10 @@ export function useCollaborativeDocument(
    */
   const onSelectionChange = useCallback((from: number, to: number, text: string) => {
     selectionRange.current = from < to ? { from, to } : null
+    // The caret is remembered even when nothing is selected, because a block gesture (CP30) acts
+    // on the LINE the cursor is in rather than on a selection — pressing "heading" with no
+    // selection is the ordinary way to use it.
+    caret.current = from
     setSelection(text)
   }, [])
 
@@ -369,6 +376,43 @@ export function useCollaborativeDocument(
     // Recomputed immediately rather than waiting for the echo from the server: the operation is
     // already applied locally, so waiting would mean a visible delay between pressing Ctrl+B and
     // the appearance changing — exactly the cost optimistic editing exists to avoid.
+    setFormatting(model.formatting())
+  }, [canWrite])
+
+  /**
+   * Turns the current LINE into a heading, a quotation or a list item — or back (CP30).
+   *
+   * Block structure is marks, because the document is a flat character sequence and a paragraph
+   * is not an object in it: it is the text between two newlines. The mark covers exactly that
+   * range, so the character layer needs nothing new — the third time that has been true, after
+   * formatting and comments.
+   *
+   * Two limits worth stating rather than hiding:
+   *
+   * - **an empty line cannot be marked.** There is nothing to anchor to, and inventing an anchor
+   *   would mean a mark pointing at a character that does not exist. Pressing the button on an
+   *   empty line does nothing, which is at least honest;
+   * - **there is no move.** Moving a paragraph here is a deletion plus an insertion, and two
+   *   people moving the same one produce two copies — pinned by a test rather than described
+   *   (ADR-0016).
+   */
+  const toggleBlock = useCallback((type: string, value: string | null) => {
+    const model = document.current
+    const link = connection.current
+    if (model === null || link === null || !canWrite) return
+
+    const text = model.text
+    const at = Math.min(selectionRange.current?.from ?? caret.current, text.length)
+    const start = text.lastIndexOf('\n', Math.max(0, at - 1)) + 1
+    const newline = text.indexOf('\n', at)
+    const end = newline === -1 ? text.length : newline
+    if (start >= end) return
+
+    const already = coveredBy(model.formatting(), type, start, end)
+    const op = already
+      ? model.removeMark(start, end, type)
+      : model.addMark(start, end, type, value)
+    link.send(op)
     setFormatting(model.formatting())
   }, [canWrite])
 
@@ -498,6 +542,7 @@ export function useCollaborativeDocument(
     selection,
     recovery,
     toggleMark,
+    toggleBlock,
     anchorComment,
     proposeDeletion,
     proposeInsertion,

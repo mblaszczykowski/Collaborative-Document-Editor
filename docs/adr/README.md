@@ -29,6 +29,7 @@ than I had assumed.
 | [0013](0013-deterministic-simulation.md) | Deterministic simulation as a third testing pillar — a seed instead of a thread interleaving | Accepted |
 | [0014](0014-invitations.md) | Sharing by invitation link carrying a role, because passwordless login leaves nobody to name | Accepted |
 | [0015](0015-suggestion-mode.md) | Suggestions as marks over the real text — the third use of the CP13 layer, and the first the layer did not anticipate | Accepted |
+| [0016](0016-block-structure.md) | Block structure as marks over a line, with no move operation — and the duplication that costs, pinned by a test | Accepted |
 
 Filenames keep their original Polish slugs. Renaming them would break every link in the README, in
 the commit history and in the other ADRs, in exchange for cosmetics — and the commit history is

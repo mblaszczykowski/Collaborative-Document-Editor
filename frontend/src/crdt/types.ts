@@ -132,7 +132,18 @@ export function opSpan(op: Op): number {
  * than to everyone else. The conformance corpus will not catch this, because it concerns operations
  * that already exist, whereas this is a decision made when an operation is CREATED.
  */
-const EXPANDING_MARKS = new Set(['bold', 'italic', 'underline', 'strike'])
+const EXPANDING_MARKS = new Set([
+  'bold',
+  'italic',
+  'underline',
+  'strike',
+  // Block types (CP30) expand for a different reason from bold: they describe a LINE, and typing
+  // at the end of a line has to stay in that line. The end anchor sits before the newline, so the
+  // growth stops there and a heading cannot swallow the paragraph below it.
+  'heading',
+  'quote',
+  'list',
+])
 
 export function markExpandsAtEnd(type: string): boolean {
   return EXPANDING_MARKS.has(type)

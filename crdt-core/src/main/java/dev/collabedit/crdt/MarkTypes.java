@@ -63,13 +63,41 @@ public final class MarkTypes {
     public static final String SUGGEST_DELETE = "suggest-delete";
 
     /**
+     * A heading (CP30). The value is the level, {@code "1"} to {@code "3"}.
+     *
+     * <h2>Block structure as marks, and what that does not buy</h2>
+     * The document is a flat character sequence, so a paragraph is not an object here — it is the
+     * text between two newlines. A heading is therefore a mark over that range, exactly like
+     * bolding, and it needs nothing new in the character layer.
+     *
+     * <p>What it does <b>not</b> give is a move operation. Moving a paragraph in this model is a
+     * deletion plus an insertion, and two people moving the same paragraph concurrently produce
+     * two copies of it — a documented, tested limit rather than a bug (ADR-0016, and
+     * {@code BlockStructureTest}). A real move needs a block identity the sequence does not have.
+     */
+    public static final String HEADING = "heading";
+
+    /** A quoted paragraph (CP30). */
+    public static final String QUOTE = "quote";
+
+    /** A list item (CP30). The value is {@code "bullet"} or {@code "ordered"}. */
+    public static final String LIST = "list";
+
+    /**
      * Types whose range <b>grows</b> when text is typed immediately after it.
      *
      * <p>An unknown type does NOT grow. That is the cautious choice: a mark that expands
      * unexpectedly changes the appearance of text the user did not format, whereas a mark that
      * fails to expand costs at most a repeated gesture.
+     *
+     * <p>The block types (CP30) grow for a different reason from the inline ones. Bold grows
+     * because that is what people expect while typing; a heading grows because <b>it describes a
+     * line</b>, and typing at the end of a line has to stay in the same line. The end anchor sits
+     * before the newline, so growth stops there — a heading cannot swallow the paragraph under
+     * it, which is the failure this rule has to avoid rather than the one it is chosen for.
      */
-    private static final Set<String> EXPANDING = Set.of(BOLD, ITALIC, UNDERLINE, STRIKETHROUGH);
+    private static final Set<String> EXPANDING =
+        Set.of(BOLD, ITALIC, UNDERLINE, STRIKETHROUGH, HEADING, QUOTE, LIST);
 
     public static boolean expandsAtEnd(String type) {
         return EXPANDING.contains(type);

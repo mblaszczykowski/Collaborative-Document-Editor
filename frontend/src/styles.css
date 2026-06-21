@@ -645,3 +645,23 @@ button { font-family: inherit; cursor: pointer; }
   margin-left: auto; font-size: 10.5px; padding: 1px 6px; border-radius: 8px;
   border: 1px solid var(--warn); color: var(--warn); white-space: nowrap;
 }
+
+/* --- block structure (CP30) --- */
+
+/* A heading is a MARK over a line, not a node in a tree — the document is a flat character
+   sequence and a paragraph is the text between two newlines. So these are inline decorations
+   made to look like blocks, and the level arrives as a data attribute because it is the mark's
+   value rather than its type. */
+.cm-mark-heading { font-family: var(--serif); font-weight: 600; line-height: 1.25; }
+.cm-mark-heading[data-level='1'] { font-size: 1.6em; }
+.cm-mark-heading[data-level='2'] { font-size: 1.3em; }
+.cm-mark-heading[data-level='3'] { font-size: 1.12em; }
+
+.cm-mark-quote {
+  font-family: var(--serif); font-style: italic; color: var(--text-dim);
+  border-left: 3px solid var(--chrome-line); padding-left: 10px;
+}
+
+/* The bullet is drawn, not inserted: a character in the text would be a character somebody else
+   could delete without removing the mark, and the two would then disagree. */
+.cm-mark-list::before { content: '• '; color: var(--text-faint); }

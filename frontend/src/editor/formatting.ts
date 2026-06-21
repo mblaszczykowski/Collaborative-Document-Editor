@@ -67,13 +67,21 @@ function decorationsFor(spans: Span[], documentLength: number): DecorationSet {
 
     const classes = [...span.marks.keys()].map(classOf).join(' ')
     const href = span.marks.get('link')
+    const level = span.marks.get('heading')
+    // The heading level (CP30) travels as the mark's VALUE, and it is rendered as a data
+    // attribute rather than a class per level: values are open, so a level this build has never
+    // heard of should still render as a heading rather than as nothing.
+    const attributes: Record<string, string> = {}
+    if (href) attributes.title = href
+    if (level) attributes['data-level'] = level
+
     ranges.push(
       Decoration.mark({
         class: classes,
         // The link address as an attribute rather than an <a> element: the document is editable,
         // and a clickable link inside an editing surface would capture clicks instead of placing
         // the cursor. The address is visible in the tooltip.
-        attributes: href ? { title: href } : undefined,
+        attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
       }).range(from, to),
     )
   }
