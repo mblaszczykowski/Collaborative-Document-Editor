@@ -1,22 +1,22 @@
--- Schemat wynika wprost z ADR-0003 (log operacji jako źródło prawdy, snapshoty jako cache)
--- i ADR-0004 (server_seq jako kursor dla resynchronizacji i anti-entropy).
+-- The schema follows directly from ADR-0003 (the operation log as the source of truth, snapshots
+-- as a cache) and ADR-0004 (server_seq as the cursor for resynchronisation and anti-entropy).
 
 CREATE TABLE documents (
     id              UUID PRIMARY KEY,
     title           TEXT        NOT NULL,
-    -- Licznik server_seq trzymany przy dokumencie, a nie jako sekwencja Postgresa.
-    -- Powód: sekwencja zostawia dziury przy wycofanej transakcji, a ADR-0004 opiera
-    -- wykrywanie zgubionych operacji na ciągłości tego licznika. Ceną jest blokada
-    -- wiersza przy zapisie, czyli serializacja zapisów w obrębie JEDNEGO dokumentu —
-    -- akceptowalna, bo zapisy i tak są wsadowane co 50 ms (application.yml).
+    -- The server_seq counter lives on the document rather than being a Postgres sequence.
+    -- The reason: a sequence leaves gaps when a transaction rolls back, and ADR-0004 bases
+    -- detection of lost operations on this counter's continuity. The price is a row lock on
+    -- write, that is, serialised writes within ONE document — acceptable, because writes are
+    -- batched every 50 ms anyway (application.yml).
     next_server_seq BIGINT      NOT NULL DEFAULT 1,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ŹRÓDŁO PRAWDY. Tabela wyłącznie dopisywana — nigdy UPDATE, nigdy DELETE.
--- Przywrócenie starej wersji dokumentu zapisujemy jako NOWE operacje (ADR-0003 pkt 6),
--- bo obcięcie logu zniszczyłoby audytowalność i rozspójniło podłączonych klientów.
+-- THE SOURCE OF TRUTH. An append-only table — never UPDATE, never DELETE.
+-- Restoring an old version of a document is recorded as NEW operations (ADR-0003, point 6),
+-- because truncating the log would destroy auditability and diverge the connected clients.
 CREATE TABLE operations (
     doc_id     UUID        NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
     replica_id INTEGER     NOT NULL,
@@ -27,28 +27,28 @@ CREATE TABLE operations (
     user_id    TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    -- Klucz główny to identyfikator operacji CRDT. Dzięki temu idempotencja zapisu
-    -- jest własnością schematu, a nie kodu deduplikującego: retransmisja po ponownym
-    -- połączeniu po prostu nie może utworzyć drugiego wiersza.
+    -- The primary key is the CRDT operation's identifier. That makes write idempotence a
+    -- property of the schema rather than of deduplication code: a retransmission after a
+    -- reconnect simply cannot create a second row.
     PRIMARY KEY (doc_id, replica_id, lamport)
 );
 
--- Kursor resynchronizacji: "daj mi wszystko powyżej server_seq X".
--- UNIQUE, bo dwie operacje o tym samym server_seq oznaczałyby błąd przydziału licznika.
+-- The resynchronisation cursor: "give me everything above server_seq X".
+-- UNIQUE, because two operations with the same server_seq would mean a counter allocation bug.
 CREATE UNIQUE INDEX operations_by_seq ON operations (doc_id, server_seq);
 
--- CACHE. Wolno skasować w każdej chwili — system odtworzy stan z logu, wolniej,
--- ale poprawnie. Test w CP5 kasuje wszystkie snapshoty i sprawdza, że żaden wynik
--- się nie zmienia; bez takiego testu cache po cichu stałby się źródłem prawdy.
+-- A CACHE. It may be deleted at any moment — the system will rebuild the state from the log,
+-- more slowly but correctly. A test in CP5 deletes every snapshot and checks that no result
+-- changes; without such a test the cache would quietly become the source of truth.
 CREATE TABLE snapshots (
     doc_id           UUID        NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
     up_to_server_seq BIGINT      NOT NULL,
-    -- Wersja formatu serializacji. Przy niezgodności snapshot jest IGNOROWANY,
-    -- a nie migrowany — migracja cache'a to koszt bez korzyści, skoro log wystarczy.
+    -- The serialisation format version. On a mismatch the snapshot is IGNORED rather than
+    -- migrated — migrating a cache is a cost with no benefit when the log suffices.
     format_version   INTEGER     NOT NULL,
     state            BYTEA       NOT NULL,
-    -- Metryki narzutu tombstone'ów (ADR-0005) zapisane w chwili snapshotu, żeby dało
-    -- się je pokazać na wykresie bez ładowania całego stanu do pamięci.
+    -- Tombstone overhead metrics (ADR-0005) recorded at snapshot time, so they can be graphed
+    -- without loading the whole state into memory.
     text_length      INTEGER     NOT NULL,
     tombstone_count  INTEGER     NOT NULL,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -56,8 +56,8 @@ CREATE TABLE snapshots (
     PRIMARY KEY (doc_id, up_to_server_seq)
 );
 
--- Uproszczony model użytkowników i dostępu. Świadomie minimalny — pełny model ról
--- i udostępniania jest poza zakresem projektu (README, "co zrobiłbym inaczej").
+-- A simplified model of users and access. Deliberately minimal — a full model of roles and
+-- sharing is outside the project's scope (README, "what I would do differently").
 CREATE TABLE users (
     id           TEXT PRIMARY KEY,
     display_name TEXT        NOT NULL,

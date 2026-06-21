@@ -1,44 +1,43 @@
--- CP12 — model uprawnień.
+-- CP12 — the permission model.
 --
--- Do tej pory model dostępu brzmiał „każdy zalogowany może wszystko z każdym dokumentem"
--- i było to poprawne, bo dokument był jeden i wspólny. Od CP11 dokumentów jest wiele,
--- więc ten sam model przestaje być uproszczeniem, a staje się podatnością.
+-- Until now the access model read "anyone signed in may do anything with any document", and that
+-- was coherent, because there was one shared document. Since CP11 there are many documents, so the
+-- same model stops being a simplification and becomes a vulnerability.
 
--- Właściciel dokumentu. NULL dla dokumentów sprzed tej migracji — nie wymyślamy im
--- właściciela, bo informacji o tym, kto je utworzył, nigdy nie było.
+-- The document's owner. NULL for documents predating this migration — we do not invent an owner
+-- for them, because the information about who created them never existed.
 ALTER TABLE documents
     ADD COLUMN owner_id TEXT REFERENCES users (id) ON DELETE SET NULL,
 
-    -- WIDOCZNOŚĆ. Domyślnie 'link', czyli „każdy, kto ma adres, może edytować".
+    -- VISIBILITY. 'link' by default, that is, "anyone with the address may edit".
     --
-    -- To jest świadomy wybór wartości domyślnej, nie przeoczenie. Odpowiada dokładnie
-    -- temu, jak aplikacja zachowywała się do tej pory, więc migracja niczego nie psuje
-    -- ani nikomu nie odbiera dostępu — a jednocześnie mechanizm uprawnień jest realny
-    -- i da się go włączyć per dokument. Odpowiednik dokumentu Google z ustawieniem
-    -- „każdy z linkiem może edytować".
+    -- A deliberate choice of default, not an oversight. It matches exactly how the application
+    -- behaved until now, so the migration breaks nothing and takes nobody's access away — while
+    -- the permission mechanism is real and can be turned on per document. The equivalent of a
+    -- Google document set to "anyone with the link can edit".
     --
-    -- 'private' oznacza: wyłącznie właściciel i osoby wymienione w document_members.
+    -- 'private' means: only the owner and the people listed in document_members.
     ADD COLUMN visibility TEXT NOT NULL DEFAULT 'link'
         CHECK (visibility IN ('private', 'link'));
 
 CREATE INDEX documents_by_owner ON documents (owner_id) WHERE deleted_at IS NULL;
 
--- V1 utworzyło document_members bez roli — wtedy członkostwo znaczyło tylko „widziałem
--- ten dokument". Teraz niesie uprawnienie.
+-- V1 created document_members with no role — back then membership only meant "I have seen this
+-- document". Now it carries a permission.
 --
--- Role są uporządkowane rosnąco i to uporządkowanie jest częścią modelu:
---   viewer    — czyta
---   commenter — czyta i komentuje (CP14), NIE zmienia tekstu
---   editor    — zmienia tekst i formatowanie
---   owner     — dodatkowo zarządza dostępem
+-- The roles are ordered ascending, and that ordering is part of the model:
+--   viewer    — reads
+--   commenter — reads and comments (CP14), does NOT change the text
+--   editor    — changes the text and the formatting
+--   owner     — additionally manages access
 ALTER TABLE document_members
     ADD COLUMN role TEXT NOT NULL DEFAULT 'editor'
         CHECK (role IN ('viewer', 'commenter', 'editor', 'owner'));
 
--- Uprawnienia na poziomie workspace'u, dziedziczone przez jego dokumenty.
+-- Workspace-level permissions, inherited by its documents.
 --
--- Dziedziczenie jest nadpisywalne wpisem w document_members — inaczej nie dałoby się
--- odebrać komuś dostępu do JEDNEGO dokumentu bez wyrzucania go z całego workspace'u.
+-- The inheritance is overridable by an entry in document_members — otherwise there would be no way
+-- to take away someone's access to ONE document without ejecting them from the whole workspace.
 CREATE TABLE workspace_members (
     workspace_id UUID        NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
     user_id      TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,

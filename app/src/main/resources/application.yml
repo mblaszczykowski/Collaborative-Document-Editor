@@ -7,31 +7,30 @@ spring:
     username: collabedit
     password: collabedit
     hikari:
-      # 10 połączeń na instancję. Uzasadnienie: obciążenie bazy w tym systemie to
-      # głównie krótkie, wsadowe INSERT-y operacji (ADR-0003) — nie długie transakcje.
-      # Przy takim profilu duża pula nie pomaga, a mnoży kontencję w Postgresie.
+      # 10 connections per instance. The rationale: this system's database load is mostly short,
+      # batched operation INSERTs (ADR-0003) — not long transactions. With that profile a large
+      # pool does not help and multiplies contention inside Postgres.
       #
-      # Zweryfikowane w CP10: przy 50 klientach jednocześnie edytujących jeden dokument
-      # pula nie jest wąskim gardłem — przepustowość przyjmowania operacji sięga 116 tys./s,
-      # a wszystkie scenariusze harnessu zbiegają się. Wynika to z tego, że zapis jest
-      # wsadowany (op-batch-window-ms), więc pod blokadę wiersza wchodzi się raz na wsad,
-      # a nie raz na naciśnięcie klawisza. Wartość zostaje.
+      # Verified in CP10: with 50 clients editing one document simultaneously the pool is not the
+      # bottleneck — operation intake throughput reaches 116k/s and every harness scenario
+      # converges. That follows from writes being batched (op-batch-window-ms), so the row lock is
+      # taken once per batch rather than once per keystroke. The value stays.
       #
-      # Czego to NIE dowodzi: harness używa jednego dokumentu. Pula jest współdzielona przez
-      # wszystkie dokumenty instancji, więc granicą jest liczba jednocześnie ZAPISUJĄCYCH
-      # dokumentów, a nie klientów — i tego nie zmierzyłem.
+      # What that does NOT prove: the harness uses one document. The pool is shared by all of an
+      # instance's documents, so the bound is the number of documents being WRITTEN TO
+      # simultaneously rather than the number of clients — and I have not measured that.
       maximum-pool-size: 10
       minimum-idle: 2
-      # Krótszy niż domyślne 30 s. Jeśli nie ma połączenia przez 5 s, to znaczy, że
-      # baza jest przeciążona — chcę szybkiego błędu i widocznej metryki, a nie
-      # cichego narastania kolejki żądań.
+      # Shorter than the 30 s default. If no connection is available for 5 s the database is
+      # overloaded — I want a fast error and a visible metric rather than a request queue
+      # silently growing.
       connection-timeout: 5000
 
   flyway:
     enabled: true
     locations: classpath:db/migration
-    # Brak `clean` na produkcji — zabezpieczenie przed przypadkowym skasowaniem
-    # tabeli operations, która jest u nas źródłem prawdy (ADR-0003).
+    # No `clean` in production — a guard against accidentally dropping the operations table,
+    # which is our source of truth (ADR-0003).
     clean-disabled: true
 
   data:
@@ -44,34 +43,34 @@ server:
   port: 8080
 
 # ---------------------------------------------------------------------------
-# Parametry WebSocket/STOMP — każda wartość uzasadniona w ADR-0002.
-# Nie zmieniać bez aktualizacji tamtego dokumentu.
+# WebSocket/STOMP parameters — every value is justified in ADR-0002.
+# Do not change one without updating that document.
 # ---------------------------------------------------------------------------
 collabedit:
   websocket:
-    # 10 s: wyraźnie poniżej typowego idle timeout pośredników (nginx 60 s,
-    # wiele LB/CDN 30-60 s), więc połączenie nie zostanie zerwane jako bezczynne.
+    # 10 s: comfortably below intermediaries' typical idle timeout (nginx 60 s, many LBs/CDNs
+    # 30-60 s), so the connection will not be torn down as idle.
     heartbeat-interval-ms: 10000
-    # 2,5 × interwał. Jeden zgubiony heartbeat na łączu mobilnym jest normalny;
-    # dopiero dwa z rzędu to przesłanka do uznania sesji za martwą. Fałszywe
-    # rozłączenie kosztuje pełną resynchronizację (CP6), więc wolę być zbyt luźny.
+    # 2.5 × the interval. One lost heartbeat on a mobile link is normal; only two in a row are
+    # grounds for treating a session as dead. A false disconnect costs a full resynchronisation
+    # (CP6), so I would rather be too lenient.
     heartbeat-tolerance-factor: 2.5
-    # 64 KiB: pojedyncza operacja to ~100 B, ale wklejenie dużego tekstu musi przejść.
+    # 64 KiB: a single operation is ~100 B, but pasting a large block of text has to get through.
     max-message-size-bytes: 65536
-    # 512 KiB: wolny klient nie może zablokować broadcastu do reszty. Po przepełnieniu
-    # sesja jest zamykana → klient przechodzi ścieżką reconnect+resync (CP6).
-    # Kontrolowana degradacja zamiast zatoru na całym dokumencie.
+    # 512 KiB: a slow client must not block the broadcast to everyone else. On overflow the
+    # session is closed -> the client takes the reconnect+resync path (CP6). Controlled degradation
+    # instead of a jam across the whole document.
     send-buffer-size-bytes: 524288
     send-time-limit-ms: 20000
-    # Okno sklejania rozgłoszeń. Bez niego każde naciśnięcie klawisza to osobna ramka
-    # dla KAŻDEGO odbiorcy — przy N klientach liczba ramek rośnie z kwadratem N i przy
-    # 50 klientach przepełnia bufor powyżej (metryka ws_sessions_closed_total{reason}).
+    # The broadcast coalescing window. Without it every keystroke is a separate frame for EVERY
+    # recipient — with N clients the frame count grows with N squared, and at 50 clients it
+    # overflows the buffer above (the ws_sessions_closed_total{reason} metric).
     #
-    # 10 ms, bo to jest poniżej progu, na którym człowiek zauważa opóźnienie w pisaniu
-    # (~50-100 ms), a jednocześnie wystarcza, żeby skleić serię znaków wpisywanych
-    # w tempie 5-10 na sekundę przez kilku użytkowników naraz. Wartość musi być WYRAŹNIE
-    # mniejsza od op-batch-window-ms: potwierdzenie zapisu nie może wyprzedzić rozgłoszenia,
-    # bo klient wykrywa luki właśnie po potwierdzeniu operacji, której u siebie nie ma.
+    # 10 ms, because that is below the threshold at which a person notices typing latency
+    # (~50-100 ms) while still being enough to coalesce a run of characters typed at 5-10 per
+    # second by several users at once. The value has to be CLEARLY smaller than
+    # op-batch-window-ms: a write acknowledgement must not overtake the broadcast, because gap
+    # detection on the client works by acknowledging an operation it does not hold.
     broadcast-window-ms: 10
     # Origins allowed to open the WebSocket. Local only by default.
     #
@@ -92,20 +91,20 @@ collabedit:
       - "http://127.0.0.1:*"
 
   persistence:
-    # Batchowanie zapisu operacji (ADR-0003 pkt 5). W tym oknie operacja jest już
-    # rozesłana, ale jeszcze nie w bazie — świadomy kompromis trwałość/przepustowość,
-    # opisany w README w sekcji Failure modes.
+    # Batching of operation writes (ADR-0003, point 5). Within this window an operation has been
+    # broadcast but is not yet in the database — a deliberate durability/throughput trade-off,
+    # described in the README's Failure modes section.
     op-batch-window-ms: 50
-    # Górna granica ROZMIARU wsadu, niezależna od okna czasowego. Zapis trzyma blokadę
-    # wiersza dokumentu (OperationStore), więc długość transakcji to długość, przez którą
-    # wszyscy inni piszący do tego dokumentu czekają — również z innych instancji.
-    # Nadmiar zostaje w buforze i wychodzi w następnym oknie: stały rytm zapisu jest tu
-    # lepszy niż jedna wielka transakcja zatrzymująca dokument.
+    # The upper bound on batch SIZE, independent of the time window. A write holds the document's
+    # row lock (OperationStore), so the transaction's duration is the duration every other writer
+    # to that document waits — including writers on other instances. The excess stays in the buffer
+    # and goes out in the next window: a steady write rhythm beats one large transaction stalling
+    # the document.
     op-batch-max-size: 100
-    # Snapshot po 500 operacjach ALBO po 30 s ciszy (ADR-0003 pkt 4) — dwa progi, bo łapią
-    # dwa różne przypadki. Próg operacji obsługuje dokument intensywnie edytowany; próg
-    # ciszy obsługuje ten edytowany krótkimi sesjami, który inaczej nigdy nie dobiłby do 500
-    # i przy każdym otwarciu odtwarzałby coraz dłuższy ogon logu.
+    # A snapshot after 500 operations OR after 30 s of quiet (ADR-0003, point 4) — two thresholds,
+    # because they catch two different cases. The operation threshold covers a heavily edited
+    # document; the idle threshold covers one edited in short sessions, which would otherwise never
+    # reach 500 and would replay an ever-longer log tail on every open.
     snapshot-every-n-ops: 500
     snapshot-after-idle-ms: 30000
     # How often the maintenance pool asks "is any document due for a snapshot".
@@ -134,39 +133,39 @@ collabedit:
     snapshots-kept-per-document: 3
 
   cluster:
-    # Sweep anti-entropy (ADR-0004). Górna granica czasu życia niewykrytego rozjazdu
-    # w scenariuszu "zgubiona ostatnia operacja + cisza na dokumencie".
+    # The anti-entropy sweep (ADR-0004). The upper bound on how long an undetected divergence can
+    # live in the "lost last operation + quiet document" scenario.
     anti-entropy-interval-ms: 30000
-    # Replika dokumentu bez klientów żyje jeszcze 5 min, zanim zwolnimy pamięć.
-    # Krócej → ciągłe przeładowywanie przy chwilowych rozłączeniach.
+    # A document replica with no clients lives another 5 min before its memory is reclaimed.
+    # Shorter -> constant reloading on brief disconnects.
     idle-document-eviction-ms: 300000
-    # Górna granica liczby replik w pamięci — granica POJEMNOŚCI, nie czasu.
+    # The upper bound on in-memory replicas — a CAPACITY bound, not a time one.
     #
-    # Sam próg bezczynności powyżej nie ogranicza niczego przy wielu dokumentach: sto osób
-    # otwierających sto różnych dokumentów w ciągu minuty daje sto replik, z których żadna
-    # nie jest bezczynna. Dopiero ta wartość mówi, ile pamięci wolno zająć.
+    # The idle threshold above bounds nothing with many documents: a hundred people opening a
+    # hundred different documents within a minute gives a hundred replicas, none of them idle. Only
+    # this value says how much memory may be occupied.
     #
-    # 200 wynika z rzędu wielkości, nie z pomiaru: replika dokumentu o 100 tys. znaków
-    # zajmuje jednostki megabajtów (bloki run-length + treap), więc 200 mieści się
-    # w domyślnej stercie z zapasem na resztę aplikacji. DO ZWERYFIKOWANIA POMIAREM
-    # zużycia pamięci na replikę — ADR-0004 wymienia to jako niezrobione od CP8.
+    # 200 comes from an order-of-magnitude estimate rather than a measurement: the replica of a
+    # 100k-character document takes single-digit megabytes (run-length blocks + a treap), so 200
+    # fits in the default heap with room for the rest of the application. TO BE VERIFIED BY
+    # MEASURING per-replica memory use — ADR-0004 lists this as outstanding since CP8.
     max-loaded-documents: 200
 
   gc:
-    # Okno GC tombstone'ów: 7 dni (ADR-0005). Klient offline dłużej dostaje
-    # RESYNC_REQUIRED i eksport lokalnej kopii zamiast cichego scalenia.
-    # WARTOŚĆ ZGADNIĘTA, nie wyliczona — w produkcji dobrałbym ją z telemetrii.
+    # The tombstone GC window: 7 days (ADR-0005). A client offline for longer gets
+    # RESYNC_REQUIRED and an export of its local copy instead of a silent merge.
+    # A GUESSED VALUE, not a computed one — in production I would derive it from telemetry.
     window-days: 7
-    # Klient podłączony, ale niepotwierdzający postępu przez 60 s jest wykluczany
-    # z liczenia stableVersion, żeby jeden zawieszony klient nie blokował GC
-    # całemu dokumentowi. ~2× tolerancja heartbeatu z ADR-0002.
+    # A client that is connected but has not reported progress for 60 s is excluded from the
+    # stableVersion computation, so that one hung client does not block GC for the whole document.
+    # ~2× the heartbeat tolerance from ADR-0002.
     unresponsive-replica-timeout-ms: 60000
 
 # ---------------------------------------------------------------------------
-# Śledzenie rozproszone (CP7). Metryki NIE idą tą drogą — te eksportuje Micrometer
-# prosto do Prometheusa. Dwa kanały zamiast jednego, bo Micrometer daje percentyle
-# liczone w aplikacji, a metryki OTel wymagałyby liczenia ich z kubełków po stronie
-# Prometheusa i traciłyby dokładność dla pojedynczej instancji.
+# Distributed tracing (CP7). Metrics do NOT travel this way — those are exported by Micrometer
+# straight to Prometheus. Two channels rather than one, because Micrometer gives percentiles
+# computed in the application, whereas OTel metrics would require computing them from buckets on
+# the Prometheus side and would lose accuracy for a single instance.
 # ---------------------------------------------------------------------------
 otel:
   service:
@@ -181,18 +180,18 @@ otel:
     otlp:
       endpoint: http://localhost:4317
       protocol: grpc
-  # Próbkowanie: WSZYSTKO. Przy tej skali trace jest narzędziem diagnostycznym,
-  # a nie źródłem kosztów — a próbkowanie 10% sprawiłoby, że interesujący nas przypadek
-  # (rzadka rozbieżność, jedna wolna operacja) najczęściej by się nie zapisał.
-  # W produkcji przy tysiącach operacji na sekundę: próbkowanie zależne od czasu trwania.
+  # Sampling: EVERYTHING. At this scale a trace is a diagnostic tool rather than a cost centre —
+  # and 10% sampling would mean the case we care about (a rare divergence, one slow operation)
+  # would usually not be recorded. In production at thousands of operations per second:
+  # duration-based sampling.
   traces_sampler: always_on
 
 management:
   endpoints:
     web:
       exposure:
-        # Tylko to, co faktycznie jest potrzebne. Actuator wystawiony w całości
-        # to niepotrzebna powierzchnia ataku nawet lokalnie.
+        # Only what is actually needed. Actuator exposed in full is unnecessary attack surface
+        # even locally.
         include: health,info,prometheus,metrics
   metrics:
     tags:

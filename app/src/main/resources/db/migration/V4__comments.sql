@@ -1,22 +1,21 @@
--- CP14 — komentarze.
+-- CP14 — comments.
 --
--- Komentarz składa się z dwóch rzeczy, z których TYLKO JEDNA jest CRDT:
+-- A comment is made of two things, of which ONLY ONE is a CRDT:
 --
---   KOTWICA  — zakres w dokumencie. To jest znacznik typu `comment` z identyfikatorem wątku
---              jako wartością, czyli dokładnie ta sama maszyneria, którą wprowadził CP13
---              (ADR-0010). Ten checkpoint jej UŻYWA, nie buduje. Nie ma dla niej tabeli,
---              bo żyje w logu operacji jak każda inna operacja CRDT.
+--   THE ANCHOR  — a range in the document. It is a mark of type `comment` carrying the thread
+--                 identifier as its value, that is, exactly the machinery CP13 introduced
+--                 (ADR-0010). This checkpoint USES it rather than building it. It has no table,
+--                 because it lives in the operation log like any other CRDT operation.
 --
---   TREŚĆ    — wiadomości w wątku. Poniższe tabele.
+--   THE CONTENT — the messages in the thread. The tables below.
 --
--- DLACZEGO TREŚĆ NIE JEST CRDT. Wiadomość ma jednego autora, powstaje w całości i nie jest
--- współbieżnie edytowana znak po znaku. CRDT rozwiązuje konkretny problem — współbieżną
--- edycję tej samej sekwencji — i stosowanie go tam, gdzie tego problemu nie ma, to koszt
--- bez korzyści: log operacji, scalanie, tombstone'y i GC dla tekstu, który nikt nigdy
--- nie edytuje równolegle.
+-- WHY THE CONTENT IS NOT A CRDT. A message has one author, is created whole, and is not
+-- concurrently edited character by character. A CRDT solves a specific problem — concurrent
+-- editing of the same sequence — and applying it where that problem does not exist is a cost with
+-- no benefit: an operation log, merging, tombstones and GC for text nobody ever edits in parallel.
 --
--- Pokusa „skoro mamy CRDT, wszystko będzie CRDT" jest realna i to jest miejsce, w którym
--- świadomie jej nie ulegamy.
+-- The temptation of "we have a CRDT, so everything will be a CRDT" is real, and this is the place
+-- where we deliberately do not give in to it.
 
 CREATE TABLE comment_threads (
     id          UUID PRIMARY KEY,
@@ -24,16 +23,16 @@ CREATE TABLE comment_threads (
     created_by  TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    -- Rozwiązanie wątku, nie jego usunięcie. Rozmowa zostaje — zmienia się tylko to,
-    -- czy jest domyślnie widoczna. Ta sama zasada, co przy miękkim usuwaniu dokumentów.
+    -- Resolving a thread, not deleting it. The conversation stays — all that changes is whether
+    -- it is visible by default. The same principle as soft-deleting documents.
     resolved_at TIMESTAMPTZ,
     resolved_by TEXT REFERENCES users (id) ON DELETE SET NULL,
 
-    -- Kopia tekstu, którego wątek dotyczy, w chwili jego założenia.
+    -- A copy of the text the thread is about, as of when it was opened.
     --
-    -- Redundantna wobec kotwic i CELOWO redundantna: gdy zakotwiczony tekst zostanie
-    -- skasowany, wątek staje się „odłączony" i bez tej kopii nie da się pokazać, czego
-    -- dotyczył. Rozmowa o nieznanym fragmencie jest niewiele warta.
+    -- Redundant with the anchors, and DELIBERATELY redundant: when the anchored text is deleted
+    -- the thread becomes "detached", and without this copy there is no way to show what it was
+    -- about. A conversation about an unknown fragment is worth little.
     quoted_text TEXT        NOT NULL DEFAULT ''
 );
 
