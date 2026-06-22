@@ -1,412 +1,413 @@
-# Plan v2 — z artefaktu w produkt
+# Plan v2 — from artifact to product
 
-> **Status: plan zamknięty w całości (CP10–CP15).** Następca [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md),
-> który opisuje checkpointy CP1–CP9 (również zamknięte).
+> **Status: the plan is closed in full (CP10–CP15).** The successor to
+> [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md), which covers checkpoints CP1–CP9 (also
+> closed).
 >
-> | Checkpoint | Stan | Uwagi |
+> | Checkpoint | State | Notes |
 > |---|---|---|
-> | CP10 — Fundament | **zamknięty** | Otwarte pytanie z CP8 rozstrzygnięte — patrz niżej |
-> | CP11 — Multi-dokument | **zamknięty** | Odsiew klastra, limit pamięci, schemat V2, katalog, lista z wyszukiwaniem i koszem |
-> | CP12 — Uprawnienia | **zamknięty** | Zamknięty IDOR otwarty przez CP11 — obie drogi, WS i REST |
-> | CP13 — Rich text | **zamknięty** | Peritext w Javie i TS, wektory konformancyjne, GC naprawiony |
-> | CP14 — Komentarze | **zamknięty** | Kotwica to znacznik z CP13 — **zero linijek w warstwie CRDT** |
-> | CP15 — Pomiar + dokumentacja | **zamknięty** | Dwa błędy z pomiaru, obawa o GC potwierdzona liczbą, drugie demo |
+> | CP10 — Foundations | **closed** | The open question from CP8 is settled — see below |
+> | CP11 — Multi-document | **closed** | Cluster filtering, a memory limit, schema V2, the catalog, the list with search and a bin |
+> | CP12 — Permissions | **closed** | Closed the IDOR that CP11 opened — both routes, WS and REST |
+> | CP13 — Rich text | **closed** | Peritext in Java and TS, conformance vectors, GC fixed |
+> | CP14 — Comments | **closed** | The anchor is a CP13 mark — **zero lines in the CRDT layer** |
+> | CP15 — Measurement + documentation | **closed** | Two measurement bugs, the GC concern confirmed with a number, a second demo |
 >
-> **Audyt końcowy planu (po CP15).** Przejście punkt po punkcie przez CP10–CP15 znalazło
-> jedną rzecz **niezrobioną i groźną** oraz kilka zrobionych inaczej, niż zakładał plan —
-> rozliczenie w sekcji [11](#11-audyt-końcowy--co-nie-zostało-zrobione).
+> **Final audit of the plan (after CP15).** Going through CP10–CP15 point by point found one thing
+> **not done and dangerous**, plus several done differently from what the plan assumed — the
+> reckoning is in section [11](#11-final-audit--what-was-not-done).
 >
-> **Trzy rzeczy, których ten plan nie przewidział, a które okazały się najważniejsze.**
+> **Three things this plan did not foresee, which turned out to matter most.**
 >
-> 1. **Limit tempa gubił operacje po cichu** (CP12 wprowadził, CP15 wykrył). Odmowa z powodu
->    tempa działała tak samo jak odmowa z powodu uprawnień — bez odpowiedzi. Te dwa przypadki
->    są asymetryczne: przy braku uprawnień klient ma się NIE dowiedzieć, że dokument istnieje;
->    przy przekroczonym tempie MUSI się dowiedzieć, bo jego operacja czeka w buforze i bez
->    sygnału nikt jej nie ponowi. 115 operacji przepadło, dokument przestał się zbiegać
->    i nic tego nie zgłosiło.
-> 2. **Ta sama pomyłka miała trzecią odsłonę** — rola użytkownika też nie docierała do klienta.
->    Czytelnik pisał u siebie, widział swój tekst, a serwer odrzucał każdą operację. Naprawione
->    razem z pierwszym.
-> 3. **Obawa o GC z punktu 5.5 potwierdziła się mocniej, niż zakładała.** Plan przewidywał
->    „dwa tombstone'y na znacznik"; pomiar pokazał „cały blok run-length na znacznik" —
->    przy dokumencie napisanym ciągiem GC nie odzyskuje po dodaniu formatowania **nic**.
->    Liczby w README i w ADR-0005.
+> 1. **Rate limiting lost operations silently** (CP12 introduced it, CP15 found it). A refusal on
+>    rate behaved exactly like a refusal on permissions — with no response. Those two cases are
+>    asymmetric: without permission the client should NOT learn that the document exists; over the
+>    rate limit it MUST learn, because its operation is waiting in the buffer and without a signal
+>    nobody retries it. 115 operations were lost, the document stopped converging, and nothing
+>    reported it.
+> 2. **The same mistake had a third instance** — the user's role did not reach the client either.
+>    A reader typed, saw their own text, and the server rejected every operation. Fixed together
+>    with the first.
+> 3. **The GC concern from point 5.5 was confirmed more strongly than it assumed.** The plan
+>    predicted "two tombstones per mark"; the measurement showed "a whole run-length block per
+>    mark" — on a document written in one continuous run, GC reclaims **nothing** after formatting
+>    is added. The numbers are in the README and in ADR-0005.
 >
-> **Najważniejszy wynik CP10, którego plan nie przewidywał.** Punkt 2.1 zakładał, że
-> brak powtarzalnej zbieżności powyżej ~10 klientów jest problemem systemu i że sklejanie
-> rozgłoszeń go naprawi. Sklejanie owszem pomogło (2,7× szybsza zbieżność przy 50 klientach),
-> ale **przyczyną braku zbieżności było stanowisko pomiarowe**: klient testowy miał domyślny
-> bufor JSR-356 o rozmiarze 8 KiB, który przepuszczał rozgłoszenia (~70 B na ramkę),
-> a zatrzymywał odpowiedzi na resynchronizację (300 operacji ≈ 15 KB) — czyli jedyny
-> mechanizm zdolny naprawić zgubioną operację. Szczegóły w README i ADR-0002.
+> **The most important result of CP10, which the plan did not predict.** Point 2.1 assumed that the
+> lack of repeatable convergence above ~10 clients was a problem in the system, and that coalescing
+> broadcasts would fix it. Coalescing did help (2.7× faster convergence at 50 clients), but **the
+> cause of the non-convergence was the measuring rig**: the test client had the default 8 KiB
+> JSR-356 buffer, which let broadcasts through (~70 B per frame) and stopped resynchronisation
+> responses (300 operations ≈ 15 KB) — that is, the only mechanism capable of repairing a lost
+> operation. The details are in the README and ADR-0002.
 >
-> Hipoteza z planu o przepełnieniu bufora wysyłkowego serwera **nie potwierdziła się**:
-> metryka `ws_sessions_closed_total{reason}` nie odnotowała ani jednego takiego zamknięcia
-> przy 50 klientach.
+> The plan's hypothesis about the server's send buffer overflowing **was not confirmed**: the
+> `ws_sessions_closed_total{reason}` metric recorded not one such close at 50 clients.
 
-Wersja 1 była **wąskim artefaktem inżynierskim**: jeden dokument, jeden problem (zbieżność
-danych rozproszonych), maksymalna głębia. Zakres produktowy był świadomie odrzucony
-w [ADR-0007](adr/0007-ui-scope.md), a README zamyka się sekcją „co zrobiłbym inaczej
-w produkcji", która wymienia dokładnie te cztery braki, które ten plan teraz adresuje.
+Version 1 was a **narrow engineering artifact**: one document, one problem (convergence of
+distributed data), maximum depth. Product scope was deliberately rejected in
+[ADR-0007](adr/0007-ui-scope.md), and the README closes with a "what I would do differently in
+production" section listing exactly the four gaps this plan now addresses.
 
-Wersja 2 zmienia pozycjonowanie: **edytor tekstu bogatego z komentarzami, wieloma dokumentami
-i modelem uprawnień.** To jest inny projekt niż v1 — nie rozszerzenie, tylko zmiana tezy.
+Version 2 changes the positioning: **a rich text editor with comments, many documents and a
+permission model.** That is a different project from v1 — not an extension but a change of thesis.
 
-Zasady prowadzenia dokumentu przejęte z v1 bez zmian: jeśli decyzja z planu okaże się zła
-w praktyce, poprawiamy **tutaj** i commitujemy zmianę planu razem z powodem. Historia
-iteracji jest częścią artefaktu.
+The rules for keeping this document are carried over from v1 unchanged: if a decision from the plan
+turns out badly in practice, we fix it **here** and commit the plan change together with the
+reason. The history of iteration is part of the artifact.
 
 ---
 
-## 0. Zmiana pozycjonowania — zanim ruszy CP10
+## 0. The change of positioning — before CP10 begins
 
-Repozytorium w tej chwili **wprost odradza** zakres, który ten plan wprowadza. Bez
-uporządkowania tego, dokumentacja będzie sama ze sobą sprzeczna, a to kosztuje więcej niż
-brak dokumentacji — czytelnik przestaje ufać całości.
+The repository currently **explicitly advises against** the scope this plan introduces. Without
+tidying that up, the documentation will contradict itself, and that costs more than having no
+documentation — the reader stops trusting the whole.
 
-| Plik | Co mówi teraz | Co zrobić |
+| File | What it says now | What to do |
 |---|---|---|
-| `CLAUDE.md`, „Czego unikać" | „Nadmiarowego scope'u (rich text formatting, komentarze, multi-dokument workspace) kosztem głębi w core problemie" | Przepisać: zakres rozszerzony świadomie po zamknięciu CP9, z warunkiem utrzymania głębi rdzenia |
-| [ADR-0007](adr/0007-ui-scope.md) | Zakres funkcjonalny mockupu odrzucony | Status → **Zastąpiony przez ADR-0008**. Nie kasować — decyzja była słuszna dla v1 |
-| README, „Co zrobiłbym inaczej" | Wymienia te funkcje jako świadome granice | Rozdzielić na „zrobione w v2" i „nadal poza zakresem" |
+| `CLAUDE.md`, "What to avoid" | "Excessive scope (rich text formatting, comments, a multi-document workspace) at the cost of depth in the core problem" | Rewrite: the scope is extended deliberately after CP9 closed, on condition that the core's depth is maintained |
+| [ADR-0007](adr/0007-ui-scope.md) | The mockup's functional scope rejected | Status → **Superseded by ADR-0008**. Do not delete — the decision was right for v1 |
+| README, "What I would do differently" | Lists these features as deliberate boundaries | Split into "done in v2" and "still out of scope" |
 
-### ADR-0008 — rozszerzenie zakresu do produktu
+### ADR-0008 — extending the scope into a product
 
-Pierwsza rzecz do napisania, przed jakimkolwiek kodem. Układ jak w pozostałych ADR-ach.
+The first thing to write, before any code. The same layout as the other ADRs.
 
-**Kontekst do opisania:** v1 osiągnęła swój cel (rdzeń CRDT udowodniony property testami,
-zbieżność zmierzona, granice nazwane). Wąski zakres przestał być atutem w momencie, w którym
-rdzeń jest gotowy — dalsza głębia w tym samym miejscu ma malejący zwrot, a cztery odrzucone
-funkcje są naturalnym kierunkiem, w którym ten rdzeń da się *wykorzystać*, a nie tylko pokazać.
+**The context to describe:** v1 achieved its goal (the CRDT core proven by property tests,
+convergence measured, the boundaries named). The narrow scope stopped being an advantage the moment
+the core was finished — further depth in the same place has a diminishing return, and the four
+rejected features are the natural direction in which that core can be *used* rather than merely
+shown.
 
-**Rozważane opcje:** (A) zostać przy v1 i pogłębiać rdzeń — Fugue, undo świadome CRDT;
-(B) rozszerzyć do produktu; (C) rozszerzyć wybiórczo — tylko multi-dokument i uprawnienia,
-bez rich textu.
+**Options considered:** (A) stay with v1 and deepen the core — Fugue, CRDT-aware undo; (B) extend
+into a product; (C) extend selectively — only multi-document and permissions, without rich text.
 
-**Konsekwencje negatywne — do wpisania szczerze, bo są realne:**
-- **Rozcieńczenie.** Projekt przestaje mieć jedno zdanie opisu. Recenzent z trzema minutami
-  może wyjść z „kolejny klon Google Docs" zamiast „ktoś naprawdę rozumie CRDT".
-  Przeciwdziałanie: README musi nadal otwierać się rdzeniem, a nie listą funkcji.
-- **Podwójny koszt każdej zmiany algorytmu** (Java + TypeScript) dotyczy teraz także znaczników
-  formatowania. Dług opisany w README rośnie proporcjonalnie do nowego zakresu.
-- **GC tombstone'ów staje się jeszcze mniej skuteczny** — patrz CP13, sekcja o kotwicach.
-  To jest najpoważniejsza konsekwencja techniczna i może wymusić przeprojektowanie
-  reprezentacji bloku, które [ADR-0005](adr/0005-tombstone-gc.md) odkładał.
-- **Wszystkie liczby w README stają się nieaktualne.** Rich text zmienia profil ruchu.
-  Pozostawienie starych liczb byłoby nieuczciwe — stąd CP15 jest obowiązkowy, nie opcjonalny.
+**Negative consequences — to be written down honestly, because they are real:**
+- **Dilution.** The project stops having a one-sentence description. A reviewer with three minutes
+  may come away with "another Google Docs clone" instead of "somebody really understands CRDTs".
+  Mitigation: the README still has to open with the core rather than a feature list.
+- **The double cost of every algorithm change** (Java + TypeScript) now applies to formatting marks
+  as well. The debt described in the README grows in proportion to the new scope.
+- **Tombstone GC becomes even less effective** — see CP13, the section on anchors. This is the most
+  serious technical consequence and may force a redesign of the block representation that
+  [ADR-0005](adr/0005-tombstone-gc.md) deferred.
+- **Every number in the README becomes stale.** Rich text changes the traffic profile. Leaving the
+  old numbers would be dishonest — hence CP15 is mandatory rather than optional.
 
-**Do zweryfikowania w CP15:** czy po rozszerzeniu projekt nadal czyta się jako jedna spójna
-całość, czy jako dwie sklejone.
+**To be verified in CP15:** whether, after the extension, the project still reads as one coherent
+whole rather than two things glued together.
 
 ---
 
-## 1. Kolejność i dlaczego akurat taka
+## 1. The order, and why this one
 
-Zależności nie są dowolne — trzy z nich są twarde:
+The dependencies are not arbitrary — three of them are hard:
 
 ```
-CP10  Fundament ────────────┐
-      (propagacja, ruch,    │  rich text i komentarze ZWIĘKSZAJĄ ruch.
-       uruchamialność)      │  Budowanie ich na niezdiagnozowanym
-                            │  problemie propagacji >10 klientów
-                            │  oznacza debugowanie dwóch rzeczy naraz.
+CP10  Foundations ──────────┐
+      (propagation, traffic,│  rich text and comments INCREASE traffic.
+       runnability)         │  Building them on an undiagnosed propagation
+                            │  problem above 10 clients means debugging
+                            │  two things at once.
                             ▼
-CP11  Multi-dokument ───────┐
-      (kontener)            │  uprawnienia bez wielu dokumentów nie mają
-                            │  czego chronić — jeden wspólny dokument to
-                            │  model dostępu „wszyscy wszystko".
+CP11  Multi-document ───────┐
+      (the container)       │  permissions without many documents have
+                            │  nothing to protect — one shared document is
+                            │  an access model of "everyone, everything".
                             ▼
-CP12  Uprawnienia ──────────┐
-      (autoryzacja per      │  autoryzacja musi objąć TYPY operacji.
-       destynacja STOMP)    │  Dołożenie znaczników formatowania po
-                            │  zbudowaniu autoryzacji = jedno miejsce
-                            │  do rozszerzenia. Odwrotnie = przerabianie.
+CP12  Permissions ──────────┐
+      (authorization per    │  authorization has to cover operation TYPES.
+       STOMP destination)   │  Adding formatting marks after authorization is
+                            │  built = one place to extend. The other way
+                            │  round = rework.
                             ▼
 CP13  Rich text ────────────┐
-      (rdzeń algorytmiczny) │  komentarz to zakotwiczony zakres.
-                            │  Warstwa kotwic powstaje w CP13 —
-                            │  komentarze ją tylko REUŻYWAJĄ.
+      (the algorithmic core)│  a comment is an anchored range.
+                            │  The anchor layer is built in CP13 —
+                            │  comments merely REUSE it.
                             ▼
-CP14  Komentarze
+CP14  Comments
                             │
                             ▼
-CP15  Ponowny pomiar + dokumentacja
+CP15  Re-measurement + documentation
 ```
 
-Kluczowa obserwacja: **komentarze są tanie, ale tylko po rich texcie.** Zrobione wcześniej
-wymagałyby własnej warstwy kotwic, którą CP13 i tak by zastąpił. To jest jedyny powód,
-dla którego komentarze — funkcja produktowo prostsza — są w planie później niż rich text.
+The key observation: **comments are cheap, but only after rich text.** Done earlier they would need
+their own anchor layer, which CP13 would replace anyway. That is the only reason comments — the
+simpler feature from a product point of view — come later in the plan than rich text.
 
 ---
 
-## 2. CP10 — Fundament (2–3 dni)
+## 2. CP10 — Foundations (2–3 days)
 
-Nie jest to „sprzątanie przed właściwą pracą". Trzy z tych rzeczy są **warunkiem** sensownego
-wykonania CP11–CP14.
+This is not "tidying up before the real work". Three of these things are a **precondition** for
+doing CP11–CP14 sensibly.
 
-### 2.1 Domknąć otwarte pytanie o propagację
+### 2.1 Close the open question about propagation
 
-README kończy sekcję wydajności zdaniem „nie wiem, czy przyczyna leży w systemie, czy
-w stanowisku pomiarowym". Rich text i komentarze **zwielokrotnią ruch** — startowanie
-z niezdiagnozowanym problemem oznacza, że każda przyszła regresja będzie nierozróżnialna
-od tej istniejącej.
+The README ends its performance section with "I do not know whether the cause lies in the system or
+in the measuring rig". Rich text and comments will **multiply the traffic** — starting from an
+undiagnosed problem means every future regression will be indistinguishable from the existing one.
 
-Hipoteza do sprawdzenia w pierwszej kolejności: **ścieżka rozgłoszenia nie jest wsadowana,
-w przeciwieństwie do ścieżki zapisu.**
+The hypothesis to check first: **the broadcast path is not batched, unlike the write path.**
 
-`DocumentService.java:150` — `onFastPath.accept(documentId, List.of(op))`. Jedna ramka na
-naciśnięcie klawisza, rozesłana do N subskrybentów. Zapis (`flush()`) i potwierdzenia są
-wsadowane co 50 ms; rozgłoszenie nie.
+`DocumentService.java:150` — `onFastPath.accept(documentId, List.of(op))`. One frame per keystroke,
+sent to N subscribers. The write (`flush()`) and the acknowledgements are batched every 50 ms; the
+broadcast is not.
 
-Arytmetyka dla scenariusza z harnessu (50 klientów × 40 operacji):
+The arithmetic for the harness scenario (50 clients × 40 operations):
 
-| Wielkość | Wartość |
+| Quantity | Value |
 |---|---:|
-| Ramek na topicu `/ops` | 2000 × 50 = **100 000** |
-| Kolejka wysyłkowa na klienta | ~2000 × ~200 B ≈ **400 KB** |
+| Frames on the `/ops` topic | 2000 × 50 = **100 000** |
+| Send queue per client | ~2000 × ~200 B ≈ **400 KB** |
 | `send-buffer-size-bytes` (`application.yml:55`) | **512 KiB** |
 
-Po przepełnieniu bufora sesja jest zamykana — co daje dokładnie objaw z README: serwer ma
-komplet operacji, część klientów zostaje trwale w tyle, w logu nie ma błędu.
+Once the buffer overflows the session is closed — which gives exactly the symptom from the README:
+the server holds the complete set of operations, some clients fall permanently behind, and there is
+no error in the log.
 
-Kroki:
+The steps:
 
-1. **Zmierzyć przed naprawą.** Licznik sesji zamkniętych przez przepełnienie bufora
-   w `DocumentMetrics` + panel w dashboardzie. Jeśli zapala się przy 25 klientach i milczy
-   przy 10 — pytanie jest odpowiedziane liczbą. To jest wynik sam w sobie, niezależnie
-   od tego, czy hipoteza się potwierdzi.
-2. **Skleić rozgłoszenia w okno ~10–15 ms**, tym samym kształtem co `flushAll()`.
-   Wymaga aktualizacji [ADR-0002](adr/0002-transport.md) i [ADR-0004](adr/0004-horizontal-scaling.md),
-   bo ADR-0004 mówi „rozgłoszenie natychmiast" i to przestanie być dosłownie prawdą.
-   Koszt: ≤15 ms do latencji przy zmierzonym p50 22–553 ms.
-3. **Rozdzielić klientów od serwera** w harnessie — README sam wskazuje to jako warunek
-   ostatecznego rozstrzygnięcia „system czy stanowisko".
+1. **Measure before fixing.** A counter of sessions closed by buffer overflow in `DocumentMetrics`
+   plus a panel on the dashboard. If it fires at 25 clients and stays silent at 10, the question is
+   answered with a number. That is a result in itself, regardless of whether the hypothesis holds.
+2. **Coalesce broadcasts into a ~10–15 ms window**, in the same shape as `flushAll()`. This
+   requires updating [ADR-0002](adr/0002-transport.md) and
+   [ADR-0004](adr/0004-horizontal-scaling.md), because ADR-0004 says "broadcast immediately" and
+   that will stop being literally true. The cost: ≤15 ms of latency against a measured p50 of
+   22–553 ms.
+3. **Separate the clients from the server** in the harness — the README itself names this as the
+   precondition for finally settling "the system or the rig".
 
-**Kryterium zamknięcia:** scenariusz 25 i 50 klientów zbiega się powtarzalnie w pięciu
-kolejnych przebiegach, albo istnieje metryka i opis mówiące, dlaczego nie.
+**Closing criterion:** the 25- and 50-client scenarios converge repeatably across five consecutive
+runs, or a metric and a description exist explaining why not.
 
-### 2.2 Presence — O(N²) bez throttlingu
+### 2.2 Presence — O(N²) with no throttling
 
-`Editor.tsx:82` — `reportCursor` odpala się na każdym `selectionSet || docChanged`, czyli na
-każdym klawiszu i każdej strzałce. `PresenceService.java:79` rozsyła w odpowiedzi **pełną listę
-uczestników wszystkim** w dokumencie. Bez throttlingu, bez delty.
+`Editor.tsx:82` — `reportCursor` fires on every `selectionSet || docChanged`, that is, on every key
+and every arrow. `PresenceService.java:79` responds by broadcasting **the full participant list to
+everyone** in the document. No throttling, no delta.
 
-10 osób piszących po 5 znaków/s = 50 wiadomości/s do serwera → 500 wysyłek/s, każda z pełną
-tablicą JSON.
+10 people typing at 5 characters/s = 50 messages/s to the server → 500 sends/s, each with a full
+JSON array.
 
-Dodatkowo: `LoadHarnessIT` **w ogóle nie generuje ruchu presence** (`TestStompClient` go nie
-wysyła). Liczby w README opisują więc system lżejszy niż ten, którego używa przeglądarka.
+On top of that: `LoadHarnessIT` **generates no presence traffic at all** (`TestStompClient` does
+not send it). The numbers in the README therefore describe a lighter system than the one a browser
+uses.
 
-- Throttle po stronie klienta: ~50–100 ms, trailing edge.
-- Rozgłaszanie zmienionego uczestnika, nie całej listy.
-- Dodanie ruchu presence do harnessu — inaczej liczby z CP15 powtórzą ten sam błąd.
+- Throttle on the client: ~50–100 ms, trailing edge.
+- Broadcast the changed participant rather than the whole list.
+- Add presence traffic to the harness — otherwise the CP15 numbers repeat the same mistake.
 
-Po CP12 dochodzi tu drugi wymiar: presence musi respektować uprawnienia (viewer widzi kursory,
-ale czy jego kursor widzą inni — decyzja produktowa do podjęcia w CP12).
+After CP12 a second dimension appears here: presence has to respect permissions (a viewer sees
+cursors, but whether others see the viewer's cursor is a product decision to be taken in CP12).
 
-### 2.3 Uruchamialność jedną komendą
+### 2.3 Runnable with one command
 
-Nie ma `Dockerfile`, a `docker-compose.yml` w nagłówku obiecuje „Uruchomienie pełnego stacku:
-`docker compose up -d`", podczas gdy zawiera wyłącznie postgres, redis i profil observability.
+There is no `Dockerfile`, and `docker-compose.yml` promises in its header "To start the full stack:
+`docker compose up -d`" while containing only postgres, redis and the observability profile.
 
-Przy czterech nowych funkcjach do zademonstrowania to przestaje być kosmetyką — bez tego
-nikt tych funkcji nie zobaczy.
+With four new features to demonstrate this stops being cosmetic — without it nobody will see those
+features.
 
-- Multi-stage `Dockerfile` dla `app` (warstwowy jar), `Dockerfile` + nginx dla `frontend`.
-- Usługi `app` i `frontend` w compose; poprawienie mylącego nagłówka.
-- Docelowo: hostowana instancja i link nad GIF-em w README.
+- A multi-stage `Dockerfile` for `app` (a layered jar), a `Dockerfile` + nginx for `frontend`.
+- The `app` and `frontend` services in compose; fixing the misleading header.
+- Eventually: a hosted instance and a link above the GIF in the README.
 
-### 2.4 Dług, który zaprzecza dokumentacji
+### 2.4 Debt that contradicts the documentation
 
-Drobne, ale w repo o tej staranności rzucają się w oczy — i wszystkie są sprzecznością
-między kodem a jego własnym opisem.
+Small, but in a repository this careful they stand out — and all of them are a contradiction
+between the code and its own description.
 
-| Miejsce | Problem |
+| Place | Problem |
 |---|---|
-| `application.yml:67` → `CollabEditProperties:52` | `snapshot-after-idle-ms` zadeklarowane i uzasadnione komentarzem, **nigdzie nieczytane**. `maybeSnapshot()` sprawdza wyłącznie próg liczby operacji |
-| `application.yml:63` | `op-batch-max-size: 100` — to samo. `drainUnwritten()` zabiera cały bufor niezależnie od rozmiaru; zadeklarowany limit nie istnieje |
-| `application.yml:13`, `:65`, `OperationStore.java:52` | Martwe „do zweryfikowania w CP8" — CP8 zamknięty. Reguła z `docs/adr/README.md` każe wrócić po checkpoincie |
-| `.github/workflows/nightly.yml` | Job chaosu `if: false` z `echo "Do włączenia w CP8"`, mimo że `ClusterChaosIT` istnieje i README się na niego powołuje |
-| `.gitignore` | Reguła celuje w `demo/recordings/`, a nagrania leżą w `frontend/demo-recordings/` — 1,5 MB `.webm` śledzone w gicie |
-| `TokenService.java:78` | Ładunek sklejany `String.join("|")`, `verify` robi `split("\\|")` i odrzuca przy `parts.length != 4`. `displayName` pochodzi od użytkownika (`DocumentRestController.java:66`). Nazwa z `\|` → token wydany, ale CONNECT go odrzuca: logowanie „działa", aplikacja nie. Zawodzi bezpiecznie, ale to realny błąd. Brak też limitu długości nazwy |
-| `App.tsx` | 732 linie, 10 komponentów. Reszta repo trzyma wzorową dyscyplinę plików; CP11 i tak doda tu routing i listę dokumentów, więc podział wykonać **przed**, nie po |
+| `application.yml:67` → `CollabEditProperties:52` | `snapshot-after-idle-ms` is declared and justified by a comment, and **read nowhere**. `maybeSnapshot()` checks only the operation-count threshold |
+| `application.yml:63` | `op-batch-max-size: 100` — the same. `drainUnwritten()` takes the whole buffer regardless of size; the declared limit does not exist |
+| `application.yml:13`, `:65`, `OperationStore.java:52` | Dead "to be verified in CP8" notes — CP8 is closed. The rule in `docs/adr/README.md` says to come back after a checkpoint |
+| `.github/workflows/nightly.yml` | The chaos job is `if: false` with `echo "To be enabled in CP8"`, even though `ClusterChaosIT` exists and the README cites it |
+| `.gitignore` | The rule targets `demo/recordings/`, while the recordings live in `frontend/demo-recordings/` — 1.5 MB of `.webm` tracked in git |
+| `TokenService.java:78` | The payload is assembled with `String.join("|")`, `verify` does `split("\\|")` and rejects when `parts.length != 4`. `displayName` comes from the user (`DocumentRestController.java:66`). A name containing `\|` → a token is issued but CONNECT rejects it: login "works", the application does not. It fails safe, but it is a real bug. There is also no length limit on the name |
+| `App.tsx` | 732 lines, 10 components. The rest of the repository keeps exemplary file discipline; CP11 will add routing and the document list here anyway, so do the split **before**, not after |
 
-Fully-kwalifikowane nazwy pakietów zamiast importów: `PresenceService.java:37`,
+Fully qualified package names instead of imports: `PresenceService.java:37`,
 `DocumentService.java:263`, `DocumentStompController.java:214`.
 
 ---
 
-## 3. CP11 — Multi-dokument (2–3 dni)
+## 3. CP11 — Multi-document (2–3 days)
 
-### 3.1 Model danych
+### 3.1 The data model
 
-Migracja `V2__workspaces.sql`:
+The `V2__workspaces.sql` migration:
 
 ```
 workspaces          id, name, owner_id, created_at
 documents           + workspace_id (FK), + deleted_at (soft delete),
-                    + preview_text (materializowany przy snapshocie)
+                    + preview_text (materialised at snapshot time)
 ```
 
-`preview_text` jest **cachem, nie źródłem prawdy** — dokładnie jak snapshoty w
-[ADR-0003](adr/0003-change-history.md). Lista dokumentów nie może ładować replik CRDT
-do pamięci tylko po to, żeby pokazać trzy pierwsze linijki; to jest ta sama pułapka,
-przed którą chroni istniejący test „skasowanie wszystkich snapshotów nic nie zmienia".
+`preview_text` is a **cache, not a source of truth** — exactly like the snapshots in
+[ADR-0003](adr/0003-change-history.md). The document list must not load CRDT replicas into memory
+merely to show the first three lines; that is the same trap the existing test "deleting every
+snapshot changes nothing" guards against.
 
-Soft delete zamiast `DELETE`, bo `operations` ma `ON DELETE CASCADE` — twarde usunięcie
-dokumentu skasowałoby log operacji, czyli źródło prawdy. To jest sprzeczne z zasadą
-z `V1__initial_schema.sql` („tabela wyłącznie dopisywana"). Dokument usunięty ma być
-niedostępny, nie nieodwracalnie zniszczony.
+A soft delete rather than `DELETE`, because `operations` has `ON DELETE CASCADE` — a hard delete of
+a document would erase the operation log, that is, the source of truth. That contradicts the
+principle in `V1__initial_schema.sql` ("an append-only table"). A deleted document should be
+unreachable, not irreversibly destroyed.
 
-### 3.2 Dwa realne problemy skalowania, które multi-dokument odsłania
+### 3.2 Two real scaling problems that multi-document exposes
 
-**(a) Każda instancja deserializuje ruch wszystkich dokumentów.**
+**(a) Every instance deserialises the traffic of every document.**
 
-`RedisConfig` subskrybuje wzorzec `collabedit:doc:*:ops` i uzasadnia to tym, że odsiew
-dokumentów nietrzymanych w pamięci „jest trywialny". Dla samego sprawdzenia — tak. Ale
-`ClusterBus.onMessage:112` robi `readTree(message.getBody())` **przed** jakimkolwiek filtrem;
-sprawdzenie `registry.isLoaded()` następuje dopiero w `DocumentService.onClusterMessage:240`.
-Przy jednym dokumencie to nie miało znaczenia. Przy tysiącu — każda instancja parsuje JSON
-całego ruchu klastra.
+`RedisConfig` subscribes to the pattern `collabedit:doc:*:ops` and justifies it by saying that
+filtering out documents not held in memory "is trivial". For the check itself — yes. But
+`ClusterBus.onMessage:112` calls `readTree(message.getBody())` **before** any filter; the
+`registry.isLoaded()` check happens only in `DocumentService.onClusterMessage:240`. With one
+document that did not matter. With a thousand, every instance parses the JSON of the whole
+cluster's traffic.
 
-Naprawa jest tania i nie wymaga zmiany modelu subskrypcji: identyfikator dokumentu **jest już
-w nazwie kanału**. Wystarczy wyciągnąć go z `message.getChannel()` i sprawdzić `isLoaded`
-przed parsowaniem. Uzasadnienie w `RedisConfig` staje się wtedy prawdziwe.
+The fix is cheap and requires no change to the subscription model: the document identifier **is
+already in the channel name**. It is enough to extract it from `message.getChannel()` and check
+`isLoaded` before parsing. The justification in `RedisConfig` then becomes true.
 
-**(b) `flushAll()` co 50 ms po wszystkich załadowanych dokumentach.**
+**(b) `flushAll()` every 50 ms across every loaded document.**
 
-`DocumentService.java:167` iteruje `registry.loaded()` i dla każdego woła `drainUnwritten()`,
-które bierze blokadę dokumentu. Przy 500 załadowanych dokumentach to 10 000 zajęć blokady
-na sekundę, w większości bez żadnej pracy do wykonania.
+`DocumentService.java:167` iterates `registry.loaded()` and calls `drainUnwritten()` for each,
+which takes the document's lock. With 500 loaded documents that is 10 000 lock acquisitions per
+second, mostly with no work to do.
 
-Naprawa: rejestr utrzymuje zbiór „brudnych" dokumentów (tych z niezapisanymi operacjami),
-a `flushAll` iteruje po nim zamiast po wszystkim. Ten sam wzorzec dotyczy `antiEntropySweep`.
+The fix: the registry maintains a set of "dirty" documents (those with unwritten operations), and
+`flushAll` iterates over that instead of over everything. The same pattern applies to
+`antiEntropySweep`.
 
-### 3.3 Zarządzanie pamięcią
+### 3.3 Memory management
 
-`idle-document-eviction-ms` już istnieje, ale nie ma **górnej granicy** liczby replik
-w pamięci. Przy wielu dokumentach potrzebne:
+`idle-document-eviction-ms` already exists, but there is no **upper bound** on the number of
+replicas in memory. With many documents this is needed:
 
-- Limit LRU na `DocumentRegistry` z konfiguracją i uzasadnieniem wartości.
-- Metryka: liczba załadowanych replik, szacowana pamięć na replikę, liczba eksmisji/s.
-- Eksmisja musi wymusić `flush` przed zwolnieniem — inaczej gubimy niezapisany wsad.
+- An LRU limit on `DocumentRegistry`, configurable and with the value justified.
+- Metrics: the number of loaded replicas, the estimated memory per replica, evictions/s.
+- Eviction has to force a `flush` before releasing — otherwise an unwritten batch is lost.
 
-### 3.4 Zakres pozostały
+### 3.4 The remaining scope
 
-REST: lista, tworzenie, zmiana nazwy, soft delete, przywracanie, wyszukiwanie (Postgres FTS
-po `preview_text`). Frontend: routing, lista dokumentów, tworzenie — po podziale `App.tsx`
-z CP10.
+REST: listing, creation, renaming, soft delete, restore, search (Postgres FTS over
+`preview_text`). Frontend: routing, the document list, creation — after the `App.tsx` split from
+CP10.
 
-### 3.5 Testy
+### 3.5 Tests
 
-| Test | Jaki failure mode wyłapuje |
+| Test | The failure mode it catches |
 |---|---|
-| `evictionFlushesUnwrittenOperations` | Eksmisja pod presją pamięci gubi wsad — utrata danych widoczna dopiero przy obciążeniu |
-| `softDeletedDocumentKeepsOperationLog` | `ON DELETE CASCADE` kasuje źródło prawdy; nieodwracalne |
-| `previewTextIsOnlyACache` | Podgląd staje się źródłem prawdy — dokładny odpowiednik istniejącego testu snapshotów |
-| `clusterMessageForUnloadedDocumentIsNotParsed` | Regresja odsiewu z 3.2(a); niewidoczna funkcjonalnie, widoczna tylko w profilu CPU |
-| `flushTouchesOnlyDirtyDocuments` | Regresja z 3.2(b) — jw. |
+| `evictionFlushesUnwrittenOperations` | Eviction under memory pressure loses a batch — data loss visible only under load |
+| `softDeletedDocumentKeepsOperationLog` | `ON DELETE CASCADE` erases the source of truth; irreversible |
+| `previewTextIsOnlyACache` | The preview becomes a source of truth — the exact counterpart of the existing snapshot test |
+| `clusterMessageForUnloadedDocumentIsNotParsed` | A regression of the filtering from 3.2(a); functionally invisible, visible only in a CPU profile |
+| `flushTouchesOnlyDirtyDocuments` | A regression from 3.2(b) — likewise |
 
 ---
 
-## 4. CP12 — Uprawnienia (2,5–3,5 dnia)
+## 4. CP12 — Permissions (2.5–3.5 days)
 
-### 4.1 To jest przede wszystkim praca nad bezpieczeństwem, nie nad UI
+### 4.1 This is primarily security work, not UI work
 
-Stan obecny: `StompConnectInterceptor` obsługuje **wyłącznie** `CONNECT` i `DISCONNECT`.
-Nie ma żadnej autoryzacji na `SUBSCRIBE` ani `SEND`. Tabela `document_members` istnieje
-w schemacie od V1, ale **nie jest nigdzie egzekwowana**.
+The current state: `StompConnectInterceptor` handles **only** `CONNECT` and `DISCONNECT`. There is
+no authorization on `SUBSCRIBE` or `SEND` at all. The `document_members` table has existed in the
+schema since V1 but **is enforced nowhere**.
 
-Dziś jest to nieszkodliwe — jest jeden wspólny dokument i model dostępu „wszyscy wszystko".
-**W momencie wejścia CP11 staje się to podatnością:** dowolny uwierzytelniony użytkownik może
-zasubskrybować `/topic/doc/{dowolne-id}/ops` i czytać cudzy dokument, albo wysłać operację
-na `/app/doc/{dowolne-id}/op`.
+Today that is harmless — there is one shared document and an access model of "everyone,
+everything". **The moment CP11 lands it becomes a vulnerability:** any authenticated user can
+subscribe to `/topic/doc/{any-id}/ops` and read somebody else's document, or send an operation to
+`/app/doc/{any-id}/op`.
 
-To jest najważniejszy pojedynczy element tego checkpointu i powód, dla którego CP12 nie może
-być przesunięty za CP13.
+This is the single most important element of this checkpoint and the reason CP12 cannot be pushed
+past CP13.
 
-### 4.2 Model ról
+### 4.2 The role model
 
-| Rola | Tekst | Formatowanie | Komentarze | Udostępnianie |
+| Role | Text | Formatting | Comments | Sharing |
 |---|:---:|:---:|:---:|:---:|
-| `viewer` | — | — | odczyt | — |
-| `commenter` | — | — | zapis | — |
+| `viewer` | — | — | read | — |
+| `commenter` | — | — | write | — |
 | `editor` | ✓ | ✓ | ✓ | — |
 | `owner` | ✓ | ✓ | ✓ | ✓ |
 
-Migracja `V3__permissions.sql`: `document_members.role`, `workspace_members` (rola dziedziczona
-na dokumenty, nadpisywalna per dokument), `invitations`.
+The `V3__permissions.sql` migration: `document_members.role`, `workspace_members` (a role inherited
+by the documents, overridable per document), `invitations`.
 
-**Rozstrzygnięcie do zapisania w ADR-0009:** dziedziczenie z workspace'u kontra wyłącznie
-uprawnienia per dokument. Dziedziczenie jest wygodniejsze produktowo i trudniejsze do
-zweryfikowania — sprawdzenie dostępu przestaje być jednym zapytaniem, a unieważnienie cache'a
-musi objąć wszystkie dokumenty workspace'u.
+**A decision to record in ADR-0009:** inheritance from the workspace versus per-document
+permissions only. Inheritance is more convenient from a product point of view and harder to verify
+— an access check stops being one query, and cache invalidation has to cover every document in the
+workspace.
 
-### 4.3 Autoryzacja per destynacja STOMP
+### 4.3 Authorization per STOMP destination
 
-Rozszerzenie istniejącego `ChannelInterceptor`:
+Extending the existing `ChannelInterceptor`:
 
-- `SUBSCRIBE` → wyciągnij `documentId` z destynacji, sprawdź prawo odczytu, odrzuć ramkę
-  przy braku.
-- `SEND` → sprawdź prawo **odpowiednie do typu operacji**, nie tylko do dokumentu.
-  `commenter` może wysłać `AddMark(type=comment)`, ale nie `Insert`. To oznacza, że
-  autoryzacja musi zajrzeć do treści operacji — po CP13 lista typów rośnie, więc mapowanie
-  „rola → dozwolone typy operacji" ma być **jedną tablicą w jednym miejscu**, a nie serią
-  `if`-ów rozsianych po interceptorze.
-- Cache uprawnień per sesja, inaczej każda operacja to zapytanie do bazy.
+- `SUBSCRIBE` → extract the `documentId` from the destination, check the read permission, reject
+  the frame if absent.
+- `SEND` → check the permission **appropriate to the operation type**, not merely to the document.
+  A `commenter` may send `AddMark(type=comment)` but not `Insert`. That means authorization has to
+  look inside the operation — and after CP13 the list of types grows, so the mapping "role →
+  permitted operation types" is to be **one table in one place**, not a series of `if`s scattered
+  through the interceptor.
+- A permission cache per session, otherwise every operation is a database query.
 
-**Druga linia obrony w `DocumentService.submit`.** Warstwa STOMP to nie jedyna droga do
-zapisu — jest jeszcze przywracanie wersji z historii (`HistoryService`). Autoryzacja
-wyłącznie w transporcie jest autoryzacją jednej ścieżki.
+**A second line of defence in `DocumentService.submit`.** The STOMP layer is not the only route to
+a write — there is also restoring a version from history (`HistoryService`). Authorization only in
+the transport is authorization of one path.
 
-### 4.4 Unieważnienie w trakcie sesji
+### 4.4 Revocation mid-session
 
-README wymienia to jako znane ograniczenie: token sprawdzany raz, przy `CONNECT`.
-Przy uprawnieniach robi się z tego realny problem — odebranie dostępu ma zadziałać
-natychmiast, a nie po 12 godzinach (`LIFETIME` w `TokenService`).
+The README lists this as a known limitation: the token is checked once, at `CONNECT`. With
+permissions this becomes a real problem — revoking access should take effect immediately, not after
+12 hours (`LIFETIME` in `TokenService`).
 
-Kanał `collabedit:acl:{userId}` w Redisie → instancja unieważnia cache i **aktywnie zrywa
-subskrypcje** tego użytkownika na dokumentach, do których stracił dostęp. Klient dostaje
-błąd i przechodzi swoją istniejącą ścieżką obsługi (`onError` w `connection.ts`).
+A `collabedit:acl:{userId}` channel in Redis → the instance invalidates its cache and **actively
+tears down that user's subscriptions** on documents they have lost access to. The client receives
+an error and takes its existing handling path (`onError` in `connection.ts`).
 
 ### 4.5 Rate limiting
 
-README wymienia brak jako granicę. Naturalnie ląduje w tym samym interceptorze: token bucket
-per sesja, z osobnym limitem dla operacji i dla presence (bardzo różne profile). Wartości
-uzasadnione liczbowo, nie z palca — zgodnie z regułą z `CLAUDE.md`.
+The README lists its absence as a boundary. It naturally belongs in the same interceptor: a token
+bucket per session, with separate limits for operations and for presence (very different profiles).
+The values justified numerically rather than plucked from the air, per the rule in `CLAUDE.md`.
 
-### 4.6 Testy
+### 4.6 Tests
 
-| Test | Jaki failure mode wyłapuje |
+| Test | The failure mode it catches |
 |---|---|
-| `subscribeToForeignDocumentIsRejected` | IDOR — odczyt cudzego dokumentu przez subskrypcję topicu. **Najważniejszy test tego checkpointu** |
-| `commenterCannotInsertText` | Autoryzacja per dokument zamiast per typ operacji |
-| `revokedAccessTerminatesLiveSubscription` | Odebranie dostępu działa dopiero po wygaśnięciu tokenu |
-| `historyRestoreChecksWriteAccess` | Autoryzacja tylko w transporcie; obejście drugą ścieżką zapisu |
-| `workspaceRoleIsOverriddenByDocumentRole` | Dziedziczenie nadpisuje jawne odebranie dostępu |
-| `rateLimitClosesFloodingSession` | Jeden klient wysyca instancję |
+| `subscribeToForeignDocumentIsRejected` | IDOR — reading somebody else's document by subscribing to a topic. **The most important test of this checkpoint** |
+| `commenterCannotInsertText` | Authorization per document instead of per operation type |
+| `revokedAccessTerminatesLiveSubscription` | Revoking access only takes effect once the token expires |
+| `historyRestoreChecksWriteAccess` | Authorization only in the transport; bypassed via the second write path |
+| `workspaceRoleIsOverriddenByDocumentRole` | Inheritance overriding an explicit revocation |
+| `rateLimitClosesFloodingSession` | One client saturating an instance |
 
 ---
 
-## 5. CP13 — Rich text (5–7 dni) — **rdzeń algorytmiczny v2**
+## 5. CP13 — Rich text (5–7 days) — **the algorithmic core of v2**
 
-Największy i najtrudniejszy checkpoint. Odpowiednik CP2 w v1, ale trudniejszy: w dwóch
-językach, na istniejącym formacie przewodowym i z konsekwencjami dla GC.
+The largest and hardest checkpoint. The counterpart of CP2 in v1, but harder: in two languages, on
+an existing wire format, and with consequences for GC.
 
-### 5.1 Dlaczego nie da się tego zrobić „per znak"
+### 5.1 Why this cannot be done "per character"
 
-Pułapka, którą trzeba nazwać w ADR-0010, bo jest to najczęstsze błędne podejście:
-**formatowanie jako atrybut znaku nie działa.** Jeśli Ania pogrubia zakres, a Bartek
-jednocześnie wstawia tekst w jego środek, wstawiony tekst musi być pogrubiony — a przy
-atrybutach per znak nie ma go kto pogrubić, bo w chwili wstawienia operacja Ani jeszcze
-nie dotarła.
+A trap that has to be named in ADR-0010, because it is the most common wrong approach:
+**formatting as an attribute of a character does not work.** If Ania bolds a range while Bartek
+concurrently inserts text into the middle of it, the inserted text has to be bold — and with
+per-character attributes there is nobody to make it bold, because at the moment of insertion Ania's
+operation had not arrived.
 
-Nie działa też przechowywanie zakresów jako offsetów. Powód jest identyczny jak przy kursorach
-w [ADR-0006](adr/0006-editor-layer.md): offset przestaje wskazywać to samo miejsce po cudzej
-edycji. Projekt rozwiązał to raz — kotwiczeniem kursora w **identyfikatorze znaku CRDT** — i to
-samo rozwiązanie skaluje się na formatowanie.
+Storing ranges as offsets does not work either. The reason is identical to the one for cursors in
+[ADR-0006](adr/0006-editor-layer.md): an offset stops pointing at the same place after somebody
+else's edit. The project solved this once — by anchoring a cursor to a **CRDT character identifier**
+— and the same solution scales to formatting.
 
-### 5.2 Projekt (Peritext) — do zweryfikowania w CP13
+### 5.2 The design (Peritext) — to be verified in CP13
 
 ```
 Anchor = (Id charId, Side side)            Side ∈ {BEFORE, AFTER}
@@ -416,258 +417,260 @@ Op.AddMark(Id id, String type, String value, Anchor start, Anchor end)
 Op.RemoveMark(Id id, String type, Anchor start, Anchor end)
 ```
 
-- **`Side` jest istotne, nie kosmetyczne.** Znacznik kończący się „za znakiem X" i zaczynający
-  „przed znakiem Y" zachowują się różnie, gdy ktoś wstawi tekst między X a Y — jeden go obejmie,
-  drugi nie. To jest mechanizm, dzięki któremu pisanie na końcu pogrubionego fragmentu zostaje
-  pogrubione, a pisanie na końcu linku już do niego nie należy.
-- **`RemoveMark` musi być operacją zakresową**, nie referencją do identyfikatora `AddMark`.
-  Dwoje ludzi może pogrubić zachodzące na siebie zakresy, a trzeci odgrubić część wspólną.
-- **Rozstrzyganie konfliktów:** dla danego znaku i danego typu znacznika wygrywa operacja
-  o najwyższym `(lamport, replicaId)`, która go obejmuje. Ten sam porządek totalny, którego
-  używa już RGA — bez nowego mechanizmu arbitrażu.
-- **Renderowanie:** zamiatanie po liście bloków z utrzymywaniem zbioru aktywnych znaczników,
-  emisja spanów. `O(n + m log m)`.
-- **Zachowanie rozszerzania** (`expand`) jest własnością **typu** znacznika, nie pojedynczej
-  operacji: pogrubienie rozszerza się na końcu, link nie. Tablica typów w jednym miejscu.
+- **`Side` matters and is not cosmetic.** A mark ending "after character X" and one starting
+  "before character Y" behave differently when somebody inserts text between X and Y — one covers
+  it, the other does not. That is the mechanism by which typing at the end of a bold fragment stays
+  bold, while typing at the end of a link is no longer part of it.
+- **`RemoveMark` has to be a range operation**, not a reference to an `AddMark` identifier. Two
+  people may bold overlapping ranges while a third unbolds their intersection.
+- **Conflict resolution:** for a given character and a given mark type, the operation with the
+  highest `(lamport, replicaId)` covering it wins. The same total order RGA already uses — no new
+  arbitration mechanism.
+- **Rendering:** a sweep over the block list maintaining a set of active marks, emitting spans.
+  `O(n + m log m)`.
+- **Expansion behaviour** (`expand`) is a property of the mark **type**, not of an individual
+  operation: bold expands at the end, a link does not. The type table lives in one place.
 
-### 5.3 Dwie pułapki, których kompilator nie złapie
+### 5.3 Two traps the compiler will not catch
 
-`Op` jest `sealed interface Op permits Op.Insert, Op.Delete`. Dodanie wariantów sprawi, że
-kompilator wskaże wszystkie wyczerpujące `switch`-e — `RgaDocument.isAlreadyKnown`,
-`RgaDocument.tryApply`, `OpCodec.toJson`. To jest zaleta i warto ją w ADR nazwać.
+`Op` is `sealed interface Op permits Op.Insert, Op.Delete`. Adding variants makes the compiler
+point at every exhaustive `switch` — `RgaDocument.isAlreadyKnown`, `RgaDocument.tryApply`,
+`OpCodec.toJson`. That is an advantage and worth naming in the ADR.
 
-Ale **dwa miejsca używają trójargumentowego `instanceof` zamiast `switch`-a** i przejdą
-kompilację po cichu, z błędnym wynikiem:
+But **two places use a ternary `instanceof` instead of a `switch`** and will pass
+compilation silently, with the wrong result:
 
-| Miejsce | Kod | Skutek |
+| Place | Code | Effect |
 |---|---|---|
-| `OperationStore.java:83` | `op instanceof Op.Insert ? "i" : "d"` | Nowy typ operacji zapisany w logu jako **usunięcie**. Korupcja źródła prawdy |
-| `DocumentStompController.java:75` | `op instanceof Op.Insert ? "insert" : "delete"` | Błędny atrybut w trace — mylące dane diagnostyczne |
+| `OperationStore.java:83` | `op instanceof Op.Insert ? "i" : "d"` | A new operation type recorded in the log as a **delete**. Corruption of the source of truth |
+| `DocumentStompController.java:75` | `op instanceof Op.Insert ? "insert" : "delete"` | A wrong trace attribute — misleading diagnostic data |
 
-Oba do przepisania na `switch` **przed** dodaniem wariantów, jako osobny commit.
+Both to be rewritten as a `switch` **before** the variants are added, as a separate commit.
 
-### 5.4 Format przewodowy i zapis
+### 5.4 The wire format and persistence
 
-- `OpCodec`: nowe dyskryminatory `"t"` (obok `"i"` i `"d"`). Format jest ręcznie pisany
-  i udokumentowany w javadocu — rozszerzenie jest czyste, javadoc do aktualizacji.
-- `operations.op_type CHAR(1)`: **bez migracji schematu**, wystarczą nowe kody. `payload`
-  jest `JSONB`. Schemat z V1 okazuje się tu wystarczający — warto to odnotować.
-- `DocumentSnapshot.CURRENT_FORMAT_VERSION`: podbicie. Migracja **darmowa z projektu** —
-  `V1__initial_schema.sql:46` mówi wprost, że snapshot o niezgodnej wersji jest ignorowany,
-  a stan odtwarzany z logu. Decyzja z ADR-0003 spłaca się tutaj.
-- **Korpus konformancyjny do regeneracji** + nowe wektory dla znaczników. Job CI
-  „wektory konformancyjne są aktualne" pilnuje reszty.
+- `OpCodec`: new discriminators `"t"` (alongside `"i"` and `"d"`). The format is hand-written and
+  documented in javadoc — the extension is clean, and the javadoc needs updating.
+- `operations.op_type CHAR(1)`: **no schema migration**, new codes suffice. `payload` is `JSONB`.
+  The V1 schema turns out to be sufficient here — worth noting.
+- `DocumentSnapshot.CURRENT_FORMAT_VERSION`: bump it. The migration is **free by design** —
+  `V1__initial_schema.sql:46` says outright that a snapshot with a mismatched version is ignored and
+  the state rebuilt from the log. The decision from ADR-0003 pays off here.
+- **The conformance corpus needs regenerating**, plus new vectors for marks. The CI job "the
+  conformance vectors are current" covers the rest.
 
-### 5.5 Konsekwencja dla GC — najpoważniejsza w całym planie
+### 5.5 The consequence for GC — the most serious in the whole plan
 
-[ADR-0005](adr/0005-tombstone-gc.md) zabrania usuwania tombstone'u, który jest `originLeft`
-innego bloku. README już przyznaje, że przez to GC odzyskuje praktycznie tylko ogon dokumentu.
+[ADR-0005](adr/0005-tombstone-gc.md) forbids removing a tombstone that is another block's
+`originLeft`. The README already admits that as a result GC reclaims practically only the
+document's tail.
 
-**Po CP13 dochodzi drugi warunek: tombstone będący kotwicą znacznika też nie może zniknąć.**
-Po CP14 — trzeci: kotwica komentarza. Skuteczność GC spada dalej, a rich text zwiększa
-liczbę kotwic proporcjonalnie do ilości formatowania.
+**After CP13 a second condition appears: a tombstone that is a mark anchor cannot disappear
+either.** After CP14 a third: a comment anchor. GC's effectiveness drops further, and rich text
+increases the number of anchors in proportion to how much formatting there is.
 
-To może wymusić przeprojektowanie, które README identyfikuje jako właściwe rozwiązanie:
-**porzucanie treści skasowanych węzłów przy zachowaniu ich w strukturze** (podejście Yjs).
-Zmienia reprezentację `Block` i unieważnia format snapshotu — ale format snapshotu i tak
-jest w tym checkpoincie podbijany, więc **jeśli ta zmiana ma nastąpić, to teraz jest najtańszy
-moment.**
+This may force the redesign the README identifies as the right solution: **dropping the content of
+deleted nodes while keeping them in the structure** (the Yjs approach). It changes the `Block`
+representation and invalidates the snapshot format — but the snapshot format is being bumped in
+this checkpoint anyway, so **if that change is going to happen, now is the cheapest moment.**
 
-Decyzja do podjęcia na starcie CP13, nie w trakcie. Zapisać w ADR-0011 z rewizją ADR-0005.
+A decision to be taken at the start of CP13, not during it. To be recorded in ADR-0011 together
+with a revision of ADR-0005.
 
 ### 5.6 Frontend
 
-`remoteCursors.ts` jest gotowym wzorcem: identyfikatory CRDT → offsety → dekoracje CodeMirrora,
-przeliczane na ostatnią chwilę przed rysowaniem. Znaczniki idą tą samą drogą przez
-`Decoration.mark()`. CodeMirror pozostaje wyłącznie warstwą widoku — [ADR-0006](adr/0006-editor-layer.md)
-nie wymaga rewizji.
+`remoteCursors.ts` is a ready-made pattern: CRDT identifiers → offsets → CodeMirror decorations,
+computed at the last moment before drawing. Marks travel the same road through
+`Decoration.mark()`. CodeMirror stays purely a view layer —
+[ADR-0006](adr/0006-editor-layer.md) needs no revision.
 
-Pasek narzędzi, skróty klawiszowe, `bridge.ts` rozszerzony o transakcje formatowania.
+A toolbar, keyboard shortcuts, and `bridge.ts` extended with formatting transactions.
 
-**Podwójna implementacja (Java + TS) obowiązuje.** To jest dług opisany w README i CP13 go
-podwaja — ale rezygnacja z niej po stronie klienta oznaczałaby, że przeglądarka nie potrafi
-renderować formatowania bez odpowiedzi serwera, czyli utratę optymistycznej edycji.
+**The double implementation (Java + TS) applies.** It is the debt described in the README and CP13
+doubles it — but doing without it on the client would mean the browser cannot render formatting
+without a response from the server, that is, losing optimistic editing.
 
-### 5.7 Testy
+### 5.7 Tests
 
-| Test | Jaki failure mode wyłapuje |
+| Test | The failure mode it catches |
 |---|---|
-| `markConvergence` (property) | Znaczniki nie są przemienne — dwie osoby formatują, każda widzi co innego |
-| `insertIntoMarkedRangeInheritsMark` | Klasyczny błąd „formatowanie per znak" z 5.1 |
-| `concurrentBoldAndUnboldConverges` | Brak porządku totalnego na znacznikach; miganie formatowania |
-| `markSurvivesConcurrentDeleteOfBoundary` | Kotwica na skasowanym znaku rozspójnia strukturę |
-| `expandBehaviourDiffersByMarkType` | Pisanie za linkiem rozszerza link |
-| `markAnchorPreventsGarbageCollection` | GC kasuje kotwicę — objaw dopiero przy następnej edycji w to miejsce |
-| konformancja Java ↔ TS dla znaczników | Ciche rozjechanie się obu implementacji |
+| `markConvergence` (property) | Marks are not commutative — two people format and each sees something different |
+| `insertIntoMarkedRangeInheritsMark` | The classic "formatting per character" bug from 5.1 |
+| `concurrentBoldAndUnboldConverges` | No total order on marks; formatting flickers |
+| `markSurvivesConcurrentDeleteOfBoundary` | An anchor on a deleted character diverges the structure |
+| `expandBehaviourDiffersByMarkType` | Typing after a link extends the link |
+| `markAnchorPreventsGarbageCollection` | GC removes an anchor — the symptom only appears at the next edit in that place |
+| Java ↔ TS conformance for marks | The two implementations diverging silently |
 
 ---
 
-## 6. CP14 — Komentarze (2–2,5 dnia)
+## 6. CP14 — Comments (2–2.5 days)
 
-### 6.1 Dwie warstwy, z których tylko jedna jest CRDT
+### 6.1 Two layers, only one of which is a CRDT
 
-**Kotwica** — zakres w dokumencie. To jest znacznik typu `comment` z identyfikatorem wątku
-jako wartością. Cała maszyneria powstała w CP13; ten checkpoint jej **używa**, nie buduje.
+**The anchor** — a range in the document. It is a mark of type `comment` carrying the thread
+identifier as its value. All the machinery was built in CP13; this checkpoint **uses** it rather
+than building it.
 
-**Treść wątku** — komentarze i odpowiedzi. **Świadomie nie jest CRDT.** Wiadomość ma jednego
-autora, jest dopisywana w całości i nie jest współbieżnie edytowana znak po znaku. Zwykłe
-tabele relacyjne wystarczą.
+**The thread's content** — comments and replies. **Deliberately not a CRDT.** A message has one
+author, is appended whole, and is not concurrently edited character by character. Ordinary
+relational tables suffice.
 
-To rozróżnienie jest warte zapisania w ADR-0012, bo pokusa „skoro mamy CRDT, wszystko będzie
-CRDT" jest realna, a odpowiedzią jest: CRDT rozwiązuje konkretny problem (współbieżna edycja
-tej samej sekwencji) i stosowanie go tam, gdzie tego problemu nie ma, to koszt bez korzyści.
+That distinction is worth recording in ADR-0012, because the temptation of "we have a CRDT, so
+everything will be a CRDT" is real, and the answer is: a CRDT solves a specific problem (concurrent
+editing of the same sequence), and applying it where that problem does not exist is a cost with no
+benefit.
 
-Migracja `V4__comments.sql`: `comment_threads` (doc_id, status, created_by, resolved_at),
+The `V4__comments.sql` migration: `comment_threads` (doc_id, status, created_by, resolved_at),
 `comment_messages` (thread_id, author_id, body, created_at, edited_at).
 
-### 6.2 Komentarz osierocony
+### 6.2 An orphaned comment
 
-Co się dzieje, gdy zakotwiczony tekst zostanie skasowany. Kotwica przeżywa, bo tombstone'y
-przeżywają — wątek staje się zerowej długości.
+What happens when the anchored text is deleted. The anchor survives, because tombstones survive —
+the thread becomes zero-length.
 
-Decyzja produktowa: pokazać jako „odłączony" na marginesie, nie kasować po cichu. Kasowanie
-byłoby utratą rozmowy w reakcji na edycję tekstu, czyli zachowaniem zaskakującym.
-Wchodzi do sekcji failure modes w README.
+The product decision: show it as "detached" in the margin, do not delete it silently. Deleting
+would mean losing a conversation in response to a text edit, which is surprising behaviour. It goes
+into the failure modes section of the README.
 
-### 6.3 Uprawnienia
+### 6.3 Permissions
 
-Rola `commenter` z CP12 nabiera tu treści: zapis do wątków, brak zapisu do tekstu.
-Egzekwowane mapowaniem „rola → typy operacji" z 4.3 — jeśli CP12 zrobiony poprawnie,
-ten checkpoint nie dodaje nowego kodu autoryzacji, tylko wpis w tablicy.
+The `commenter` role from CP12 acquires content here: writing to threads, no writing to the text.
+Enforced by the "role → operation types" mapping from 4.3 — if CP12 was done properly, this
+checkpoint adds no new authorization code, only an entry in the table.
 
-### 6.4 Testy
+### 6.4 Tests
 
-| Test | Jaki failure mode wyłapuje |
+| Test | The failure mode it catches |
 |---|---|
-| `commentAnchorFollowsConcurrentEdit` | Kotwica na offsetach zamiast identyfikatorach — komentarz wskazuje cudzy tekst |
-| `deletingAnchoredTextDetachesThread` | Kasowanie tekstu gubi rozmowę |
-| `commenterCannotEditDocumentText` | Regresja mapowania ról z CP12 |
-| `threadSurvivesDocumentRestore` | Przywrócenie wersji z historii gubi komentarze dodane później |
+| `commentAnchorFollowsConcurrentEdit` | An anchor on offsets rather than identifiers — the comment points at somebody else's text |
+| `deletingAnchoredTextDetachesThread` | Deleting text loses the conversation |
+| `commenterCannotEditDocumentText` | A regression in the role mapping from CP12 |
+| `threadSurvivesDocumentRestore` | Restoring a version from history loses comments added later |
 
 ---
 
-## 7. CP15 — Ponowny pomiar i dokumentacja (1,5–2 dni)
+## 7. CP15 — Re-measurement and documentation (1.5–2 days)
 
-**Obowiązkowy, nie opcjonalny.** Po CP13 wszystkie liczby w README opisują inny system.
-Zostawienie ich byłoby dokładnie tym, przed czym `CLAUDE.md` ostrzega — dokumentacją
-odtwarzaną z pamięci zamiast mierzoną.
+**Mandatory, not optional.** After CP13 every number in the README describes a different system.
+Leaving them would be exactly what `CLAUDE.md` warns against — documentation reconstructed from
+memory instead of measured.
 
-- Harness przebiega ponownie, **z ruchem presence i z operacjami formatowania** w profilu.
-- Nowy wymiar w tabeli: udział znaczników w ruchu i w rozmiarze snapshotu.
-- Zmierzony narzut GC po dodaniu kotwic — liczba potwierdzająca lub obalająca obawę z 5.5.
-- README: rozdzielenie „zrobione w v2" od „nadal poza zakresem"; nowe failure modes
-  (komentarz osierocony, odebranie uprawnień w trakcie sesji, dokument usunięty miękko).
-- Nowe demo — GIF ze skryptu Playwrighta, jak w CP9. Cztery nowe funkcje wymagają
-  nowego scenariusza.
-- **Powrót do ADR-ów** (0008–0012) — konwencja domu: dopisać, co faktycznie wyszło,
-  łącznie z tym, co okazało się gorsze niż zakładano.
+- The harness runs again, **with presence traffic and formatting operations** in the profile.
+- A new dimension in the table: the share of marks in the traffic and in the snapshot size.
+- The measured GC overhead after anchors are added — a number confirming or refuting the concern
+  from 5.5.
+- README: separating "done in v2" from "still out of scope"; new failure modes (an orphaned
+  comment, revoked permissions mid-session, a soft-deleted document).
+- A new demo — a GIF from a Playwright script, as in CP9. Four new features need a new scenario.
+- **A pass back over the ADRs** (0008–0012) — the house convention: write down what actually came
+  out, including what turned out worse than assumed.
 
-### Co z tego wyszło
+### How it turned out
 
-| Zadanie | Wynik |
+| Task | Result |
 |---|---|
-| Harness z presence i formatowaniem | Zrobione. **Ujawnił błąd, nie tylko liczby** — limit tempa gubił operacje po cichu (12 scenariuszy, 351 odrzuceń, po naprawie zero strat) |
-| Udział znaczników w snapshocie | **8 B na znacznik.** Pomijalne — znacznik nie kopiuje objętego tekstu |
-| Narzut GC po dodaniu kotwic | **Obawa potwierdzona, i to mocniej.** Nie „dwa tombstone'y na znacznik", tylko cały blok run-length. Przy tekście napisanym ciągiem: 0 % odzysku. [ADR-0005, sekcja CP15](adr/0005-tombstone-gc.md) |
-| README: zrobione w v2 vs nadal poza zakresem | Zrobione przez **przekreślenie**, nie przepisanie — widać, która pierwotna diagnoza była trafna, a która nie |
-| Nowe failure modes | Pięć nowych wierszy, w tym rola bez prawa zapisu — znaleziona przy pisaniu tej sekcji |
-| Nowe demo | Drugi GIF, osobny scenariusz Playwrighta. Jeden byłby za długi albo za pobieżny |
-| Powrót do ADR-ów | 0002, 0003, 0004, 0005 dopisane; 0007 oznaczony jako zastąpiony przez 0008 |
+| A harness with presence and formatting | Done. **It revealed a bug, not just numbers** — rate limiting lost operations silently (12 scenarios, 351 refusals; after the fix, zero losses) |
+| The share of marks in a snapshot | **8 B per mark.** Negligible — a mark does not copy the text it covers |
+| GC overhead after adding anchors | **The concern is confirmed, and more strongly.** Not "two tombstones per mark" but a whole run-length block. On text written in one continuous run: 0 % reclaimed. [ADR-0005, the CP15 section](adr/0005-tombstone-gc.md) |
+| README: done in v2 vs still out of scope | Done by **strikethrough** rather than rewriting — it shows which original diagnosis was right and which was not |
+| New failure modes | Five new rows, including a role without write permission — found while writing that section |
+| A new demo | A second GIF, a separate Playwright scenario. One would have been too long or too cursory |
+| A pass back over the ADRs | 0002, 0003, 0004 and 0005 amended; 0007 marked as superseded by 0008 |
 
-Poza planem: **rola użytkownika jedzie teraz do klienta**. Wyszło przy opisywaniu naprawy
-limitu tempa — ta sama pomyłka (ciche egzekwowanie po stronie serwera) występowała drugi raz,
-w innym miejscu, i tak samo prowadziła do cichego rozjazdu repliki.
+Outside the plan: **the user's role now travels to the client**. It came up while describing the
+rate-limit fix — the same mistake (silent server-side enforcement) occurred a second time, in a
+different place, and led to the same silent replica divergence.
 
 ---
 
-## 8. Estymata
+## 8. Estimate
 
-| Checkpoint | Dni |
+| Checkpoint | Days |
 |---|---:|
-| CP10 — Fundament | 2–3 |
-| CP11 — Multi-dokument | 2–3 |
-| CP12 — Uprawnienia | 2,5–3,5 |
+| CP10 — Foundations | 2–3 |
+| CP11 — Multi-document | 2–3 |
+| CP12 — Permissions | 2.5–3.5 |
 | CP13 — Rich text | 5–7 |
-| CP14 — Komentarze | 2–2,5 |
-| CP15 — Pomiar + dokumentacja | 1,5–2 |
-| **Razem** | **15,5–21 dni roboczych** |
+| CP14 — Comments | 2–2.5 |
+| CP15 — Measurement + documentation | 1.5–2 |
+| **Total** | **15.5–21 working days** |
 
-Dla porównania: v1 (CP1–CP9) zajęła ~13–17 dni. **Ten plan to drugi projekt tej samej
-wielkości co pierwszy.** Warto to wiedzieć przed startem, a nie w połowie CP13.
+For comparison: v1 (CP1–CP9) took ~13–17 days. **This plan is a second project the same size as
+the first.** Worth knowing before starting rather than halfway through CP13.
 
-Jeśli budżet jest mniejszy niż całość, sensowne punkty zatrzymania to koniec CP12
-(produkt z wieloma dokumentami i uprawnieniami, bez rich textu — spójna całość)
-albo koniec CP13 (bez komentarzy). **Zatrzymanie w środku CP13 nie jest punktem
-zatrzymania** — format przewodowy i korpus konformancyjny byłyby w stanie przejściowym.
+If the budget is smaller than the whole, the sensible stopping points are the end of CP12 (a
+product with many documents and permissions, without rich text — a coherent whole) or the end of
+CP13 (without comments). **Stopping in the middle of CP13 is not a stopping point** — the wire
+format and the conformance corpus would be in a transitional state.
 
 ---
 
-## 9. Ryzyka
+## 9. Risks
 
-| Ryzyko | Prawdopodobieństwo | Przeciwdziałanie |
+| Risk | Likelihood | Mitigation |
 |---|---|---|
-| **Rozcieńczenie przekazu** — projekt traci jedno zdanie opisu | Wysokie | README nadal otwiera się rdzeniem CRDT i demem, nie listą funkcji. Rich text prezentowany jako *konsekwencja* dobrego rdzenia, nie jako osobna funkcja |
-| **CP13 przeciąga się** — Peritext w dwóch językach to najtrudniejsza rzecz w całym projekcie | Wysokie | Zamknąć na jednym typie znacznika (pogrubienie) z pełnymi property testami, dopiero potem rozszerzać. Typy są tanie, mechanizm jest drogi |
-| **GC przestaje działać** po dodaniu kotwic | Średnie | Decyzja o przeprojektowaniu reprezentacji bloku **na starcie CP13**, nie w trakcie (5.5) |
-| Podatność IDOR wchodzi razem z CP11, zanim CP12 ją zamknie | Średnie | CP11 nie wchodzi na hostowaną instancję przed CP12. Albo: tymczasowe ograniczenie do dokumentów własnych |
-| Liczby w README dezaktualizują się cicho | Średnie | CP15 obowiązkowy; do rozważenia job CI porównujący harness z zapisanym wynikiem |
-| Dwie implementacje rozjeżdżają się na znacznikach | Niskie | Korpus konformancyjny + istniejący job CI. Mechanizm sprawdzony w v1 |
+| **Diluting the message** — the project loses its one-sentence description | High | The README still opens with the CRDT core and the demo, not a feature list. Rich text is presented as a *consequence* of a good core rather than as a separate feature |
+| **CP13 overruns** — Peritext in two languages is the hardest thing in the whole project | High | Close it on one mark type (bold) with full property tests, and only then extend. Types are cheap, the mechanism is expensive |
+| **GC stops working** once anchors are added | Medium | Decide on redesigning the block representation **at the start of CP13**, not during it (5.5) |
+| An IDOR vulnerability lands with CP11, before CP12 closes it | Medium | CP11 does not go onto a hosted instance before CP12. Or: a temporary restriction to one's own documents |
+| The README's numbers go stale silently | Medium | CP15 is mandatory; consider a CI job comparing the harness against a recorded result |
+| The two implementations diverge on marks | Low | The conformance corpus plus the existing CI job. The mechanism was proven in v1 |
 
 ---
 
-## 10. Czego ten plan świadomie NIE obejmuje
+## 10. What this plan deliberately does NOT cover
 
-Zakres rozszerzony nie znaczy nieograniczony. Poza zakresem zostają, do sekcji
-„co zrobiłbym inaczej w produkcji":
+An extended scope does not mean an unlimited one. These stay out of scope, destined for the "what I
+would do differently in production" section:
 
-- **Osadzone obiekty** (tabele, obrazy, bloki kodu). Peritext obsługuje znaczniki nad tekstem;
-  osadzone obiekty to inny problem strukturalny.
-- **Undo świadome CRDT.** Nadal brak, nadal wymienione w README. Po rich texcie robi się
-  trudniejsze — cofnięcie musi objąć znaczniki.
-- **Fugue zamiast RGA.** Anomalia przeplotu zostaje udokumentowana, nie naprawiona.
-- **Presence w klastrze.** Wymienione w README; nie zmienia się przez ten plan.
-- **Edycja offline komentarzy.** Bufor offline obejmuje operacje CRDT; komentarze wymagają
-  połączenia.
-- **Powiadomienia, wzmianki, eksport do docx/pdf, wersje mobilne.** Zakres produktowy
-  bez zawartości inżynierskiej odpowiadającej tezie projektu.
+- **Embedded objects** (tables, images, code blocks). Peritext handles marks over text; embedded
+  objects are a different structural problem.
+- **CRDT-aware undo.** Still absent, still listed in the README. After rich text it becomes harder
+  — an undo has to cover marks.
+- **Fugue instead of RGA.** The interleaving anomaly stays documented rather than fixed.
+- **Cluster-wide presence.** Listed in the README; unchanged by this plan.
+- **Offline editing of comments.** The offline buffer covers CRDT operations; comments require a
+  connection.
+- **Notifications, mentions, export to docx/pdf, mobile versions.** Product scope with no
+  engineering content matching the project's thesis.
 
 
 ---
 
-## 11. Audyt końcowy — co NIE zostało zrobione
+## 11. Final audit — what was NOT done
 
-Plan przeszedł na koniec punkt po punkcie, przeciw kodowi, a nie przeciw pamięci. Sekcja
-istnieje, bo „plan zamknięty" bez takiego przejścia jest deklaracją, a nie faktem — i bo
-pierwsza pozycja poniżej to dowód, że deklaracja by nie wystarczyła.
+At the end the plan was walked point by point, against the code rather than against memory. This
+section exists because "the plan is closed" without such a pass is a declaration rather than a
+fact — and because the first item below is proof that the declaration would not have been enough.
 
-### Niezrobione, znalezione audytem i naprawione
+### Not done, found by the audit and fixed
 
-| Punkt planu | Co było |
+| Plan item | What it was |
 |---|---|
-| §4.3 „druga linia obrony", test `historyRestoreChecksWriteAccess` | **`HistoryController` nie sprawdzał uprawnień w ogóle.** Trzy endpointy otwarte, w tym pełny odczyt treści cudzego dokumentu i jego nadpisanie. Jedyna droga w projekcie, którą rola bez prawa zapisu mogła zmienić tekst. Naprawione, test sprawdzony mutacją |
-| §4.6 `workspaceRoleIsOverriddenByDocumentRole` | Dziedziczenie działało, testu nie było. Dopisany |
-| §6.4 `threadSurvivesDocumentRestore` | Zachowanie poprawne, testu nie było. Dopisany |
+| §4.3 "a second line of defence", the `historyRestoreChecksWriteAccess` test | **`HistoryController` checked no permissions at all.** Three open endpoints, including a full read of somebody else's document content and overwriting it. The only route in the project by which a role without write permission could change the text. Fixed, and the test verified by mutation |
+| §4.6 `workspaceRoleIsOverriddenByDocumentRole` | Inheritance worked, the test did not exist. Added |
+| §6.4 `threadSurvivesDocumentRestore` | The behaviour was correct, the test did not exist. Added |
 
-Pierwsza pozycja jest ważniejsza niż jej naprawa. Plan **wymieniał tę ścieżkę wprost**
-i to nie wystarczyło — czyli zabezpieczenie oparte na tym, że ktoś pamięta o punkcie
-z dokumentu, nie jest zabezpieczeniem. Wniosek trafił do ADR-0009 i do README.
+The first item matters more than its fix. The plan **named that path explicitly** and that was not
+enough — which means a protection resting on somebody remembering a point from a document is not a
+protection. The conclusion went into ADR-0009 and into the README.
 
-### Zrobione inaczej, niż zakładał plan — świadomie
+### Done differently from what the plan assumed — deliberately
 
-| Punkt planu | Jak jest |
+| Plan item | How it actually is |
 |---|---|
-| §2.2 „rozgłaszanie zmienionego uczestnika, nie całej listy" | Delta dla ruchu kursora, **pełna lista przy dołączeniu i odejściu**. Odejścia nie da się wyrazić deltą („tego wpisu już nie ma"), a trzeci rodzaj komunikatu kosztowałby więcej niż wysłanie listy przy zdarzeniu, które zdarza się raz na sesję |
-| §3.2(b) „rejestr utrzymuje zbiór brudnych dokumentów" | Bezblokadowe `hasPendingWork()` przed zajęciem blokady. Rozwiązuje ten sam problem (10 tys. zajęć blokady/s) bez dodatkowego stanu do utrzymania w synchronizacji |
-| §4.4 „kanał `collabedit:acl:{userId}`, aktywne zrywanie subskrypcji" | Cache uprawnień z TTL 5 s + natychmiastowe unieważnienie na instancji, która odbiera dostęp. Odebranie działa **w granicy 5 s**, nie natychmiast na wszystkich instancjach. Tańsze i wystarczające przy tej skali; granica wpisana do README |
-| §4.6 `rateLimitClosesFloodingSession` | Serwer **nie zamyka sesji**, tylko odsyła `RATE_LIMITED`, a klient ponawia. Zamknięcie sesji przy przekroczeniu tempa jest utratą pracy klienta, który po prostu szybko pisze — patrz błąd opisany wyżej |
-| §5.5 „decyzja o reprezentacji bloku na starcie CP13" | Decyzja **odłożona**, świadomie i z powodem: brakowało pomiaru. Pomiar jest w CP15 i wypadł źle, więc zmiana przestała być opcjonalna — ale najtańszy moment (podniesienie wersji formatu) został przepuszczony. To jest realny koszt tej decyzji i nie ma sensu go ukrywać |
+| §2.2 "broadcast the changed participant, not the whole list" | A delta for cursor movement, **the full list on join and leave**. A leave cannot be expressed as a delta ("this entry is gone"), and a third message type would cost more than sending the list on an event that happens once per session |
+| §3.2(b) "the registry maintains a set of dirty documents" | A lock-free `hasPendingWork()` before taking the lock. It solves the same problem (10k lock acquisitions/s) without extra state to keep in sync |
+| §4.4 "a `collabedit:acl:{userId}` channel, actively tearing down subscriptions" | A permission cache with a 5 s TTL plus immediate invalidation on the instance that performs the revocation. Revocation takes effect **within 5 s** rather than instantly on every instance. Cheaper and sufficient at this scale; the bound is written into the README |
+| §4.6 `rateLimitClosesFloodingSession` | The server **does not close the session**; it replies `RATE_LIMITED` and the client retries. Closing a session on a rate breach loses the work of a client who is simply typing fast — see the bug described above |
+| §5.5 "decide on the block representation at the start of CP13" | The decision was **deferred**, deliberately and with a reason: the measurement was missing. The measurement is in CP15 and came out badly, so the change stopped being optional — but the cheapest moment (bumping the format version) was missed. That is a real cost of this decision and there is no point hiding it |
 
-### Niezrobione świadomie, wypisane w README
+### Deliberately not done, written up in the README
 
-- **Tabela `invitations`** (§4.2) — model uprawnień działa bez zapraszania; bez ekranu
-  do zarządzania dostępem tabela byłaby martwym schematem.
-- **Ekran zarządzania dostępem.** `grant` / `revoke` / `setVisibility` istnieją i są
-  przetestowane, ale wywołuje je wyłącznie kod. Model działa, brakuje mu ostatniego kroku
-  do bycia funkcją produktu.
-- **Hostowana instancja i link nad GIF-em** (§2.3, „docelowo"). Docker Compose uruchamia
-  całość jedną komendą; hostingu nie ma.
+- **The `invitations` table** (§4.2) — the permission model works without invitations; without a
+  screen for managing access the table would be dead schema.
+- **An access management screen.** `grant` / `revoke` / `setVisibility` exist and are tested, but
+  only code calls them. The model works; it is one step short of being a product feature.
+- **A hosted instance and a link above the GIF** (§2.3, "eventually"). Docker Compose brings the
+  whole thing up with one command; there is no hosting.
