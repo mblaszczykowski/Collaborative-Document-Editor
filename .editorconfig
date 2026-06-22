@@ -16,7 +16,7 @@ indent_size = 2
 
 [*.md]
 indent_size = 2
-# Markdown używa trailing spaces jako hard line break
+# Markdown uses trailing spaces as a hard line break
 trim_trailing_whitespace = false
 
 [*.{kts,gradle}]

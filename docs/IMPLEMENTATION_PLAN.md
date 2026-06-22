@@ -1,346 +1,355 @@
-# Plan implementacji — Collaborative Document Editor
+# Implementation plan — Collaborative Document Editor
 
-> **Status: wszystkie 9 checkpointów zamkniętych.** Dokument zostaje w repo jako zapis tego,
-> co było planowane — łącznie z miejscami, w których plan się nie sprawdził. Najważniejsze
-> odstępstwa: Gradle zastąpiony Mavenem (CP1), Gatling zastąpiony własnym harnessem (CP8),
-> a zasięg GC okazał się węższy, niż zakładał ADR-0005 (CP6). Wszystkie trzy są opisane
-> w miejscach, których dotyczą.
+> **Status: all 9 checkpoints closed.** The document stays in the repository as a record of what
+> was planned — including the places where the plan did not hold. The most significant departures:
+> Gradle replaced by Maven (CP1), Gatling replaced by a custom harness (CP8), and the reach of GC
+> turning out to be narrower than ADR-0005 assumed (CP6). All three are described where they
+> belong.
 
-Dokument roboczy. Powstał przed pierwszą linijką kodu, na bazie `idea.md` i `CLAUDE.md`.
-Aktualizowany w miarę postępu — jeśli decyzja z planu okaże się zła w praktyce, poprawiamy
-tutaj **i** commitujemy zmianę planu razem z powodem (historia iteracji jest częścią artefaktu).
+A working document. Written before the first line of code, on the basis of `idea.md` and
+`CLAUDE.md`. Updated as work progressed — if a decision from the plan turned out badly in practice,
+we fix it here **and** commit the plan change together with the reason (the history of iteration is
+part of the artifact).
 
 ---
 
-## 0. Stan wyjściowy i blokady (do zrobienia zanim ruszy checkpoint 1)
+## 0. Starting state and blockers (to be done before checkpoint 1 begins)
 
-| Rzecz | Status | Co zrobić |
+| Thing | Status | What to do |
 |---|---|---|
-| Repozytorium git | ❌ brak | `git init` + `.gitignore` + pierwszy commit. Bez tego tracimy narrację commitów wymaganą przez CLAUDE.md §2 |
-| Java | ⚠️ domyślna 25-ea, jest też 21.0.1 | Celujemy w **21 LTS** przez `maven.compiler.release=21` — bajtkod jest ten sam niezależnie od tego, na czym Maven startuje |
-| Node | ✅ v20.18.1 | OK dla Vite 5 / React 19 |
-| **Docker** | ❌ **brak** | **BLOKADA.** Bez niego nie ma: Testcontainers (§3.2 wymagań), Postgresa lokalnie, Docker Compose, stacku Prometheus/Grafana. Potrzebne Docker Desktop albo Colima (`brew install colima docker docker-compose`) |
-| ffmpeg / gifski | ❌ brak | Potrzebne dopiero w checkpoincie 9 (GIF demo). `brew install ffmpeg gifski` |
+| git repository | ❌ absent | `git init` + `.gitignore` + the first commit. Without it we lose the commit narrative CLAUDE.md §2 requires |
+| Java | ⚠️ 25-ea by default, 21.0.1 also present | We target **21 LTS** via `maven.compiler.release=21` — the bytecode is the same whatever Maven starts on |
+| Node | ✅ v20.18.1 | Fine for Vite 5 / React 19 |
+| **Docker** | ❌ **absent** | **BLOCKER.** Without it there is no: Testcontainers (requirement §3.2), local Postgres, Docker Compose, or Prometheus/Grafana stack. Needs Docker Desktop or Colima (`brew install colima docker docker-compose`) |
+| ffmpeg / gifski | ❌ absent | Needed only in checkpoint 9 (the demo GIF). `brew install ffmpeg gifski` |
 
-**Docker jest blokerem dla checkpointów 3, 7, 8, 9** — checkpointy 1 i 2 (ADR-y + rdzeń CRDT)
-można zrobić bez niego, bo `crdt-core` to czysta Java bez I/O. Sugeruję instalować Dockera
-równolegle z checkpointem 1, żeby nie stać.
+**Docker blocks checkpoints 3, 7, 8 and 9** — checkpoints 1 and 2 (the ADRs and the CRDT core) can
+be done without it, because `crdt-core` is pure Java with no I/O. I suggest installing Docker in
+parallel with checkpoint 1, so as not to stall.
 
 ---
 
-## 1. Architektura docelowa — jedna strona
+## 1. The target architecture — one page
 
 ```
 ┌─ frontend (React + TS, Vite) ──────────────────────────────┐
-│  CodeMirror 6 (tylko warstwa widoku + dekoracje kursorów)  │
-│  crdt-ts/          ← własna implementacja RGA (bliźniak Javy)│
-│  transport/        ← STOMP client + bufor offline + symulator sieci │
+│  CodeMirror 6 (view layer and cursor decorations only)     │
+│  crdt-ts/          ← our own RGA implementation (Java twin)  │
+│  transport/        ← STOMP client + offline buffer + network simulator │
 └────────────────────────┬───────────────────────────────────┘
-                         │ WebSocket / STOMP (traceparent w headerach)
+                         │ WebSocket / STOMP (traceparent in the headers)
 ┌────────────────────────▼───────────────────────────────────┐
 │ app (Spring Boot 3, Java 21)                               │
 │  ws/         StompController, presence, per-doc session reg│
 │  domain/     DocumentReplica (in-memory), OpApplier        │
 │  persist/    op_log (append-only) + snapshots (Postgres)   │
-│  history/    time-travel: snapshot + replay do punktu T    │
-│  cluster/    Redis pub/sub fan-out + anti-entropy z op_log │
-│  otel/       tracing, metryki Micrometer → Prometheus      │
+│  history/    time travel: snapshot + replay up to point T  │
+│  cluster/    Redis pub/sub fan-out + anti-entropy from op_log │
+│  otel/       tracing, Micrometer metrics → Prometheus      │
 └──────┬──────────────────────┬──────────────────────────────┘
        │                      │
    PostgreSQL             Redis (fast path)
-   (źródło prawdy)        (best-effort broadcast)
-                         
-crdt-core/  ← osobny moduł Mavena, ZERO zależności od Springa.
-             Czysty algorytm + testy property-based (jqwik) + JMH.
+   (source of truth)      (best-effort broadcast)
+
+crdt-core/  ← a separate Maven module, ZERO Spring dependencies.
+             The pure algorithm + property-based tests (jqwik) + JMH.
 ```
 
-### Kluczowa decyzja architektoniczna: każda instancja backendu jest repliką CRDT
+### The key architectural decision: every backend instance is a CRDT replica
 
-Nie ma „właściciela dokumentu", nie ma sticky sessions, nie ma rozproszonego locka.
-Każda instancja trzyma własną replikę dokumentu i scala operacje — czyli robi dokładnie to,
-do czego CRDT został wymyślony. Redis pub/sub to **ścieżka szybka, zawodna** (at-most-once).
-Postgres `op_log` to **ścieżka wolna, autorytatywna** — instancja, która wykryje lukę w
-version vectorze, dociąga brakujące operacje z bazy (anti-entropy / read-repair).
+There is no "document owner", no sticky sessions and no distributed lock. Every instance holds its
+own replica of the document and merges operations — that is, does exactly what a CRDT was invented
+for. Redis pub/sub is the **fast, unreliable path** (at-most-once). The Postgres `op_log` is the
+**slow, authoritative path** — an instance that detects a gap in the version vector pulls the
+missing operations from the database (anti-entropy / read repair).
 
-To jest ADR-004 i jest to najmocniejszy punkt architektury: zawodny broadcast jest tu
-*bezpieczny z definicji*, a nie „bezpieczny bo mamy nadzieję".
-
----
-
-## 2. Rdzeń algorytmu — co dokładnie implementujemy
-
-### Wybór: RGA (Replicated Growable Array), wariant z left-origin
-
-- `Id = (replicaId: int, counter: long)` — licznik Lamporta per replika.
-- Węzeł znaku: `{ id, originLeft: Id, value, deleted: boolean }`.
-- **Insert**: nowy węzeł wskazuje lewego sąsiada w momencie wstawienia. Wśród rodzeństwa
-  wstawionego po tym samym origin — porządek malejąco po `(counter, replicaId)`. Deterministyczny
-  porządek totalny bez arbitra.
-- **Delete**: tombstone (flaga), nie usunięcie z listy — bo inne repliki mogą jeszcze
-  wskazywać na ten węzeł jako origin.
-- **Dedup / dostarczanie przyczynowe**: version vector per replika + bufor operacji, których
-  przyczyny jeszcze nie widzieliśmy.
-- **Run-length encoding**: ciągłe pisanie („user wpisał 20 znaków") to jedna operacja z bazowym
-  `id` i długością; węzeł dzieli się dopiero gdy ktoś wstawi coś w jego środek (jak `Item` w Yjs).
-  Bez tego dokument na 100 tys. znaków to 100 tys. obiektów.
-
-### Świadomie udokumentowana słabość: anomalia przeplotu (interleaving)
-
-RGA nie jest maksymalnie non-interleaving (patrz: Weidner & Kleppmann, *Fugue*). Istnieją
-sekwencje współbieżnych wstawień, gdzie litery dwóch autorów się przeplatają zamiast zostać
-zwartymi blokami.
-
-**Plan:** napisać test property-based `concurrentTyping_staysContiguous`, znaleźć przypadek,
-w którym RGA go łamie, i **zostawić go w repo jako jawnie oznaczony known-limitation test**
-(`@Disabled("ADR-001: znana anomalia RGA, patrz sekcja Trade-offs")`) z linkiem do ADR.
-Uczciwe udokumentowanie granicy własnego algorytmu > udawanie, że granicy nie ma.
-
-Opcja rozszerzenia (jeśli starczy czasu): drugi backend algorytmu (Fugue) za tym samym
-interfejsem + ten sam zestaw property testów puszczony na obu. To by było mocne, ale to
-+2-3 dni — decyzja do podjęcia po checkpoincie 2.
-
-### Optymalizacja jako narracja, nie jako założenie
-
-Robimy **dwie** implementacje mapowania `index ↔ CRDT id`, za tym samym interfejsem:
-
-1. **Naiwna** — liniowe skanowanie listy. O(n) na operację. Prosta, oczywiście poprawna.
-2. **Indeksowana** — order-statistic tree / skip-list nad blokami, trzymająca licznik
-   widocznych znaków. O(log n).
-
-Obie przechodzą **ten sam** zestaw property testów (to dowód, że optymalizacja niczego nie
-zepsuła), a JMH pokazuje różnicę w liczbach na dokumentach 1k / 10k / 100k / 1M znaków.
-Ta sekwencja commitów — naiwne → zmierzone → zoptymalizowane → ta sama poprawność — jest
-warta więcej niż od razu wrzucony sprytny kod.
-
-### Dwie implementacje (Java + TypeScript) i jak nie dopuścić do rozjazdu
-
-CRDT musi istnieć po obu stronach (klient edytuje offline lokalnie). To realny koszt: dwa
-kody, jedna specyfikacja. Rozwiązanie: **korpus wektorów konformancyjnych**.
-
-Property testy w Javie generują losowe sekwencje operacji i zapisują je jako JSON
-(`crdt-core/src/test/resources/conformance/*.json`: operacje + oczekiwany stan końcowy).
-Suite w TypeScripcie odtwarza dokładnie te same wektory i musi dojść do tego samego tekstu.
-CI odpala oba. Rozjazd implementacji przestaje być możliwy po cichu.
+This is ADR-004 and it is the architecture's strongest point: an unreliable broadcast is *safe by
+definition* here, rather than "safe because we hope so".
 
 ---
 
-## 3. Checkpointy
+## 2. The algorithm's core — what exactly we implement
 
-Po każdym checkpoincie **stop i pytanie, czy kontynuować** (CLAUDE.md).
-Estymaty zakładają pracę z Claude Code, nie „ręcznie od zera".
+### The choice: RGA (Replicated Growable Array), the left-origin variant
+
+- `Id = (replicaId: int, counter: long)` — a Lamport counter per replica.
+- The character node: `{ id, originLeft: Id, value, deleted: boolean }`.
+- **Insert**: a new node points at its left neighbour at the moment of insertion. Among siblings
+  inserted after the same origin, the order is descending by `(counter, replicaId)`. A
+  deterministic total order with no arbiter.
+- **Delete**: a tombstone (a flag), not removal from the list — because other replicas may still
+  point at that node as an origin.
+- **Dedup / causal delivery**: a version vector per replica plus a buffer of operations whose
+  causes we have not seen yet.
+- **Run-length encoding**: continuous typing ("the user typed 20 characters") is one operation with
+  a base `id` and a length; a node splits only when somebody inserts into the middle of it (like
+  `Item` in Yjs). Without this, a 100k-character document is 100k objects.
+
+### A deliberately documented weakness: the interleaving anomaly
+
+RGA is not maximally non-interleaving (see Weidner & Kleppmann, *Fugue*). There are sequences of
+concurrent insertions where two authors' letters interleave instead of staying in contiguous
+blocks.
+
+**The plan:** write a property-based test `concurrentTyping_staysContiguous`, find the case where
+RGA breaks it, and **leave it in the repository as an explicitly marked known-limitation test**
+(`@Disabled("ADR-001: a known RGA anomaly, see the Trade-offs section")`) with a link to the ADR.
+Honestly documenting the boundary of one's own algorithm beats pretending the boundary is not
+there.
+
+An optional extension (if time allows): a second algorithm backend (Fugue) behind the same
+interface plus the same set of property tests run against both. That would be strong, but it is
++2–3 days — a decision to be taken after checkpoint 2.
+
+### Optimisation as narrative, not as an assumption
+
+We build **two** implementations of the `index ↔ CRDT id` mapping behind the same interface:
+
+1. **Naive** — a linear scan of the list. O(n) per operation. Simple, obviously correct.
+2. **Indexed** — an order-statistic tree / skip list over the blocks, carrying a count of visible
+   characters. O(log n).
+
+Both pass **the same** set of property tests (that is the proof the optimisation broke nothing),
+and JMH shows the difference in numbers on documents of 1k / 10k / 100k / 1M characters. That
+sequence of commits — naive → measured → optimised → the same correctness — is worth more than
+clever code dropped in from the start.
+
+### Two implementations (Java + TypeScript) and how to keep them from diverging
+
+The CRDT has to exist on both sides (the client edits offline, locally). That is a real cost: two
+bodies of code, one specification. The solution: **a corpus of conformance vectors**.
+
+The Java property tests generate random sequences of operations and write them out as JSON
+(`crdt-core/src/test/resources/conformance/*.json`: the operations plus the expected final state).
+The TypeScript suite replays exactly those vectors and has to arrive at the same text. CI runs
+both. The implementations can no longer diverge silently.
 
 ---
 
-### CP1 — ADR-y + szkielet (0,5–1 dnia) — bez kodu domenowego
+## 3. Checkpoints
+
+After each checkpoint, **stop and ask whether to continue** (CLAUDE.md). The estimates assume
+working with Claude Code, not "by hand from scratch".
+
+---
+
+### CP1 — ADRs + skeleton (0.5–1 day) — no domain code
 
 **Deliverables:**
-- `git init`, `.gitignore`, `.editorconfig`, pierwszy commit
-- `docs/adr/0001-crdt-vs-ot.md` — RGA vs Logoot/LSEQ vs YATA/Yjs vs Fugue vs OT.
-  Konsekwencje negatywne: tombstone growth, anomalia przeplotu, podwójna implementacja
-- `docs/adr/0002-transport.md` — STOMP/WS vs raw WS vs SSE+POST vs WebTransport.
-  Uzasadnienie heartbeatu i jego wartości liczbowej (nie „bo default")
-- `docs/adr/0003-change-history.md` — event log vs periodic snapshots (decyzja: oba,
-  snapshot to cache nad logiem; kompromis miejsce/czas odtworzenia)
-- `docs/adr/0004-horizontal-scaling.md` — instancja jako replika + Redis fast path +
-  anti-entropy z op_log; alternatywa (document affinity) i dlaczego odrzucona
-- `docs/adr/0005-tombstone-gc.md` — causal stability, kiedy wolno skasować tombstone
-- Szkielet Mavena: `pom.xml` (parent) + moduły `crdt-core`, `app`
-- `frontend/` — Vite + React + TS, pusty
-- `docker-compose.yml` — Postgres, Redis, Prometheus, Grafana, OTel Collector (z komentarzami
-  *dlaczego* przy każdym nietrywialnym ustawieniu)
-- CI: GitHub Actions, na razie tylko build + lint
-- README: sekcje-zaślepki z tytułami, żeby wiadomo było co dopisujemy po drodze
+- `git init`, `.gitignore`, `.editorconfig`, the first commit
+- `docs/adr/0001-crdt-vs-ot.md` — RGA vs Logoot/LSEQ vs YATA/Yjs vs Fugue vs OT. Negative
+  consequences: tombstone growth, the interleaving anomaly, the double implementation
+- `docs/adr/0002-transport.md` — STOMP/WS vs raw WS vs SSE+POST vs WebTransport. A justification
+  for the heartbeat and for its numeric value (not "because it is the default")
+- `docs/adr/0003-change-history.md` — an event log vs periodic snapshots (decision: both, with the
+  snapshot a cache over the log; the space/replay-time trade-off)
+- `docs/adr/0004-horizontal-scaling.md` — an instance as a replica + the Redis fast path +
+  anti-entropy from the op_log; the alternative (document affinity) and why it was rejected
+- `docs/adr/0005-tombstone-gc.md` — causal stability, and when a tombstone may be removed
+- The Maven skeleton: `pom.xml` (parent) + the `crdt-core` and `app` modules
+- `frontend/` — Vite + React + TS, empty
+- `docker-compose.yml` — Postgres, Redis, Prometheus, Grafana, the OTel Collector (with a comment
+  saying *why* next to every non-trivial setting)
+- CI: GitHub Actions, for now just build + lint
+- README: placeholder sections with titles, so it is clear what gets filled in along the way
 
-**Exit criteria:** `./mvnw install` i `npm run build` przechodzą, ADR-y opisują 5 decyzji,
-w każdym jest sekcja „Konsekwencje negatywne" która nie jest pusta.
+**Exit criteria:** `./mvnw install` and `npm run build` pass, the ADRs cover 5 decisions, and each
+of them has a "Negative consequences" section that is not empty.
 
 ---
 
-### CP2 — Rdzeń CRDT + property testy (2–3 dni) — **serce projektu**
+### CP2 — The CRDT core + property tests (2–3 days) — **the heart of the project**
 
 **Deliverables:**
-- `crdt-core`: `Id`, `VersionVector`, `Op` (Insert/Delete), `RgaDocument`, `IndexMap`
-  (naiwna + indeksowana), serializacja binarna operacji
-- Property testy (jqwik) — każdy odpowiada na konkretne pytanie:
+- `crdt-core`: `Id`, `VersionVector`, `Op` (Insert/Delete), `RgaDocument`, `IndexMap` (naive and
+  indexed), binary serialisation of operations
+- Property tests (jqwik) — each answering a specific question:
 
-| Property | Jaki failure mode wyłapuje |
+| Property | The failure mode it catches |
 |---|---|
-| `convergence` — N replik, losowe operacje, losowa kolejność dostarczenia → identyczny tekst | Rdzeń: brak przemienności scalania = ciche gubienie zmian |
-| `idempotence` — dostarczenie tej samej operacji 2× nic nie zmienia | Retransmisja po reconnect duplikuje tekst |
-| `causalDelivery` — operacja przed swoim originem trafia do bufora, nie do stanu | Sieć zmienia kolejność → NPE albo znak w złym miejscu |
-| `deleteCommutesWithInsert` — usunięcie znaku i wstawienie obok siebie w dowolnej kolejności | Wyścig kursor/backspace = zjedzony sąsiedni znak |
-| `naiveEqualsIndexed` — obie implementacje IndexMap na tym samym wejściu | Optymalizacja O(log n) wprowadziła regres poprawności |
-| `concurrentTyping_staysContiguous` | Anomalia przeplotu — **oczekujemy że padnie**, dokumentujemy |
-| `gcPreservesText` — GC tombstone'ów nie zmienia widocznego tekstu | GC kasuje węzeł, który był czyimś originem |
+| `convergence` — N replicas, random operations, random delivery order → identical text | The core: without commutative merging, changes are silently lost |
+| `idempotence` — delivering the same operation twice changes nothing | A retransmission after a reconnect duplicates text |
+| `causalDelivery` — an operation arriving before its origin goes into the buffer, not into the state | The network reorders → an NPE or a character in the wrong place |
+| `deleteCommutesWithInsert` — deleting a character and inserting next to it, in either order | A cursor/backspace race eats the neighbouring character |
+| `naiveEqualsIndexed` — both IndexMap implementations on the same input | The O(log n) optimisation introduced a correctness regression |
+| `concurrentTyping_staysContiguous` | The interleaving anomaly — **we expect this to fail**, and we document it |
+| `gcPreservesText` — tombstone GC does not change the visible text | GC removes a node that was somebody's origin |
 
-- Determinizm testów: stały seed w CI + nightly run z losowym seedem i 10× większą liczbą prób
-  (znalezione kontrprzykłady lądują w repo jako regression testy)
-- Generator wektorów konformancyjnych (JSON) dla frontendu
-- JMH: benchmark insert/delete/merge na 1k/10k/100k/1M znaków, wynik do README
+- Test determinism: a fixed seed in CI plus a nightly run with a random seed and 10× the tries
+  (counterexamples found go into the repository as regression tests)
+- A generator of conformance vectors (JSON) for the frontend
+- JMH: an insert/delete/merge benchmark on 1k/10k/100k/1M characters, with the result in the README
 
-**Exit criteria:** wszystkie property testy zielone (poza jawnie oznaczonym known-limitation),
-JMH pokazuje liczbami, że wersja indeksowana skaluje się log-liniowo, a naiwna kwadratowo.
-**Nie idziemy dalej, dopóki to nie jest solidne** (CLAUDE.md).
+**Exit criteria:** every property test green (except the explicitly marked known limitation), and
+JMH showing in numbers that the indexed version scales log-linearly while the naive one scales
+quadratically. **We do not go further until this is solid** (CLAUDE.md).
 
 ---
 
-### CP3 — WebSocket + persystencja (2 dni)
+### CP3 — WebSocket + persistence (2 days)
 
 **Deliverables:**
-- STOMP endpoint, kanały: `/topic/doc/{id}/ops`, `/topic/doc/{id}/presence`, `/app/doc/{id}/op`
-- Protokół: `ClientOp` → serwer scala → `ServerAck(opId, serverSeq)` + broadcast do reszty.
-  Klient nie czeka na ack żeby pokazać własny znak (local-first, zero input lag)
-- Postgres: `documents`, `operations` (PK = `(doc_id, replica_id, counter)` → idempotencja
-  zapisu za darmo), `snapshots`, `document_members`
-- Migracje: Flyway
-- Batchowanie zapisu operacji (grupowy insert co N ms) — z komentarzem o kompromisie
-  trwałość/przepustowość
-- Auth: JWT, uproszczony in-memory user store — świadomie, do sekcji „co inaczej w produkcji"
-- **Testy integracyjne z Testcontainers** (prawdziwy Postgres): dwóch klientów WS edytuje
-  ten sam dokument → obaj widzą to samo; restart aplikacji → stan odtworzony z op_log
+- A STOMP endpoint, with the channels `/topic/doc/{id}/ops`, `/topic/doc/{id}/presence`,
+  `/app/doc/{id}/op`
+- The protocol: `ClientOp` → the server merges → `ServerAck(opId, serverSeq)` + a broadcast to
+  everyone else. The client does not wait for an ack to show its own character (local-first, zero
+  input lag)
+- Postgres: `documents`, `operations` (PK = `(doc_id, replica_id, counter)` → write idempotence for
+  free), `snapshots`, `document_members`
+- Migrations: Flyway
+- Batched operation writes (a grouped insert every N ms) — with a comment about the
+  durability/throughput trade-off
+- Auth: JWT with a simplified in-memory user store — deliberately, and destined for the "what I
+  would do differently in production" section
+- **Integration tests with Testcontainers** (a real Postgres): two WS clients editing the same
+  document → both see the same thing; an application restart → the state rebuilt from the op_log
 
-**Exit criteria:** dwa klienty (test) zbieżne przez prawdziwy stack, stan przeżywa restart.
+**Exit criteria:** two (test) clients converging through the real stack, and the state surviving a
+restart.
 
 ---
 
-### CP4 — Frontend: edytor + kursory (2–3 dni)
+### CP4 — Frontend: the editor and cursors (2–3 days)
 
 **Deliverables:**
-- `crdt-ts` — port RGA, przechodzi wektory konformancyjne z CP2
-- CodeMirror 6 jako **warstwa widoku** (nie model): transakcje CM6 → operacje CRDT →
-  z powrotem dekoracje. Uzasadnienie w ADR-006: raw contentEditable to miesiąc walki
-  z IME/composition/undo przeglądarki, a `idea.md` explicite dopuszcza bibliotekę jako UI layer
-- Zdalne kursory i zaznaczenia — pozycja kursora trzymana jako **CRDT id, nie offset**
-  (offset rozjeżdża się przy zdalnej edycji przed kursorem — to klasyczny bug, warto o nim
-  napisać w README)
-- Presence: lista userów, „X pisze", kolory per user
-- Optimistic local apply + rekoncyliacja po ack
+- `crdt-ts` — a port of RGA that passes the conformance vectors from CP2
+- CodeMirror 6 as a **view layer** (not the model): CM6 transactions → CRDT operations → back as
+  decorations. The justification goes into ADR-006: raw contentEditable is a month of fighting
+  IME/composition/the browser's undo, and `idea.md` explicitly allows a library as the UI layer
+- Remote cursors and selections — a cursor position held as a **CRDT id, not an offset** (an offset
+  drifts under remote editing before the cursor — a classic bug worth writing about in the README)
+- Presence: a list of users, "X is typing", a colour per user
+- Optimistic local apply plus reconciliation after the ack
 
-**Exit criteria:** dwie karty przeglądarki, jednoczesne pisanie w tym samym akapicie, brak
-skakania kursora, brak gubienia znaków.
+**Exit criteria:** two browser tabs, simultaneous typing in the same paragraph, no cursor jumping,
+no lost characters.
 
 ---
 
-### CP5 — Historia zmian / wersjonowanie (1–1,5 dnia)
+### CP5 — Change history / versioning (1–1.5 days)
 
 **Deliverables:**
-- Time travel: `GET /api/docs/{id}/at?t=...` — najbliższy wcześniejszy snapshot + replay
-  operacji z op_log do punktu T
-- Audit trail: kto, co, kiedy (na bazie `replica_id → user_id`)
-- Restore: przywrócenie wersji jako **nowe operacje**, nie nadpisanie logu (log pozostaje
-  append-only — inaczej tracimy audytowalność i psujemy zbieżność u klientów online)
-- UI: timeline / lista wersji, diff między wersjami, podgląd
+- Time travel: `GET /api/docs/{id}/at?t=...` — the nearest earlier snapshot plus a replay of
+  operations from the op_log up to point T
+- An audit trail: who, what, when (based on `replica_id → user_id`)
+- Restore: bringing back a version as **new operations**, not by overwriting the log (the log stays
+  append-only — otherwise we lose auditability and break convergence for online clients)
+- UI: a timeline / version list, a diff between versions, a preview
 
-**Exit criteria:** można cofnąć się do dowolnego punktu, przywrócić go, a inne otwarte klienty
-zobaczą to jako normalną edycję.
+**Exit criteria:** it is possible to go back to any point and restore it, and other open clients see
+that as an ordinary edit.
 
 ---
 
-### CP6 — Offline / reconnect (1,5 dnia)
+### CP6 — Offline / reconnect (1.5 days)
 
 **Deliverables:**
-- Bufor operacji offline w IndexedDB (przeżywa refresh karty, nie tylko utratę sieci)
-- Reconnect: wymiana version vectorów → serwer dosyła braki, klient dosyła swoje
-- Backoff wykładniczy z jitterem (uzasadniony liczbowo, nie z palca)
-- **Tombstone GC + polityka dla bardzo starych klientów**: klient offline dłużej niż okno GC
-  wraca z operacjami wskazującymi na skasowane tombstone'y. Decyzja: odrzucamy je i eksportujemy
-  lokalną kopię jako „odzyskany szkic", zamiast udawać scalanie. To jest failure mode do README
-- Symulator sieci: middleware transportu z suwakami latency / jitter / packet loss / partition.
-  Ten sam kod napędza demo (idea.md) i testy chaosu (CP8) — jedna rzecz, dwa zastosowania
+- An offline operation buffer in IndexedDB (surviving a tab refresh, not just a network loss)
+- Reconnect: an exchange of version vectors → the server sends what is missing, the client sends
+  its own
+- Exponential backoff with jitter (justified numerically, not plucked from the air)
+- **Tombstone GC plus a policy for very old clients**: a client offline for longer than the GC
+  window comes back with operations pointing at collected tombstones. The decision: we reject them
+  and export the local copy as a "recovered draft", instead of pretending to merge. That is a
+  failure mode for the README
+- A network simulator: transport middleware with latency / jitter / packet loss / partition
+  sliders. The same code drives the demo (idea.md) and the chaos tests (CP8) — one thing, two uses
 
-**Exit criteria:** wyłączenie sieci na 60 s przy aktywnym pisaniu po obu stronach → po powrocie
-oba klienty mają identyczny tekst zawierający obie edycje.
+**Exit criteria:** turning the network off for 60 s while both sides are actively typing → after it
+returns, both clients hold identical text containing both sets of edits.
 
 ---
 
-### CP7 — Observability (1,5 dnia)
+### CP7 — Observability (1.5 days)
 
 **Deliverables:**
-- OpenTelemetry: trace pojedynczej edycji end-to-end. `traceparent` (W3C) przenoszony
-  w headerze STOMP; spany: `edit.submit` (browser) → `op.receive` → `crdt.merge` →
-  `op.persist` → `op.broadcast` → span **links** do N × `op.deliver` (fan-out to nie jest
-  relacja rodzic-dziecko — link jest tu semantycznie poprawny)
-- Metryki (Micrometer → Prometheus):
-  `doc_active_sessions`, `crdt_merge_duration_seconds`, `op_propagation_latency_seconds`,
-  `crdt_concurrent_merges_total`, `doc_tombstone_ratio`, `ws_reconnect_total`,
-  `offline_buffer_size`, `redis_gap_repairs_total`
-- **Metodologia pomiaru latencji propagacji** (bo inaczej to liczba bez znaczenia):
-  - *serwerowa*: ingest → broadcast, jeden zegar, uczciwa
-  - *end-to-end*: mierzona wyłącznie w harnessie benchmarkowym, gdzie writer i reader są
-    w jednym procesie i dzielą zegar monotoniczny
-  - Nie mieszamy tych dwóch liczb w README i piszemy wprost, która jest która
-- Grafana: dashboard provisionowany z repo (JSON), nie klikany ręcznie
-- Exemplars: histogram Prometheusa → konkretny trace (opcjonalne, jeśli zostanie czas)
+- OpenTelemetry: an end-to-end trace of a single edit. `traceparent` (W3C) carried in a STOMP
+  header; the spans: `edit.submit` (browser) → `op.receive` → `crdt.merge` → `op.persist` →
+  `op.broadcast` → span **links** to N × `op.deliver` (fan-out is not a parent-child relationship —
+  a link is semantically correct here)
+- Metrics (Micrometer → Prometheus): `doc_active_sessions`, `crdt_merge_duration_seconds`,
+  `op_propagation_latency_seconds`, `crdt_concurrent_merges_total`, `doc_tombstone_ratio`,
+  `ws_reconnect_total`, `offline_buffer_size`, `redis_gap_repairs_total`
+- **A methodology for measuring propagation latency** (because otherwise it is a meaningless
+  number):
+  - *server-side*: ingest → broadcast, one clock, honest
+  - *end-to-end*: measured solely in the benchmark harness, where writer and reader are in one
+    process and share a monotonic clock
+  - We do not mix those two numbers in the README, and we say outright which is which
+- Grafana: a dashboard provisioned from the repository (JSON), not clicked together by hand
+- Exemplars: a Prometheus histogram → a specific trace (optional, if time is left)
 
-**Exit criteria:** jedno naciśnięcie klawisza w przeglądarce = jeden trace widoczny end-to-end;
-dashboard startuje z `docker compose up` bez ręcznej konfiguracji.
+**Exit criteria:** one keystroke in the browser = one trace visible end to end; the dashboard comes
+up from `docker compose up` with no manual configuration.
 
 ---
 
-### CP8 — Chaos + benchmarki (1,5–2 dni)
+### CP8 — Chaos + benchmarks (1.5–2 days)
 
 **Deliverables:**
-- Testy chaosu: losowe opóźnienia, reorder, drop, partycja sieciowa, kill instancji backendu
-  w trakcie edycji. Asercja końcowa zawsze ta sama: **wszystkie repliki zbieżne**
-- Toxiproxy w Testcontainers dla chaosu na prawdziwym połączeniu (nie tylko in-process)
-- **Gatling** (nie k6) — bo JVM, zgodny ze stackiem, łatwiej ręcznie składać ramki STOMP
-- Scenariusze: 10 / 50 / 100 / 250 userów w jednym dokumencie; dokument 1k / 10k / 100k / 1M znaków
-- Do README, z metodologią i specyfikacją maszyny:
-  - throughput (ops/s) vs liczba userów
-  - latencja propagacji p50/p95/p99 vs liczba userów
-  - **punkt degradacji** — przy ilu userach / jakim rozmiarze dokumentu p95 przekracza próg
-  - zużycie pamięci vs rozmiar dokumentu (koszt tombstone'ów, przed i po GC)
+- Chaos tests: random delays, reordering, drops, a network partition, killing a backend instance
+  mid-edit. The final assertion is always the same: **every replica converges**
+- Toxiproxy in Testcontainers, for chaos on a real connection (not just in-process)
+- **Gatling** (not k6) — because it is JVM-based, matches the stack, and makes assembling STOMP
+  frames by hand easier
+- Scenarios: 10 / 50 / 100 / 250 users in one document; documents of 1k / 10k / 100k / 1M
+  characters
+- For the README, with the methodology and the machine's specification:
+  - throughput (ops/s) vs the number of users
+  - propagation latency p50/p95/p99 vs the number of users
+  - **the degradation point** — at how many users and what document size p95 crosses the threshold
+  - memory use vs document size (the cost of tombstones, before and after GC)
 
-**Exit criteria:** README zawiera tabele z liczbami i wykresy, zero przymiotników typu „szybki".
-Jeśli coś degraduje się źle — zapisujemy to szczerze, wraz z hipotezą dlaczego.
+**Exit criteria:** the README contains tables of numbers and charts, with zero adjectives like
+"fast". If something degrades badly, we write that down honestly along with a hypothesis as to why.
 
 ---
 
-### CP9 — Dokumentacja finalna + demo (1–1,5 dnia)
+### CP9 — Final documentation + demo (1–1.5 days)
 
 **Deliverables:**
-- **GIF na samej górze README, przed jakimkolwiek tekstem.** Nagrywany skryptem Playwright
-  (dwa konteksty przeglądarki, deterministyczny scenariusz) → wideo → `ffmpeg` + `gifski`.
-  Skrypt w repo → demo da się nagrać ponownie po zmianie UI, i przy okazji jest testem E2E
-- Scenariusz demo: (1) dwóch userów pisze w tym samym zdaniu, (2) rozłączenie + edycja offline
-  + reconnect i scalenie, (3) cofnięcie do wcześniejszej wersji
-- Diagramy: architektura, sekwencja pojedynczej edycji, maszyna stanów reconnectu (Mermaid)
-- **Sekcja Failure modes** (CLAUDE.md §6): utrata połączenia, pad instancji/failover,
-  jednoczesna edycja tego samego znaku, bardzo duży dokument i GC tombstone'ów
-- **Sekcja „co zrobiłbym inaczej w produkcji"** (§7): brak rich text, uproszczony auth,
-  brak shardingu dokumentów, brak rate limitingu per user, anomalia przeplotu RGA,
-  podwójna implementacja algorytmu jako dług — i jak każdą z tych rzeczy zaadresować przy skali
-- Przejście po ADR-ach: dopisanie „zweryfikowano w fazie X" tam, gdzie w CP1 była niepewność
+- **A GIF at the very top of the README, before any text.** Recorded by a Playwright script (two
+  browser contexts, a deterministic scenario) → video → `ffmpeg` + `gifski`. The script lives in
+  the repository → the demo can be re-recorded after a UI change, and doubles as an E2E test
+- The demo scenario: (1) two users typing in the same sentence, (2) a disconnect + offline editing
+  + a reconnect and a merge, (3) rewinding to an earlier version
+- Diagrams: the architecture, the sequence of a single edit, the reconnect state machine (Mermaid)
+- **A Failure modes section** (CLAUDE.md §6): losing the connection, an instance crash/failover,
+  simultaneous editing of the same character, a very large document and tombstone GC
+- **A "what I would do differently in production" section** (§7): no rich text, simplified auth, no
+  document sharding, no per-user rate limiting, RGA's interleaving anomaly, the double
+  implementation of the algorithm as a debt — and how each of those would be addressed at scale
+- A pass over the ADRs: adding "verified in phase X" wherever CP1 left uncertainty
 
 ---
 
-## 4. Decyzje podjęte (2026-08-14)
+## 4. Decisions taken (2026-08-14)
 
-1. **Głębokość CRDT** → samo **RGA**, z anomalią przeplotu udokumentowaną jako znane
-   ograniczenie (jawnie oznaczony test + sekcja w ADR-001). Fugue jako drugi backend
-   algorytmu **odrzucone** ze względu na koszt (+2–3 dni); wchodzi do sekcji
-   „co zrobiłbym inaczej w produkcji" jako świadomie niewykonany krok.
-2. **Warstwa edytora** → **CodeMirror 6** jako czysta warstwa widoku (model dokumentu
-   to nasz CRDT, CM6 renderuje i dostarcza dekoracje dla zdalnych kursorów). Uzasadnienie
-   trafia do ADR-006.
-3. **Zakres benchmarku** → do **250 userów / 1M znaków**, jedna maszyna, specyfikacja
-   sprzętu podana w README razem z wynikami. Bez distributed Gatling.
+1. **Depth of the CRDT** → **RGA** alone, with the interleaving anomaly documented as a known
+   limitation (an explicitly marked test plus a section in ADR-001). Fugue as a second algorithm
+   backend is **rejected** on cost (+2–3 days); it goes into the "what I would do differently in
+   production" section as a deliberately skipped step.
+2. **The editor layer** → **CodeMirror 6** as a pure view layer (the document model is our CRDT;
+   CM6 renders and supplies the decorations for remote cursors). The justification goes into
+   ADR-006.
+3. **The scope of the benchmark** → up to **250 users / 1M characters**, one machine, with the
+   hardware specification stated in the README alongside the results. No distributed Gatling.
 
-## 5. Sumaryczna estymata
+## 5. Total estimate
 
-| Checkpoint | Dni |
+| Checkpoint | Days |
 |---|---|
-| CP1 ADR-y + szkielet | 0,5–1 |
-| CP2 CRDT + property testy | 2–3 |
-| CP3 WebSocket + persystencja | 2 |
-| CP4 Frontend + kursory | 2–3 |
-| CP5 Historia zmian | 1–1,5 |
-| CP6 Offline / reconnect | 1,5 |
-| CP7 Observability | 1,5 |
-| CP8 Chaos + benchmarki | 1,5–2 |
-| CP9 Dokumentacja + demo | 1–1,5 |
-| **Razem** | **~13–17 dni roboczych** |
+| CP1 ADRs + skeleton | 0.5–1 |
+| CP2 CRDT + property tests | 2–3 |
+| CP3 WebSocket + persistence | 2 |
+| CP4 Frontend + cursors | 2–3 |
+| CP5 Change history | 1–1.5 |
+| CP6 Offline / reconnect | 1.5 |
+| CP7 Observability | 1.5 |
+| CP8 Chaos + benchmarks | 1.5–2 |
+| CP9 Documentation + demo | 1–1.5 |
+| **Total** | **~13–17 working days** |
 
-Gdyby zabrakło czasu: tniemy CP5 (historia) do minimum i rozszerzenia CRDT z §4.1.
-**Nie tniemy CP7 (observability)** — CLAUDE.md §4 mówi wprost, że to jeden z głównych
-sygnałów senioralności.
+If time ran short: we would cut CP5 (history) to a minimum, along with the CRDT extensions from
+§4.1. **We would not cut CP7 (observability)** — CLAUDE.md §4 states outright that it is one of the
+main signals of seniority.
