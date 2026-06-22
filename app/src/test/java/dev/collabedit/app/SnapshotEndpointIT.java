@@ -105,7 +105,8 @@ class SnapshotEndpointIT extends IntegrationTestBase {
             client.awaitCondition(() -> client.lastAckSeq() >= 1, PATIENCE, "text");
             client.markReturningOp(0, 3, "bold", null);
             client.awaitCondition(() -> client.lastAckSeq() >= 2, PATIENCE, "mark");
-            client.delete(11, 6);
+            // " on the mat" — eleven characters from index 11, leaving "The cat sat".
+            client.delete(11, 11);
             client.awaitCondition(() -> client.lastAckSeq() >= 3, PATIENCE, "deletion");
         }
 
