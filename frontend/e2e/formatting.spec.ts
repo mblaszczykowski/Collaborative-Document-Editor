@@ -1,5 +1,4 @@
-import { expect, test } from '@playwright/test'
-import { freshDocument, joinAs, typeInto } from './helpers'
+import { expect, test, freshDocument, joinAs, typeInto } from './helpers'
 
 /**
  * Text formatting (CP13) across two real browsers.
@@ -80,6 +79,32 @@ test('formatting survives a page reload', async ({ browser, request }) => {
   await expect(page.locator('.cm-content')).toContainText('alfa beta gamma', { timeout: 15_000 })
   await expect(await hasMark(page, 'cm-mark-italic', 'alfa'))
     .toBeVisible({ timeout: 10_000 })
+
+  await page.context().close()
+})
+
+test('undo after making a line a heading takes back the heading, not the text', async ({
+  browser,
+  request,
+}) => {
+  const documentId = await freshDocument(request, `BlockUndo-${Date.now()}`)
+  const page = await joinAs(browser, 'Ania', documentId)
+
+  await typeInto(page, 'a line worth keeping')
+  await expect(page.locator('.cm-content')).toContainText('a line worth keeping')
+
+  await page.getByRole('button', { name: 'Heading', exact: true }).click()
+  await expect(page.locator('.cm-content .cm-mark-heading')).toBeVisible({ timeout: 10_000 })
+
+  // Ctrl+Z. Block gestures never reached the undo stack, so this popped the entry underneath —
+  // the insertion of the line itself — and deleted the text while leaving the heading on the
+  // empty line behind. The text is what the user would have lost, so it is what is asserted
+  // first.
+  await page.locator('.cm-content').click()
+  await page.keyboard.press('ControlOrMeta+z')
+
+  await expect(page.locator('.cm-content')).toContainText('a line worth keeping')
+  await expect(page.locator('.cm-content .cm-mark-heading')).toHaveCount(0, { timeout: 10_000 })
 
   await page.context().close()
 })

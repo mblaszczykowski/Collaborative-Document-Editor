@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
  * The generator of the conformance vector corpus — the bridge between the Java implementation and
  * the TypeScript one.
  *
- * <p><b>Why this exists.</b> ADR-0001 accepts a deliberate debt: the algorithm exists in two
+ * <p><b>Why this exists.</b> the CRDT decision accepts a deliberate debt: the algorithm exists in two
  * implementations, because the client has to edit offline. Two implementations of one specification
  * are two opportunities for a bug and a certainty that sooner or later they will diverge —
  * especially since the divergence only shows up as "it looks different on mine than on yours",
@@ -61,10 +61,19 @@ class ConformanceVectorGeneratorTest {
             duplicatedOperations()));
 
         written.add(write("005-backward-typing-interleaving",
-            "Backward typing by two replicas. Pins the KNOWN RGA LIMITATION (ADR-0001): "
+            "Backward typing by two replicas. Pins the KNOWN RGA LIMITATION: "
                 + "the result is an interleaving. The TS implementation must interleave THE SAME "
                 + "WAY — agreement matters more than whether the result is pleasing.",
             backwardTyping()));
+
+        written.add(write("006-duplicate-while-buffered",
+            "An operation delivered TWICE while its origin is still missing, then the origin. "
+                + "Distinct from 004: there the duplicate lands in a document that already holds "
+                + "the operation, so a structure-based check catches it. Here both copies go into "
+                + "the PENDING buffer, and a replica that only checks the structure integrates "
+                + "both when the origin arrives — duplicating the text AND putting one identifier "
+                + "in two blocks, which makes a later delete tombstone only one of the copies.",
+            duplicateWhileBuffered()));
 
         written.add(write("201-mark-inherited-by-concurrent-insert",
             "Text typed into the middle of a bold range by a replica that has not seen the bold "
@@ -119,7 +128,7 @@ class ConformanceVectorGeneratorTest {
                 randomRichTextScenario(seed)));
         }
 
-        assertThat(written).hasSize(40);
+        assertThat(written).hasSize(41);
 
         // A self-check: every vector written must be reproducible by the same implementation that
         // generated it. A vector Java itself does not pass cannot be a reference for TypeScript.
@@ -129,7 +138,7 @@ class ConformanceVectorGeneratorTest {
     }
 
     // ------------------------------------------------------------------
-    // Scenariusze
+    // Scenarios
     // ------------------------------------------------------------------
 
     private static List<Op> sequentialTyping() {
@@ -173,6 +182,21 @@ class ConformanceVectorGeneratorTest {
         return List.of(base, fromMarek, base, deletion, fromMarek, deletion);
     }
 
+    /**
+     * The origin arrives LAST, after two copies of the operation that depends on it.
+     *
+     * <p>The order is the point: a vector is replayed exactly as listed, so putting the origin at
+     * the end is what forces both copies through the pending buffer. It is reachable in the
+     * product — the resynchronisation path re-sends operations by design, including ones the
+     * client is currently buffering because their origin is in a later chunk.
+     */
+    private static List<Op> duplicateWhileBuffered() {
+        RgaDocument anna = new RgaDocument(1);
+        Op origin = anna.insert(0, "AB");
+        Op child = anna.insert(2, "cd");
+        return List.of(child, child, origin);
+    }
+
     private static List<Op> backwardTyping() {
         RgaDocument anna = new RgaDocument(1);
         RgaDocument marek = new RgaDocument(2);
@@ -186,7 +210,7 @@ class ConformanceVectorGeneratorTest {
         return ops;
     }
 
-    // --- scenariusze formatowania (CP13) ---
+    // --- formatting scenarios (CP13) ---
 
     private static List<Op> markInheritedByConcurrentInsert() {
         RgaDocument ania = new RgaDocument(1);
@@ -325,7 +349,7 @@ class ConformanceVectorGeneratorTest {
         RgaDocument fresh = new RgaDocument(999);
         fresh.applyAll(operations);
         assertThat(fresh.pendingCount())
-            .as("wektor %s zostawia operacje w buforze — jest niekompletny", name)
+            .as("vector %s leaves operations in the buffer — it is incomplete", name)
             .isZero();
 
         ObjectNode root = OpCodec.mapper().createObjectNode();
@@ -355,8 +379,35 @@ class ConformanceVectorGeneratorTest {
         }
 
         String fileName = name + ".json";
-        Files.writeString(OUTPUT.resolve(fileName),
-            OpCodec.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(root) + "\n");
+        Path target = OUTPUT.resolve(fileName);
+        String produced =
+            OpCodec.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(root) + "\n";
+
+        // WRITTEN ONLY WHEN MISSING, compared otherwise — the same shape SnapshotFixtureTest uses
+        // for the encoder, and for the same reason.
+        //
+        // This used to write unconditionally. That makes the corpus a RECORDING of whatever the
+        // algorithm currently does rather than a reference it is checked against: run the suite
+        // with a defect present and the expected text is quietly replaced by the defect's output,
+        // after which every vector agrees with it and the TypeScript twin agrees with the vectors.
+        // CI catches the drift (`ci.yml` fails on a dirty `conformance/`), so the corpus itself was
+        // never in danger — but the developer running the tests locally, which is when a defect is
+        // actually present, got a green build and a silently rewritten reference.
+        //
+        // Regenerating on purpose is still one step: delete the file (or the directory) and run
+        // this test once. That is a deliberate act with a visible diff, which is the whole
+        // difference.
+        if (Files.exists(target)) {
+            assertThat(produced)
+                .as("the vector %s no longer matches the committed reference. If the algorithm "
+                    + "changed on purpose, delete conformance/%s and run this test once — "
+                    + "otherwise this is a regression, and the TypeScript suite replays this "
+                    + "corpus, so accepting it silently would make both implementations agree "
+                    + "about the wrong answer.", fileName, fileName)
+                .isEqualTo(Files.readString(target));
+        } else {
+            Files.writeString(target, produced);
+        }
         return fileName;
     }
 
@@ -385,7 +436,7 @@ class ConformanceVectorGeneratorTest {
         root.get("operations").forEach(node -> operations.add(OpCodec.fromJson(node)));
 
         // Verified on BOTH BlockList implementations — a vector is meant to be a reference for
-        // algorytmu, a nie dla konkretnej struktury danych.
+        // of the algorithm rather than of one particular data structure.
         for (BlockList storage : List.of(new ArrayBlockList(), new TreapBlockList())) {
             RgaDocument document = new RgaDocument(999, storage);
             document.applyAll(operations);
@@ -395,7 +446,7 @@ class ConformanceVectorGeneratorTest {
                 .isEqualTo(root.get("expectedText").asText());
 
             assertThat(describeFormatting(document))
-                .as("wektor %s daje inne FORMATOWANIE na %s", path.getFileName(),
+                .as("vector %s produces different FORMATTING on %s", path.getFileName(),
                     storage.getClass().getSimpleName())
                 .isEqualTo(root.get("expectedFormatting").toString());
         }

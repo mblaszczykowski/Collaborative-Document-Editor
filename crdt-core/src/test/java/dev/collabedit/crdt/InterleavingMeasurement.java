@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
  * The interleaving anomaly is the most-cited weakness of the algorithm this project chose, and
  * until now it was the one claim in the repository stated with an adjective.
  * {@link RgaInterleavingTest} proves the anomaly <b>exists</b> — it constructs the case by hand
- * and pins it. ADR-0001 names Fugue as the fix and declines it on budget. Neither says how often
+ * and pins it. The CRDT decision names Fugue as the fix and declines it on budget. Neither says how often
  * a real editing session runs into it.
  *
  * <p>That is a gap the project's own thesis does not permit. Plan v3 §9 rejects Fugue with a good

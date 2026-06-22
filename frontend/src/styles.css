@@ -1,8 +1,9 @@
 /*
-  The visual language is taken from the mockup (docs/design/mockup-inkline.html).
+  The visual language is taken from the static HTML mockup described in the original UI scope. The mockup
+  itself is not in the repository.
 
-  ADR-0007 rejected its functional scope — the formatting bar and the comments panel were
-  dummies at the time and were replaced by controls that actually did something. ADR-0008
+  The original UI scope rejected its functional scope — the formatting bar and the comments panel were
+  dummies at the time and were replaced by controls that actually did something. The scope extension
   revised that decision, and CP13 and CP14 built both for real. The mockup turned out to be
   right, just two checkpoints early.
 */
@@ -102,7 +103,7 @@ button { font-family: inherit; cursor: pointer; }
 .tb-icon svg { width: 15px; height: 15px; }
 .tb-icon:hover { background: var(--hover); }
 
-/* ===== PASEK DIAGNOSTYCZNY — tylko przy ?debug=1 ===== */
+/* ===== DIAGNOSTICS BAR — only with ?debug=1 ===== */
 .diagnostics {
   height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 12px;
   padding: 0 10px; background: #2a2a2a; color: #d8d8d8;
@@ -142,7 +143,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .sb-new { color: var(--text-faint); margin-top: 4px; }
 
-/* --- formatowanie tekstu (CP13) ---
+/* --- text formatting (CP13) ---
    Decorations overlap (a bold link, italic code), so each class sets ONLY its own property.
    A shorthand like `font: bold italic` would eat the neighbouring one. */
 
@@ -197,16 +198,23 @@ button { font-family: inherit; cursor: pointer; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.sb-delete, .sb-restore {
+/* `.sb-edit` is the rename button. It joined these two rather than getting rules of its own,
+   because it is the same kind of thing in the same place and should behave identically — including
+   the focus rule below, which is the whole reason it exists: renaming had no keyboard route at all
+   before it (double-click has no keyboard equivalent). */
+.sb-delete,.sb-restore,.sb-edit {
   flex-shrink: 0; border: none; background: transparent; cursor: pointer;
   color: var(--text-faint); font-size: 15px; line-height: 1;
   padding: 2px 5px; border-radius: 4px; opacity: 0;
 }
-.sb-row:hover .sb-delete, .sb-row:hover .sb-restore { opacity: 1; }
-.sb-delete:hover, .sb-restore:hover { background: var(--hover); color: var(--text); }
+.sb-edit { font-size: 12px; }
+.sb-row:hover.sb-delete,.sb-row:hover.sb-restore,.sb-row:hover.sb-edit { opacity: 1; }
+.sb-delete:hover,.sb-restore:hover,.sb-edit:hover { background: var(--hover); color: var(--text); }
 /* The keyboard has to see what the mouse sees — otherwise deleting is unreachable for anyone
    not using a pointer. */
-.sb-delete:focus-visible, .sb-restore:focus-visible { opacity: 1; outline: 1px solid var(--text-faint); }
+.sb-delete:focus-visible,.sb-restore:focus-visible,.sb-edit:focus-visible {
+  opacity: 1; outline: 1px solid var(--text-faint);
+}
 
 .sb-rename {
   flex: 1; min-width: 0; padding: 4px 6px; font-size: 12.5px;
@@ -226,7 +234,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .sb-trash-toggle:hover { background: var(--hover); color: var(--text-dim); }
 
-/* ===== KANWA ===== */
+/* ===== CANVAS ===== */
 .canvas-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .canvas-wrap { flex: 1; overflow-y: auto; display: flex; justify-content: center; padding: 28px 32px 60px; }
 .page {
@@ -286,7 +294,7 @@ button { font-family: inherit; cursor: pointer; }
   opacity: 1;
 }
 
-/* ===== PASEK STANU ===== */
+/* ===== STATUS BAR ===== */
 .statusbar {
   height: 24px; flex-shrink: 0; background: var(--chrome); border-top: 1px solid var(--chrome-line);
   display: flex; align-items: center; padding: 0 12px; gap: 16px;
@@ -296,7 +304,7 @@ button { font-family: inherit; cursor: pointer; }
 .statusbar-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
 .statusbar .metric { font-family: var(--mono); }
 
-/* ===== PANEL PRAWY — historia zmian ===== */
+/* ===== RIGHT PANEL — change history ===== */
 .rightpanel {
   width: 280px; flex-shrink: 0; background: var(--chrome);
   border-left: 1px solid var(--chrome-line); display: flex; flex-direction: column; min-height: 0;
@@ -308,24 +316,37 @@ button { font-family: inherit; cursor: pointer; }
 .rp-empty { font-size: 12px; color: var(--text-faint); }
 .rp-body { flex: 1; overflow-y: auto; padding: 12px; }
 
-.rp-hint {
-  font-size: 11px; color: var(--text-faint); line-height: 1.5;
-  border-left: 2px solid var(--chrome-line); padding-left: 8px; margin-bottom: 14px;
-}
-.rp-metric { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 12px; }
-.rp-metric .label { color: var(--text-dim); }
-.rp-metric .value { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--text); }
-.rp-metric .value.warn { color: var(--warn); }
+/* `.rp-hint`, `.rp-metric` and `.rp-replica` used to live here — the old right panel that showed
+   version vectors and replica state. It moved into `DiagnosticsBar` behind `?debug=1`,
+   and the rules stayed behind for nobody: nothing in `src/` or `e2e/` referenced any of them.
+   Deleted rather than kept "just in case", because dead CSS is the kind of thing a reader has to
+   grep the whole project to be sure about. */
 
-.rp-replica {
-  border: 1px solid var(--chrome-line); border-radius: 5px; padding: 7px 9px;
-  margin-bottom: 7px; background: #fff;
+/* A gesture that did not take effect, said out loud — see `ui/useFailure.ts` for why every one of
+   these used to be silent. Deliberately quieter than `.recovery-banner` and `.notice-banner`:
+   those report work that has moved or a guarantee that is gone, whereas this one says "that button
+   did nothing, try again", which needs to be noticed rather than to dominate the panel it sits
+   in. */
+.failure-note {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0 0 10px;
+  border: 1px solid var(--bad); border-radius: 4px; padding: 7px 9px;
+  font-family: var(--sans); font-size: 11.5px; line-height: 1.45; color: var(--bad);
+  background: none;
 }
-.rp-replica .who { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
-.rp-replica .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.rp-replica .vv { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); margin-top: 3px; }
+.failure-dismiss {
+  margin-left: auto; border: none; background: transparent; cursor: pointer;
+  font-size: 15px; line-height: 1; color: var(--bad); padding: 0 2px;
+}
 
-/* ===== EKRAN LOGOWANIA ===== */
+/* The address, shown when the clipboard could not be written to. Monospaced and narrow: it is
+   there to be selected and copied, not read. See `ui/browser.ts`. */
+.share-fallback {
+  width: 220px; padding: 3px 6px; font-family: var(--mono); font-size: 11px;
+  border: 1px solid var(--chrome-line); border-radius: 4px;
+  background: var(--page); color: var(--text);
+}
+
+/* ===== SIGN-IN SCREEN ===== */
 .login { height: 100vh; display: flex; align-items: center; justify-content: center; }
 .login-card {
   background: var(--page); padding: 32px; border-radius: 8px; width: 320px;
@@ -371,7 +392,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .history-restore:disabled { background: var(--text-faint); }
 
-/* The refused-merge message (ADR-0005) — deliberately prominent rather than discreet:
+/* The refused-merge message — deliberately prominent rather than discreet:
    losing the ability to merge matters to the user and has to be noticed. */
 .recovery-banner {
   border: 1px solid #e0c4b8; border-left: 3px solid var(--bad);
@@ -380,7 +401,22 @@ button { font-family: inherit; cursor: pointer; }
 }
 .recovery-banner a { color: var(--bad); }
 
-/* ===== KOMENTARZE (CP14) ===== */
+/* A problem the user can act on but that does not stop them working — see USER_FACING_ERRORS.
+   Weaker than.recovery-banner on purpose: that one reports work already moved elsewhere, this
+   one warns. Dismissable, because it stays until acknowledged rather than fading away unread. */
+.notice-banner {
+  display: flex; align-items: flex-start; gap: 10px;
+  border: 1px solid #e6d5ab; border-left: 3px solid #c99a2e;
+  background: #fdf9ef; border-radius: 4px; padding: 10px 12px; margin-bottom: 20px;
+  font-family: var(--sans); font-size: 12px; line-height: 1.55; color: #4a3a1f;
+}
+.notice-dismiss {
+  margin-left: auto; border: none; background: transparent; cursor: pointer;
+  font-size: 16px; line-height: 1; color: #8a7442; padding: 0 2px;
+}
+.notice-dismiss:hover { color: #4a3a1f; }
+
+/* ===== COMMENTS (CP14) ===== */
 
 .rp-toggle {
   float: right; border: none; background: transparent; cursor: pointer;
@@ -454,7 +490,7 @@ button { font-family: inherit; cursor: pointer; }
    when a comment appears, and that looks like a rendering bug. */
 .cm-mark-comment { background: rgba(184, 134, 46, 0.18); border-bottom: 1px solid rgba(184, 134, 46, 0.5); }
 
-/* --- rola w dokumencie (CP12) --- */
+/* --- role in the document (CP12) --- */
 
 /* The badge appears ONLY when the role restricts something. An "Owner" label on every document
    of one's own would be noise — the information is useful only at the moment it explains why
@@ -644,6 +680,15 @@ button { font-family: inherit; cursor: pointer; }
 .rp-queued {
   margin-left: auto; font-size: 10.5px; padding: 1px 6px; border-radius: 8px;
   border: 1px solid var(--warn); color: var(--warn); white-space: nowrap;
+}
+
+/* A comment the server refused for good. Louder than the "unsent" badge and dismissible, because
+   unlike waiting for a connection this will not resolve itself — the work is gone and saying so is
+   the only honest option left. */
+.rp-failed {
+  margin-left: auto; font-size: 10.5px; padding: 1px 6px; border-radius: 8px;
+  border: 1px solid var(--bad); color: var(--bad); background: none;
+  cursor: pointer; text-align: left; max-width: 60%;
 }
 
 /* --- block structure (CP30) --- */

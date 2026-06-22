@@ -20,8 +20,13 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     ...devices['Desktop Chrome'],
-    baseURL: 'http://localhost:5173',
-    // Video from every run — the same recording drives the demo GIF in CP9.
+    // The same override the fixtures read (`E2E_APP_URL` in e2e/helpers.ts), so a run against a
+    // throwaway stack does not have one half of the suite talking to it and the other half to
+    // whatever happens to be on the default ports.
+    baseURL: process.env.E2E_APP_URL ?? 'http://localhost:5173',
+    // Kept on failure, so a red e2e run in CI carries a recording of what happened. The demo
+    // GIF (CP9) comes from `npm run demo`, whose scenes pass — so this setting does NOT drive
+    // it; `tools/make-gif.sh` reads what Playwright leaves behind for that run specifically.
     video: 'retain-on-failure',
     trace: 'retain-on-failure',
   },

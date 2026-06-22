@@ -1,5 +1,6 @@
 package dev.collabedit.app.auth;
 
+import java.security.SecureRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,12 +11,12 @@ import org.springframework.stereotype.Service;
  * Allocating globally unique replica identifiers.
  *
  * <p>Uniqueness is a correctness requirement, not a convenience: two replicas with the same number
- * would generate colliding character identifiers, and the algorithm from ADR-0001 would treat them
+ * would generate colliding character identifiers, and the algorithm from the CRDT decision would treat them
  * as the same character. The effect would be silently losing one author's text — a bug undetectable
  * after the fact, because it leaves no trace in the structure.
  *
  * <p>Hence one source of numbers for the whole cluster: a counter in Redis. This is the only place
- * where Redis plays an <b>authoritative</b> role rather than being a best-effort path (ADR-0004) —
+ * where Redis plays an <b>authoritative</b> role rather than being a best-effort path —
  * and that is why its unavailability is treated differently here than when publishing operations.
  */
 @Service

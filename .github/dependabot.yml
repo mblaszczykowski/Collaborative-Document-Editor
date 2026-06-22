@@ -3,7 +3,7 @@ version: 2
 # Why this exists at all, in a project that deliberately avoids dependencies:
 #
 # The narrative of this repository includes three access-control holes, all found by a human
-# reading code (ADR-0012). A known-vulnerable dependency is the same kind of problem one layer
+# reading code. A known-vulnerable dependency is the same kind of problem one layer
 # down — nobody forgets it on purpose, and nothing reports it. The whole point of plan v3 is
 # replacing "somebody will notice" with something that notices on its own.
 #

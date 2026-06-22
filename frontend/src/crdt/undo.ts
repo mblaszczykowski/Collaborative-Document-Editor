@@ -1,10 +1,11 @@
 import type { RgaDocument } from './document'
+import { idEquals } from './types'
 import type { Id, Op } from './types'
 
 /**
  * Undo and redo — CRDT-aware.
  *
- * CodeMirror's history is disabled ([ADR-0006](../../docs/adr/0006-editor-layer.md)) because it
+ * CodeMirror's history is disabled (the editor-layer decision) because it
  * works on the text: an undo would also take back other people's changes that landed in the
  * meantime. In a shared editor that is not an inconvenience but the deletion of somebody else's
  * work.
@@ -167,13 +168,32 @@ export class UndoManager {
   recordDelete(after: Id | null, text: string): void {
     if (this.applying) return
 
-    // Likewise for deleting with backspace: successive characters disappear right to left, so the
-    // new fragment is prepended BEFORE the previously recorded one, and the anchor becomes the one
-    // from the more recent deletion.
+    // Coalescing a run of deletions, and the DIRECTION decides how. The two keys behave
+    // differently and the anchor is what tells them apart:
+    //
+    // Backspace — characters disappear right to left, so each deletion has a NEW anchor further
+    // left, and the fragment belongs BEFORE the one already recorded.
+    // Delete — characters disappear left to right from a fixed point, so the anchor does not
+    // move, and the fragment belongs AFTER the one already recorded.
+    //
+    // Prepending unconditionally (which is what this did) reverses the text of every forward
+    // Delete: "abcd" deleted three times from position 0 undid to "cbad".
+    //
+    // What this still does NOT separate: two backspaces a second apart at unrelated places in the
+    // document. Both take the second branch and merge into one entry, so undo re-inserts them
+    // together at the later anchor. Telling that apart needs to know that the new fragment ends
+    // exactly where the previous one began, and the identifiers that would prove it are not in
+    // this layer — `recordDelete` receives the text and the anchor, not the deleted characters'
+    // ids. Left as a known limit rather than guessed at, because guessing wrong here re-inserts
+    // the user's text somewhere they did not delete it from.
     const previous = this.undoStack.at(-1)
     if (previous !== undefined && previous.kind === 'delete' && this.withinWindow()) {
-      previous.text = text + previous.text
-      previous.after = after
+      if (idEquals(previous.after, after)) {
+        previous.text = previous.text + text
+      } else {
+        previous.text = text + previous.text
+        previous.after = after
+      }
       this.lastRecordedAt = Date.now()
       this.redoStack.length = 0
       this.onChange?.()
@@ -274,22 +294,52 @@ export class UndoManager {
     }
   }
 
-  /** Undoing an insertion = deleting the characters that are still alive. */
+  /**
+   * Undoing an insertion = deleting the characters that are still alive — **found by identity**.
+   *
+   * This used to resolve the anchor to a position and then delete `entry.length` characters from
+   * it. RGA guarantees the identifier still points at the right character; it guarantees nothing
+   * about the run still being contiguous. A remote insertion landing inside the fragment pushes
+   * somebody else's characters into that range, and deleting by length took them with it:
+   * typing "hello", a collaborator wedging "XX" at index 3, then Ctrl+Z left "lo" and destroyed
+   * their "XX". That is precisely what this module's header says undo must never do.
+   *
+   * Every character of the run is therefore resolved separately. The ones a collaborator has
+   * already deleted resolve to `null` and are skipped, which is also the "undo only what is left"
+   * case the old comment described and did not implement correctly either.
+   */
   private revertInsert(entry: UndoableInsert): { ops: Op[]; inverse: UndoEntry } | null {
-    const start = this.document.visibleIndexOf(entry.first)
-    if (start === null) {
-      return null
-    }
-    // Somebody may already have deleted part of this fragment — we undo only what is left.
-    const available = Math.min(entry.length, this.document.visibleLength - start)
-    if (available <= 0) {
+    // Resolved BEFORE any deletion: every index below is an index into this state.
+    //
+    // One sweep for the whole run, not `visibleIndexOf` per character: that walked the block list
+    // once per character, so undoing a 50 000-character paste on a fragmented document took half a
+    // second of blocked main thread — for a gesture the user expects to be instant. The result is
+    // ascending by construction, which the run-splitting loop below depends on.
+    const before = this.document.text
+    const alive = this.document.visibleIndicesOf(entry.first, entry.length)
+    if (alive.length === 0) {
       return null
     }
 
-    const text = this.document.text.slice(start, start + available)
-    const anchor = start > 0 ? this.document.idAtVisible(start - 1) : null
-    const op = this.document.delete(start, available)
-    return { ops: [op], inverse: { kind: 'delete', after: anchor, text } }
+    const text = alive.map((index) => before[index]).join('')
+    const anchor = alive[0] > 0 ? this.document.idAtVisible(alive[0] - 1) : null
+
+    // Contiguous runs, deleted HIGHEST FIRST so that the indices of the runs still to come are not
+    // shifted by the deletions already made.
+    const ops: Op[] = []
+    for (let end = alive.length; end > 0;) {
+      let start = end - 1
+      while (start > 0 && alive[start - 1] === alive[start] - 1) {
+        start--
+      }
+      ops.push(this.document.delete(alive[start], end - start))
+      end = start
+    }
+
+    // Redo re-inserts the fragment as one contiguous block at the anchor. When the run had been
+    // split by somebody else's text there is no non-arbitrary way to interleave it again, and
+    // putting the user's own text back in one piece is the answer least likely to surprise them.
+    return { ops, inverse: { kind: 'delete', after: anchor, text } }
   }
 
   /** Undoing a deletion = inserting the text back, as NEW characters. */

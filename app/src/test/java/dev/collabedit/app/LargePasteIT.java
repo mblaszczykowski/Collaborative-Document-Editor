@@ -21,7 +21,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * ONE operation of tens of kilobytes.
  *
  * <p>The failure this produces is the one CP8 already found once, and it is silent: the frame
- * exceeds the 64 KiB limit from ADR-0002, the client that needs the data most is the one that
+ * exceeds the 64 KiB limit from the transport decision, the client that needs the data most is the one that
  * cannot receive it, and nothing in the log says so. The README carried it as an open item —
  * "the resynchronisation chunk limit is counted in operations, not bytes" — from CP10 until here.
  *

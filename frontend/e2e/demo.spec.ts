@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
+import { type APIRequestContext, type Browser, type Page } from '@playwright/test'
+import { expect, test, freshDocument as sharedFreshDocument } from './helpers'
 
 /**
  * The demo scenario for the README's GIF recording (CP9).
@@ -19,8 +20,9 @@ import { expect, test, type APIRequestContext, type Browser, type Page } from '@
  * To run: `npm run demo`, then `./tools/make-gif.sh`.
  */
 
-const APP = 'http://localhost:5173'
-const API = 'http://localhost:8080/api'
+// Same default and the same override as e2e/helpers.ts — see the comment there. The API base is
+// not needed here any more: the fixture below delegates to the shared one, which owns it.
+const APP = process.env.E2E_APP_URL ?? 'http://localhost:5173'
 
 /** Slower than in the tests — a recording should be legible, not fast. */
 const TYPING_DELAY = 45
@@ -64,7 +66,7 @@ async function joinAs(
   const context = await browser.newContext({
     viewport: { width: 1280, height: 760 },
     recordVideo: record
-      ? { dir: `demo-recordings/${scene}`, size: { width: 1280, height: 760 } }
+      ? { dir : `demo-recordings/${scene}`, size: { width: 1280, height: 760 } }
       : undefined,
   })
   const page = await context.newPage()
@@ -172,7 +174,7 @@ test('demo: formatting, comments and the bin', async ({ browser, request }) => {
   await expect(marek.locator('.cm-content')).toContainText('Monday', { timeout: 10_000 })
 
   await select(anna, 11, 17) // "rollout on Friday"
-  await anna.getByRole('button', { name: 'Bold' }).click()
+  await anna.getByRole('button', { name: 'Bold', exact: true }).click()
   // `.first()`, because CodeMirror splits a decoration into as many elements as the range splits
   // into blocks in the CRDT — a bare selector hits several at once and fails on ambiguity.
   await expect(marek.locator('.cm-content .cm-mark-bold').first())
@@ -181,7 +183,7 @@ test('demo: formatting, comments and the bin', async ({ browser, request }) => {
 
   // Marek puts the cursor INSIDE the bold range and types. The bold should cover the new text
   // rather than leave a hole in itself — that is the whole difference between a mark as a RANGE
-  // BETWEEN ANCHORS and formatting stored as a character attribute (ADR-0010).
+  // BETWEEN ANCHORS and formatting stored as a character attribute.
   await select(marek, 20, 0)
   await marek.keyboard.type(' early', { delay: TYPING_DELAY })
   // Filtering by content rather than `.cm-mark-bold` alone: CodeMirror splits a decoration into
@@ -195,8 +197,7 @@ test('demo: formatting, comments and the bin', async ({ browser, request }) => {
   await select(marek, 0, 10)
   await marek.locator('.comment-draft').fill('Is Friday really realistic?')
   await marek.waitForTimeout(500)
-  await marek.getByRole('button', { name: 'Comment' }).click()
-
+  await marek.getByRole('button', { name: 'Comment', exact: true }).click()
   // The highlight on the anchored fragment appears for Anna WITHOUT a refresh — an anchor is an
   // ordinary CRDT operation, so it travels over the same channel as the text.
   await expect(anna.locator('.cm-mark-comment')).toBeVisible({ timeout: 10_000 })
@@ -233,7 +234,19 @@ test('demo: formatting, comments and the bin', async ({ browser, request }) => {
   await marek.context().close()
 })
 
+/**
+ * A private copy of the fixture that `helpers.ts` already owns — and it carried the bug that file
+ * documents as fixed.
+ *
+ * Creating a document with NO token worked until CP16, when the endpoint started requiring an
+ * identity: a document with no owner is a document nobody can ever secure. The request has answered
+ * 401 ever since, and `response.json` throws on the empty body. `helpers.ts` was fixed; this copy
+ * was not, so both demo scenes have failed since CP16 — which means `npm run demo` has not produced
+ * a recording, and `tools/make-gif.sh` has had nothing to convert.
+ *
+ * Now delegating rather than duplicating. Keeping two fixtures for one job is what let one of them
+ * rot unnoticed.
+ */
 async function freshDocument(request: APIRequestContext, title: string): Promise<string> {
-  const response = await request.post(`${API}/documents`, { data: { title } })
-  return (await response.json()).id as string
+  return sharedFreshDocument(request, title)
 }

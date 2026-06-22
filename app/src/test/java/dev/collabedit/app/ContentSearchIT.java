@@ -50,6 +50,9 @@ class ContentSearchIT extends IntegrationTestBase {
     @Autowired
     SnapshotStore snapshots;
 
+    /** Any signed-in user — these fixtures leave visibility at its default of `link`. */
+    private static final String ANY_USER = "user-" + UUID.randomUUID();
+
     private UUID newDocument(String title) {
         UUID id = UUID.randomUUID();
         jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, title);
@@ -91,7 +94,7 @@ class ContentSearchIT extends IntegrationTestBase {
         }
         awaitSnapshot(document);
 
-        assertThat(catalog.search(needle, 20))
+        assertThat(catalog.search(ANY_USER, null, needle, 20))
             .as("the word is in the document and the search does not find it — which is worse "
                 + "than not having search, because the answer looks like an answer")
             .extracting(DocumentCatalog.DocumentSummary::id)
@@ -106,7 +109,7 @@ class ContentSearchIT extends IntegrationTestBase {
 
         // No operations, so no snapshot, so no search vector. This is the state of every document
         // in its first seconds — and the one somebody is most likely to be looking for.
-        assertThat(catalog.search(title, 20))
+        assertThat(catalog.search(ANY_USER, null, title, 20))
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
     }
@@ -133,7 +136,7 @@ class ContentSearchIT extends IntegrationTestBase {
 
         catalog.updatePreview(document, huge);
 
-        assertThat(catalog.search(needle, 20))
+        assertThat(catalog.search(ANY_USER, null, needle, 20))
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
     }
@@ -146,7 +149,7 @@ class ContentSearchIT extends IntegrationTestBase {
 
         catalog.rename(document, after);
 
-        assertThat(catalog.search(after, 20))
+        assertThat(catalog.search(ANY_USER, null, after, 20))
             .as("renaming does not rebuild the vector, so without the title fallback the new "
                 + "name would be invisible to search until the next snapshot — which for a "
                 + "document nobody is typing in is never")

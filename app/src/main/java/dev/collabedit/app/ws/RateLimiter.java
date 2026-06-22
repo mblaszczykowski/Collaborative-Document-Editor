@@ -2,6 +2,7 @@ package dev.collabedit.app.ws;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.stereotype.Component;
 
 /**
  * Rate limiting of inbound frames, separately for each session (CP12).
@@ -28,7 +29,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * rejects traffic that did not fit, even when the previous second was empty. A token bucket allows
  * short bursts (pasting text, coming back from a disconnect with a buffer of operations) and limits
  * only the AVERAGE rate — which is exactly what we want to limit.
+ *
+ * <h2>Why this is a bean now</h2>
+ * It used to be a {@code new RateLimiter()} inside {@link DocumentAccessInterceptor}, which is the
+ * only place that CONSUMES tokens — and it was also the place that FORGOT a session's buckets, on
+ * the inbound {@code DISCONNECT} frame, because that was the only place holding a reference. That
+ * put one step of session teardown inside a class about authorization, where nothing showed its
+ * order relative to the other two steps. {@link SessionLifecycle} owns that order now, and it needs
+ * to reach the same instance. Unit tests still construct one directly; nothing about the mechanism
+ * requires a container.
  */
+@Component
 public class RateLimiter {
 
     /**

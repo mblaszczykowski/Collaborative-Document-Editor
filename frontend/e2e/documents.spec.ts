@@ -1,5 +1,4 @@
-import { expect, test } from '@playwright/test'
-import { deleteDocument, freshDocument, joinAs, typeInto } from './helpers'
+import { expect, test, deleteDocument, freshDocument, joinAs, typeInto } from './helpers'
 
 /**
  * The document list (CP11) on a real browser.

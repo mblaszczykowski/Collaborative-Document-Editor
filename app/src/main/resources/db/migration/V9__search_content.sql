@@ -7,7 +7,7 @@
 --
 -- WHAT IS STORED, AND WHAT IS NOT. A tsvector of the content, not the content. Keeping the whole
 -- text in a column beside the document would duplicate it — the operation log is the source of
--- truth (ADR-0003) and the snapshot is already a cache of the state. A tsvector is what search
+-- truth and the snapshot is already a cache of the state. A tsvector is what search
 -- needs and nothing else can be read out of it, which also means this column cannot quietly
 -- become a second source of truth for the text.
 --
@@ -16,7 +16,7 @@
 -- hidden: THE INDEX LAGS. A document is searchable as of its last snapshot, which in production
 -- means at most 500 operations or 30 seconds of quiet behind the truth.
 --
--- That is the right side of the trade for this system, and the reasoning is the same one ADR-0003
+-- That is the right side of the trade for this system, and the reasoning is the same one the operation-log decision
 -- used about snapshots: the write path serves people typing, and search serves somebody who will
 -- retry in ten seconds if the first attempt missed. Making the index exact would mean recomputing
 -- a tsvector on every keystroke — putting the cost of a rare read onto the most frequent write in

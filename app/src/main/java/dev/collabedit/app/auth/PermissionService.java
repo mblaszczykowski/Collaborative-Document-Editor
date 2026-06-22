@@ -3,6 +3,7 @@ package dev.collabedit.app.auth;
 import dev.collabedit.app.cluster.ClusterBus;
 import dev.collabedit.app.cluster.PermissionInvalidationBus;
 import dev.collabedit.app.config.SchedulingConfig;
+import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -84,7 +85,7 @@ public class PermissionService {
      * same reason {@code DocumentService} wires itself to {@link ClusterBus}: the transport should
      * not know what the message means.
      */
-    @jakarta.annotation.PostConstruct
+    @PostConstruct
     void subscribeToInvalidations() {
         invalidations.onInvalidate(this::invalidateLocally);
     }
@@ -219,7 +220,7 @@ public class PermissionService {
      *
      * <p>It is worth being precise about why that limitation was different from the others in this
      * project. Almost everything here is built on the idea that replicas may disagree briefly and
-     * converge — that is ADR-0001's whole argument, and ADR-0004 makes the cluster bus
+     * converge — that is the CRDT decision's whole argument, and the cluster design makes the cluster bus
      * deliberately unreliable on the same reasoning. <b>This is the one place where that does not
      * transfer.</b> A text operation arriving late is still the same document. A revocation
      * arriving late is a window during which the system keeps doing something it was told to stop
@@ -319,10 +320,23 @@ public class PermissionService {
         invalidate(documentId);
     }
 
-    public void revoke(UUID documentId, String userId) {
-        jdbc.update("DELETE FROM document_members WHERE doc_id = ? AND user_id = ?",
+    /**
+     * Removes an explicit membership row.
+     *
+     * <p>Returns whether anything was actually removed, which it used to discard. The caller had no
+     * way to tell "access revoked" from "that person was never a member", so
+     * {@code AccessController.removeMember} answered 204 either way — and an owner who mistyped a
+     * user identifier, or aimed at the wrong document, was told it had worked.
+     *
+     * <p>Note what this does NOT say: {@code false} does not mean the user has no access. They may
+     * still reach the document through the workspace or through {@code link} visibility, and
+     * removing a row cannot change that. It means there was no per-document grant to remove.
+     */
+    public boolean revoke(UUID documentId, String userId) {
+        int removed = jdbc.update("DELETE FROM document_members WHERE doc_id = ? AND user_id = ?",
             documentId, userId);
         invalidate(documentId);
+        return removed > 0;
     }
 
     public void setVisibility(UUID documentId, String visibility) {

@@ -109,9 +109,20 @@ final class ReplicaSet {
      * <p>It exists because without it the whole test suite had a blind spot: under the "all edits
      * locally first, then the whole exchange" scheme a replica never generates an operation
      * <i>after</i> receiving somebody else's. And that is exactly when the Lamport clock bumping
-     * rule matters ({@code docs/crdt-design.md} section 1) — without this method, removing the
-     * clock bump failed no test at all. Found by deliberately introducing a mutation into
-     * production code and checking whether the tests would catch it; they did not.
+     * rule matters (the README, "What the Lamport clock is actually for").
+     *
+     * <p><b>This method is necessary and was not sufficient, and the javadoc here claimed
+     * otherwise for a long time.</b> It used to end "without this method, removing the clock bump
+     * failed no test at all" — true — and left the reader to conclude that with it, the mutation
+     * is caught. It was not. Re-running the mutation showed all fifteen property tests still green
+     * at 3000 tries: this method makes the code PATH execute, and nothing asserted anything
+     * sensitive to its result. Convergence cannot be that assertion, because every replica runs
+     * the same code and agrees on the same wrong answer.
+     *
+     * <p>What catches it is the timestamp condition in {@link RgaInvariants#violations} — a
+     * structural claim about one replica, checked against the algorithm's rule rather than against
+     * the other replicas. Interleaved delivery is what makes that condition reachable; the
+     * condition is what makes it fail.
      */
     void deliverSome(Random random, int maxPerReplica) {
         for (int target = 0; target < replicas.size(); target++) {

@@ -5,14 +5,14 @@ import dev.collabedit.app.auth.RequiresDocumentAccess;
 import dev.collabedit.crdt.MarkTypes;
 import dev.collabedit.app.auth.TokenAuthFilter;
 import dev.collabedit.app.domain.DocumentRegistry;
-import dev.collabedit.crdt.MarkSet;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -37,7 +37,6 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(originPatterns = {"http://localhost:*", "http://127.0.0.1:*"})
 public class CommentController {
 
     private final CommentService comments;
@@ -48,19 +47,43 @@ public class CommentController {
         this.registry = registry;
     }
 
-    private String callerId(HttpServletRequest request) {
-        return TokenAuthFilter.principalOf(request).map(p -> p.userId()).orElse(null);
-    }
+    /**
+     * The upper bound on one comment or reply.
+     *
+     * <p>A comment is a person writing a sentence, and nothing downstream treats it as anything
+     * else: it is stored whole, read back whole with the thread, and rendered in a side panel.
+     * Unbounded, it was a way to put arbitrary bytes into the database through an endpoint that
+     * needs only {@code COMMENT} — the LOWEST role that can write anything at all.
+     *
+     * <p>4000 characters is about two pages of prose. Chosen large enough that nobody writing a
+     * genuine comment meets it, and small enough that a thread of them stays a thread rather than
+     * a document.
+     */
+    private static final int MAX_BODY_LENGTH = 4_000;
+
+    /**
+     * The upper bound on the quoted fragment stored with a thread.
+     *
+     * <p>The quote is what the panel shows when the anchored text has been deleted (CP14: the
+     * thread survives, marked as detached), so it has to be able to hold a real selection — but it
+     * is the CLIENT's copy of text the document already owns, and nothing verifies it. 8192
+     * characters is the same bound the paste path uses, so a selection somebody could paste is a
+     * selection they can quote.
+     */
+    private static final int MAX_QUOTE_LENGTH = 8_192;
 
     /**
      * @param clientId the caller's own identifier for this comment, so a retry after an
      *                 uncertain connection does not post it twice (CP27). Optional — a client
      *                 that does not send one gets the old always-insert behaviour
      */
-    public record OpenThreadRequest(String quotedText, String body, String clientId) {
+    public record OpenThreadRequest(@Size(max = MAX_QUOTE_LENGTH) String quotedText,
+                                    @Size(max = MAX_BODY_LENGTH) String body,
+                                    @Size(max = 200) String clientId) {
     }
 
-    public record MessageRequest(String body, String clientId) {
+    public record MessageRequest(@Size(max = MAX_BODY_LENGTH) String body,
+                                 @Size(max = 200) String clientId) {
     }
 
     /**
@@ -72,7 +95,7 @@ public class CommentController {
      * deleting it.
      */
     @GetMapping("/documents/{documentId}/comments")
-    @RequiresDocumentAccess(value = Capability.READ, param = "documentId")
+    @RequiresDocumentAccess(Capability.READ)
     public ResponseEntity<List<CommentService.Thread>> threads(
         @PathVariable UUID documentId,
         @RequestParam(value = "resolved", defaultValue = "false") boolean includeResolved) {
@@ -92,26 +115,32 @@ public class CommentController {
      * The identifiers of threads whose anchor still covers something.
      *
      * <p>Read from the replica's current state: a mark of type {@code comment} carries the thread
-     * identifier as its value, and {@code formatting()} returns only the ranges that actually cover
-     * something. A thread whose anchors were deleted along with the text simply does not appear
-     * here.
+     * identifier as its value. A thread whose anchors were deleted along with the text simply does
+     * not appear here.
+     *
+     * <h2>Why not {@code formatting()}</h2>
+     * This used to read the resolved spans and collect their {@code comment} value. That is the
+     * RENDER's view, and the render resolves exactly one value per type per segment — so when two
+     * threads overlapped, the newer one won every shared segment and the older one vanished from
+     * this set entirely. The panel then showed a thread whose text is fully present with the
+     * detached treatment, which the README reserves for a thread whose text was <b>deleted</b>.
+     *
+     * <p>Two people commenting on the same sentence is the ordinary case, so this was not an edge.
+     * {@code markPlacements} asks the mark layer directly and is blind to who wins the render.
      */
     private Set<String> anchoredThreadIds(UUID documentId) {
-        return registry.get(documentId).withLock(replica -> replica.formatting().stream()
-            .map(MarkSet.Span::marks)
-            .map(marks -> marks.get(MarkTypes.COMMENT))
-            .filter(java.util.Objects::nonNull)
-            .collect(java.util.stream.Collectors.toSet()));
+        return registry.get(documentId).withLock(
+            replica -> Set.copyOf(replica.markPlacements(MarkTypes.COMMENT).keySet()));
     }
 
     // Commenting needs COMMENTER, not EDITOR — that distinction is the whole point of the role
     // model, and it is now stated where the endpoint is rather than in an if further down.
     @PostMapping("/documents/{documentId}/comments")
-    @RequiresDocumentAccess(value = Capability.COMMENT, param = "documentId")
+    @RequiresDocumentAccess(Capability.COMMENT)
     public ResponseEntity<CommentService.Thread> open(@PathVariable UUID documentId,
-                                                      @RequestBody OpenThreadRequest body,
+                                                      @Valid @RequestBody OpenThreadRequest body,
                                                       HttpServletRequest request) {
-        String caller = callerId(request);
+        String caller = TokenAuthFilter.requiredCallerId(request);
         if (body.body() == null || body.body().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
@@ -135,9 +164,9 @@ public class CommentController {
     @RequiresDocumentAccess(value = Capability.COMMENT, param = "threadId",
         from = RequiresDocumentAccess.Source.COMMENT_THREAD)
     public ResponseEntity<Void> reply(@PathVariable UUID threadId,
-                                      @RequestBody MessageRequest body,
+                                      @Valid @RequestBody MessageRequest body,
                                       HttpServletRequest request) {
-        String caller = callerId(request);
+        String caller = TokenAuthFilter.requiredCallerId(request);
         if (body.body() == null || body.body().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
@@ -149,7 +178,7 @@ public class CommentController {
     @RequiresDocumentAccess(value = Capability.COMMENT, param = "threadId",
         from = RequiresDocumentAccess.Source.COMMENT_THREAD)
     public ResponseEntity<Void> resolve(@PathVariable UUID threadId, HttpServletRequest request) {
-        String caller = callerId(request);
+        String caller = TokenAuthFilter.requiredCallerId(request);
         return comments.resolve(threadId, caller)
             ? ResponseEntity.noContent().build()
             : ResponseEntity.status(HttpStatus.CONFLICT).build();

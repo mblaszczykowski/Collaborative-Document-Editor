@@ -15,7 +15,7 @@
 
     <!--
       A DELIBERATE CONSTRAINT: this module has no dependency on Spring or on anything from the
-      application layer, and never will (ADR-0001). The only production dependency is Jackson, and
+      application layer, and never will. The only production dependency is Jackson, and
       only for serialising operations for transport and persistence. If org.springframework ever
       appears here, the boundary has leaked and the right move is to back out, not to add an
       exception.
@@ -68,7 +68,7 @@
               the *Test pattern.
             -->
             <!--
-              Procesor adnotacji JMH zadeklarowany JAWNIE.
+              The JMH annotation processor, declared EXPLICITLY.
 
               Since JDK 23, javac does not run processors found on the class path without being
               told explicitly. The symptom is misleading: compilation passes, the benchmarks
@@ -114,8 +114,20 @@
             </plugin>
 
             <!--
-              Running the benchmarks:  mvn -pl crdt-core -Pbenchmark test-compile exec:exec
+              Running the benchmarks:./mvnw -pl crdt-core test-compile exec:exec@run-benchmarks
               The result lands in crdt-core/target/jmh-result.json and from there in the README.
+
+              This line used to read `mvn -pl crdt-core -Pbenchmark test-compile exec:exec`, and
+              it was wrong in two ways at once. There is no `benchmark` profile in either pom —
+              the execution below is bound to the `run-benchmarks` id and nothing else — and bare
+              `exec:exec` with no id has no configuration to pick up, so the command it published
+              produced a BUILD FAILURE rather than a number. It survived because a comment is the
+              one part of a build file nothing executes: `nightly.yml` and the README's Tests
+              section both had the correct form, and neither reads this.
+
+              `test-compile` is not optional. The benchmarks live in src/jmh/java, added as a test
+              source by build-helper above, so on a clean tree there is nothing on the classpath
+              for JMH to find without it.
             -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>

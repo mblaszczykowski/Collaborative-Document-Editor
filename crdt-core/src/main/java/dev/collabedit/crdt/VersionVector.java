@@ -14,11 +14,11 @@ import java.util.TreeMap;
  * to 48" cannot tell a hole left by a lost operation from a hole left by a clock jump. Duplicate
  * insertions are detected by checking whether a character with that identifier is already in the
  * structure; duplicate deletions are harmless, because setting a tombstone is idempotent. Expanded
- * on in {@code docs/crdt-design.md}, section 2.
+ * on in the README, "Why deduplication is not the version vector's job".
  *
  * <p><b>What it is for:</b>
  * <ul>
- *   <li>causal stability for tombstone GC (ADR-0005) — {@link #meet},</li>
+ *   <li>causal stability for tombstone GC — {@link #meet},</li>
  *   <li>the "what do I have" exchange on reconnect (CP6),</li>
  *   <li>diagnostics: which replica is blocking GC.</li>
  * </ul>
@@ -52,7 +52,9 @@ public final class VersionVector {
         return maxSeen.getOrDefault(replicaId, -1L);
     }
 
-    public Set<Integer> replicas() {
+    // Private: the only caller is laggingReplica below, in this class. It was public and looked
+    // like part of the type's surface while nothing outside ever asked for it.
+    private Set<Integer> replicas() {
         return Collections.unmodifiableSet(maxSeen.keySet());
     }
 
@@ -60,20 +62,33 @@ public final class VersionVector {
         return maxSeen.isEmpty();
     }
 
-    public VersionVector with(int replicaId, long lamport) {
-        if (get(replicaId) >= lamport) {
+    /**
+     * The component-wise MAXIMUM of two vectors — the opposite of {@link #meet}.
+     *
+     * <p>Where {@code meet} answers "what has everybody seen", this answers "what has anybody
+     * seen". A replica present in only one of the two is kept: the join of "I know nothing about
+     * replica 7" and "replica 7 is at 100" is 100, not the absence of 7.
+     *
+     * <p>Exists for the GC watermark, which must only ever move forwards. Physical removal is not
+     * reversible, so a boundary that describes it cannot be assigned — it can only be raised.
+     */
+    public VersionVector join(VersionVector other) {
+        if (other.isEmpty()) {
             return this;
         }
-        Map<Integer, Long> next = new HashMap<>(maxSeen);
-        next.put(replicaId, lamport);
-        return new VersionVector(Map.copyOf(next));
+        if (isEmpty()) {
+            return other;
+        }
+        Map<Integer, Long> merged = new HashMap<>(maxSeen);
+        other.maxSeen.forEach((replica, lamport) -> merged.merge(replica, lamport, Math::max));
+        return new VersionVector(Map.copyOf(merged));
     }
 
     /**
      * The meet (component-wise minimum) — the point up to which <b>every</b> given replica has
      * certainly seen the history.
      *
-     * <p>This is the {@code stableVersion} from ADR-0005: operations below that boundary are
+     * <p>This is the {@code stableVersion} from the tombstone-collection design: operations below that boundary are
      * causally stable, so their tombstones may be physically removed.
      *
      * <p>Note the edge case: if any replica has seen <i>nothing</i> from replica R, then the minimum
@@ -95,7 +110,7 @@ public final class VersionVector {
 
     /**
      * The replica holding {@code stableVersion} back the most relative to a given target state —
-     * that is, the answer to "why is GC stuck" (the metric from ADR-0005). {@code null} when
+     * that is, the answer to "why is GC stuck" (the metric from the tombstone-collection design). {@code null} when
      * nothing is lagging.
      */
     public static Integer laggingReplica(VersionVector stable, VersionVector target) {
@@ -111,7 +126,7 @@ public final class VersionVector {
         return worst;
     }
 
-    /** A copy as a plain map — for serialisation and for assertions in tests. */
+    /** A copy as a plain map — how the vector travels in a snapshot (SnapshotCodec). */
     public Map<Integer, Long> asMap() {
         return new TreeMap<>(maxSeen);
     }

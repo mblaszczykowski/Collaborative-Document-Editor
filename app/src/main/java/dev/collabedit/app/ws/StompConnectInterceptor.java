@@ -4,7 +4,6 @@ import dev.collabedit.app.auth.ReplicaIdAllocator;
 import dev.collabedit.app.auth.TokenService;
 import java.util.List;
 import java.util.Map;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
@@ -35,25 +34,23 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
     private final TokenService tokens;
     private final ReplicaIdAllocator replicaIds;
 
-    /**
-     * {@link PresenceService} is injected <b>lazily</b>, because otherwise a cycle appears: this
-     * configurer is needed to build the WebSocket infrastructure, and {@code PresenceService} needs
-     * {@code SimpMessagingTemplate}, which comes from that infrastructure. Spring detects it as a
-     * {@code BeanCurrentlyInCreationException} at startup.
-     *
-     * <p>{@code ObjectProvider} rather than {@code @Lazy}: it is explicit in the signature, so the
-     * next person can see this is a cycle being broken and not an oversight.
-     */
-    private final ObjectProvider<PresenceService> presence;
+    private final SessionLifecycle sessions;
     private final DocumentAccessInterceptor access;
 
+    /**
+     * Registered on the OUTBOUND channel. See {@link RevokedAccessFilter} for what it does and why
+     * the inbound half alone left revocation half-implemented.
+     */
+    private final RevokedAccessFilter revoked;
+
     public StompConnectInterceptor(TokenService tokens, ReplicaIdAllocator replicaIds,
-                                   ObjectProvider<PresenceService> presence,
-                                   DocumentAccessInterceptor access) {
+                                   SessionLifecycle sessions, DocumentAccessInterceptor access,
+                                   RevokedAccessFilter revoked) {
         this.tokens = tokens;
         this.replicaIds = replicaIds;
-        this.presence = presence;
+        this.sessions = sessions;
         this.access = access;
+        this.revoked = revoked;
     }
 
     /**
@@ -66,10 +63,31 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
      */
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(authentication(), access);
+        registration.interceptors(sessionState(), access);
     }
 
-    private ChannelInterceptor authentication() {
+    /**
+     * There was no outbound configuration at all, and that is the shape of the hole CP12 left.
+     *
+     * <p>Authorizing only what comes IN answers "may this client act on the document" and leaves
+     * "may this client keep watching it" unasked — so a revoked user's writes were refused while
+     * every broadcast kept arriving. The full argument, including why the plan's own test name for
+     * it never existed, is in {@link RevokedAccessFilter}.
+     */
+    @Override
+    public void configureClientOutboundChannel(ChannelRegistration registration) {
+        registration.interceptors(revoked);
+    }
+
+    /**
+     * Establishes a session's identity, and ends it.
+     *
+     * <p>The teardown itself is not here — it is {@link SessionLifecycle#end}, which is also
+     * reached from {@code SessionDisconnectEvent}. This frame is the PROMPT trigger of the two; the
+     * event is the reliable one, for a client that vanishes without saying anything. Both go to the
+     * same idempotent method, so the order between the two no longer matters.
+     */
+    private ChannelInterceptor sessionState() {
         return new ChannelInterceptor() {
             @Override
             public Message<?> preSend(Message<?> message, MessageChannel channel) {
@@ -80,8 +98,10 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
                 }
                 if (StompCommand.CONNECT.equals(accessor.getCommand())) {
                     authenticate(accessor);
+                    sessions.begin(accessor.getSessionId(),
+                        SessionAttributes.userId(accessor));
                 } else if (StompCommand.DISCONNECT.equals(accessor.getCommand())) {
-                    presence.getObject().leave(accessor.getSessionId());
+                    sessions.end(accessor.getSessionId());
                 }
                 return message;
             }

@@ -11,7 +11,7 @@
     </parent>
 
     <artifactId>app</artifactId>
-    <name>app — WebSocket, persystencja, klaster</name>
+    <name>app — WebSocket, persistence, cluster</name>
 
     <dependencies>
         <dependency>
@@ -45,7 +45,7 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- Flyway rather than ddl-auto: the shape of the tables follows directly from ADR-0003,
+        <!-- Flyway rather than ddl-auto: the shape of the tables follows directly from the operation-log decision,
              so a schema change should be a commit to review, not a side effect of startup. -->
         <dependency>
             <groupId>org.flywaydb</groupId>
@@ -68,7 +68,7 @@
             <artifactId>opentelemetry-spring-boot-starter</artifactId>
         </dependency>
 
-        <!-- Metryki → Prometheus (CP7) -->
+        <!-- Metrics → Prometheus (CP7) -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
@@ -86,7 +86,7 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Testy integracyjne na PRAWDZIWYM Postgresie, nie na mocku (CLAUDE.md §3.2). -->
+        <!-- Integration tests against a REAL Postgres, not a mock (CLAUDE.md §3.2). -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>

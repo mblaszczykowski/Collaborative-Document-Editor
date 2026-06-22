@@ -213,7 +213,7 @@ class LoadHarnessIT extends IntegrationTestBase {
 
     private void seedDocument(TestStompClient client, int characters) {
         // Inserted in chunks: a single operation for 100k characters would exceed the message
-        // size limit from ADR-0002 (64 KiB).
+        // size limit from the transport decision (64 KiB).
         String chunk = "x".repeat(500);
         for (int written = 0; written < characters; written += chunk.length()) {
             client.insert(client.text().length(), chunk);

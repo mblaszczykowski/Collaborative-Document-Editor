@@ -89,7 +89,7 @@ public class RgaBenchmark {
     /** A remote operation arrives anchored to a character — the CRDT has to find it. */
     @Benchmark
     public void locateByIdentifier(Blackhole blackhole) {
-        blackhole.consume(document.blocks().locateId(sampleIds[random.nextInt(sampleIds.length)]));
+        blackhole.consume(document.blockList().locateId(sampleIds[random.nextInt(sampleIds.length)]));
     }
 
     /** A full insertion: finding the origin, splitting a block if needed, integrating. */

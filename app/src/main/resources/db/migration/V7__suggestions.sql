@@ -1,6 +1,6 @@
 -- CP23 — suggestion mode ("track changes").
 --
--- The split is the one ADR-0011 made for comments, and it is made here for the same reason:
+-- The split is the one the comment split made for comments, and it is made here for the same reason:
 --
 --   THE PROPOSAL ITSELF  — lives in the CRDT. A proposed insertion is real text in the real
 --                          character sequence wearing a `suggest-insert` mark; a proposed

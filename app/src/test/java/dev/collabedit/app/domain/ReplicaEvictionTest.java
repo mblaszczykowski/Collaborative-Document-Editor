@@ -129,6 +129,60 @@ class ReplicaEvictionTest {
     }
 
     /**
+     * A replica in the middle of writing to the log refuses to be claimed.
+     *
+     * <h2>The window this closes</h2>
+     * {@code drainForFlush} empties BOTH buffers and only then raises the in-flight counter, and
+     * the append that follows runs outside the lock — it is a JDBC round trip holding the
+     * document's row lock. For that whole duration the two emptiness checks said "idle", so a
+     * replica writing up to {@code op-batch-max-size} operations was a legal eviction candidate.
+     *
+     * <p>What that costs, when the append then throws: {@code requeueUnwritten} hits
+     * {@code refuseIfEvicted}, and up to a hundred operations are visible on every connected client
+     * and absent from the source of truth. Anti-entropy cannot see it — the log's head is not ahead
+     * of {@code appliedServerSeq}, so no gap exists to detect — and the text silently rolls back at
+     * the next restart.
+     */
+    @Test
+    @DisplayName("a replica with a flush in flight refuses eviction, though both buffers are empty")
+    void replicaWithAFlushInFlightRefusesEviction() {
+        DocumentReplica replica = replica();
+        RgaDocument client = new RgaDocument(2, new TreapBlockList());
+        replica.merge(anInsert(client), "u1", null, System.currentTimeMillis());
+
+        DocumentReplica.OutboundBatch outbound = replica.drainForFlush(100);
+        assertThat(outbound.writes())
+            .as("the test premise: the drain has to have taken something for a flush to be in flight")
+            .hasSize(1);
+        assertThat(replica.unwrittenCount())
+            .as("the drain empties the buffer, which is exactly why the buffer check is not enough")
+            .isZero();
+
+        assertThat(replica.tryEvict())
+            .as("""
+                Both buffers are empty and the write has not reached the database yet, so every \
+                signal except the in-flight counter says this replica is idle. Evicting it here \
+                means a failed append cannot put its operations back — they are already on every \
+                client's screen and in no log.""")
+            .isFalse();
+    }
+
+    @Test
+    @DisplayName("once the flush completes, the replica can be claimed again")
+    void completingTheFlushAllowsEviction() {
+        DocumentReplica replica = replica();
+        RgaDocument client = new RgaDocument(2, new TreapBlockList());
+        replica.merge(anInsert(client), "u1", null, System.currentTimeMillis());
+        replica.drainForFlush(100);
+
+        replica.flushCompleted(1);
+
+        assertThat(replica.tryEvict())
+            .as("the write finished, so the replica holds nothing that eviction could lose")
+            .isTrue();
+    }
+
+    /**
      * Reading is deliberately still allowed.
      *
      * <p>An evicted replica holds correct state — it is simply no longer the canonical one — and
@@ -143,6 +197,11 @@ class ReplicaEvictionTest {
         RgaDocument client = new RgaDocument(2, new TreapBlockList());
         replica.merge(anInsert(client), "u1", null, System.currentTimeMillis());
         replica.drainForFlush(100);
+        // flushCompleted, and this line is the fix rather than setup noise. This test used to
+        // drain and then assert tryEvict() == true — that is, it PINNED the defect above as
+        // intended behaviour, which is how a bug survives a test suite. Ending the flush is what
+        // the production path does on every route out, including failure.
+        replica.flushCompleted(1);
 
         assertThat(replica.tryEvict()).isTrue();
         assertThat(replica.withLock(RgaDocument::text)).isEqualTo("x");

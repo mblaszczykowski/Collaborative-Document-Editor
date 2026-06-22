@@ -11,7 +11,7 @@ import { markExpandsAtEnd } from './types'
  * Changing one side passes the whole corpus green and only manifests for the user as "bold grows
  * when I type and it does not when you do".
  *
- * ADR-0010 claimed such a test existed on both sides. A review found it existed on neither — the
+ * The mark layer claimed such a test existed on both sides. A review found it existed on neither — the
  * documentation described a safeguard that was not there.
  */
 

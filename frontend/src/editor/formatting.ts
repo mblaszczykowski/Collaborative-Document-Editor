@@ -5,7 +5,7 @@ import type { Span } from '../crdt/marks'
 /**
  * Drawing text formatting (CP13).
  *
- * This layer is **purely a view**, exactly like the rest of the CodeMirror integration (ADR-0006).
+ * This layer is **purely a view**, exactly like the rest of the CodeMirror integration.
  * It does not decide what is bold — it receives finished runs computed by the CRDT layer and turns
  * them into decorations. If it decided for itself, it would be a third model of the document beside
  * the CRDT and CodeMirror, that is, a third thing to drift apart.
@@ -50,6 +50,20 @@ function classOf(type: string): string {
       return 'cm-mark-suggest-insert'
     case 'suggest-delete':
       return 'cm-mark-suggest-delete'
+    // Block structure (CP30). These are marks over a LINE rather than nodes in a tree, because the
+    // document is a flat character sequence and a paragraph is the text between two newlines —
+    // which is why they belong in this switch alongside bold, and not in a separate mechanism.
+    //
+    // They were missing here while `styles.css` already carried their rules and
+    // `conformance/schema/mark-types.json` already listed them as first-class types, so a heading
+    // arriving from another client — or generated server-side — rendered as `cm-mark-unknown` and
+    // `.cm-mark-heading[data-level='1']` could never match anything.
+    case 'heading':
+      return 'cm-mark-heading'
+    case 'quote':
+      return 'cm-mark-quote'
+    case 'list':
+      return 'cm-mark-list'
     default:
       return 'cm-mark-unknown'
   }
@@ -88,23 +102,74 @@ function decorationsFor(spans: Span[], documentLength: number): DecorationSet {
   return Decoration.set(ranges, true)
 }
 
-export const formattingField = StateField.define<DecorationSet>({
+/**
+ * The formatting runs and the decorations derived from them.
+ *
+ * ## Why the spans are kept, and not only the decorations
+ *
+ * `decorationsFor` clamps every run to the CURRENT document length, because a run computed
+ * before the latest change can extend past the text and CodeMirror throws while painting. That
+ * makes the decorations a function of TWO inputs — the spans and the document — while the effect
+ * that carries them only announces one.
+ *
+ * The two arrive in the wrong order on the path that opens a document from a server snapshot
+ * (CP24). The view is created with `doc: ''` and fills from the operations that follow, so the
+ * first `setFormatting` lands while the document is still empty: every run clamps to nothing and
+ * the decorations become `Decoration.none`. The text arrives immediately afterwards, and mapping
+ * an empty set through those changes leaves it empty.
+ *
+ * That used to heal itself by accident. `refreshStats` built a fresh array on every call, so the
+ * effect in `Editor` — keyed on the array's IDENTITY — re-ran on the next refresh and recomputed
+ * the runs against a document that by then had the text. Adding a structural comparison to skip
+ * redundant state updates removed the redundancy and, with it, the accident: the second refresh
+ * produced equal spans, the identity stayed the same, the effect never re-ran, and formatting
+ * restored from a snapshot was silently missing until the next edit.
+ *
+ * Keeping the spans makes the field recompute when EITHER input changes, so the ordering stops
+ * mattering. Mapping is still what happens on an ordinary keystroke — the runs are one frame
+ * stale there and mapping is the more accurate answer, which is what stops the flicker.
+ */
+interface Formatting {
+  readonly spans: Span[]
+  readonly decorations: DecorationSet
+}
+
+export const formattingField = StateField.define<Formatting>({
   create() {
-    return Decoration.none
+    return { spans: [], decorations: Decoration.none }
   },
 
-  update(decorations, transaction) {
-    // First map the existing decorations through the document's changes. Without this the
-    // formatting would "flicker" on every keystroke: disappearing for one frame and coming back
-    // only once the CRDT layer had recomputed the runs.
-    let updated = decorations.map(transaction.changes)
+  update(formatting, transaction) {
     for (const effect of transaction.effects) {
       if (effect.is(setFormatting)) {
-        updated = decorationsFor(effect.value, transaction.state.doc.length)
+        return {
+          spans: effect.value,
+          decorations: decorationsFor(effect.value, transaction.state.doc.length),
+        }
       }
     }
-    return updated
+    if (!transaction.docChanged) {
+      return formatting
+    }
+    // The document changed and no new runs came with it. Normally mapping is the right answer:
+    // the runs are one frame behind a local keystroke, and mapping keeps them where the user can
+    // see they belong.
+    //
+    // The exception is the case above — runs we hold that produced NOTHING, because the document
+    // was shorter than they described when they arrived. There is nothing to map, and the runs
+    // are the only truth available, so they are recomputed against the document that has now
+    // caught up.
+    if (formatting.spans.length > 0 && formatting.decorations.size === 0) {
+      return {
+        spans: formatting.spans,
+        decorations: decorationsFor(formatting.spans, transaction.state.doc.length),
+      }
+    }
+    return {
+      spans: formatting.spans,
+      decorations: formatting.decorations.map(transaction.changes),
+    }
   },
 
-  provide: (field) => EditorView.decorations.from(field),
+  provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
 })

@@ -1,7 +1,7 @@
 /**
  * The client-side twin implementation of RGA.
  *
- * It exists because the client has to edit offline (ADR-0001) — which means it has to be able to
+ * It exists because the client has to edit offline — which means it has to be able to
  * merge on its own, without the server. This is a deliberately accepted debt: one algorithm, two
  * implementations, two opportunities for a bug.
  *
@@ -18,7 +18,7 @@
  * A character identifier.
  *
  * `lamport` is a Lamport clock value, not a replica's sequential counter — see
- * `docs/crdt-design.md` section 1. The practical consequence: it is NOT contiguous within a
+ * the README, "What the Lamport clock is actually for". The practical consequence: it is NOT contiguous within a
  * replica, because it jumps when remote operations arrive.
  */
 export interface Id {
@@ -44,7 +44,7 @@ export function idEquals(a: Id | null, b: Id | null): boolean {
  *
  * Ties are common — two replicas working concurrently on the same state generate the same lamport.
  * It is `replicaId` that makes the order total without needing an arbiter, which is the entire
- * point of the choice in ADR-0001.
+ * point of the choice in the CRDT decision.
  */
 export function compareIds(a: Id, b: Id): number {
   if (a.lamport !== b.lamport) return a.lamport - b.lamport

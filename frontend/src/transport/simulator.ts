@@ -30,7 +30,7 @@ export interface NetworkConditions {
   partitioned: boolean
 }
 
-export const PERFECT_NETWORK: NetworkConditions = {
+const PERFECT_NETWORK: NetworkConditions = {
   latencyMs: 0,
   jitterMs: 0,
   packetLoss: 0,

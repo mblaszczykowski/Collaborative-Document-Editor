@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
  * {@code collabedit.gc.window-days: 7} existed in {@code application.yml} with a paragraph of
  * justification, and in {@code CollabEditProperties} as a field. <b>No code read it.</b>
  *
- * <p>[ADR-0005](../../../../../../../docs/adr/0005-tombstone-gc.md) defines the replicas that hold
+ * <p>The tombstone-collection design defines the replicas that hold
  * GC back as those <i>"connected now, or disconnected for less than the GC window"</i>, and
  * devotes a section to the client that returns after it. The implementation had the first clause
  * and, on disconnect, deleted the replica's entry outright — so a departed client held nothing
@@ -90,7 +90,7 @@ class GcWindowTest {
             .as("""
                 An hour after disconnecting, the departed replica no longer held the boundary \
                 back, so tombstones it never saw became collectable — and its return becomes an \
-                unmergeable RESYNC_REQUIRED. ADR-0005 promises seven days.""")
+                unmergeable RESYNC_REQUIRED. The tombstone-collection design promises seven days.""")
             .isEqualTo(1L);
     }
 
@@ -114,7 +114,7 @@ class GcWindowTest {
         assertThat(boundaryFor(stable, DEPARTED))
             .as("""
                 The window has expired and the replica still holds the boundary back. Then the \
-                window is not finite, which is option A in ADR-0005 — tombstones accumulate for \
+                window is not finite, which is option A in the tombstone-collection design — tombstones accumulate for \
                 the lifetime of the document.""")
             .isEqualTo(4L);
     }
@@ -159,7 +159,7 @@ class GcWindowTest {
             .as("""
                 A connected client that stopped reporting ten minutes ago is still holding GC \
                 back. One hung tab then blocks compaction for the whole document, which is the \
-                negative consequence ADR-0005 introduced the shorter timeout to avoid.""")
+                negative consequence the tombstone-collection design introduced the shorter timeout to avoid.""")
             .isEqualTo(4L);
     }
 }

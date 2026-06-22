@@ -8,7 +8,7 @@ spring:
     password: collabedit
     hikari:
       # 10 connections per instance. The rationale: this system's database load is mostly short,
-      # batched operation INSERTs (ADR-0003) — not long transactions. With that profile a large
+      # batched operation INSERTs — not long transactions. With that profile a large
       # pool does not help and multiplies contention inside Postgres.
       #
       # Verified in CP10: with 50 clients editing one document simultaneously the pool is not the
@@ -30,7 +30,7 @@ spring:
     enabled: true
     locations: classpath:db/migration
     # No `clean` in production — a guard against accidentally dropping the operations table,
-    # which is our source of truth (ADR-0003).
+    # which is our source of truth.
     clean-disabled: true
 
   data:
@@ -43,7 +43,7 @@ server:
   port: 8080
 
 # ---------------------------------------------------------------------------
-# WebSocket/STOMP parameters — every value is justified in ADR-0002.
+# WebSocket/STOMP parameters — every value is justified in the transport decision.
 # Do not change one without updating that document.
 # ---------------------------------------------------------------------------
 collabedit:
@@ -51,9 +51,15 @@ collabedit:
     # 10 s: comfortably below intermediaries' typical idle timeout (nginx 60 s, many LBs/CDNs
     # 30-60 s), so the connection will not be torn down as idle.
     heartbeat-interval-ms: 10000
-    # 2.5 × the interval. One lost heartbeat on a mobile link is normal; only two in a row are
-    # grounds for treating a session as dead. A false disconnect costs a full resynchronisation
-    # (CP6), so I would rather be too lenient.
+    # 2.5 × the interval — the INTENT, and deliberately kept even though nothing reads it.
+    #
+    # One lost heartbeat on a mobile link is normal; only two in a row are grounds for treating a
+    # session as dead, and a false disconnect costs a full resynchronisation (CP6), so leniency is
+    # the right side to err on. But Spring's simple broker has no tolerance factor to configure: it
+    # takes the interval and applies its own rule. A computed heartbeatTimeoutMs used to sit in
+    # CollabEditProperties deriving a value nothing consumed, which made the transport decision's row read like a
+    # setting. That accessor is gone; this value stays as the documented intent, and the transport decision says
+    # so in the same words.
     heartbeat-tolerance-factor: 2.5
     # 64 KiB: a single operation is ~100 B, but pasting a large block of text has to get through.
     max-message-size-bytes: 65536
@@ -91,7 +97,7 @@ collabedit:
       - "http://127.0.0.1:*"
 
   persistence:
-    # Batching of operation writes (ADR-0003, point 5). Within this window an operation has been
+    # Batching of operation writes (point 5). Within this window an operation has been
     # broadcast but is not yet in the database — a deliberate durability/throughput trade-off,
     # described in the README's Failure modes section.
     op-batch-window-ms: 50
@@ -101,7 +107,7 @@ collabedit:
     # and goes out in the next window: a steady write rhythm beats one large transaction stalling
     # the document.
     op-batch-max-size: 100
-    # A snapshot after 500 operations OR after 30 s of quiet (ADR-0003, point 4) — two thresholds,
+    # A snapshot after 500 operations OR after 30 s of quiet (point 4) — two thresholds,
     # because they catch two different cases. The operation threshold covers a heavily edited
     # document; the idle threshold covers one edited in short sessions, which would otherwise never
     # reach 500 and would replay an ever-longer log tail on every open.
@@ -121,9 +127,9 @@ collabedit:
     #
     # Until this existed NOTHING ever removed a snapshot. One is written every 500 operations or
     # after 30 s of quiet, each holding a full compressed copy of the document, so the table grew
-    # without bound for the lifetime of the deployment. ADR-0003 calls the snapshot a DISPOSABLE
+    # without bound for the lifetime of the deployment. The operation-log decision calls the snapshot a DISPOSABLE
     # cache — the code had implemented the "cache" half and skipped "disposable". Tombstone GC in
-    # memory has its own ADR and its own checkpoint; the cache on disk had no policy at all.
+    # memory has its own design and its own checkpoint; the cache on disk had no policy at all.
     #
     # 3 rather than 1, because the newest snapshot is not the only one that gets read.
     # HistoryService.textAt asks for the newest snapshot NOT LATER than some past server_seq, so
@@ -131,9 +137,49 @@ collabedit:
     # recent history cheap and still bounds the table at three copies per document rather than
     # unboundedly many.
     snapshots-kept-per-document: 3
+    # The upper bound on operations BUFFERED WAITING FOR THEIR CAUSE in one replica.
+    #
+    # What this protects. RgaDocument buffers an operation whose origin it has not seen yet, and
+    # DocumentReplica.merge deliberately writes and broadcasts buffered operations — they are
+    # complete, they are simply early (see its comment). Nothing validated that an origin is
+    # PLAUSIBLE, so a client sending operations with invented origins grew three things without
+    # bound at once: this instance's memory, the operation log, and the pending map of every other
+    # client. Worse, every reload of that document then re-applied them and logged "the log may be
+    # corrupt" — a permanent false alarm about the one condition that line exists to report.
+    #
+    # WHY THE BOUND LIVES HERE AND NOT IN crdt-core. Buffering an early operation is correct
+    # algorithm behaviour. "How many strangers do we hold for how long" is a POLICY, and
+    # policy belongs to the application that has a client, a session and an error channel to answer
+    # on. The core keeps the property; this decides how much of it we are willing to pay for.
+    #
+    # 10 000, chosen to sit far from both edges rather than near either. A legitimate causal
+    # reordering backlog is bounded by what one client can have in flight — the rate limiter allows
+    # a burst of 200 operations, and a resynchronisation arrives ordered by server_seq — so real
+    # traffic stays two orders of magnitude below this. At the other end, 10 000 buffered operations
+    # is single-digit megabytes, which is a document's worth of memory rather than an instance's.
+    # Reaching it means a client is inventing causality, and the honest answer is to refuse it
+    # explicitly (op.rejected.pending.total) rather than to keep swallowing it.
+    max-pending-operations: 10000
+    # The upper bound on how many operations one resynchronisation response may carry.
+    #
+    # `sinceServerSeq` comes from the client and was unvalidated, and the query behind it had no
+    # LIMIT: every row was decoded into an Op and then re-encoded into JSON, all of it live at once.
+    # That is not only an attack surface — the shipped client sends 0 whenever it detects a gap, so
+    # a 250k-operation document paid it on the ORDINARY recovery path.
+    #
+    # Above this the server does NOT truncate silently. It answers SNAPSHOT_REQUIRED, which tells
+    # the client to re-open through GET /api/documents/{id}/snapshot — O(document size) instead of
+    # O(log size), which is exactly why CP24 built that endpoint. A truncated response that looked
+    # complete would be the CP8 failure again: the client that needs the data most is the one that
+    # silently does not get it.
+    #
+    # 5 000 operations is on the order of 500 KB decoded, and roughly ten frames at the 32 KiB
+    # budget — a recovery a client can actually complete. Beyond that the snapshot is cheaper for
+    # both sides, so the number is where the two costs cross rather than a guess at a safe size.
+    max-sync-operations: 5000
 
   cluster:
-    # The anti-entropy sweep (ADR-0004). The upper bound on how long an undetected divergence can
+    # The anti-entropy sweep. The upper bound on how long an undetected divergence can
     # live in the "lost last operation + quiet document" scenario.
     anti-entropy-interval-ms: 30000
     # A document replica with no clients lives another 5 min before its memory is reclaimed.
@@ -148,17 +194,22 @@ collabedit:
     # 200 comes from an order-of-magnitude estimate rather than a measurement: the replica of a
     # 100k-character document takes single-digit megabytes (run-length blocks + a treap), so 200
     # fits in the default heap with room for the rest of the application. TO BE VERIFIED BY
-    # MEASURING per-replica memory use — ADR-0004 lists this as outstanding since CP8.
+    # MEASURING per-replica memory use — the cluster design lists this as outstanding since CP8.
     max-loaded-documents: 200
 
   gc:
-    # The tombstone GC window: 7 days (ADR-0005). A client offline for longer gets
+    # The tombstone GC window: 7 days. A client offline for longer gets
     # RESYNC_REQUIRED and an export of its local copy instead of a silent merge.
     # A GUESSED VALUE, not a computed one — in production I would derive it from telemetry.
     window-days: 7
     # A client that is connected but has not reported progress for 60 s is excluded from the
     # stableVersion computation, so that one hung client does not block GC for the whole document.
-    # ~2× the heartbeat tolerance from ADR-0002.
+    #
+    # 60 s = 4× the client's progress interval (15 s, connection.ts). Derived from THAT rather than
+    # from the heartbeat tolerance, which is what the comment used to say: the tolerance is an
+    # intent the broker does not implement (see websocket above), so deriving a real threshold from
+    # it was deriving a number from a number that does not exist. Four missed reports in a row is
+    # evidence about the client this value is actually about.
     unresponsive-replica-timeout-ms: 60000
 
 # ---------------------------------------------------------------------------

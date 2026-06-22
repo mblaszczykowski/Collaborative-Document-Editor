@@ -1,5 +1,7 @@
 package dev.collabedit.app;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import dev.collabedit.app.auth.TokenService;
 import java.util.ArrayList;
 import java.util.List;
@@ -62,6 +64,15 @@ class BroadcastFanoutIT extends IntegrationTestBase {
             }
             System.out.printf("%-10d %-12s %-12s %s%n",
                 clients, converged + "/" + ROUNDS, "", String.join("  ", details));
+
+            // ASSERTED, not only printed. The value was already computed and thrown away, so a run
+            // where 0 of 3 rounds converged was a green test — while README's failure-mode table
+            // cites this class in its "Verified" column, under a heading that promises the marked
+            // rows have a test that checks them.
+            assertThat(converged)
+                .as("%d clients in one document did not converge in every round (%d/%d) — the "
+                    + "table in the README claims this is verified", clients, converged, ROUNDS)
+                .isEqualTo(ROUNDS);
         }
         System.out.println();
     }

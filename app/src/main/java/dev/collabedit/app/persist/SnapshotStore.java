@@ -11,7 +11,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Snapshots — a <b>cache</b> over the operation log (ADR-0003).
+ * Snapshots — a <b>cache</b> over the operation log.
  *
  * <p>This entire store may be wiped at any moment. The system will rebuild the state from the log:
  * more slowly, but identically. A test in CP5 deletes every snapshot and checks that no result
@@ -21,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Repository
 public class SnapshotStore {
 
-    /** A snapshot with an incompatible format version is ignored rather than migrated (ADR-0003). */
+    /** A snapshot with an incompatible format version is ignored rather than migrated. */
     private record Row(byte[] state, long upToServerSeq) {
     }
 
@@ -63,7 +63,7 @@ public class SnapshotStore {
      * documents people actually used.
      *
      * <p>The asymmetry is what makes it worth a comment rather than a fix. Tombstone garbage
-     * collection <i>in memory</i> has a 345-line ADR, a causal-stability calculation, a rule for
+     * collection <i>in memory</i> has a causal-stability calculation, a rule for
      * excluding unresponsive replicas, and a checkpoint of its own. The cache <i>on disk</i> had
      * no policy at all. {@link dev.collabedit.crdt.DocumentSnapshot} is described throughout as a
      * disposable cache; the code had implemented "cache" and skipped "disposable".

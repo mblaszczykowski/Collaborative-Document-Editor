@@ -1,0 +1,41 @@
+# What must NOT go into the Docker build context.
+#
+# app/Dockerfile does `COPY crdt-core/ crdt-core/` and `COPY app/ app/`, and frontend/Dockerfile
+# does `COPY . .` — so without this file a local `target/` (tens of megabytes of class files and
+# jars) and a local `node_modules/` were shipped to the daemon on every build and then copied into
+# a layer, where the build immediately overwrote them with its own.
+#
+# Two costs, and the second is the one that bites: a slow build, and an image whose contents depend
+# on what happens to be lying around in the working directory. `npm ci` and `mvn package` are
+# supposed to make the build reproducible; a stale directory smuggled in through the context
+# quietly undoes that.
+
+# Build output
+target/
+**/target/
+dist/
+**/dist/
+node_modules/
+**/node_modules/
+*.tsbuildinfo
+
+# Version control and CI
+.git/
+.github/
+
+# Local tooling and editors
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Test and demo artefacts
+**/test-results/
+**/playwright-report/
+frontend/demo-recordings/
+crdt-core/.jqwik-database
+
+# Local environment
+.env
+.env.local
+*.local.yml

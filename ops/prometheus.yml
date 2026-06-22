@@ -22,7 +22,7 @@ scrape_configs:
         labels:
           instance: app-local
 
-      # The instances started in compose for the horizontal scaling test (ADR-0004). Inactive
+      # The instances started in compose for the horizontal scaling test. Inactive
       # targets simply show up as "down" — that is not a configuration error.
       - targets: ["host.docker.internal:8081"]
         labels:

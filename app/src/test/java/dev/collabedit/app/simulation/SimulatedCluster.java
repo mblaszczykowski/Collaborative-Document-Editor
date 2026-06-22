@@ -12,13 +12,13 @@ import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * The design from ADR-0004, running on the real merge algorithm, with the network under the
+ * The design from the cluster design, running on the real merge algorithm, with the network under the
  * control of a seed (CP17).
  *
  * <h2>What is modelled</h2>
  * <ul>
  *   <li><b>Instances</b> — each holds its own {@link RgaDocument}. No leader, no distributed
- *       lock, no sticky sessions. This is the whole point of ADR-0004.</li>
+ *       lock, no sticky sessions. This is the whole point of the cluster design.</li>
  *   <li><b>The operation log</b> — append-only and authoritative, standing in for Postgres.
  *       Every edit lands here.</li>
  *   <li><b>The fast path</b> — best-effort broadcast standing in for Redis pub/sub. Messages
@@ -27,7 +27,7 @@ import java.util.TreeMap;
  *       whatever it missed.</li>
  * </ul>
  *
- * <p>The claim this exists to attack is the central one in ADR-0004: <i>a lost broadcast is a
+ * <p>The claim this exists to attack is the central one in the cluster design: <i>a lost broadcast is a
  * latency problem, not a correctness problem.</i> If that is true, no amount of dropping,
  * delaying, reordering or crashing can leave two instances permanently disagreeing, because the
  * log is authoritative and anti-entropy always catches up.
@@ -48,8 +48,8 @@ import java.util.TreeMap;
  *
  * <p>{@link Durability#SYNCHRONOUS} is kept, and every pre-existing scenario still uses it. Not
  * out of caution: the two modes ask different questions. The synchronous one asks whether a lossy
- * fast path can make replicas disagree, which is ADR-0004's claim and needs no client to state.
- * The deferred one asks whether an acknowledged operation can be lost, which is ADR-0003's claim
+ * fast path can make replicas disagree, which is the cluster design's claim and needs no client to state.
+ * The deferred one asks whether an acknowledged operation can be lost, which is the operation-log decision's claim
  * and cannot be asked without one.
  */
 final class SimulatedCluster {
@@ -68,7 +68,7 @@ final class SimulatedCluster {
         /**
          * Append happens after {@link #PERSIST_DELAY_MS}, and the acknowledgement after that.
          *
-         * <p>This is the real ordering from ADR-0004: merge, broadcast, persist, acknowledge. It
+         * <p>This is the real ordering from the cluster design: merge, broadcast, persist, acknowledge. It
          * exists so that a crash can land between the broadcast and the append, which is the one
          * window in which the server loses an operation others have already seen.
          */
@@ -210,7 +210,7 @@ final class SimulatedCluster {
         int clamped = Math.min(position, instance.document.visibleLength());
         Op op = instance.document.insert(clamped, text);
 
-        // Authoritative first, fast path second — the order ADR-0004 specifies. Reversing it is
+        // Authoritative first, fast path second — the order the cluster design specifies. Reversing it is
         // what makes a lost broadcast a correctness problem instead of a latency one.
         // The cursor is deliberately NOT advanced here.
         //
@@ -290,13 +290,13 @@ final class SimulatedCluster {
     }
 
     // ------------------------------------------------------------------
-    // The write path: merge, broadcast, persist, acknowledge (ADR-0004)
+    // The write path: merge, broadcast, persist, acknowledge
     // ------------------------------------------------------------------
 
     /**
      * Puts a freshly merged operation on its way.
      *
-     * <p>The broadcast goes first in both modes, because that is what ADR-0004 specifies and what
+     * <p>The broadcast goes first in both modes, because that is what the cluster design specifies and what
      * the user sees. The two modes differ only in when the log learns about it.
      */
     private void submit(Instance instance, Op op) {
@@ -318,7 +318,7 @@ final class SimulatedCluster {
      * <p>A crash between {@link #submit} and here loses the operation from the server outright:
      * the log never sees it, so anti-entropy has nothing to find and no other instance will ever
      * hear about it again. The operation survives only in the client's buffer, which is exactly
-     * the arrangement ADR-0003 describes when it says an acknowledgement must follow the write
+     * the arrangement the operation-log decision describes when it says an acknowledgement must follow the write
      * rather than the broadcast.
      */
     private void persist(int instanceId, Op op) {
@@ -473,7 +473,7 @@ final class SimulatedCluster {
      * Every operation some client has been told is durable but which is not in the log.
      *
      * <p>Empty is the invariant. A non-empty result means the system acknowledged work it then
-     * lost — the one promise in ADR-0003 that a user has no way to check for themselves.
+     * lost — the one promise in the operation-log decision that a user has no way to check for themselves.
      */
     List<Id> acknowledgedButNotLogged() {
         List<Id> broken = new ArrayList<>();

@@ -10,7 +10,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -50,7 +49,6 @@ import org.springframework.web.bind.annotation.RestController;
  * "what does this say" and has no reason to be available to everyone who can read the text.
  */
 @RestController
-@CrossOrigin(originPatterns = {"http://localhost:*", "http://127.0.0.1:*"})
 public class AccessController {
 
     private static final Logger log = LoggerFactory.getLogger(AccessController.class);
@@ -81,10 +79,10 @@ public class AccessController {
     }
 
     @GetMapping("/api/documents/{documentId}/access")
-    @RequiresDocumentAccess(value = Capability.MANAGE_ACCESS, param = "documentId")
-    public AccessState access(@PathVariable("documentId") UUID documentId) {
+    @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
+    public ResponseEntity<AccessState> access(@PathVariable("documentId") UUID documentId) {
         var settings = permissions.settingsOf(documentId);
-        return new AccessState(
+        return ResponseEntity.ok(new AccessState(
             settings.map(PermissionService.Settings::visibility).orElse("private"),
             settings.map(PermissionService.Settings::ownerId).orElse(null),
             permissions.membersOf(documentId).stream()
@@ -92,7 +90,7 @@ public class AccessController {
                 .toList(),
             invites.listFor(documentId).stream()
                 .map(i -> new InviteView(i.id(), i.role().wire(), i.expiresAt().toString()))
-                .toList());
+                .toList()));
     }
 
     /**
@@ -110,12 +108,12 @@ public class AccessController {
     }
 
     @GetMapping("/api/documents/{documentId}/access/me")
-    @RequiresDocumentAccess(value = Capability.READ, param = "documentId")
-    public MyRole myRole(@PathVariable("documentId") UUID documentId,
-                         HttpServletRequest request) {
-        return new MyRole(DocumentAccessGuard.resolvedRole(request)
+    @RequiresDocumentAccess(Capability.READ)
+    public ResponseEntity<MyRole> myRole(@PathVariable("documentId") UUID documentId,
+                                         HttpServletRequest request) {
+        return ResponseEntity.ok(new MyRole(DocumentAccessGuard.resolvedRole(request)
             .map(Role::wire)
-            .orElse("viewer"));
+            .orElse("viewer")));
     }
 
     // ------------------------------------------------------------------
@@ -126,7 +124,7 @@ public class AccessController {
     }
 
     @PutMapping("/api/documents/{documentId}/access/visibility")
-    @RequiresDocumentAccess(value = Capability.MANAGE_ACCESS, param = "documentId")
+    @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
     public ResponseEntity<Void> setVisibility(@PathVariable("documentId") UUID documentId,
                                               @RequestBody VisibilityRequest body) {
         String visibility = body.visibility();
@@ -144,7 +142,7 @@ public class AccessController {
     }
 
     @PutMapping("/api/documents/{documentId}/access/members/{userId}")
-    @RequiresDocumentAccess(value = Capability.MANAGE_ACCESS, param = "documentId")
+    @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
     public ResponseEntity<Void> setMemberRole(@PathVariable("documentId") UUID documentId,
                                               @PathVariable("userId") String userId,
                                               @RequestBody RoleRequest body) {
@@ -167,19 +165,28 @@ public class AccessController {
     }
 
     @DeleteMapping("/api/documents/{documentId}/access/members/{userId}")
-    @RequiresDocumentAccess(value = Capability.MANAGE_ACCESS, param = "documentId")
+    @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
     public ResponseEntity<Void> removeMember(@PathVariable("documentId") UUID documentId,
                                              @PathVariable("userId") String userId,
                                              HttpServletRequest request) {
-        String caller = TokenAuthFilter.principalOf(request)
-            .map(TokenService.Principal::userId)
-            .orElse(null);
+        String caller = TokenAuthFilter.requiredCallerId(request);
         if (userId.equals(caller)) {
             // Removing yourself from your own document leaves it with an owner_id that no longer
             // matches anybody who can act — and nothing else in the system can repair that.
             return ResponseEntity.status(HttpStatus.CONFLICT).build();
         }
-        permissions.revoke(documentId, userId);
+        // 404 when there was no membership row to remove, matching revokeInvite one method below
+        // and every other DELETE in this project (catalog.softDelete, catalog.restore). It used to
+        // answer 204 unconditionally, because PermissionService.revoke discarded the row count —
+        // so "I removed Marek" and "Marek was never a member, and you may be looking at the wrong
+        // document" were the same answer.
+        //
+        // The choice between 204-always and 404-when-absent is a real one: DELETE is idempotent, so
+        // 204 is defensible. This codebase had already made it, four times, in the other direction.
+        // One convention, applied, beats two defensible ones.
+        if (!permissions.revoke(documentId, userId)) {
+            return ResponseEntity.notFound().build();
+        }
         announce(documentId);
         log.info("Access of user {} to document {} revoked", userId, documentId);
         return ResponseEntity.noContent().build();
@@ -196,7 +203,7 @@ public class AccessController {
     }
 
     @PostMapping("/api/documents/{documentId}/access/invites")
-    @RequiresDocumentAccess(value = Capability.MANAGE_ACCESS, param = "documentId")
+    @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
     public ResponseEntity<CreatedInvite> createInvite(@PathVariable("documentId") UUID documentId,
                                                       @RequestBody CreateInviteRequest body,
                                                       HttpServletRequest request) {
@@ -204,9 +211,7 @@ public class AccessController {
         if (role == null) {
             return ResponseEntity.badRequest().build();
         }
-        String caller = TokenAuthFilter.principalOf(request)
-            .map(TokenService.Principal::userId)
-            .orElseThrow();
+        String caller = TokenAuthFilter.requiredCallerId(request);
 
         var issued = invites.create(documentId, role, caller,
             body.days() == null ? null : Duration.ofDays(body.days()));
@@ -216,7 +221,7 @@ public class AccessController {
     }
 
     @DeleteMapping("/api/documents/{documentId}/access/invites/{inviteId}")
-    @RequiresDocumentAccess(value = Capability.MANAGE_ACCESS, param = "documentId")
+    @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
     public ResponseEntity<Void> revokeInvite(@PathVariable("documentId") UUID documentId,
                                              @PathVariable("inviteId") String inviteId) {
         return invites.revoke(documentId, inviteId)
@@ -250,9 +255,7 @@ public class AccessController {
         + "the document comes from inside it, never from the request.")
     public ResponseEntity<RedeemResult> redeem(@RequestBody RedeemRequest body,
                                                HttpServletRequest request) {
-        String caller = TokenAuthFilter.principalOf(request)
-            .map(TokenService.Principal::userId)
-            .orElseThrow();
+        String caller = TokenAuthFilter.requiredCallerId(request);
 
         var documentId = invites.documentOf(body.token());
         var role = invites.redeem(body.token(), caller);

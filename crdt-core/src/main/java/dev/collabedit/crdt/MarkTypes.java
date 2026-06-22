@@ -54,7 +54,7 @@ public final class MarkTypes {
      *
      * <p>The value is the suggestion's identifier, exactly as {@link #COMMENT} carries a thread
      * identifier — the author, the time and the resolution live in a table, because none of them
-     * is edited concurrently and none of them belongs in an operation log (ADR-0011, the same
+     * is edited concurrently and none of them belongs in an operation log (the same
      * split, for the same reason).
      */
     public static final String SUGGEST_INSERT = "suggest-insert";
@@ -72,7 +72,7 @@ public final class MarkTypes {
      *
      * <p>What it does <b>not</b> give is a move operation. Moving a paragraph in this model is a
      * deletion plus an insertion, and two people moving the same paragraph concurrently produce
-     * two copies of it — a documented, tested limit rather than a bug (ADR-0016, and
+     * two copies of it — a documented, tested limit rather than a bug (and
      * {@code BlockStructureTest}). A real move needs a block identity the sequence does not have.
      */
     public static final String HEADING = "heading";

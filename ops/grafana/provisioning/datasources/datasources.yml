@@ -3,6 +3,12 @@ apiVersion: 1
 datasources:
   - name: Prometheus
     type: prometheus
+    # The uid is declared rather than left to Grafana. Tempo's `tracesToMetrics` below refers to
+    # this datasource by uid, and without this line Grafana generated a random one at provisioning
+    # time — so the reference resolved to nothing and the trace→metric jump silently did not
+    # appear. Tempo already declared its uid, which is why the metric→trace direction worked and
+    # the missing half looked like a Grafana version difference rather than a typo of ours.
+    uid: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true

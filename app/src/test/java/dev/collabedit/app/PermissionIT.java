@@ -98,6 +98,17 @@ class PermissionIT extends IntegrationTestBase {
         return HttpClient.newHttpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 
+    private HttpResponse<String> delete(String path, String token) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + path))
+            .timeout(Duration.ofSeconds(10))
+            .DELETE();
+        if (token != null) {
+            builder.header("Authorization", "Bearer " + token);
+        }
+        return HttpClient.newHttpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
     private HttpResponse<String> get(String path, String token) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
             .uri(URI.create("http://localhost:" + port + path))
@@ -240,6 +251,91 @@ class PermissionIT extends IntegrationTestBase {
             .as("revoking access did nothing — the permission was remembered")
             .isFalse();
         assertThat(get("/api/documents/" + document, marek.token()).statusCode()).isEqualTo(404);
+    }
+
+    /**
+     * The half of revocation that did not exist, named by {@code PLAN-v2} and never written.
+     *
+     * <h2>What was wrong</h2>
+     * {@code DocumentAccessInterceptor} was registered on the INBOUND channel only, and nothing
+     * looked at what went OUT. So after a revocation the user's writes were refused and their next
+     * REST request answered 404 — while <b>every broadcast kept arriving in their browser</b>: the
+     * text other people were typing, character by character, plus the presence of everyone in the
+     * room, indefinitely.
+     *
+     * <p>It was invisible from the server. The refusals in the log looked exactly as they should,
+     * because it is the WRITES that were being refused, and {@code revokingAccessTakesEffect} above
+     * passes on the old code: it checks the permission and the REST route, which are the two halves
+     * that worked. The README claimed revocation took effect within the cache's five seconds, and
+     * for reading it never took effect at all.
+     *
+     * <p>This test holds a live session ACROSS the revocation, which is the only arrangement that
+     * can tell the difference — a client that reconnects afterwards is refused at SUBSCRIBE by the
+     * inbound half and proves nothing about the outbound one.
+     */
+    @Test
+    @DisplayName("revoking access stops a subscription that is already live")
+    void revokedAccessTerminatesLiveSubscription() throws Exception {
+        User anna = newUser("Anna");
+        User marek = newUser("Marek");
+        UUID document = privateDocument(anna, "Shared, then not");
+        permissions.grant(document, marek.id(), Role.EDITOR);
+
+        try (TestStompClient owner = new TestStompClient(port, anna.token(), document, 741);
+             TestStompClient guest = new TestStompClient(port, marek.token(), document, 742)) {
+
+            owner.insert(0, "BEFORE");
+            guest.awaitCondition(() -> guest.text().contains("BEFORE"), PATIENCE,
+                "the guest receives broadcasts while they have access");
+
+            int noticesBefore = guest.accessChangeCount();
+            // Revoked through the ENDPOINT rather than through PermissionService, because the
+            // notice below is published by the controller. Calling the service directly tests the
+            // half of the mechanism that has no user in front of it — and it is what let the
+            // missing notice go unnoticed here in the first place.
+            assertThat(delete("/api/documents/" + document + "/access/members/" + marek.id(),
+                anna.token()).statusCode())
+                .as("the owner revokes through the endpoint the interface actually calls")
+                .isEqualTo(204);
+
+            long before = owner.lastAckSeq();
+            owner.insert(owner.text().length(), "AFTER");
+            // Waited for POSITIVELY, not slept through. The assertion below is a negative one, and
+            // this codebase has already found once (DocumentCollaborationIT) that a negative
+            // assertion guarded by a fixed sleep passes whenever the machine is slower than the
+            // sleep. The acknowledgement advancing is proof that the operation has been merged,
+            // broadcast and written — that is, that the frame the guest must not have received has
+            // already gone out to everybody who was entitled to it.
+            owner.awaitCondition(() -> owner.lastAckSeq() > before, PATIENCE,
+                "the second write is acknowledged, so its broadcast has already happened");
+            // A short additional margin only for the delivery hop to the guest's own socket, which
+            // has no signal of its own to wait on — the whole point is that nothing arrives.
+            Thread.sleep(300);
+
+            assertThat(guest.text())
+                .as("""
+                    A revoked user kept receiving the document's broadcasts on a subscription that \
+                    was established before the revocation. Their writes are refused and their REST \
+                    requests answer 404, so from the server's own logs the revocation looks \
+                    complete — while they are watching the document being typed.""")
+                .doesNotContain("AFTER");
+            assertThat(guest.text())
+                .as("what they already had is not the question here; what arrives afterwards is")
+                .contains("BEFORE");
+
+            // THE OTHER HALF, and the one the first version of the filter broke. A revoked client
+            // must stop receiving the document's CONTENT and must still receive the notice that
+            // its access changed — that frame is the only thing that makes the client re-ask for
+            // its role, and without it the tab simply goes quiet: still showing the document, and
+            // still letting somebody type into a replica whose operations are being refused.
+            //
+            // Safe to deliver because Messages.AccessChanged is EMPTY; CP21 removed its fields so
+            // that this broadcast cannot say anything GET /access would refuse.
+            guest.awaitCondition(() -> guest.accessChangeCount() > noticesBefore, PATIENCE,
+                "the revoked client is never told its access changed, so it has no way to find "
+                    + "out — the one frame whose purpose is to say so was the one being dropped");
+        }
+
     }
 
     @Test

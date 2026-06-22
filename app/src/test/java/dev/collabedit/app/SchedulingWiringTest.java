@@ -117,8 +117,8 @@ class SchedulingWiringTest {
     void heartbeatPoolCarriesHeartbeatsOnly() {
         List<String> onHeartbeatPool = scheduledMethods().stream()
             .flatMap(job -> List.of(job.getAnnotationsByType(Scheduled.class)).stream()
-                .filter(scheduled -> HEARTBEAT_POOL.equals(scheduled.scheduler()))
-                .map(scheduled -> describe(job)))
+            .filter(scheduled -> HEARTBEAT_POOL.equals(scheduled.scheduler()))
+            .map(scheduled -> describe(job)))
             .toList();
 
         assertThat(onHeartbeatPool)

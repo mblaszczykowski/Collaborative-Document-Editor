@@ -2,10 +2,13 @@ package dev.collabedit.app.ws;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.collabedit.app.auth.PermissionService;
+import dev.collabedit.app.observability.DocumentMetrics;
 import dev.collabedit.app.auth.Role;
 import dev.collabedit.crdt.MarkTypes;
 import dev.collabedit.crdt.OpCodec;
 import java.io.IOException;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,8 +50,66 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentAccessInterceptor.class);
 
+    /**
+     * The only destinations that legitimately carry no document identifier.
+     *
+     * <p>Spelled out rather than matched by prefix, because a prefix rule is what let
+     * {@code /queue/**} through: Spring rewrites a {@code /user/queue/x} subscription into a
+     * session-suffixed {@code /queue/x-user<sessionId>} at the broker, so <b>{@code /queue/**} is a
+     * pattern that matches other people's private queues</b>. An exact set cannot drift into that.
+     *
+     * <p>Kept in step with {@code convertAndSendToUser} — the three destinations the server
+     * actually publishes to — by {@code DocumentAccessInterceptorTest}.
+     */
+    static final Set<String> PRIVATE_USER_QUEUES = Set.of(
+        "/user/queue/session",
+        "/user/queue/sync",
+        "/user/queue/errors");
+
+    /**
+     * The prefix a client may PUBLISH to, and the only one.
+     *
+     * <p>The same string {@code WebSocketConfig.setApplicationDestinationPrefixes} registers.
+     * Everything else the broker knows — {@code /topic}, {@code /queue}, {@code /user} — is an
+     * OUTBOUND prefix: the server sends there and clients subscribe. A SEND to one of those goes
+     * straight into the broker's fan-out with the client's own payload in it, which is what the
+     * check in {@code preSend} exists to stop.
+     */
+    static final String APPLICATION_PREFIX = "/app/";
+
+    /**
+     * Why a frame was refused — a CLOSED set, because it becomes a metric tag.
+     *
+     * <p>An open set of reasons taken from the frame would let a client mint metric series at
+     * will, which is the cardinality hazard {@code SessionCloseListener} already guards against by
+     * collapsing unknown close codes.
+     */
+    enum Refusal {
+        WILDCARD_DESTINATION("wildcard destination"),
+        UNKNOWN_DESTINATION("destination carries no document identifier"),
+        NO_ACCESS("no access at all"),
+        ROLE("the role does not permit this operation"),
+        RATE("send rate exceeded");
+
+        private final String description;
+
+        Refusal(String description) {
+            this.description = description;
+        }
+    }
+
     private final PermissionService permissions;
-    private final RateLimiter rateLimiter = new RateLimiter();
+    private final DocumentMetrics metrics;
+
+    /**
+     * Shared with {@link SessionLifecycle}, which is what forgets a session's buckets.
+     *
+     * <p>This class used to own the instance outright and clean it up on the inbound
+     * {@code DISCONNECT} frame — one step of session teardown living inside the authorization
+     * class, with nothing showing its order relative to the other two steps that also fired on
+     * that event.
+     */
+    private final RateLimiter rateLimiter;
 
     /**
      * Injected lazily for the same reason as {@code PresenceService} in
@@ -57,16 +118,18 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      */
     private final ObjectProvider<SimpMessagingTemplate> messaging;
 
-    public DocumentAccessInterceptor(PermissionService permissions,
+    public DocumentAccessInterceptor(PermissionService permissions, DocumentMetrics metrics,
+                                     RateLimiter rateLimiter,
                                      ObjectProvider<SimpMessagingTemplate> messaging) {
         this.permissions = permissions;
+        this.metrics = metrics;
+        this.rateLimiter = rateLimiter;
         this.messaging = messaging;
     }
 
-    /** Diagnostics and tests only — access to the token bucket counters. */
-    public RateLimiter rateLimiter() {
-        return rateLimiter;
-    }
+    // rateLimiter used to sit here as a public accessor "for diagnostics and tests", with no
+    // caller in either. RateLimiterTest builds its own instance, which is the right way to test a
+    // token bucket.
 
     @Override
     public Message<?> preSend(Message<?> message, MessageChannel channel) {
@@ -77,32 +140,89 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         }
 
         StompCommand command = accessor.getCommand();
-        if (command == StompCommand.DISCONNECT) {
-            // Without this the bucket maps grow with every session since process start.
-            rateLimiter.forget(accessor.getSessionId());
-            return message;
-        }
+        // DISCONNECT is no longer handled here. Forgetting the session's buckets is one step of
+        // session teardown, and all three of them now happen in SessionLifecycle, in an order a
+        // reader can see. This class decides whether a frame may act, and nothing else.
         if (command != StompCommand.SUBSCRIBE && command != StompCommand.SEND) {
             return message;
         }
 
         String destination = accessor.getDestination();
-        UUID documentId = documentIdOf(destination);
-        if (documentId == null) {
-            // Destinations unrelated to a document — the user's own queues (/user/queue/**). They
-            // are private by definition: the broker delivers them only to the session that
-            // subscribed.
-            return message;
+        String userId = SessionAttributes.userId(accessor);
+
+        // No destination at all — a malformed frame. Refused here rather than left to fall through:
+        // the allow-list below is a Set.of(...), which throws on contains(null), so a missing header
+        // would have become a NullPointerException inside the interceptor rather than a refusal.
+        if (destination == null) {
+            return deny(command, "<none>", userId, Refusal.UNKNOWN_DESTINATION);
         }
 
-        String userId = SessionAttributes.userId(accessor);
+        // A destination carrying a wildcard is refused before anything else, whether or not a
+        // document identifier can be parsed out of it. Nothing in this protocol subscribes to a
+        // pattern — every destination the client uses is spelled out in `connection.ts` — so the
+        // only thing a wildcard can express here is an attempt to widen the subscription past what
+        // the check below is able to reason about.
+        if (destination.indexOf('*') >= 0 || destination.indexOf('?') >= 0) {
+            return deny(command, destination, userId, Refusal.WILDCARD_DESTINATION);
+        }
+
+        // A SEND may only ever go to the APPLICATION prefix. Nothing below this line checks that,
+        // and that was a hole with the same shape as the CP12 wildcard bypass.
+        //
+        // `allowedToSend` decides on the destination's SUFFIX — "/op", "/presence", "/sync" — and
+        // never looks at its head. The rules were written with `/app/doc/{id}/…` in mind, but
+        // `documentIdOf` parses `/topic/doc/{uuid}/…` just as happily (its javadoc says so, by
+        // design, because the same parser authorises SUBSCRIBE), and `/topic` is a BROKER prefix:
+        // WebSocketConfig calls enableSimpleBroker("/topic", "/queue"). So a SEND to
+        // /topic/doc/{id}/presence matched the "/presence" rule, which returns true for every role,
+        // and Spring's SimpleBrokerMessageHandler fanned the client's own payload out to every
+        // subscriber of that topic.
+        //
+        // What that buys an attacker is the participant list of every client in the document:
+        // impersonated names, colours and cursors, or an empty room, or complete:false — the flag
+        // whose whole purpose is to tell the user the list may be wrong. Any role at all is enough,
+        // including viewer.
+        //
+        // /topic/doc/{id}/ops escaped only because "/ops" does not end with "/op". That is luck,
+        // not a rule, and one renamed channel away from being an operation-injection hole.
+        //
+        // Refused before documentIdOf rather than inside allowedToSend, because the question is not
+        // about the document: a client has no business publishing to a broker destination at all.
+        // Every destination the client publishes to is spelled out in `connection.ts`, and all of
+        // them are under /app/.
+        if (command == StompCommand.SEND && !destination.startsWith(APPLICATION_PREFIX)) {
+            return deny(command, destination, userId, Refusal.UNKNOWN_DESTINATION);
+        }
+
+        UUID documentId = documentIdOf(destination);
+        if (documentId == null) {
+            // Destinations unrelated to a document. This used to let the frame THROUGH, on the
+            // reasoning that anything without a document identifier must be one of the user's own
+            // queues, which the broker delivers only to the session that subscribed.
+            //
+            // The premise was false, and it cost the whole of CP12. `enableSimpleBroker` installs
+            // Spring's DefaultSubscriptionRegistry, which matches subscription destinations as ANT
+            // PATTERNS. `documentIdOf("/topic/**")` returns null, so the frame was waved through and
+            // then matched every document's broadcast — SUBSCRIBE /topic/** delivered the operations,
+            // acknowledgements and presence of every document open on this instance, and
+            // SUBSCRIBE /queue/** delivered other sessions' sync responses. Login is passwordless by
+            // design, so the whole path needed no account and nothing was logged, because
+            // deny was never reached.
+            //
+            // The rule is now the same one allowedToSend already applies: an unrecognised
+            // destination is refused. A new private channel has to be permitted deliberately rather
+            // than discovered to have been permitted all along.
+            return PRIVATE_USER_QUEUES.contains(destination)
+                ? message
+: deny(command, destination, userId, Refusal.UNKNOWN_DESTINATION);
+        }
         Role role = permissions.roleOf(userId, documentId).orElse(null);
 
         if (role == null) {
-            return deny(command, destination, userId, "no access at all");
+            return deny(command, destination, userId, Refusal.NO_ACCESS);
         }
         if (command == StompCommand.SEND && !allowedToSend(role, destination, message)) {
-            return deny(command, destination, userId, "role " + role.wire() + " does not permit this operation");
+            return deny(command, destination, userId, Refusal.ROLE);
         }
         RateLimiter.Decision pace = command == StompCommand.SEND
             ? withinRateLimit(accessor.getSessionId(), destination)
@@ -119,7 +239,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             // document exhausted the burst, 115 operations were lost, and the document simply came
             // out shorter, with no trace in the interface.
             notifyRateLimited(accessor, destination, pace.retryAfterMillis());
-            return deny(command, destination, userId, "send rate exceeded");
+            return deny(command, destination, userId, Refusal.RATE);
         }
         return message;
     }
@@ -130,6 +250,11 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      * <p>Checked AFTER authorization, not before: a client without permission should be refused for
      * lack of access rather than for pace — otherwise the log message would state the wrong reason
      * when diagnosing.
+     *
+     * <p>SEND only, deliberately. SUBSCRIBE is not paced because there is nothing left for it to
+     * protect: a wildcard destination is refused outright, an unrecognised one is refused, and a
+     * document destination costs one entry in the broker's per-session registry, reclaimed on
+     * disconnect. A third token bucket would be machinery guarding a bound that already exists.
      */
     private RateLimiter.Decision withinRateLimit(String sessionId, String destination) {
         long now = System.currentTimeMillis();
@@ -143,6 +268,13 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      *
      * <p>For reading (SUBSCRIBE) any role at all is enough — the lowest of them, {@code viewer},
      * reads by definition. Sending is decided per destination.
+     *
+     * <p><b>Every destination reaching this method is already known to start with {@code /app/}</b>,
+     * and that precondition is enforced in {@link #preSend} rather than here. It matters because
+     * every rule below matches on a SUFFIX: without the prefix check, {@code /topic/doc/{id}/
+     * presence} matched the presence rule and the client's payload went into the broker's fan-out.
+     * Adding the head of the destination to each rule would work too and would have to be
+     * remembered for every future one; a single check at the door cannot be forgotten per rule.
      */
     private static boolean allowedToSend(Role role, String destination, Message<?> message) {
         if (destination.endsWith("/op")) {
@@ -153,7 +285,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             }
             // A commenter may send ONLY a comment mark. This is the point where authorization has
             // to descend to the OPERATION TYPE: comments travel the same channel as editing, so
-            // they cannot be distinguished at the destination level (ADR-0009). Without this the
+            // they cannot be distinguished at the destination level. Without this the
             // "commenter" role would mean "editor".
             return role.canComment() && isCommentMark(message);
         }
@@ -204,7 +336,7 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      * Tells the client its operation was refused because of the rate limit.
      *
      * <p>The client holds unacknowledged operations in a buffer until the WRITE is confirmed
-     * (ADR-0003), so it has something to retry — all it lacks is a signal that retrying is worth it.
+     *, so it has something to retry — all it lacks is a signal that retrying is worth it.
      *
      * <p><b>Since CP20 the signal also carries the WAIT.</b> The token bucket knows it exactly
      * ({@code (1 - tokens) / refillPerMs}), and the client used to guess it — a hardcoded one
@@ -228,8 +360,25 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         }
     }
 
-    private Message<?> deny(StompCommand command, String destination, String userId, String reason) {
-        log.warn("Refused: {} {} for user {} — {}", command, destination, userId, reason);
+    /**
+     * Stops the frame on the channel, counts it, and logs it at a level matched to what it means.
+     *
+     * <p>WARN for an authorization refusal — rare, and something a reader of the log should see.
+     * DEBUG for a rate refusal, which is a NORMAL back-pressure signal on a busy document: the
+     * CP15 harness produced 1614 of them in one run, and 1614 WARN lines from a hot inbound path
+     * bury everything else. The count is what carries that information now, and it is a number
+     * rather than a line.
+     */
+    private Message<?> deny(StompCommand command, String destination, String userId,
+                            Refusal reason) {
+        metrics.recordFrameRefused(reason.name().toLowerCase(Locale.ROOT));
+        if (reason == Refusal.RATE) {
+            log.debug("Refused: {} {} for user {} — {}",
+                command, destination, userId, reason.description);
+        } else {
+            log.warn("Refused: {} {} for user {} — {}",
+                command, destination, userId, reason.description);
+        }
         // Returning null stops the message on the channel. The client receives neither a
         // subscription confirmation nor any broadcasts, so from its point of view the document does
         // not exist. We deliberately send NO details: "this document exists but you have no access

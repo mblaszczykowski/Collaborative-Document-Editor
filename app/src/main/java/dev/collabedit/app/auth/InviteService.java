@@ -1,6 +1,7 @@
 package dev.collabedit.app.auth;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -24,7 +25,7 @@ import org.springframework.stereotype.Service;
  * since CP12, and they were called from tests only. The missing piece is that <b>there is nothing
  * to type into a share box</b>: login has no password and mints a new user identifier on every
  * call, so a person is not addressable before they arrive. The reasoning, and the option that was
- * rejected (a searchable user directory), is in {@code V5__invites.sql} and ADR-0014.
+ * rejected (a searchable user directory), is in {@code V5__invites.sql} and the invitation design.
  *
  * <p>So an invitation carries the role and identity is bound at redemption. The consequence worth
  * stating plainly: <b>an invite is a bearer credential</b>. Whoever holds the token gets the role
@@ -105,7 +106,7 @@ public class InviteService {
         jdbc.update("""
             INSERT INTO document_invites (token_hash, doc_id, role, created_by, expires_at)
             VALUES (?, ?, ?, ?, ?)
-            """, hash, documentId, role.wire(), createdBy, java.sql.Timestamp.from(expiresAt));
+            """, hash, documentId, role.wire(), createdBy, Timestamp.from(expiresAt));
 
         log.info("Invite minted for document {} with role {} by {}", documentId, role.wire(),
             createdBy);

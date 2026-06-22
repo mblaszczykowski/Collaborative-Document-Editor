@@ -15,7 +15,7 @@ package dev.collabedit.app.auth;
  */
 public enum Role {
 
-    /** Czyta dokument i widzi kursory innych. Nie zmienia niczego. */
+    /** Reads the document and sees other people's cursors. Changes nothing. */
     VIEWER,
 
     /**

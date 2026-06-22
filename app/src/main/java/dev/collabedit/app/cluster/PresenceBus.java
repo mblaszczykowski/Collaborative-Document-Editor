@@ -1,5 +1,6 @@
 package dev.collabedit.app.cluster;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
@@ -20,7 +21,7 @@ import org.springframework.stereotype.Component;
  *
  * <ul>
  *   <li>{@link ClusterBus} — operations. Unreliable on purpose: a lost message costs propagation
- *       delay and the anti-entropy sweep repairs it (ADR-0004).</li>
+ *       delay and the anti-entropy sweep repairs it.</li>
  *   <li>{@link PermissionInvalidationBus} — access decisions. Unreliable, with the cache TTL as
  *       the backstop.</li>
  *   <li>this one — <b>soft state with an expiry</b>. Nothing repairs a lost presence message and
@@ -47,14 +48,15 @@ public class PresenceBus implements MessageListener {
 
     public static final String CHANNEL = "collabedit:presence";
 
-    private final String instanceId = UUID.randomUUID().toString();
+    private final String instanceId;
     private final StringRedisTemplate redis;
 
     /** (instanceId, documentId, participants as the wire sees them). */
     private volatile Consumer<Announcement> handler = announcement -> { };
 
-    public PresenceBus(StringRedisTemplate redis) {
+    public PresenceBus(StringRedisTemplate redis, InstanceIdentity identity) {
         this.redis = redis;
+        this.instanceId = identity.id();
     }
 
     public record Announcement(String instanceId, UUID documentId, JsonNode participants) {
@@ -85,7 +87,7 @@ public class PresenceBus implements MessageListener {
             payload.set("p", JSON.valueToTree(participants));
             redis.convertAndSend(CHANNEL, JSON.writeValueAsString(payload));
             return true;
-        } catch (RuntimeException | com.fasterxml.jackson.core.JsonProcessingException e) {
+        } catch (RuntimeException | JsonProcessingException e) {
             log.warn("Could not announce presence for document {}: {}", documentId, e.toString());
             return false;
         }

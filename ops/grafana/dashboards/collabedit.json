@@ -2,23 +2,46 @@
   "uid": "collabedit-main",
   "title": "Inkline — collaborative editing",
   "description": "Panels chosen for the questions one has to be able to answer about THIS system, rather than for a list of 'what people usually measure'. Every row carries a description saying what a bad value means.",
-  "tags": ["collabedit", "crdt"],
+  "tags": [
+    "collabedit",
+    "crdt"
+  ],
   "timezone": "browser",
   "refresh": "5s",
-  "time": { "from": "now-15m", "to": "now" },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
   "schemaVersion": 39,
   "panels": [
     {
       "type": "row",
       "title": "Is the system keeping up",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
     },
     {
       "type": "timeseries",
-      "title": "Latencja serwerowa operacji (p50 / p95 / p99)",
+      "title": "Server-side operation latency (p50 / p95 / p99)",
       "description": "Operation intake -> broadcast to this instance's clients. ONE clock, so the only latency whose number can be quoted without caveats. Client-to-client latency is measured solely in the benchmark harness (CP8) and is NOT here — deliberately, because it would require comparing two different clocks.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 5 } } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 5
+          }
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum(rate(op_server_latency_seconds_bucket[1m])) by (le))",
@@ -36,77 +59,143 @@
     },
     {
       "type": "timeseries",
-      "title": "Czas scalenia CRDT (p95)",
+      "title": "CRDT merge time (p95)",
       "description": "The algorithm alone, without transport or persistence. This is where the difference between an O(n) and an O(log n) index shows — a value growing with document size means the indexing structure has stopped keeping up.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum(rate(crdt_merge_duration_seconds_bucket[1m])) by (le))",
-          "legendFormat": "scalenie p95"
+          "legendFormat": "merge p95"
         },
         {
           "expr": "histogram_quantile(0.95, sum(rate(op_persist_duration_seconds_bucket[1m])) by (le))",
-          "legendFormat": "zapis wsadu p95"
+          "legendFormat": "batch write p95"
         }
       ]
     },
     {
       "type": "timeseries",
       "title": "Operations per second",
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 9 },
-      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "description": "Merges across all instances — the rate the system is actually absorbing. Read it against the sessions panel beside it, because the number alone says nothing: what is bad is this line FLAT while sessions climb, which means frames are arriving and not being merged, and what is worse is this line far above the sessions it could plausibly come from — a merge counted more than once per operation, or the same operation arriving twice from Redis and the log without idempotence catching it. A drop to zero with sessions still connected is the strongest signal on this dashboard: it is the intake path stalled, not a quiet document.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
       "targets": [
-        { "expr": "sum(rate(crdt_merges_total[1m]))", "legendFormat": "scalone" }
+        {
+          "expr": "sum(rate(crdt_merges_total[1m]))",
+          "legendFormat": "merged"
+        }
       ]
     },
     {
       "type": "timeseries",
       "title": "Active sessions and in-memory documents",
-      "description": "The number of in-memory documents matters, because ADR-0004 deliberately multiplies memory use by the number of instances holding the same document.",
-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 9 },
+      "description": "The number of in-memory documents matters, because the cluster design deliberately multiplies memory use by the number of instances holding the same document.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 9
+      },
       "targets": [
-        { "expr": "sum(ws_sessions_active)", "legendFormat": "sesje" },
-        { "expr": "sum(doc_loaded_count)", "legendFormat": "dokumenty" }
+        {
+          "expr": "sum(ws_sessions_active)",
+          "legendFormat": "sessions"
+        },
+        {
+          "expr": "sum(doc_loaded)",
+          "legendFormat": "documents"
+        }
       ]
     },
     {
       "type": "stat",
-      "title": "Operacje bez przyczyny",
-      "description": "Operations waiting for their origin. Transient values > 0 are normal (the network reorders). A value that STAYS above zero means a permanently missing operation, that is, a corrupt log — see ADR-0004.",
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 9 },
+      "title": "Operations with no cause",
+      "description": "Operations waiting for their origin. Transient values > 0 are normal (the network reorders). A value that STAYS above zero means a permanently missing operation, that is, a corrupt log — see the cluster design.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 9
+      },
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         }
       },
-      "targets": [{ "expr": "sum(crdt_pending_operations)" }]
+      "targets": [
+        {
+          "expr": "sum(crdt_pending_operations)"
+        }
+      ]
     },
     {
       "type": "row",
       "title": "Are the repair mechanisms working",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      }
     },
     {
       "type": "timeseries",
       "title": "Gap repairs in the numbering (messages lost by Redis)",
-      "description": "ADR-0004: Redis pub/sub loses messages, and that is expected rather than exceptional. NOTE — a permanently zero value is NOT good news: it means the repair mechanism has never fired, so there is no telling whether it works at all. The CP8 chaos test triggers it on purpose.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "description": "the cluster design: Redis pub/sub loses messages, and that is expected rather than exceptional. NOTE — a permanently zero value is NOT good news: it means the repair mechanism has never fired, so there is no telling whether it works at all. The CP8 chaos test triggers it on purpose.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
       "targets": [
-        { "expr": "sum(rate(cluster_gap_repairs_total[5m]))", "legendFormat": "naprawy/s" }
+        {
+          "expr": "sum(rate(cluster_gap_repairs_total[5m]))",
+          "legendFormat": "repairs/s"
+        }
       ]
     },
     {
       "type": "timeseries",
       "title": "Tombstone share",
-      "description": "Characters deleted but still present in the structure. A monotonically rising value means GC is not working — usually because one hung client is blocking causal stability for the whole document (ADR-0005). Note: even a working GC will not reach zero, because a tombstone in the middle of the text is the origin of the next block and must not be removed.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "description": "Characters deleted but still present in the structure. A monotonically rising value means GC is not working — usually because one hung client is blocking causal stability for the whole document. Note: even a working GC will not reach zero, because a tombstone in the middle of the text is the origin of the next block and must not be removed.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
@@ -114,60 +203,173 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 0.5 },
-              { "color": "red", "value": 0.8 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 0.8
+              }
             ]
           }
         }
       },
       "targets": [
-        { "expr": "max(doc_tombstone_ratio)", "legendFormat": "tombstone share" }
+        {
+          "expr": "max(doc_tombstone_ratio)",
+          "legendFormat": "tombstone share"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Znaki odzyskane przez GC",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 25 },
+      "title": "Characters reclaimed by GC",
+      "description": "Characters given back by tombstone collection, per second. The bad value is PERMANENTLY ZERO while the tombstone share above it rises: that is causal stability standing still, and the usual cause is one replica holding stableVersion back — check 'GC blocked' below and the DEBUG line that names the replica. Zero on a quiet document is normal, so read this panel only together with the tombstone share; neither one means anything alone. Since CP18 a collection can also reclaim characters WITHOUT removing a block, because a protected block drops its content and stays, so this counting characters rather than nodes is deliberate: it measures what actually costs memory.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
       "targets": [
         {
           "expr": "sum(rate(crdt_gc_reclaimed_characters_total[5m]))",
-          "legendFormat": "znaki/s"
+          "legendFormat": "characters/s"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Operacje odrzucone (RESYNC_REQUIRED)",
-      "description": "Clients offline for longer than the GC window whose changes could not be merged (ADR-0005). Every such event means a user who saw the recovered-draft message — a real, if controlled, inconvenience.",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 25 },
+      "title": "Operations refused (RESYNC_REQUIRED)",
+      "description": "Clients offline for longer than the GC window whose changes could not be merged. Every such event means a user who saw the recovered-draft message — a real, if controlled, inconvenience.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
             ]
           }
         }
       },
-      "targets": [{ "expr": "sum(op_rejected_stale_total)" }]
+      "targets": [
+        {
+          "expr": "sum(op_rejected_stale_total)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "GC blocked, and cluster messages dropped",
+      "description": "Two ways the system quietly does more work than it should. GC blocked: a sweep that reclaimed nothing because one replica's version vector is holding the stability boundary back — a value that stays above zero means tombstones grow without bound. Cluster messages dropped: the Redis listener pool was saturated and DISCARDED a message (makes that bus best-effort), so the gap repairs above are doing work the fast path should have done.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(crdt_gc_blocked_total[5m]))",
+          "legendFormat": "GC blocked/s"
+        },
+        {
+          "expr": "sum(rate(cluster_messages_dropped_total[5m]))",
+          "legendFormat": "cluster messages dropped/s"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Operations returned by a failed write",
+      "description": "The one place where operations are already broadcast to clients and not yet in the source of truth. Counted in OPERATIONS rather than in batches, because that is the size of the exposure: they are put back in the buffer and retried in the next window, so this is not data loss — but a non-zero rate means the database is the problem, and before this counter existed the only trace was a log line.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "expr": "sum(op_write_failures_total)"
+        }
+      ]
     },
     {
       "type": "row",
       "title": "Are the clients keeping up with the broadcasts",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      }
     },
     {
       "type": "timeseries",
       "title": "Session disconnects by reason",
-      "description": "This panel exists to close an open question in the README (the 'Degradation point' section): why, above ~10 clients in one document, some of them fall permanently behind even though the server holds the complete set of operations. The BAD VALUE is a rising slow_client_buffer_overflow — the client cannot keep up with delivery, its send queue exceeds send-buffer-size-bytes (ADR-0002), and the server tears down its session. The client comes back through reconnect+resync, so from the outside it looks like a brief hiccup rather than lost deliveries. If this series grows with the client count, the bottleneck is BROADCASTING rather than CRDT merging. NOTE: a permanently zero value while clients are diverging does NOT mean all is well — it means the cause lies elsewhere and the hypothesis has to be rejected.",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
-      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 5 } } },
+      "description": "This panel exists to close an open question in the README (the 'Degradation point' section): why, above ~10 clients in one document, some of them fall permanently behind even though the server holds the complete set of operations. The BAD VALUE is a rising slow_client_buffer_overflow — the client cannot keep up with delivery, its send queue exceeds send-buffer-size-bytes, and the server tears down its session. The client comes back through reconnect+resync, so from the outside it looks like a brief hiccup rather than lost deliveries. If this series grows with the client count, the bottleneck is BROADCASTING rather than CRDT merging. NOTE: a permanently zero value while clients are diverging does NOT mean all is well — it means the cause lies elsewhere and the hypothesis has to be rejected.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 5
+          }
+        }
+      },
       "targets": [
         {
           "expr": "sum by (reason) (rate(ws_sessions_closed_total[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "STOMP frames refused, by reason",
+      "description": "What the access interceptor turned away. The reason set is closed (an enum), so this cannot grow cardinality with anything a client controls. `rate` rather than `no_access` alone is the point: a rising `rate` bucket is a client hitting the throttle and retrying, which is normal under load; a rising `no_access` or `wildcard_destination` bucket is somebody probing the topic namespace.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(ws_frames_refused_total[5m]))",
           "legendFormat": "{{reason}}"
         }
       ]

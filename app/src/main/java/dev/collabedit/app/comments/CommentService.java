@@ -14,11 +14,11 @@ import org.springframework.transaction.annotation.Transactional;
  * <h2>What is NOT here — and this is the important part</h2>
  * The anchor. The range in the document a thread refers to is a <b>CRDT mark</b> of type
  * {@code comment} carrying the thread identifier as its value — that is, the same machinery CP13
- * introduced (ADR-0010). This checkpoint uses it and adds nothing to it.
+ * introduced. This checkpoint uses it and adds nothing to it.
  *
  * <p>The anchor lives in the operation log, so it moves with the text and survives edits to its
  * surroundings in exactly the way bold does. Keeping it in the database next to the thread would be
- * a return to offsets, a mistake already rejected twice (ADR-0006 for cursors, ADR-0010 for
+ * a return to offsets, a mistake already rejected twice (for cursors, the mark layer for
  * formatting).
  *
  * <h2>Why a thread's content is NOT a CRDT</h2>
@@ -73,7 +73,7 @@ public class CommentService implements ThreadDocumentResolver {
      * the connection dropped. What it needs is not merging but <b>exactly once</b>, and that is a
      * unique column rather than a data structure.
      *
-     * <p>ADR-0011 claimed comments do not need to be a CRDT because a message has one author, is
+     * <p>The comment split claimed comments do not need to be a CRDT because a message has one author, is
      * written in one go and is never edited concurrently character by character. This is where
      * that claim is tested by use instead of by argument, and it holds: the offline path needed a
      * key, not a merge.
@@ -94,8 +94,31 @@ public class CommentService implements ThreadDocumentResolver {
             }
         }
         UUID threadId = UUID.randomUUID();
-        jdbc.update("INSERT INTO comment_threads (id, doc_id, created_by, quoted_text, client_id) "
-            + "VALUES (?, ?, ?, ?, ?)", threadId, documentId, authorId, quotedText, clientId);
+        // ON CONFLICT, not a bare INSERT. The check above and this write are two statements, so
+        // two in-flight retries of the same comment both found nothing and both inserted — and the
+        // loser got a DuplicateKeyException, i.e. a 500 from the one mechanism whose entire purpose
+        // is making the second attempt a no-op. That is reachable from the shipped client: `flush`
+        // has no in-flight guard and runs from both an effect and the browser's `online` event.
+        //
+        // Letting the unique index decide closes the window instead of narrowing it. On conflict
+        // nothing is written and the row that won is read back below.
+        int inserted = jdbc.update(
+            "INSERT INTO comment_threads (id, doc_id, created_by, quoted_text, client_id) "
+                + "VALUES (?, ?, ?, ?, ?) "
+                // The index is PARTIAL (V8: WHERE client_id IS NOT NULL), so the
+                // predicate has to be repeated here for Postgres to infer it.
+                + "ON CONFLICT (client_id) WHERE client_id IS NOT NULL DO NOTHING",
+            threadId, documentId, authorId, quotedText, clientId);
+        if (inserted == 0) {
+            UUID winner = threadByClientId(clientId);
+            if (winner != null) {
+                return winner;
+            }
+            // Only reachable if the conflict was on something other than client_id, which the
+            // schema does not allow. Loud rather than a silent null.
+            throw new IllegalStateException(
+                "the thread insert conflicted but no row with client_id " + clientId + " exists");
+        }
         addMessage(threadId, authorId, body, clientId == null ? null : clientId + ":first");
         return threadId;
     }
@@ -113,8 +136,22 @@ public class CommentService implements ThreadDocumentResolver {
             }
         }
         UUID messageId = UUID.randomUUID();
-        jdbc.update("INSERT INTO comment_messages (id, thread_id, author_id, body, client_id) "
-            + "VALUES (?, ?, ?, ?, ?)", messageId, threadId, authorId, body, clientId);
+        // Same reasoning as openThread: the check above and this write are two statements, and the
+        // unique index is what actually decides. The predicate is repeated because the index is
+        // partial (V8).
+        int inserted = jdbc.update(
+            "INSERT INTO comment_messages (id, thread_id, author_id, body, client_id) "
+                + "VALUES (?, ?, ?, ?, ?) "
+                + "ON CONFLICT (client_id) WHERE client_id IS NOT NULL DO NOTHING",
+            messageId, threadId, authorId, body, clientId);
+        if (inserted == 0) {
+            UUID winner = messageByClientId(clientId);
+            if (winner != null) {
+                return winner;
+            }
+            throw new IllegalStateException(
+                "the message insert conflicted but no row with client_id " + clientId + " exists");
+        }
         return messageId;
     }
 

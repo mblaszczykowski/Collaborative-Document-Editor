@@ -36,7 +36,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *
  * <p>Since CP16 that decision is no longer left to each controller to remember: every endpoint
  * declares what it needs and {@link DocumentAccessGuard} refuses to serve one that declares nothing
- * (ADR-0012).
+ *.
  */
 @Component
 public class TokenAuthFilter extends OncePerRequestFilter {
@@ -74,5 +74,43 @@ public class TokenAuthFilter extends OncePerRequestFilter {
         return attribute instanceof TokenService.Principal principal
             ? Optional.of(principal)
             : Optional.empty();
+    }
+
+    /**
+     * The caller's identifier, or {@code null} when the request is unauthenticated.
+     *
+     * <h2>Why the two methods below exist</h2>
+     * {@code TokenAuthFilter.principalOf(request).map(p -> p.userId).orElse(…)} appeared SIX
+     * times across four controllers — and with <b>two different endings</b>: three call sites used
+     * {@code orElse(null)} and three used {@code orElseThrow}. Nothing said which was intended
+     * where, so "what happens to an anonymous caller here" was answered by whichever line happened
+     * to get copied.
+     *
+     * <p>Naming both makes the choice deliberate at the call site instead of accidental. The rule
+     * that decides between them is the endpoint's own declaration: one guarded by
+     * {@link RequiresDocumentAccess} or {@link RequiresAuthentication} has already had an anonymous
+     * caller refused by {@link DocumentAccessGuard}, so it may say {@code requiredCallerId} and mean
+     * it. One that tolerates anonymity — a public endpoint, or a filter that treats "no caller" as
+     * "no rows" — says {@code callerId} and handles the null.
+     */
+    public static String callerId(HttpServletRequest request) {
+        return principalOf(request).map(TokenService.Principal::userId).orElse(null);
+    }
+
+    /**
+     * The caller's identifier, insisting there is one.
+     *
+     * <p>Throwing is correct here rather than defensive: every call site is behind an annotation
+     * the guard enforces, so reaching this without a principal means the guard did not run — a
+     * wiring fault in our own code, which {@link DocumentAccessGuard} also answers with a 500 for
+     * exactly the same reason. Returning null instead would push the fault downstream, into a
+     * foreign key or an ownerless document, which is how CP16 found three separate bugs.
+     */
+    public static String requiredCallerId(HttpServletRequest request) {
+        return principalOf(request)
+            .map(TokenService.Principal::userId)
+            .orElseThrow(() -> new IllegalStateException(
+                "an authenticated endpoint was reached with no principal — the access guard did "
+                    + "not run for it"));
     }
 }

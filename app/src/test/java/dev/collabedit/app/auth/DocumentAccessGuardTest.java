@@ -187,7 +187,7 @@ class DocumentAccessGuardTest {
     void malformedIdentifierIsDenied() throws Exception {
         MockHttpServletRequest request = request("anna");
         request.setAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE,
-            Map.of("id", "not-a-uuid"));
+            Map.of("documentId", "not-a-uuid"));
 
         assertThat(guard.preHandle(request, response, handler("needsRead"))).isFalse();
         assertThat(response.getStatus()).isEqualTo(404);
@@ -212,10 +212,25 @@ class DocumentAccessGuardTest {
         return request;
     }
 
+    /**
+     * A request carrying the path variable the guard will look for.
+     *
+     * <p>The name is {@code documentId}, matching {@link RequiresDocumentAccess#param()}'s default.
+     * It used to be {@code id}, and the day the default changed this fixture stopped supplying the
+     * variable the guard asks for — which made {@code insufficientRoleIsDenied} keep passing for
+     * the WRONG REASON: it asserts a 404, and an unresolvable path variable is also a 404. Only
+     * {@code sufficientRolePassesTheResolvedRoleOn}, which asserts a SUCCESS, could tell the
+     * difference and it went red.
+     *
+     * <p>That is the failure mode in miniature, and it is why
+     * {@code EndpointAuthorizationArchitectureTest} now checks that every declared {@code param}
+     * exists in its endpoint's mapping: a name mismatch makes an endpoint permanently unreachable
+     * while looking exactly like "no such document".
+     */
     private static MockHttpServletRequest documentRequest(String userId) {
         MockHttpServletRequest request = request(userId);
         request.setAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE,
-            Map.of("id", DOCUMENT.toString()));
+            Map.of("documentId", DOCUMENT.toString()));
         return request;
     }
 }

@@ -1,8 +1,10 @@
 package dev.collabedit.app.ws;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.collabedit.app.config.CollabEditProperties;
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
+import dev.collabedit.app.observability.DocumentMetrics;
 import dev.collabedit.app.observability.EditTracer;
 import dev.collabedit.app.persist.StoredOperation;
 import dev.collabedit.crdt.Op;
@@ -22,7 +24,7 @@ import org.springframework.stereotype.Controller;
  * The entry point for operations from clients.
  *
  * <p>The controller is deliberately thin — all the logic lives in {@link DocumentService}. The
- * practical reason: the write path from ADR-0004 has five steps whose order matters, and spreading
+ * practical reason: the write path from the cluster design has five steps whose order matters, and spreading
  * them across annotated controller methods would stop that order being visible in one place.
  */
 @Controller
@@ -33,26 +35,30 @@ public class DocumentStompController {
     private final DocumentService documents;
     private final DocumentRegistry registry;
     private final PresenceService presence;
+    private final SessionLifecycle sessions;
     private final SimpMessagingTemplate messaging;
     private final EditTracer tracer;
-    private final dev.collabedit.app.config.CollabEditProperties properties;
+    private final CollabEditProperties properties;
+    private final DocumentMetrics metrics;
 
     public DocumentStompController(DocumentService documents, DocumentRegistry registry,
-                                   PresenceService presence, SimpMessagingTemplate messaging,
-                                   EditTracer tracer,
-                                   dev.collabedit.app.config.CollabEditProperties properties) {
+                                   PresenceService presence, SessionLifecycle sessions,
+                                   SimpMessagingTemplate messaging, EditTracer tracer,
+                                   CollabEditProperties properties, DocumentMetrics metrics) {
         this.documents = documents;
         this.registry = registry;
         this.presence = presence;
+        this.sessions = sessions;
         this.messaging = messaging;
         this.tracer = tracer;
         this.properties = properties;
+        this.metrics = metrics;
     }
 
     /**
      * An operation from a client.
      *
-     * <p>A rejection with the {@code RESYNC_REQUIRED} code is the situation from ADR-0005: the
+     * <p>A rejection with the {@code RESYNC_REQUIRED} code is the situation from the tombstone-collection design: the
      * client was offline for longer than the GC window and its operation points at a tombstone that
      * no longer exists. The information about where those characters sat is irrecoverably lost, so
      * <b>there is no honest way to merge it</b>. Appending the text to the end of the document
@@ -72,19 +78,51 @@ public class DocumentStompController {
         }
 
         String userId = SessionAttributes.userId(headers);
+
+        // Refused HERE rather than in the domain layer, because the answer depends on which
+        // sessions are connected and that is transport state. A live session holding this
+        // identifier, under a different user, means the sender is minting operations as somebody
+        // else — and the collision that follows on (replicaId, lamport) swallows the real owner's
+        // work as a duplicate, silently.
+        //
+        // Nobody holding it is ACCEPTED, and that is the whole reason the question is about
+        // liveness: an offline buffer replayed after the tab was closed arrives under an
+        // identifier whose session is long gone, and it must be accepted. See
+        // SessionLifecycle.userOfReplica.
+        String liveOwner = sessions.userOfReplica(op.id().replicaId());
+        if (liveOwner != null && !liveOwner.equals(userId)) {
+            log.warn("Refused operation {} in document {}: replica {} is in use by another "
+                + "connected session", op.id(), documentId, op.id().replicaId());
+            metrics.recordReplicaIdConflict();
+            sendError(headers, "REPLICA_ID_CONFLICT",
+                "replica id " + op.id().replicaId() + " is in use by another connected session");
+            return;
+        }
         // The span is opened HERE rather than in the domain layer: this is the point at which the
         // operation enters the system and where the frame headers carrying the trace context sent
         // by the browser are still available.
+        // The catch is INSIDE the resource block, and that is the whole point of the shape.
+        // Java closes a try-with-resources resource before the catch clause runs, so with the
+        // catch outside, the span had already ended by the time the exception was visible — and
+        // EditSpan.fail, which exists to mark it, was unreachable from anywhere in the codebase.
+        // A RESYNC_REQUIRED refusal and a clean merge were indistinguishable in Tempo, on the one
+        // path a trace is most wanted for.
         try (var span = tracer.startReceive(headers, documentId,
             SessionAttributes.replicaId(headers), opTypeName(op))) {
             span.attribute("collabedit.op.lamport", op.id().lamport());
-            documents.submit(documentId, op, userId);
-        } catch (DocumentService.ResyncRequiredException e) {
-            log.info("Rejected operation {} in document {}: {}", op.id(), documentId, e.getMessage());
-            sendError(headers, "RESYNC_REQUIRED", e.getMessage());
-        } catch (RuntimeException e) {
-            log.warn("Rejected operation {} in document {}: {}", op.id(), documentId, e.toString());
-            sendError(headers, "OPERATION_REJECTED", e.getMessage());
+            try {
+                documents.submit(documentId, op, userId);
+            } catch (DocumentService.ResyncRequiredException e) {
+                span.fail(e);
+                log.info("Rejected operation {} in document {}: {}",
+                    op.id(), documentId, e.getMessage());
+                sendError(headers, "RESYNC_REQUIRED", e.getMessage());
+            } catch (RuntimeException e) {
+                span.fail(e);
+                log.warn("Rejected operation {} in document {}: {}",
+                    op.id(), documentId, e.toString());
+                sendError(headers, "OPERATION_REJECTED", e.getMessage());
+            }
         }
     }
 
@@ -109,25 +147,69 @@ public class DocumentStompController {
      * A request for the missing operations after reconnecting.
      *
      * <p>The client states the last sequence number it definitely holds. Sending it operations it
-     * has already seen is harmless (the idempotence from ADR-0001), so the cursor may be
+     * has already seen is harmless (the idempotence from the CRDT decision), so the cursor may be
      * conservative — better a few duplicates than one lost operation.
      */
     @MessageMapping("/doc/{documentId}/sync")
     public void onSyncRequest(@DestinationVariable("documentId") UUID documentId,
                               Messages.SyncRequest request,
                               SimpMessageHeaderAccessor headers) {
-        List<StoredOperation> missing = documents.operationsSince(documentId, request.sinceServerSeq());
+        // The head is read BEFORE the operations, and the order is not free. Two separate queries:
+        // anything committed between them is counted in the head but absent from the list, so the
+        // client would set its cursor above operations it was never sent. Read this way round the
+        // error can only go the other way — head <= the last operation returned — and a cursor
+        // that is too low costs harmless duplicates, which is the trade this endpoint's javadoc
+        // already makes explicitly.
+        long head = documents.headServerSeq(documentId);
+
+        // ONE MORE than we are prepared to send, and that extra row is the whole mechanism.
+        //
+        // `sinceServerSeq` comes from the client and was neither validated nor bounded: the query
+        // behind it had no LIMIT, every row was decoded into an Op, and the chunker then re-encoded
+        // each one — all of it live at once. That is an attack surface, and it is also the ORDINARY
+        // path, because the shipped client sends 0 whenever it detects a gap. A 250k-operation
+        // document paid its entire log for a routine reconnect.
+        //
+        // Reading cap+1 distinguishes "exactly the cap" from "more than the cap" without a second
+        // query, and the difference decides between answering and refusing.
+        int cap = properties.persistence().maxSyncOperations();
+        List<StoredOperation> missing =
+            documents.operationsSince(documentId, request.sinceServerSeq(), cap + 1);
 
         // The version vector the client reports is used ONLY to compute causal stability for GC
-        // (ADR-0005). The choice of which operations to send back is based on server_seq — these
+        //. The choice of which operations to send back is based on server_seq — these
         // are two different orderings, and mixing them is a classic mistake.
+        //
+        // Reported BEFORE the size decision below, deliberately: a client that has to fall back to
+        // the snapshot endpoint has still told us what it has seen, and discarding that would stall
+        // GC for the whole document on exactly the clients that are furthest behind.
         if (request.version() != null && !request.version().isEmpty()) {
             int replicaId = SessionAttributes.replicaId(headers);
             registry.get(documentId).reportProgress(
                 replicaId, VersionVector.of(request.version()), System.currentTimeMillis());
         }
 
-        sendSync(headers, documentId, missing);
+        if (missing.size() > cap) {
+            // NOT a truncated answer. A partial response that looked complete would be the CP8
+            // failure again — the client that needs the data most silently receiving less than it
+            // asked for — and this endpoint has no way to say "there is more" that the client is
+            // required to act on: SyncResponse.last exists to mark the final chunk, and a client
+            // that received every chunk has no reason to doubt it.
+            //
+            // The snapshot endpoint is the right answer rather than a consolation. It is O(document
+            // size) instead of O(log size), which is exactly the trade CP24 built it for, and a
+            // document with this many operations above the client's cursor is precisely where the
+            // two costs diverge most.
+            log.info("Refusing a resynchronisation of document {} from server_seq {}: more than {} "
+                    + "operations to send — the client is told to re-open through the snapshot",
+                documentId, request.sinceServerSeq(), cap);
+            sendError(headers, "SNAPSHOT_REQUIRED",
+                "too far behind to resynchronise operation by operation — re-open the document "
+                    + "through GET /api/documents/{id}/snapshot");
+            return;
+        }
+
+        sendSync(headers, head, missing);
     }
 
     /**
@@ -142,7 +224,7 @@ public class DocumentStompController {
         // Loading the replica here is NECESSARY, not an optimisation.
         //
         // An instance discards cluster messages about documents it does not hold in memory
-        // (ADR-0004 — there is no reason to multiply memory for a document with no clients).
+        // (— there is no reason to multiply memory for a document with no clients).
         // Without this line, an instance a client had merely JOINED never loaded the replica, so it
         // consistently ignored every operation from the cluster and the client saw not one of
         // anybody else's changes.
@@ -156,7 +238,14 @@ public class DocumentStompController {
                 SessionAttributes.replicaId(headers), SessionAttributes.userId(headers)),
             SessionAttributes.forUser(headers));
 
-        presence.join(
+        // Through SessionLifecycle rather than straight into PresenceService, and that indirection
+        // is the fix for a race rather than a layer. The inbound channel is a multi-threaded
+        // executor with no preserveReceiveOrder, so this frame can be dispatched AFTER the same
+        // session's teardown has already run — and PresenceService.join would then re-create an
+        // entry that nothing will ever remove, because the disconnect it would have been removed by
+        // has been and gone. The lifecycle refuses a join for a session it has already ended,
+        // atomically with ending it.
+        sessions.joined(
             headers.getSessionId(),
             documentId,
             SessionAttributes.replicaId(headers),
@@ -168,7 +257,7 @@ public class DocumentStompController {
     /**
      * A replica's periodic progress report.
      *
-     * <p>It exists solely so that tombstone GC can happen at all (ADR-0005). Causal stability is
+     * <p>It exists solely so that tombstone GC can happen at all. Causal stability is
      * the common part of the version vectors of every live replica — without regular reports the
      * server only knows the state as of the last resynchronisation, the GC boundary stands still,
      * and tombstones grow without bound.
@@ -202,94 +291,54 @@ public class DocumentStompController {
         // acknowledgement just arrived (see connection.ts). If not, it asks for a resync itself.
     }
 
-    /**
-     * How much of a resynchronisation response fits in one frame — <b>in bytes</b> (CP28).
-     *
-     * <h2>What this replaces, and why counting operations was wrong</h2>
-     * This used to be {@code SYNC_CHUNK = 300}, a count, justified by "an operation is on the order
-     * of 60–100 bytes". That assumption holds for typing and fails for the one gesture every user
-     * performs in their first minute: <b>pasting</b>. A pasted chapter is ONE operation of tens of
-     * kilobytes, so three hundred of them is megabytes in a frame limited to 64 KiB — and the
-     * failure mode is the one CP8 already found once, with the client that needs the data most
-     * being the one that cannot receive it, silently.
-     *
-     * <p>The broadcast path moved to a byte budget in CP10 and the resynchronisation path did not.
-     * The README has carried that as an open item ever since; this is it closed.
-     *
-     * <h2>Half the frame limit</h2>
-     * The same margin the broadcast path uses. The budget is measured on the encoded operations,
-     * and the frame adds an envelope on top — a JSON wrapper, STOMP headers, and whatever the
-     * broker prepends. Budgeting to the exact limit means discovering the envelope's size in
-     * production, one dropped session at a time.
-     */
-    private int syncBudgetBytes() {
-        return properties.websocket().maxMessageSizeBytes() / 2;
-    }
+    // syncBudgetBytes used to sit here, deriving "half of the transport decision's 64 KiB" from the
+    // configuration — while BroadcastWiring had the same number as a literal and the same
+    // derivation in its javadoc. Both now come from FrameChunks, which is the only place that
+    // arithmetic exists.
 
     /**
      * Sends back the missing operations — <b>in chunks</b>.
      *
      * <p>The first version sent them in one message, and that was a real bug, discovered only by
      * the load harness (CP8): the response for a 100k-character document exceeded the frame size
-     * limit from ADR-0002, so <b>the client that needed the data most could not receive it</b>. The
+     * limit from the transport decision, so <b>the client that needed the data most could not receive it</b>. The
      * symptom was some clients permanently stalling a few operations behind the server — with no
      * error in the log at all.
      *
-     * <p>The order of the chunks does not matter for correctness (merging is commutative), and a
-     * chunk lost in transit will be detected by the same mechanism as the original gap.
+     * <p>The order of the chunks does not matter for correctness (merging is commutative), but
+     * <b>whether they all arrived does</b>. Only the last one is marked {@code last}, and only that
+     * one moves the client's cursor.
+     *
+     * <p>This javadoc used to claim that "a chunk lost in transit will be detected by the same
+     * mechanism as the original gap". It would not have been. The only gap detector on the client
+     * fires when an ACKNOWLEDGEMENT arrives for an operation it does not hold, and operations in a
+     * sync response were acknowledged long ago and are never acknowledged again. Every chunk
+     * carried the same head and the client advanced on each one, so losing chunk 2 of 5 left it
+     * believing it was up to date — permanently, on a document that then went quiet. That is the
+     * CP8 failure ("the client that needed the data most could not get it, with no error anywhere")
+     * reintroduced at chunk granularity by the CP8 fix itself.
      */
-    private void sendSync(SimpMessageHeaderAccessor headers, UUID documentId,
+    private void sendSync(SimpMessageHeaderAccessor headers, long head,
                           List<StoredOperation> operations) {
-        long head = documents.headServerSeq(documentId);
         if (operations.isEmpty()) {
             messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
-                new Messages.SyncResponse(List.of(), head), SessionAttributes.forUser(headers));
+                new Messages.SyncResponse(List.of(), head, true), SessionAttributes.forUser(headers));
             return;
         }
-        for (List<JsonNode> chunk : chunkByBytes(operations, syncBudgetBytes())) {
+        // Encoded ONCE, here, and the chunker measures the objects it emits. This used to call
+        // OpCodec.encode to measure and OpCodec.toJson to emit, so a full resynchronisation of a
+        // large document serialised every operation twice — double the CPU and double the transient
+        // garbage, on the most fragile path in the protocol.
+        List<JsonNode> encoded =
+            operations.stream().<JsonNode>map(stored -> OpCodec.toJson(stored.op())).toList();
+        List<List<JsonNode>> chunks =
+            FrameChunks.byBytes(encoded, FrameChunks.budgetBytes(properties));
+        for (int i = 0; i < chunks.size(); i++) {
+            boolean last = i == chunks.size() - 1;
             messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
-                new Messages.SyncResponse(chunk, head), SessionAttributes.forUser(headers));
+                new Messages.SyncResponse(chunks.get(i), head, last),
+                SessionAttributes.forUser(headers));
         }
-    }
-
-    /**
-     * Splits operations into frames that fit a byte budget (CP28).
-     *
-     * <p>Package-private and static so a unit test can look at the chunks directly. That is not
-     * convenience: the integration test cannot catch this, because the test client raises its own
-     * inbound limit to 1 MB — a limit it raises for a good reason (its DEFAULT 8 KiB buffer was
-     * the flaw in the measurement rig that CP8 spent a checkpoint chasing), and which means an
-     * oversized frame arrives there perfectly well and only fails in a browser.
-     *
-     * <p>An operation larger than the whole budget is sent alone and may still exceed the frame
-     * limit. That is a real remaining limit rather than something to pretend about: nothing here
-     * can split an operation, because its identity is what the merge algorithm is built on. The
-     * client is what must not create one — see the paste path in {@code bridge.ts}.
-     */
-    static List<List<JsonNode>> chunkByBytes(List<StoredOperation> operations, int budget) {
-        List<List<JsonNode>> chunks = new java.util.ArrayList<>();
-        List<JsonNode> current = new java.util.ArrayList<>();
-        int bytes = 0;
-
-        for (StoredOperation stored : operations) {
-            // Bytes, not characters. The budget is a FRAME size and a frame is bytes, while
-            // `String.length()` counts UTF-16 units — for Polish text that is about 10% short,
-            // for CJK three times short. The margin (half the frame limit) hid it; a document in
-            // a non-Latin script would have found it in production instead.
-            int size = OpCodec.encode(stored.op())
-                .getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-            if (!current.isEmpty() && bytes + size > budget) {
-                chunks.add(current);
-                current = new java.util.ArrayList<>();
-                bytes = 0;
-            }
-            current.add(OpCodec.toJson(stored.op()));
-            bytes += size;
-        }
-        if (!current.isEmpty()) {
-            chunks.add(current);
-        }
-        return chunks;
     }
 
     @MessageMapping("/doc/{documentId}/presence")

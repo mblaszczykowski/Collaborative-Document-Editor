@@ -1,11 +1,11 @@
--- The schema follows directly from ADR-0003 (the operation log as the source of truth, snapshots
--- as a cache) and ADR-0004 (server_seq as the cursor for resynchronisation and anti-entropy).
+-- The schema follows directly from the operation-log decision (the operation log as the source of truth, snapshots
+-- as a cache) and the cluster design (server_seq as the cursor for resynchronisation and anti-entropy).
 
 CREATE TABLE documents (
     id              UUID PRIMARY KEY,
     title           TEXT        NOT NULL,
     -- The server_seq counter lives on the document rather than being a Postgres sequence.
-    -- The reason: a sequence leaves gaps when a transaction rolls back, and ADR-0004 bases
+    -- The reason: a sequence leaves gaps when a transaction rolls back, and the cluster design bases
     -- detection of lost operations on this counter's continuity. The price is a row lock on
     -- write, that is, serialised writes within ONE document — acceptable, because writes are
     -- batched every 50 ms anyway (application.yml).
@@ -15,7 +15,7 @@ CREATE TABLE documents (
 );
 
 -- THE SOURCE OF TRUTH. An append-only table — never UPDATE, never DELETE.
--- Restoring an old version of a document is recorded as NEW operations (ADR-0003, point 6),
+-- Restoring an old version of a document is recorded as NEW operations (point 6),
 -- because truncating the log would destroy auditability and diverge the connected clients.
 CREATE TABLE operations (
     doc_id     UUID        NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
@@ -47,7 +47,7 @@ CREATE TABLE snapshots (
     -- migrated — migrating a cache is a cost with no benefit when the log suffices.
     format_version   INTEGER     NOT NULL,
     state            BYTEA       NOT NULL,
-    -- Tombstone overhead metrics (ADR-0005) recorded at snapshot time, so they can be graphed
+    -- Tombstone overhead metrics recorded at snapshot time, so they can be graphed
     -- without loading the whole state into memory.
     text_length      INTEGER     NOT NULL,
     tombstone_count  INTEGER     NOT NULL,

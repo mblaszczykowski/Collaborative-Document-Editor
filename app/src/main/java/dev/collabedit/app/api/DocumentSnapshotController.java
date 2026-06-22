@@ -4,11 +4,12 @@ import dev.collabedit.app.auth.Capability;
 import dev.collabedit.app.auth.RequiresDocumentAccess;
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.DocumentService;
+import dev.collabedit.crdt.DocumentSnapshot;
+import dev.collabedit.crdt.RgaDocument;
 import dev.collabedit.crdt.SnapshotCodec;
 import java.util.UUID;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
@@ -30,7 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
  * it already holds and receives a handful of operations twice.
  *
  * <p>That is not a flaw to be fixed with a cleverer boundary: duplicate delivery is free here,
- * because merging is idempotent (ADR-0001), while the opposite error — a number ahead of the
+ * because merging is idempotent, while the opposite error — a number ahead of the
  * snapshot — would silently skip operations. When one of two mistakes costs nothing and the other
  * loses text, the boundary belongs on the cheap side of the line.
  *
@@ -39,14 +40,12 @@ import org.springframework.web.bind.annotation.RestController;
  * nothing. The sequence number travels in a header for the same reason.
  */
 @RestController
-@CrossOrigin(originPatterns = {"http://localhost:*", "http://127.0.0.1:*"},
-    exposedHeaders = DocumentSnapshotController.THROUGH_SEQ_HEADER)
 public class DocumentSnapshotController {
 
     /**
      * The last written sequence number this snapshot is guaranteed to cover.
      *
-     * <p>Exposed via {@code exposedHeaders} above, because a browser hides every response header a
+     * <p>Exposed through the CORS mapping in {@code WebMvcConfig}, because a browser hides every response header a
      * cross-origin response does not name explicitly — and the snapshot without this number is
      * useless: the client would not know where to resynchronise from.
      */
@@ -62,13 +61,24 @@ public class DocumentSnapshotController {
 
     @GetMapping(value = "/api/documents/{documentId}/snapshot",
         produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
-    @RequiresDocumentAccess(value = Capability.READ, param = "documentId")
+    @RequiresDocumentAccess(Capability.READ)
     public ResponseEntity<byte[]> snapshot(@PathVariable("documentId") UUID documentId) {
         // The written sequence number is read BEFORE the snapshot, so it can only be behind the
         // state, never ahead of it — see the class javadoc for why that direction is the safe one.
         long throughServerSeq = documents.headServerSeq(documentId);
-        byte[] encoded = registry.get(documentId)
-            .withLock(document -> SnapshotCodec.encode(document.snapshot()));
+
+        // TAKEN under the lock, ENCODED outside it. The encode used to be inside the lambda, so
+        // every document open blocked that document's lock for a full structure walk plus gzip —
+        // and the lock it blocks is the one the 10 ms broadcast needs on every pass. Opening a
+        // large document therefore added latency to the typing of everybody already in it, which is
+        // the one cost this system is least willing to pay.
+        //
+        // Safe because DocumentSnapshot is fully immutable: its compact constructor copies all four
+        // components, and RgaDocument.copyOf copies every block. Nothing the replica does after the
+        // lock is released can reach the object being encoded — which is what makes moving the work
+        // out a correctness-preserving change rather than a race being introduced for speed.
+        DocumentSnapshot snapshot = registry.get(documentId).withLock(RgaDocument::snapshot);
+        byte[] encoded = SnapshotCodec.encode(snapshot);
 
         return ResponseEntity.ok()
             .header(THROUGH_SEQ_HEADER, Long.toString(throughServerSeq))

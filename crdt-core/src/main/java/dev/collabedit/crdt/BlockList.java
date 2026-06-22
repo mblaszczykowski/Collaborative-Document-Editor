@@ -16,9 +16,14 @@ package dev.collabedit.crdt;
  *   <tr><td>{@code locateId}</td><td>O(n)</td><td>O(log n)</td></tr>
  * </table>
  *
- * <p>The property test {@code naiveEqualsIndexed} feeds both implementations the same random
- * sequence of operations and compares the results — that is proof the optimisation did not change
- * the behaviour, rather than an assumption that it did not.
+ * <p>The property test {@code BlockListEquivalenceProperties.naiveAndIndexedProduceIdenticalDocuments}
+ * feeds both implementations the same random sequence of operations and compares the results — that
+ * is proof the optimisation did not change the behaviour, rather than an assumption that it did not.
+ *
+ * <p>That name used to read {@code naiveEqualsIndexed} here and {@code naiveAndIndexedAgree} in
+ * {@link TreapBlockList} — two different names, neither of which existed. A javadoc pointing at a
+ * test that is not there is the same failure the mark layer records about safeguards: it is worth exactly
+ * as much as the thing it names.
  */
 public interface BlockList extends Iterable<Block> {
 
@@ -39,15 +44,20 @@ public interface BlockList extends Iterable<Block> {
      * Marks a block as deleted. A separate method rather than {@code get(i).markDeleted()}, because
      * the indexed implementation has to update the tree's aggregates at the same time — mutating a
      * block "off to the side" would silently corrupt the structure.
+     *
+     * @param deleteId the identifier of the operation doing the deleting. Carried onto the block
+     * because GC needs to know whether THAT operation is causally stable, not
+     * whether the insertion is — see {@link Block#deletedBy} for the failure the
+     * previous version of this produced.
      */
-    void markDeleted(int index);
+    void markDeleted(int index, Id deleteId);
 
     /** The number of characters visible in the text (excluding tombstones). */
     int visibleLength();
 
     /**
      * The number of all characters, tombstones included — a measure of the overhead (the metric
-     * from ADR-0005).
+     * from the tombstone-collection design).
      */
     int totalLength();
 
@@ -69,6 +79,6 @@ public interface BlockList extends Iterable<Block> {
     /** The number of visible characters before the block at the given index. */
     int visibleOffsetOf(int blockIndex);
 
-    /** An empty list of the same type — used when cloning a document in tests. */
-    BlockList newEmpty();
+    // newEmpty used to be declared here, documented as "used when cloning a document in tests".
+    // No test ever cloned a document; both implementations existed only to satisfy the interface.
 }

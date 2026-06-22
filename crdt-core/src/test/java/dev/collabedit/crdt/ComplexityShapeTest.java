@@ -150,7 +150,7 @@ class ComplexityShapeTest {
      * more than it moves a median, and this test has to survive a busy runner.
      */
     private static double medianLookupNanos(RgaDocument document, int characters) {
-        BlockList blocks = document.blocks();
+        BlockList blocks = document.blockList();
         Random random = new Random(20260815L);
 
         // Warm-up. Without it the first sample includes interpretation and class loading, which

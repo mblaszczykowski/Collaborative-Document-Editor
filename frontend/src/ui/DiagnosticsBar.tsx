@@ -13,7 +13,6 @@ export function DiagnosticsBar(props: {
   network: NetworkConditions
   onChange: (patch: Partial<NetworkConditions>) => void
   document: RgaDocument | null
-  characters: number
 }) {
   const { network, onChange, document: model } = props
   return (

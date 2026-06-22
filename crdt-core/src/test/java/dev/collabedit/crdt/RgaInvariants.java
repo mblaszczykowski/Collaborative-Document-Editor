@@ -29,7 +29,7 @@ final class RgaInvariants {
      * @return a human-readable list of violations; empty when the structure is valid
      */
     static List<String> violations(RgaDocument document) {
-        BlockList blocks = document.blocks();
+        BlockList blocks = document.blockList();
         List<String> problems = new ArrayList<>();
 
         for (int i = 0; i < blocks.size(); i++) {
@@ -43,6 +43,26 @@ final class RgaInvariants {
             if (originLoc == null) {
                 problems.add("block " + block + " has origin " + origin + ", which is not in the structure");
                 continue;
+            }
+            // A block's timestamp is ALWAYS above its origin's, because its author had already
+            // seen the origin when they created it — that is what the Lamport clock bump on
+            // receipt guarantees ({@code RgaDocument.observeClock}, the README).
+            //
+            // THIS CHECK IS THE ONE THAT WAS MISSING, and its absence is why four separate
+            // comments in this suite claimed to catch a mutation they did not. Neutering
+            // observeClock entirely — the exact mutation `convergenceWithInterleavedDelivery`,
+            // `ReplicaSet.deliverSome` and `EditScript` all say they exist to catch — left every
+            // one of the fifteen property tests green at 3000 tries. Convergence cannot see it:
+            // all the replicas run the same code, so they agree on the same wrong answer, and the
+            // other invariant below only compares blocks BETWEEN the origin and the insertion,
+            // never the insertion against the origin itself.
+            //
+            // Verified both ways before it was committed: with the bump in place the properties
+            // stay green, and with it removed `RgaConvergenceProperties` goes red. That is the
+            // difference between a test that executes a line and a test that depends on it.
+            if (origin.compareTo(block.start()) >= 0) {
+                problems.add("block " + block + " has a timestamp at or below its origin " + origin
+                    + " — the Lamport clock was not advanced on receipt");
             }
             if (originLoc.blockIndex() > i) {
                 problems.add("block " + block + " stands BEFORE its origin " + origin);
@@ -67,7 +87,7 @@ final class RgaInvariants {
      * one-character blocks and run-length compression stops achieving anything.
      */
     static List<String> fragmentation(RgaDocument document) {
-        BlockList blocks = document.blocks();
+        BlockList blocks = document.blockList();
         List<String> problems = new ArrayList<>();
         for (int i = 0; i + 1 < blocks.size(); i++) {
             if (blocks.get(i).canAppend(blocks.get(i + 1))) {

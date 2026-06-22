@@ -2,6 +2,7 @@ package dev.collabedit.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.collabedit.app.auth.DocumentAccessGuard;
 import dev.collabedit.app.auth.PublicEndpoint;
 import dev.collabedit.app.auth.RequiresAuthentication;
 import dev.collabedit.app.auth.RequiresDocumentAccess;
@@ -63,7 +64,9 @@ class EndpointAuthorizationArchitectureTest {
      * would be a way to make the test green rather than a decision.
      */
     private static final List<String> EXPECTED_PUBLIC = List.of(
-        "DocumentRestController#login");
+        // Moved out of DocumentRestController: issuing an identity is not a document operation,
+        // and it was the only raw SQL under api/. See LoginController.
+        "LoginController#login");
 
     @Test
     @DisplayName("no REST endpoint is missing an access declaration")
@@ -113,6 +116,66 @@ class EndpointAuthorizationArchitectureTest {
                 point of the pin is that the change is visible in review, not that it is \
                 forbidden.""")
             .containsExactlyInAnyOrderElementsOf(EXPECTED_PUBLIC);
+    }
+
+    /**
+     * The declared {@code param} must be a path variable the endpoint actually has.
+     *
+     * <h2>What this catches, and why nothing else could</h2>
+     * {@link DocumentAccessGuard} resolves the document by looking {@code param} up in the
+     * request's URI template variables. When the name is wrong — a typo, or a controller that
+     * spells the variable differently from the annotation's default — the lookup finds nothing and
+     * the guard answers 404. That is fail-CLOSED, which is the right direction and the wrong
+     * volume: the endpoint is permanently unreachable for every caller including its owner, and the
+     * symptom is indistinguishable from "this document does not exist". No log line, no exception,
+     * and a test written against it would simply assert a 404 and pass.
+     *
+     * <p>It was one edit away from happening. {@code param()} defaulted to {@code "id"} while
+     * fifteen endpoints overrode it to {@code "documentId"}; the default is now
+     * {@code "documentId"} and the overrides are gone, which removes the mismatch and also removes
+     * the fifteen reminders that a mismatch is possible. This assertion is what replaces them.
+     *
+     * <p>{@code COMMENT_THREAD} endpoints are covered by the same rule: their {@code param} names a
+     * thread id rather than a document id, and it still has to be a variable the mapping declares.
+     */
+    @Test
+    @DisplayName("every declared param is a path variable the endpoint actually has")
+    void everyDeclaredParamExistsInItsMapping() {
+        List<String> mismatched = new ArrayList<>();
+
+        for (Method method : requestMappedMethods()) {
+            RequiresDocumentAccess guarded =
+                AnnotatedElementUtils.findMergedAnnotation(method, RequiresDocumentAccess.class);
+            if (guarded == null) {
+                continue;
+            }
+            String placeholder = "{" + guarded.param() + "}";
+            if (!mappingOf(method).contains(placeholder)) {
+                mismatched.add(describe(method) + " declares param=\"" + guarded.param()
+                    + "\" but its mapping is " + mappingOf(method));
+            }
+        }
+
+        assertThat(mismatched)
+            .as("""
+                An endpoint names a path variable that its own mapping does not declare. \
+                DocumentAccessGuard looks that name up, finds nothing and answers 404 — so the \
+                endpoint is unreachable for everybody, permanently, with nothing anywhere saying \
+                why. Fail-closed and invisible is exactly the class of thing this test exists to \
+                make loud.""")
+            .isEmpty();
+    }
+
+    /** The class-level and method-level mappings joined, which is the path the guard sees. */
+    private static String mappingOf(Method method) {
+        return String.join(" ", pathsOf(method.getDeclaringClass()))
+            + " " + String.join(" ", pathsOf(method));
+    }
+
+    private static String[] pathsOf(java.lang.reflect.AnnotatedElement element) {
+        RequestMapping mapping =
+            AnnotatedElementUtils.findMergedAnnotation(element, RequestMapping.class);
+        return mapping == null ? new String[0] : mapping.value();
     }
 
     /**

@@ -4,7 +4,7 @@
 --
 --   THE ANCHOR  — a range in the document. It is a mark of type `comment` carrying the thread
 --                 identifier as its value, that is, exactly the machinery CP13 introduced
---                 (ADR-0010). This checkpoint USES it rather than building it. It has no table,
+--. This checkpoint USES it rather than building it. It has no table,
 --                 because it lives in the operation log like any other CRDT operation.
 --
 --   THE CONTENT — the messages in the thread. The tables below.

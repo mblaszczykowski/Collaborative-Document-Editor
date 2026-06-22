@@ -12,7 +12,7 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
 
 /**
- * Transport configuration — every numeric value comes from ADR-0002 and is justified there.
+ * Transport configuration — every numeric value comes from the transport decision and is justified there.
  * Changing any of them without updating that document makes the justification stop matching
  * reality, which is worse than having none.
  */
@@ -32,7 +32,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
      * <p>Without its own scheduler the in-memory broker <b>silently sends no heartbeats</b> — the
      * configuration is accepted but does not work. The effect would be intermediaries tearing
      * connections down after their own idle timeout, which is exactly what the heartbeat exists to
-     * prevent (ADR-0002). One of those cases where missing configuration causes no error, only the
+     * prevent. One of those cases where missing configuration causes no error, only the
      * silent loss of a feature.
      *
      * <p><b>This bean also used to run every {@code @Scheduled} method in the application, and
@@ -60,7 +60,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws")
-            // No SockJS — deliberately (ADR-0002). The fallbacks (xhr-streaming, jsonp) are
+            // No SockJS — deliberately. The fallbacks (xhr-streaming, jsonp) are
             // transport paths we do not test, that is, untested code in a critical place. The price
             // is no connection from behind a proxy that blocks Upgrade.
             //
@@ -79,6 +79,26 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
             .setTaskScheduler(stompHeartbeatScheduler());
         registry.setApplicationDestinationPrefixes("/app");
         registry.setUserDestinationPrefix("/user");
+
+        // THE SECOND HALF OF THE BROADCAST-BEFORE-ACKNOWLEDGEMENT GUARANTEE.
+        //
+        // DocumentReplica.drainForFlush takes both buffers under one lock so an acknowledgement
+        // cannot be produced before the broadcast of the same operation, and SchedulingConfig
+        // keeps the flow pool single-threaded so no second thread can send for the same document.
+        // Both of those are about the SUBMISSION order. Neither survives what happens next:
+        // Spring's clientOutboundChannel is executor-backed, so frames submitted in order are
+        // dispatched by a thread pool and can reach the socket in a different one.
+        //
+        // If the acknowledgement wins that race, the client's gap detector fires — it keys on
+        // being acknowledged an operation it does not hold — and asks for a full resynchronisation
+        // from zero. That is the exact cost the batching design exists to avoid, triggered on a
+        // completely healthy system.
+        //
+        // The price is real and worth stating: this serialises delivery per session through
+        // OrderedMessageChannelDecorator. Per session, not globally — different documents and
+        // different clients are unaffected — and the alternative is an invariant that two other
+        // files go to considerable lengths to establish and that nothing actually holds.
+        registry.setPreservePublishOrder(true);
     }
 
     @Override
@@ -87,7 +107,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
             .setMessageSizeLimit(properties.websocket().maxMessageSizeBytes())
             // Once the buffer overflows the session is closed and the client takes the reconnect
             // and resynchronisation path. Controlled degradation of one slow client instead of a
-            // jam across the whole document (ADR-0002).
+            // jam across the whole document.
             .setSendBufferSizeLimit(properties.websocket().sendBufferSizeBytes())
             .setSendTimeLimit((int) properties.websocket().sendTimeLimitMs());
     }

@@ -34,6 +34,75 @@ class MarkCostMeasurement {
         return new RgaDocument(1, new TreapBlockList());
     }
 
+    /**
+     * Text that compresses like prose rather than like a test fixture.
+     *
+     * <h2>Why {@code "x".repeat(n)} was the wrong input, and what it cost</h2>
+     * The snapshot sizes here used to be measured on fifty thousand copies of the letter x. Gzip
+     * turns that into <b>83 bytes</b>. So the absolute figures published from this file
+     * ("107 B -&gt; 108 B at 50 000 characters") described the compressibility of the input rather
+     * than any property of the format, and the README quoted them as the latter.
+     *
+     * <p>The README condemns exactly this substitution three hundred lines further down, about a
+     * different measurement: <i>"the measurement uses prose rather than `x` repeated, and that
+     * distinction is the difference between a measurement and a compliment — gzip crushes a
+     * repeated character and would have reported 259x."</i> The lesson was learned once and not
+     * carried across the file boundary.
+     *
+     * <p>The DELTAS this file asserts on — bytes per mark — were never wrong, because a difference
+     * between two snapshots of the same text cancels the text out. What was wrong was the baseline
+     * printed beside them.
+     *
+     * <h2>And a small vocabulary is barely better than one letter</h2>
+     * The first attempt at this cycled through thirty-four words and produced <b>706 B</b> from
+     * 50 000 characters — a ratio of 71:1, where real English gzips at roughly 3:1. A short
+     * repeating dictionary sits entirely inside the compressor's window, so it is the same mistake
+     * one step less obvious.
+     *
+     * <p>Hence a larger vocabulary in a deterministic pseudo-random order. It still does not
+     * compress exactly like a real document, and the printed ratio says so — a number that carries
+     * its own caveat is quotable; one that needs a footnote somebody else has to remember is not.
+     *
+     * <p>Deterministic rather than random, for the reason every seed in this project is: a
+     * measurement that changes between runs cannot be compared with the one in the README.
+     */
+    private static String prose(int length) {
+        String[] words = {
+            "document", "converges", "without", "arbiter", "because", "replica", "applies",
+            "operation", "order", "reaches", "state", "architecture", "safe", "usually",
+            "working", "under", "load", "several", "authors", "tombstone", "causal", "stability",
+            "boundary", "snapshot", "cache", "disposable", "rebuild", "log", "broadcast",
+            "unreliable", "anti", "entropy", "sweep", "interval", "divergence", "repair",
+            "lamport", "clock", "timestamp", "identifier", "collision", "silent", "anchor",
+            "formatting", "range", "expands", "typing", "comment", "thread", "suggestion",
+            "proposal", "accepted", "rejected", "permission", "revoked", "session", "subscribe",
+            "frame", "refused", "budget", "chunk", "resynchronise", "cursor", "presence",
+            "heartbeat", "reconnect", "buffer", "acknowledged", "durable", "instance", "cluster",
+            "partition", "convergent", "commutative", "idempotent", "invariant", "property",
+            "counterexample", "shrunk", "mutation", "measurement", "regression", "checkpoint",
+        };
+        // splitmix64, the same generator TreapBlockList uses for its priorities — deterministic,
+        // and without the low-bit correlation that made `new Random(seed).nextDouble()` return
+        // nearly the same value for seeds 0..9 and turn a smooth curve into a fake cliff
+        // (InterleavingMeasurement records that one).
+        long state = 0x9E3779B97F4A7C15L;
+        StringBuilder text = new StringBuilder(length + 16);
+        int since = 0;
+        while (text.length() < length) {
+            state += 0x9E3779B97F4A7C15L;
+            long z = state;
+            z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+            z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+            z = z ^ (z >>> 31);
+            text.append(words[(int) Math.floorMod(z, words.length)]).append(' ');
+            if (++since >= 12) {
+                text.append(". ");
+                since = 0;
+            }
+        }
+        return text.substring(0, length);
+    }
+
     private static int snapshotBytes(RgaDocument document) {
         return SnapshotCodec.encode(document.snapshot()).length;
     }
@@ -42,11 +111,11 @@ class MarkCostMeasurement {
     @DisplayName("marks cost what they weigh in a snapshot — they do not duplicate the text")
     void marksCostProportionallyToTheirCount() {
         RgaDocument plain = document();
-        plain.insert(0, "x".repeat(TEXT_LENGTH));
+        plain.insert(0, prose(TEXT_LENGTH));
         int withoutMarks = snapshotBytes(plain);
 
         RgaDocument marked = document();
-        marked.insert(0, "x".repeat(TEXT_LENGTH));
+        marked.insert(0, prose(TEXT_LENGTH));
         for (int i = 0; i < DENSE_MARKS; i++) {
             int from = i * (TEXT_LENGTH / DENSE_MARKS);
             marked.addMark(from, from + 20, MarkTypes.BOLD, null);
@@ -56,12 +125,15 @@ class MarkCostMeasurement {
         int perMark = (withMarks - withoutMarks) / DENSE_MARKS;
         System.out.printf(
             "%nMARK COST IN A SNAPSHOT%n"
-                + "  text of %,d characters, no marks: %,d B  (run-length squeezes it into ONE%n"
-                + "                                            block, so the text length weighs%n"
-                + "                                            almost nothing here)%n"
-                + "  the same text, %d marks:          %,d B%n"
-                + "  overhead per mark:                %d B%n",
-            TEXT_LENGTH, withoutMarks, DENSE_MARKS, withMarks, perMark);
+                + "  text: %,d characters of synthetic prose, gzipped %.1f:1%n"
+                + "        (the ratio is printed because the baseline below is a property of the%n"
+                + "         TEXT as much as of the format — real English gzips at roughly 3:1,%n"
+                + "         and \"x\" repeated 50 000 times at 600:1)%n"
+                + "  snapshot without marks:  %,d B%n"
+                + "  the same text, %d marks: %,d B%n"
+                + "  overhead per mark:       %d B%n",
+            TEXT_LENGTH, (double) TEXT_LENGTH / withoutMarks,
+            withoutMarks, DENSE_MARKS, withMarks, perMark);
 
         // A mark is two anchors (replica + lamport + side) plus a type and a value. Hundreds of
         // bytes would mean the encoder is writing something more — for example copying the covered

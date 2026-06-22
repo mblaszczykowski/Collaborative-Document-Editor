@@ -6,9 +6,11 @@
  * at a glance.
  */
 
-export function shiftAfter(index: number | null): number | null {
-  return index === null ? null : index + 1
-}
+// `shiftAfter` used to live here: a one-line `index + 1` that turned "the character a cursor sits
+// after" into "the offset the caret is at". It is gone because the presence cursor now carries a
+// SIDE — a caret can be before a character as well as after one — so the shift is no longer a
+// property of every cursor and belongs with the decoding that knows which case it has. See
+// `transport/cursorAnchor.ts` and the `resolve` helper in `useCollaborativeDocument`.
 
 export function initials(name: string): string {
   return name

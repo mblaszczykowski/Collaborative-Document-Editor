@@ -21,7 +21,7 @@ ALTER TABLE documents
     -- SOFT DELETE, not DELETE.
     --
     -- The operations table has ON DELETE CASCADE on doc_id, so a hard delete of a document
-    -- would erase its operation log — the SOURCE OF TRUTH (ADR-0003), which in this system is
+    -- would erase its operation log — the SOURCE OF TRUTH, which in this system is
     -- append-only and never deleted. A deleted document should be unreachable, not
     -- irreversibly destroyed; those are two different things, and only the first is what the
     -- user clicking "delete" wants.

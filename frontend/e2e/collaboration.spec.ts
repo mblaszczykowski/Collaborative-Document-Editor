@@ -1,5 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
-import { freshDocument, joinAs, typeInto } from './helpers'
+import { type Page } from '@playwright/test'
+import { expect, test, freshDocument, joinAs, typeInto } from './helpers'
 
 /**
  * The end-to-end test on real browsers.
@@ -7,7 +7,7 @@ import { freshDocument, joinAs, typeInto } from './helpers'
  * The server-side integration tests (CP3) prove the backend merges correctly. The property tests
  * (CP2) prove the algorithm converges. Neither answers the question of whether **what the user
  * sees** matches what is in the model — and between the CRDT and the DOM sit CodeMirror and the
- * whole bridging layer (ADR-0006).
+ * whole bridging layer.
  *
  * The same scenario drives the demo recording in CP9. One implementation, two uses: that way the
  * GIF in the README shows exactly what CI checks rather than a hand-reconstructed version of
@@ -140,7 +140,7 @@ test('history lets the document be rewound to an earlier version', async ({ brow
 
   await typeInto(anna, 'good version')
   // Waiting for the write acknowledgement: history reads the operation log, so an entry appears
-  // only after the write and not after the broadcast alone (ADR-0003).
+  // only after the write and not after the broadcast alone.
   await expect(anna.getByTestId('char-count')).toContainText('12 characters')
   await marek.waitForTimeout(500)
 
@@ -164,12 +164,12 @@ test('history lets the document be rewound to an earlier version', async ({ brow
   await anna.getByRole('button', { name: 'Restore this version' }).click()
 
   // The restore comes back over the ordinary operation channel — the editor should update itself
-  // without a page reload. That is the crux of the decision in ADR-0003, point 6.
+  // without a page reload. That is the crux of the decision in the operation-log decision, point 6.
   await expect(anna.locator('.cm-content')).not.toContainText('SPOILED', { timeout: 15_000 })
   expect(await documentText(anna)).toContain('good version')
 
   // The restore comes back over the ordinary operation channel, so the SECOND browser should see
-  // it without a reload too — that is the whole thesis of ADR-0003, point 6.
+  // it without a reload too — that is the whole thesis of the operation-log decision, point 6.
   await expect(marek.locator('.cm-content')).not.toContainText('SPOILED', { timeout: 15_000 })
   expect(await documentText(marek)).toBe(await documentText(anna))
 

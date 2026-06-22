@@ -27,7 +27,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *   <tr><td>{@code commenterCannotChangeText}</td>
  *       <td><b>A "commenter" role that in practice means "editor".</b> Comments travel over the
  *           same operation channel as edits, so without checking the operation TYPE, per-destination
- *           authorization lets through everything or nothing. That is the entire reason ADR-0009
+ *           authorization lets through everything or nothing. That is the entire reason the permission model
  *           took authorization down to the operation level.</td></tr>
  *   <tr><td>{@code commenterCanAnchorComment}</td>
  *       <td>Tightening too far: a commenter who cannot place an anchor cannot comment on anything
@@ -267,7 +267,7 @@ class CommentIT extends IntegrationTestBase {
                 "A remark on the addendum");
             assertThat(threadId).isNotNull();
 
-            // A restore is a NEW change, not an undo of the log (ADR-0003) — so there is no reason
+            // A restore is a NEW change, not an undo of the log — so there is no reason
             // for anything to delete threads. This test keeps it that way: if restoring ever began
             // clearing state "outside the restored version", conversations would disappear along
             // with the text they were about.

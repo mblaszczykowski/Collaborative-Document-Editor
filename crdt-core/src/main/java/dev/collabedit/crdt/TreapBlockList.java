@@ -15,7 +15,8 @@ import java.util.TreeMap;
  * <p>It was written <b>after</b> {@link ArrayBlockList} and after measuring that one with a JMH
  * benchmark. The order is deliberate: first the obviously correct version, then numbers showing it
  * is too slow, and only then the optimisation — with the same property test suite on both, so that
- * the optimisation changed nothing in the behaviour (the {@code naiveAndIndexedAgree} property).
+ * the optimisation changed nothing in the behaviour
+ * ({@code BlockListEquivalenceProperties.naiveAndIndexedProduceIdenticalDocuments}).
  *
  * <h2>Three aggregates in every node</h2>
  * <ul>
@@ -262,12 +263,19 @@ public final class TreapBlockList implements BlockList {
     }
 
     @Override
-    public void markDeleted(int blockIndex) {
+    public void markDeleted(int blockIndex, Id deleteId) {
         Node node = nodeAt(blockIndex);
-        if (node.block.deleted()) {
+        boolean wasVisible = !node.block.deleted();
+        // Called even when the block is ALREADY a tombstone, unlike the previous version which
+        // returned early. Recording the deleter takes the minimum of the identifiers seen
+        // (Block.markDeleted), so a second, smaller delete arriving later still has to reach the
+        // block — otherwise the recorded deleter would depend on delivery order, and it is written
+        // into the snapshot.
+        node.block.markDeleted(deleteId);
+        if (!wasVisible) {
+            // The aggregates already count this block as invisible; nothing moved.
             return;
         }
-        node.block.markDeleted();
         // Without this the `visible` aggregate in the ancestors would go stale, and lookup by
         // position would start returning wrong results — silently, and only sometimes.
         pullUp(node);
@@ -341,25 +349,62 @@ public final class TreapBlockList implements BlockList {
         return accumulated;
     }
 
-    @Override
-    public BlockList newEmpty() {
-        return new TreapBlockList();
-    }
-
+    /**
+     * In-order traversal without materialising the list.
+     *
+     * <p>This used to copy every block into an {@code ArrayList} on every call, which is the one
+     * place in this class where the O(log n) claim in the class javadoc did not hold: three of the
+     * callers — {@code RgaDocument.text()}, {@code snapshot()} and {@code gc()} — only walk the
+     * blocks in order, and each was paying a full-size allocation and copy to do it. The nodes
+     * already carry {@code parent} pointers for the rotations, so the successor is reachable
+     * without any auxiliary structure.
+     *
+     * <p>The iterator does not detect concurrent modification, and neither did the copy — it
+     * merely hid it behind a stale snapshot of the list. No caller mutates while iterating:
+     * {@code gc} completes its reference pass before it removes anything, and does the removing by
+     * index.
+     */
     @Override
     public Iterator<Block> iterator() {
-        List<Block> ordered = new ArrayList<>(size());
-        collect(root, ordered);
-        return ordered.iterator();
+        return new Iterator<>() {
+            private Node next = leftmost(root);
+
+            @Override
+            public boolean hasNext() {
+                return next != null;
+            }
+
+            @Override
+            public Block next() {
+                if (next == null) {
+                    throw new java.util.NoSuchElementException();
+                }
+                Block block = next.block;
+                next = successor(next);
+                return block;
+            }
+        };
     }
 
-    private static void collect(Node node, List<Block> into) {
+    private static Node leftmost(Node node) {
         if (node == null) {
-            return;
+            return null;
         }
-        collect(node.left, into);
-        into.add(node.block);
-        collect(node.right, into);
+        while (node.left != null) {
+            node = node.left;
+        }
+        return node;
+    }
+
+    private static Node successor(Node node) {
+        if (node.right != null) {
+            return leftmost(node.right);
+        }
+        // Climb until we come up from a LEFT child: that parent is the next block in order.
+        while (node.parent != null && node.parent.right == node) {
+            node = node.parent;
+        }
+        return node.parent;
     }
 
     // ------------------------------------------------------------------

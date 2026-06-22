@@ -31,7 +31,7 @@ class MarkConvergenceProperties {
     private static final String[] TYPES = {MarkTypes.BOLD, MarkTypes.ITALIC, MarkTypes.LINK};
 
     /**
-     * Polecenie skryptu: edycja tekstu albo operacja znacznikowa.
+     * A script command: either a text edit or a mark operation.
      *
      * @param kind 0 = insert, 1 = delete, 2 = add mark, 3 = remove mark
      */
@@ -125,18 +125,88 @@ class MarkConvergenceProperties {
             .isTrue();
     }
 
+    /**
+     * <b>The sweep agrees with a naive resolver.</b> The one assertion in this file that is not
+     * self-referential.
+     *
+     * <h2>What every other property here could not see</h2>
+     * All of them compare the replicas against <b>each other</b>. Every replica runs the same code,
+     * so a mark layer that is wrong in one way is wrong in the same way everywhere and every one of
+     * those assertions holds. Measured rather than argued: with {@link MarkSet#spans(BlockList)}
+     * replaced by {@code return List.of();} all four of the original properties stayed green —
+     * {@code allFormattingConverged} is vacuously true when everyone returns nothing, and
+     * {@code spansAreDisjointAndOrdered} loops over spans and so asserts nothing when there are
+     * none. Reversing the priority order — oldest mark wins instead of newest — was invisible for
+     * the same reason.
+     *
+     * <p>{@link NaiveMarkResolver} is the answer the text side has had since CP2 in the form of a
+     * {@code StringBuilder} reference model: an independent implementation, obviously correct and
+     * far too slow to ship, that the optimised one is measured against. It resolves anchors from
+     * the block list rather than through {@code MarkSet}, so the two share nothing but the
+     * document.
+     *
+     * <p>The coverage check below is the anti-vacuity guard this file needed as much as the oracle:
+     * without it a generator that stopped producing marks would leave the property green while
+     * comparing two empty lists, which is the failure mode being fixed, one level up.
+     */
     @Property
-    @net.jqwik.api.Label("repeated delivery does not change the formatting")
-    void formattingIsIdempotent(@ForAll("scripts") List<Cmd> script, @ForAll @IntRange(min = 0, max = 9999) int seed) {
+    @net.jqwik.api.Label("the mark sweep agrees with an independent naive resolver")
+    void sweepAgreesWithNaiveResolver(
+        @ForAll("scripts") List<Cmd> script, @ForAll @IntRange(min = 0, max = 9999) int seed) {
+
         Random random = new Random(seed);
         ReplicaSet replicas = new ReplicaSet(REPLICAS, TreapBlockList::new);
 
-        run(replicas, script, random, false);
-        replicas.deliverAllShuffledTwice(random);
+        run(replicas, script, random, true);
+        replicas.deliverAllShuffled(random);
 
-        assertThat(replicas.allFormattingConverged())
-            .as("retransmitting marks changed the result — not idempotent: %s", replicas.formattings())
+        boolean anyFormatting = false;
+        for (int i = 0; i < REPLICAS; i++) {
+            RgaDocument document = replicas.get(i);
+            List<MarkSet.Span> sweep = document.formatting();
+            List<MarkSet.Span> naive = NaiveMarkResolver.spans(document);
+            anyFormatting |= !sweep.isEmpty();
+            assertThat(sweep)
+                .as("replica %d: the sweep in MarkSet and the naive resolver disagree.%n"
+                    + "text  = %s%nsweep = %s%nnaive = %s", i, document.text(), sweep, naive)
+                .isEqualTo(naive);
+        }
+
+        net.jqwik.api.statistics.Statistics.label("formatted")
+            .collect(anyFormatting)
+            .coverage(checker -> checker.check(true).percentage(p -> p > 20.0));
+    }
+
+    /**
+     * <b>Repeated delivery changes nothing.</b>
+     *
+     * <p>This used to deliver everything twice and assert only that the replicas still agreed —
+     * which is "double delivery converges", not "double delivery is a no-op". A mark that
+     * duplicated identically on every replica passed it. The text side gets this right
+     * ({@code RgaConvergenceProperties.idempotence} builds a single-delivery baseline and
+     * compares), and the fix here is the same shape: two runs of the same script, one delivery
+     * each way, compared against each other.
+     */
+    @Property
+    @net.jqwik.api.Label("repeated delivery does not change the formatting")
+    void formattingIsIdempotent(@ForAll("scripts") List<Cmd> script, @ForAll @IntRange(min = 0, max = 9999) int seed) {
+        ReplicaSet once = new ReplicaSet(REPLICAS, TreapBlockList::new);
+        run(once, script, new Random(seed), false);
+        once.deliverAllShuffled(new Random(seed));
+
+        ReplicaSet twice = new ReplicaSet(REPLICAS, TreapBlockList::new);
+        run(twice, script, new Random(seed), false);
+        twice.deliverAllShuffledTwice(new Random(seed));
+
+        assertThat(twice.allFormattingConverged())
+            .as("retransmitting marks made the replicas disagree: %s", twice.formattings())
             .isTrue();
+        assertThat(twice.get(0).formatting())
+            .as("delivering every mark twice produced DIFFERENT formatting from delivering it "
+                + "once — the mark layer is not idempotent.%nonce  = %s%ntwice = %s",
+                once.get(0).formatting(), twice.get(0).formatting())
+            .isEqualTo(once.get(0).formatting());
+        assertThat(twice.get(0).text()).isEqualTo(once.get(0).text());
     }
 
     @Property

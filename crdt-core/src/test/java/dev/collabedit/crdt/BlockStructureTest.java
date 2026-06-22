@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
  * honest half. Moving a paragraph in this model is a deletion plus an insertion, and two people
  * doing it at once produce two copies. That is not a bug to be fixed in the merge rule — it
  * follows from the model, it is the problem Kleppmann's <i>Moving Elements in List CRDTs</i>
- * (2020) exists for, and this project chose the cheap side of that trade deliberately (ADR-0016).
+ * (2020) exists for, and this project chose the cheap side of that trade deliberately.
  *
  * <p>The test pins the behaviour so the limit is a measured fact rather than a paragraph of
  * caution — and so that anybody implementing a real move operation has the failing case already
@@ -133,7 +133,7 @@ class BlockStructureTest {
                 are insertions of NEW characters that know nothing about each other. The merge \
                 rule is behaving exactly as designed; the model is what has no way to express \
                 "the same paragraph, moved". That is what Moving Elements in List CRDTs \
-                (Kleppmann, 2020) is about, and what CP30 deliberately did not buy (ADR-0016).""")
+                (Kleppmann, 2020) is about, and what CP30 deliberately did not buy.""")
             .isEqualTo(2);
     }
 }

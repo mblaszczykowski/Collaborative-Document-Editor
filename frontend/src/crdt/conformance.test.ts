@@ -7,7 +7,7 @@ import { RgaDocument } from './document'
 /**
  * The test that ties two implementations of one algorithm together.
  *
- * ADR-0001 accepts a deliberate debt: RGA exists in Java (the server) and in TypeScript (the client
+ * The CRDT decision accepts a deliberate debt: RGA exists in Java (the server) and in TypeScript (the client
  * that edits offline). Two implementations of one specification will diverge sooner or later, and
  * it will manifest as the worst possible bug — "it looks different on my side than on yours".
  *

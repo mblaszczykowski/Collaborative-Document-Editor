@@ -18,15 +18,15 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Change history and travelling back in time (ADR-0003).
+ * Change history and travelling back in time.
  *
- * <p>This whole feature is a free by-product of the decision in ADR-0003: if the operation log is
+ * <p>This whole feature is a free by-product of the decision in the operation-log decision: if the operation log is
  * the source of truth and is append-only, then <b>the history already exists</b> — it only has to
  * be read. There is no separate versioning mechanism here, no separate table and no extra write on
  * every change.
@@ -49,14 +49,24 @@ public class HistoryService {
      */
     private static final Duration GROUPING_WINDOW = Duration.ofMinutes(2);
 
+    /**
+     * The upper bound on how many timeline entries one request returns.
+     *
+     * <p>There was none, and the CTE behind it scans every operation row of the document per
+     * request — so on a long-lived document the panel asked for a list that grows for the life of
+     * that document, forever. The same bound and the same reasoning as {@code LIST_LIMIT} in the
+     * document list: the interface shows a timeline, not an archive. Pagination is the honest
+     * answer at real scale and is listed as such; a bound is what stops the unbounded version
+     * shipping in the meantime.
+     */
+    private static final int TIMELINE_LIMIT = 200;
+
     private final OperationStore operations;
     private final SnapshotStore snapshots;
-    private final JdbcTemplate jdbc;
 
-    public HistoryService(OperationStore operations, SnapshotStore snapshots, JdbcTemplate jdbc) {
+    public HistoryService(OperationStore operations, SnapshotStore snapshots) {
         this.operations = operations;
         this.snapshots = snapshots;
-        this.jdbc = jdbc;
     }
 
     /**
@@ -100,68 +110,22 @@ public class HistoryService {
      * passes since the <i>previous operation</i> — not since the start of the group. That is what
      * the Java version did, and {@code LAG} over {@code server_seq} expresses exactly the same
      * thing, which is why this could move without changing any test.
+     *
+     * <h2>The SQL now lives in persist/, and this method maps it</h2>
+     * {@code OperationStore}'s javadoc calls itself the sole access path to the {@code operations}
+     * table, and this service was holding its own {@code JdbcTemplate} and reading that table
+     * directly — a boundary that only existed in a comment. The query moved; the grouping rule,
+     * the window and the shape of the answer did not.
      */
     public List<Version> timeline(UUID documentId) {
-        return jdbc.query(
-            """
-            WITH ops AS (
-                SELECT o.server_seq,
-                       o.created_at,
-                       COALESCE(o.user_id, '?') AS user_id,
-                       o.chars_inserted,
-                       o.chars_deleted
-                  FROM operations o
-                 WHERE o.doc_id = ?
-            ),
-            boundaries AS (
-                SELECT *,
-                       CASE
-                         WHEN LAG(user_id) OVER ordered IS DISTINCT FROM user_id
-                           OR created_at - LAG(created_at) OVER ordered > ?::interval
-                         THEN 1 ELSE 0
-                       END AS starts_group
-                  FROM ops
-                WINDOW ordered AS (ORDER BY server_seq)
-            ),
-            grouped AS (
-                SELECT *,
-                       SUM(starts_group) OVER (ORDER BY server_seq) AS group_id
-                  FROM boundaries
-            ),
-            sessions AS (
-                SELECT group_id,
-                       user_id,
-                       MAX(server_seq)   AS through_server_seq,
-                       MIN(created_at)   AS started_at,
-                       COUNT(*)          AS operation_count,
-                       SUM(chars_inserted) AS inserted,
-                       SUM(chars_deleted)  AS deleted
-                  FROM grouped
-                 GROUP BY group_id, user_id
-            )
-            SELECT s.through_server_seq,
-                   s.user_id,
-                   COALESCE(u.display_name, 'Unknown') AS display_name,
-                   COALESCE(u.color, '#999999')         AS color,
-                   s.started_at,
-                   s.operation_count,
-                   s.inserted,
-                   s.deleted
-              FROM sessions s
-              LEFT JOIN users u ON u.id = s.user_id
-             ORDER BY s.through_server_seq DESC
-            """,
-            (rs, rowNum) -> new Version(
-                rs.getLong("through_server_seq"),
-                rs.getString("user_id"),
-                rs.getString("display_name"),
-                rs.getString("color"),
-                rs.getTimestamp("started_at").toInstant(),
-                rs.getInt("operation_count"),
-                rs.getInt("inserted"),
-                rs.getInt("deleted")),
-            documentId,
-            GROUPING_WINDOW.toSeconds() + " seconds");
+        return operations
+            .timelineOf(documentId, GROUPING_WINDOW.toSeconds(), TIMELINE_LIMIT)
+            .stream()
+            .map(entry -> new Version(
+                entry.throughServerSeq(), entry.userId(), entry.displayName(), entry.color(),
+                entry.startedAt(), entry.operationCount(), entry.charactersInserted(),
+                entry.charactersDeleted()))
+                    .toList();
     }
 
     /**
@@ -333,7 +297,7 @@ public class HistoryService {
     /**
      * The operations needed to restore the state from a given moment.
      *
-     * <p><b>A restore is a NEW CHANGE, not an undo of the log</b> (ADR-0003, point 6). Truncating
+     * <p><b>A restore is a NEW CHANGE, not an undo of the log</b> (point 6). Truncating
      * the log would destroy three things at once: auditability (who restored, and when), the
      * consistency of connected clients (their replicas would still hold the removed operations) and
      * the "append-only table" invariant that write idempotence rests on.
@@ -405,7 +369,7 @@ public class HistoryService {
      * Brings the formatting back to what it was, by adding and removing marks.
      *
      * <p>Not by re-applying the old operations: those are already in the log and in every replica,
-     * and re-applying them would be a no-op by idempotence (ADR-0001). Restoring the <i>state</i>
+     * and re-applying them would be a no-op by idempotence. Restoring the <i>state</i>
      * therefore means new operations that produce it — the same principle the text half of this
      * method follows, and the same one that makes a restore mergeable rather than special.
      *
@@ -487,7 +451,7 @@ public class HistoryService {
 
     /** Whether these marks contain exactly this type with exactly this value, null included. */
     private static boolean wants(Map<String, String> marks, String type, String value) {
-        return marks.containsKey(type) && java.util.Objects.equals(marks.get(type), value);
+        return marks.containsKey(type) && Objects.equals(marks.get(type), value);
     }
 
     /** A comment anchor is a mark, and a restore deliberately leaves it alone — see above. */

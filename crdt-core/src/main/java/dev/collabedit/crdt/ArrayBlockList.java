@@ -46,8 +46,8 @@ public final class ArrayBlockList implements BlockList {
     }
 
     @Override
-    public void markDeleted(int index) {
-        blocks.get(index).markDeleted();
+    public void markDeleted(int index, Id deleteId) {
+        blocks.get(index).markDeleted(deleteId);
     }
 
     @Override
@@ -103,11 +103,6 @@ public final class ArrayBlockList implements BlockList {
             seen += blocks.get(i).visibleLength();
         }
         return seen;
-    }
-
-    @Override
-    public BlockList newEmpty() {
-        return new ArrayBlockList();
     }
 
     @Override

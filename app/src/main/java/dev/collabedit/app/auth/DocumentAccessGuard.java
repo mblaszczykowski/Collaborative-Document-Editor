@@ -28,7 +28,7 @@ import org.springframework.web.servlet.HandlerMapping;
  *       {@code if (caller != null)}, so an expired token produced a link-visible document —
  *       and that endpoint exists precisely for clients whose token has expired.</li>
  * </ol>
- * All three were found by review or audit, never by a test. The lesson written into ADR-0009
+ * All three were found by review or audit, never by a test. The lesson written into the permission model
  * was that a safeguard which depends on somebody remembering is not a safeguard.
  *
  * <h2>Fail closed</h2>

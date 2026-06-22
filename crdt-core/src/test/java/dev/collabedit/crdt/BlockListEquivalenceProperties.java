@@ -103,7 +103,7 @@ class BlockListEquivalenceProperties {
             }
 
             for (Id id : allIds(naive)) {
-                assertThat(indexed.blocks().locateId(id) != null)
+                assertThat(indexed.blockList().locateId(id) != null)
                     .as("identifier %s found by only one implementation", id)
                     .isTrue();
             }

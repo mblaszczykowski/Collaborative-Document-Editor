@@ -11,18 +11,25 @@ import java.util.Map;
  * <pre>
  *   client -> server   /app/doc/{id}/op         {@link ClientOp}
  *                      /app/doc/{id}/sync       {@link SyncRequest}
+ * /app/doc/{id}/join (empty body)
+ * /app/doc/{id}/progress {@link SyncRequest} (its version vector only)
  *                      /app/doc/{id}/presence   {@link ClientPresence}
  *
  *   server -> clients  /topic/doc/{id}/ops      {@link OpBroadcast}
  *                      /topic/doc/{id}/acks     {@link OpAck}
  *                      /topic/doc/{id}/presence {@link PresenceUpdate}
  *                      /topic/doc/{id}/access   {@link AccessChanged}
- *   server -> client   /user/queue/sync         {@link SyncResponse}
+ * server -> client /user/queue/session {@link SessionInfo}
+ * /user/queue/sync {@link SyncResponse}
  *                      /user/queue/errors       {@link ErrorMessage}
  * </pre>
  *
+ * <p>The table is the whole protocol, and {@code DocumentAccessInterceptor.PRIVATE_USER_QUEUES}
+ * enumerates the three private destinations above — an unlisted destination is refused, so adding
+ * a channel means adding it in both places deliberately.
+ *
  * <h2>Why the broadcast and the acknowledgement are TWO messages</h2>
- * The ordering of steps on the server follows from ADR-0004: merge -> broadcast to our own clients
+ * The ordering of steps on the server follows from the cluster design: merge -> broadcast to our own clients
  * -> write -> publish to Redis. The broadcast comes before the write, because the broadcast is what
  * determines what the user <b>sees</b> — someone else's text should appear immediately, not after
  * the database confirms.
@@ -50,7 +57,7 @@ public final class Messages {
     // client -> server
     // ------------------------------------------------------------------
 
-    /** A CRDT operation in the {@code OpCodec} format (ADR-0002: single-letter fields). */
+    /** A CRDT operation in the {@code OpCodec} format (single-letter fields). */
     public record ClientOp(JsonNode op) {
     }
 
@@ -60,7 +67,7 @@ public final class Messages {
      * @param sinceServerSeq the last sequence number the client definitely holds; 0 means "send
      *                       everything"
      * @param version        the client's version vector — used to compute causal stability for GC
-     *                       (ADR-0005), not to choose which operations to send
+     *, not to choose which operations to send
      */
     public record SyncRequest(long sinceServerSeq, Map<Integer, Long> version) {
     }
@@ -68,7 +75,7 @@ public final class Messages {
     /**
      * The cursor and selection position.
      *
-     * <p>The positions are <b>CRDT character identifiers</b>, not offsets (ADR-0006). An offset
+     * <p>The positions are <b>CRDT character identifiers</b>, not offsets. An offset
      * drifts when someone inserts text before the cursor — an identifier moves with the text,
      * because it is attached to a character rather than to a place.
      */
@@ -83,15 +90,33 @@ public final class Messages {
     // server -> clients
     // ------------------------------------------------------------------
 
-    /** An operation broadcast. No {@code serverSeq} — that arrives in {@link OpAck}. */
-    public record OpBroadcast(JsonNode op, String userId) {
+    /**
+     * An operation broadcast. No {@code serverSeq} — that arrives in {@link OpAck}.
+     *
+     * <p>It used to carry a {@code userId} too, hard-coded to {@code null} at its only construction
+     * site and read by nobody on the client. A nullable field that is always null is a field
+     * somebody will eventually trust.
+     */
+    public record OpBroadcast(JsonNode op) {
     }
 
     /** Confirmation of a durable write. {@code r}/{@code l} is the operation's identifier. */
     public record OpAck(int r, long l, long serverSeq) {
     }
 
-    public record SyncResponse(List<JsonNode> ops, long headServerSeq) {
+    /**
+     * A chunk of the operations a client asked for, plus how far the log reaches.
+     *
+     * @param last whether this is the FINAL chunk of the response. The client advances its cursor
+     * to {@code headServerSeq} only when it sees this — see {@code onSyncResponse}.
+     * Every chunk used to carry the same head and the client moved its cursor on each
+     * one, so losing chunk 2 of 5 left it believing it held everything up to the head.
+     * Nothing could ever detect that: the only gap detector fires on an acknowledgement
+     * for an operation the client does not have, and operations in a lost sync chunk
+     * were acknowledged long ago and are never acknowledged again. On a quiet document
+     * the client stayed wrong for good.
+     */
+    public record SyncResponse(List<JsonNode> ops, long headServerSeq, boolean last) {
     }
 
     /**
@@ -169,11 +194,35 @@ public final class Messages {
     /**
      * An error the client has to react to.
      *
-     * <p>The {@code RESYNC_REQUIRED} {@code code} is the situation from ADR-0005: the client was
-     * offline for longer than the GC window and its operations point at tombstones that no longer
-     * exist. The server <b>rejects them explicitly</b>, rather than gluing the text into a random
-     * place or silently dropping it — both alternatives are worse than an honest "I cannot merge
-     * this".
+     * <p>The codes, and what each one asks of the client:
+     * <table>
+     * <caption>code -> what the client must do</caption>
+     * <tr><th>{@code code}</th><th>Meaning</th></tr>
+     * <tr><td>{@code RATE_LIMITED}</td>
+     * <td>Wait {@code retryAfterMillis} and resend. The only code where time helps, and the
+     * only one that sets that field.</td></tr>
+     * <tr><td>{@code RESYNC_REQUIRED}</td>
+     * <td>The situation from the tombstone-collection design: the client was offline for longer than the GC window
+     * and its operations point at tombstones that no longer exist. The server
+     * <b>rejects them explicitly</b>, rather than gluing the text into a random place or
+     * silently dropping it — both alternatives are worse than an honest "I cannot merge
+     * this". Also sent when the replica is already holding the maximum number of
+     * operations waiting for a cause.</td></tr>
+     * <tr><td>{@code SNAPSHOT_REQUIRED}</td>
+     * <td>The client asked to resynchronise from a cursor so far behind that the answer would
+     * exceed {@code max-sync-operations}. <b>No operations are sent with it</b> — the
+     * whole point is that a truncated response would be indistinguishable from a complete
+     * one, which is the CP8 failure at chunk granularity. The client re-opens through
+     * {@code GET /api/documents/{id}/snapshot}, which is O(document size) rather than
+     * O(log size) and is exactly why CP24 built it.</td></tr>
+     * <tr><td>{@code REPLICA_ID_CONFLICT}</td>
+     * <td>The operation was submitted under a replica identifier that belongs to another
+     * user. Neither a retry nor a resynchronisation helps; the session has to obtain a
+     * fresh identifier, which means reconnecting.</td></tr>
+     * <tr><td>{@code BAD_OPERATION} / {@code OPERATION_REJECTED}</td>
+     * <td>The frame could not be decoded, or the merge threw. Both are bugs somewhere rather
+     * than states with a recovery.</td></tr>
+     * </table>
      *
      * @param retryAfterMillis how long the client should wait before retrying, or 0 when
      *        waiting will not help. Only {@code RATE_LIMITED} sets it: a refusal for lack of

@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -13,17 +14,17 @@ import java.util.Set;
  *
  * <p>The key property this whole construction exists for: <b>applying the same set of operations in
  * any order and with any repetitions gives the same text.</b> It requires no central arbiter and no
- * ordered transport — and that is why the architecture in ADR-0004 (every backend instance a peer
+ * ordered transport — and that is why the architecture in the cluster design (every backend instance a peer
  * replica, Redis as an unreliable broadcast) is safe rather than merely "usually working".
  *
  * <p>This class contains <b>the algorithm and nothing else</b>. It knows nothing about the network,
- * the database or Spring — see ADR-0001 and the configuration of the {@code crdt-core} module.
+ * the database or Spring — see the CRDT decision and the configuration of the {@code crdt-core} module.
  *
  * <h2>Three things that are easy to get wrong</h2>
  * <ol>
  *   <li><b>The Lamport clock.</b> On receiving an operation the clock must be bumped past its
  *       timestamp ({@link #observeClock}). Without that RGA's insertion rule stops being correct —
- *       counterexample in {@code docs/crdt-design.md} section 1.</li>
+ * counterexample in the README, "What the Lamport clock is actually for".</li>
  *   <li><b>Duplicate detection.</b> Not via the version vector (a Lamport clock is not
  *       contiguous), but via the presence of the character in the structure. Deletions are
  *       idempotent, so we do not check their duplicates at all.</li>
@@ -44,8 +45,36 @@ public final class RgaDocument {
     /** The highest applied lamport per replica. For GC and resynchronisation, not for dedup. */
     private final Map<Integer, Long> maxSeen = new HashMap<>();
 
-    /** Operations that cannot be applied yet (a missing origin or deletion target). */
-    private final List<Op> pending = new ArrayList<>();
+    /**
+     * Operations that cannot be applied yet (a missing origin or deletion target).
+     *
+     * <p>Keyed by the operation's own identifier, not a plain list. {@link #isAlreadyKnown} detects
+     * a duplicate insert only once the character is IN THE STRUCTURE, so an operation waiting here
+     * was never recognised as one — and every redelivery path in the system feeds this buffer: the
+     * cluster re-broadcast that the cluster design calls an unreliable broadcast, the client's retransmission
+     * after reconnect, and log replay on load.
+     *
+     * <p>Each redelivered copy was a separate entry, and {@code DocumentReplica.merge} treats
+     * BUFFERED as news — so every copy was queued for another write to the operation log and
+     * another cluster broadcast, and {@link #drainPending} then retried all of them on every
+     * successful apply. Operation identifiers are unique per replica across all four operation
+     * types, so keying on them is exact rather than a heuristic.
+     *
+     * <p>The map alone fixes the retry cost but not the write and broadcast cost: those follow
+     * from what {@link #apply} REPORTS, so a redelivery of something already waiting here has to
+     * come back as {@link ApplyResult#DUPLICATE} rather than {@code BUFFERED}. It does.
+     */
+    private final Map<Id, Op> pending = new LinkedHashMap<>();
+
+    /**
+     * The boundary below which tombstones have already been physically removed.
+     *
+     * <p>Kept here rather than by the caller because it is a property of THIS document's history:
+     * it records what {@link #gc} has already thrown away, and only this class knows that. It
+     * travels in the snapshot, so a replica rebuilt from one still knows which operations can never
+     * be anchored again — see {@link DocumentSnapshot#gcWatermark}.
+     */
+    private VersionVector gcWatermark = VersionVector.empty();
 
     /**
      * Formatting as a separate layer above the character sequence (CP13).
@@ -105,6 +134,12 @@ public final class RgaDocument {
                     + ") outside text of length " + length);
         }
 
+        // The operation's identifier is minted BEFORE the blocks are marked, because each tombstone
+        // records which operation deleted it (Block.deletedBy) and GC's causal-stability test is
+        // about that operation rather than about the insertion. Building the Op afterwards, as this
+        // did, meant the identifier did not exist yet at the moment it was needed.
+        Id deleteId = new Id(replicaId, clock);
+
         List<Op.Range> targets = new ArrayList<>();
         int remaining = count;
         while (remaining > 0) {
@@ -121,12 +156,12 @@ public final class RgaDocument {
                 splitBlock(index, remaining);
                 target = blocks.get(index);
             }
-            blocks.markDeleted(index);
+            blocks.markDeleted(index, deleteId);
             targets.add(new Op.Range(target.start(), target.length()));
             remaining -= target.length();
         }
 
-        Op.Delete op = new Op.Delete(new Id(replicaId, clock), targets);
+        Op.Delete op = new Op.Delete(deleteId, targets);
         clock += op.span();
         observeVersion(op);
         return op;
@@ -160,6 +195,7 @@ public final class RgaDocument {
      * @return the operation to broadcast to the other replicas
      */
     public Op.AddMark addMark(int from, int to, String type, String value) {
+        requireNonEmptyRange(from, to);
         Op.AddMark op = new Op.AddMark(
             new Id(replicaId, clock), type, value, anchorStart(from), anchorEnd(to, type));
         clock += op.span();
@@ -168,8 +204,16 @@ public final class RgaDocument {
         return op;
     }
 
-    /** Removes formatting from the range of visible text {@code [from, to)}. */
+    /**
+     * Removes formatting from the range of visible text {@code [from, to)}.
+     *
+     * <p>The operation carries a type and no value, so for the identity-carrying types it means
+     * "remove comment marks here", not "remove THIS comment". Two threads anchored to exactly the
+     * same characters cannot be detached one at a time — see {@link MarkSet#placementsOf} for why
+     * fixing that is a wire-format change rather than a local one.
+     */
     public Op.RemoveMark removeMark(int from, int to, String type) {
+        requireNonEmptyRange(from, to);
         Op.RemoveMark op = new Op.RemoveMark(
             new Id(replicaId, clock), type, anchorStart(from), anchorEnd(to, type));
         clock += op.span();
@@ -200,9 +244,48 @@ public final class RgaDocument {
             : Anchor.after(idAtVisible(to - 1));
     }
 
+    /**
+     * Refuses an inverted or empty formatting range.
+     *
+     * <p>The two anchors validate independently — {@code anchorStart} checks {@code from} against
+     * the length and {@code anchorEnd} checks {@code to} — so nothing checked that one came before
+     * the other. {@code addMark(4, 2)} was accepted: it consumed a Lamport tick, was stored in the
+     * mark set for good, was broadcast and written to the log, pinned two blocks from garbage
+     * collection through the anchor-protection rule — and resolved to nothing at all.
+     *
+     * <p>An {@link IllegalArgumentException} rather than a silent no-op, for the same reason
+     * {@code insert} and {@code delete} throw on a bad range: a caller asking for an impossible
+     * range has a bug, and the operation would be permanent.
+     *
+     * <p><b>This guards the local path only.</b> An inverted range arriving from another replica
+     * through {@link #apply} is still accepted, and deliberately so: refusing a remote operation
+     * would make two replicas hold different sets of operations, which is divergence — the one
+     * outcome the whole algorithm exists to prevent. The mark simply resolves to nothing, exactly
+     * as it did before this check existed. The check stops such an operation being CREATED; it
+     * cannot stop one that already exists somewhere else.
+     */
+    private static void requireNonEmptyRange(int from, int to) {
+        if (from >= to) {
+            throw new IllegalArgumentException(
+                "an empty formatting range [" + from + ", " + to + ")");
+        }
+    }
+
     /** The formatting of the visible text as disjoint segments, in order. */
     public List<MarkSet.Span> formatting() {
         return marks.spans(blocks);
+    }
+
+    /**
+     * Where each distinct value of one mark type currently sits — see
+     * {@link MarkSet#placementsOf}.
+     *
+     * <p>This is the query to use for a mark type whose value is an <b>identity</b> (a comment
+     * thread, a suggestion) rather than decoration. {@link #formatting} resolves one winner per
+     * type per segment, which is right for rendering and wrong for asking "where is thread X".
+     */
+    public Map<String, MarkSet.Placement> markPlacements(String type) {
+        return marks.placementsOf(blocks, type);
     }
 
     /** The number of mark operations — a measure of the formatting layer's overhead. */
@@ -218,7 +301,13 @@ public final class RgaDocument {
     public enum ApplyResult {
         /** The operation contributed a new change to the document. */
         APPLIED,
-        /** We had seen this operation before — nothing changed. */
+        /**
+         * We had seen this operation before — nothing changed.
+         *
+         * <p>Covers both a change already integrated and one already waiting in the buffer. The
+         * layer above needs the same answer for the two: it persisted and broadcast the operation
+         * when it first arrived, and neither is worth doing twice.
+         */
         DUPLICATE,
         /** Its cause is missing (the origin or the deletion target); it waits in the buffer. */
         BUFFERED;
@@ -255,7 +344,13 @@ public final class RgaDocument {
             drainPending();
             return ApplyResult.APPLIED;
         }
-        pending.add(op);
+        if (pending.putIfAbsent(op.id(), op) != null) {
+            // Already waiting: the FIRST arrival was reported as news, so the layer above has
+            // already written it to the log and broadcast it. Reporting news a second time is
+            // exactly the amplification keying this buffer was meant to end — deduplicating the
+            // entries while still saying "news" would have halved the problem and hidden it.
+            return ApplyResult.DUPLICATE;
+        }
         return ApplyResult.BUFFERED;
     }
 
@@ -318,7 +413,7 @@ public final class RgaDocument {
 
     private boolean tryApplyInsert(Op.Insert op) {
         // Duplicate: a character with this identifier is already in the structure. Exact and
-        // free — the structure indexes by identifier anyway (docs/crdt-design.md section 2).
+        // free — the structure indexes by identifier anyway (the README, "Why deduplication is not the version vector's job").
         if (blocks.locateId(op.id()) != null) {
             return true;
         }
@@ -339,7 +434,7 @@ public final class RgaDocument {
             }
         }
         for (Op.Range range : op.targets()) {
-            markRangeDeleted(range);
+            markRangeDeleted(range, op.id());
         }
         return true;
     }
@@ -375,7 +470,7 @@ public final class RgaDocument {
         return true;
     }
 
-    private void markRangeDeleted(Op.Range range) {
+    private void markRangeDeleted(Op.Range range, Id deleteId) {
         long cursor = range.start().lamport();
         long end = cursor + range.length();
         while (cursor < end) {
@@ -391,7 +486,7 @@ public final class RgaDocument {
                 splitBlock(index, (int) coverable);
                 block = blocks.get(index);
             }
-            blocks.markDeleted(index);
+            blocks.markDeleted(index, deleteId);
             cursor += block.length();
         }
     }
@@ -468,7 +563,7 @@ public final class RgaDocument {
         boolean progress = true;
         while (progress && !pending.isEmpty()) {
             progress = false;
-            Iterator<Op> iterator = pending.iterator();
+            Iterator<Op> iterator = pending.values().iterator();
             while (iterator.hasNext()) {
                 Op op = iterator.next();
                 if (tryApply(op)) {
@@ -481,17 +576,30 @@ public final class RgaDocument {
     }
 
     // ------------------------------------------------------------------
-    // Tombstone garbage collection (ADR-0005)
+    // Tombstone garbage collection
     // ------------------------------------------------------------------
 
     /**
-     * Physically removes tombstones that are causally stable with respect to {@code stable} and
-     * are not the origin of any existing block.
+     * Physically removes tombstones nothing can still refer to.
      *
-     * <p>Both conditions are necessary. Causal stability guarantees that no <i>future</i> operation
-     * can anchor to that character; the absence of references guarantees that no <i>already
-     * applied</i> operation does. Dropping the second condition would corrupt the structure
-     * immediately.
+     * <p>Four conditions, and each one guards a different way of being referred to:
+     * <ol>
+     * <li><b>The DELETION is causally stable</b> — every replica that still counts has seen the
+     * operation that tombstoned this character, so none of them can still be displaying it
+     * and anchoring to it. See {@link #isDeletionStable}; this used to test the insertion
+     * instead, which is a different question and the wrong one.</li>
+     * <li><b>Not the origin of any existing block</b> — an operation already applied points
+     * at it.</li>
+     * <li><b>Not an anchor of any applied mark</b> (CP13) — removing it makes the anchor
+     * unresolvable and the formatting silently disappears.</li>
+     * <li><b>Not referenced by anything in the buffer</b> — an operation that outran its cause is
+     * exactly the case where the cause must not be collected out from under it.</li>
+     * </ol>
+     *
+     * <p>Condition 1 is about the <i>future</i>: no operation not yet seen can name this character.
+     * Conditions 2–4 are about the <i>present</i>: nothing already here names it. Dropping any of
+     * them corrupts something, and the four failures are entirely different, which is why they are
+     * listed rather than summarised.
      *
      * @return the number of characters whose memory was reclaimed
      */
@@ -511,16 +619,26 @@ public final class RgaDocument {
         // removed drops its content instead. The condition below decides whether the block stays,
         // not whether it holds text.
         for (Op mark : marks.all()) {
-            switch (mark) {
-                case Op.AddMark add -> {
-                    referenced.add(add.start().charId());
-                    referenced.add(add.end().charId());
-                }
-                case Op.RemoveMark remove -> {
-                    referenced.add(remove.start().charId());
-                    referenced.add(remove.end().charId());
-                }
-                default -> { }
+            addReferences(referenced, mark);
+        }
+
+        // The FOURTH condition. Operations WAITING IN THE BUFFER reference characters too, and
+        // this loop did not exist — so `referenced` described only what had already been applied.
+        //
+        // The case is narrow and the failure is total. A mark waits here because ONE of its two
+        // anchors has not arrived; the OTHER may be a present, causally stable, otherwise
+        // unreferenced tombstone. GC then destroyed it, and when the missing anchor finally
+        // arrived the mark could never resolve: it sat in `pending` for the lifetime of the
+        // process while the comment or suggestion it anchored simply was not there. Reproduced:
+        // with the gc call the formatting comes back empty and pendingCount stays at 1; without
+        // it, the mark applies. A buffered insert is harmless by comparison — its origin is absent
+        // by definition — but it costs nothing to be exact here, and an operation that outran its
+        // cause is precisely the case where the cause must not be collected underneath it.
+        List<Op.Range> awaitedRanges = new ArrayList<>();
+        for (Op waiting : pending.values()) {
+            addReferences(referenced, waiting);
+            if (waiting instanceof Op.Delete delete) {
+                awaitedRanges.addAll(delete.targets());
             }
         }
 
@@ -530,12 +648,19 @@ public final class RgaDocument {
             if (!block.deleted()) {
                 continue;
             }
-            if (block.lastId().lamport() > stable.get(block.start().replicaId())) {
+            if (!isDeletionStable(block, stable)) {
                 continue;
             }
-            if (!isAnyCharReferenced(block, referenced)) {
+            if (!isAnyCharReferenced(block, referenced) && !isInAwaitedRange(block, awaitedRanges)) {
                 blocks.remove(i);
-                reclaimed += block.length();
+                // Only what is actually still held. A block whose content an earlier sweep already
+                // dropped gives back nothing when it is finally removed, and counting its length a
+                // second time made the counter report more characters reclaimed than the document
+                // ever contained — nine for a six-character document, in the case that produced
+                // this comment. crdt_gc_reclaimed_characters_total is the the tombstone-collection design diagnostic for
+                // "is GC working at all", so a number that can exceed the document's size answers
+                // that question wrongly in the reassuring direction.
+                reclaimed += block.hasContent() ? block.length() : 0;
                 continue;
             }
             // CP18: the block has to stay, but its CHARACTERS do not.
@@ -556,7 +681,116 @@ public final class RgaDocument {
                 reclaimed += block.length();
             }
         }
+        // RAISED, never assigned — the boundary describes what has ALREADY been removed, and
+        // removal does not reverse. `stable` is a meet over the replicas that currently count
+        // (DocumentReplica.stableVersion), so it SHRINKS whenever a client joins reporting a lower
+        // version vector, or reaches zero when nobody is counted at all.
+        //
+        // Assigning it, which is what this did, therefore moved the boundary backwards on an
+        // ordinary event: one new client mid-sync, and an operation anchored to a character this
+        // very method destroyed stopped being recognised as unanchorable. It was then buffered for
+        // ever, written to the log and acknowledged — the silent loss of the user's work that
+        // the tombstone-collection design exists to prevent, arriving through the mechanism meant to prevent it.
+        //
+        // The old in-memory field had the same flaw and partly hid it: a reload reset the boundary
+        // to empty anyway. Now that it is durable, a regressed value would persist.
+        gcWatermark = gcWatermark.join(stable);
         return reclaimed;
+    }
+
+    /**
+     * Whether the operation that tombstoned this block is causally stable.
+     *
+     * <h2>The question this asks, and the one it used to ask</h2>
+     * The tombstone-collection design: a tombstone may be removed once <b>its deletion operation</b> is
+     * entirely below {@code stableVersion}. This used to read
+     * {@code block.lastId.lamport > stable.get(block.start.replicaId)}, which asks whether
+     * every replica has seen the <b>insertion</b> — a different question with a different answer,
+     * and one the insertion always passes in a document older than a few seconds.
+     *
+     * <p>The consequence was not a leak but the opposite, and it was the expensive direction. A
+     * replica that holds the character and not its deletion still displays it and will anchor to
+     * it. So deleting a paragraph written a minute ago made its tombstones instantly collectable,
+     * and a peer that had not yet received the delete came back with an operation pointing at a
+     * character the server had destroyed — {@code RESYNC_REQUIRED}, the refusal the tombstone-collection design reserves
+     * for a client absent longer than the seven-day GC window, fired by a race measured in
+     * milliseconds.
+     *
+     * <p>A {@code null} deleter means the block was tombstoned by a path that did not record which
+     * operation did it. No such path exists in this class, but the answer here is "keep" rather
+     * than "assume it is fine", because being wrong this way costs memory and being wrong the other
+     * way costs the user's text.
+     */
+    private static boolean isDeletionStable(Block block, VersionVector stable) {
+        Id deletedBy = block.deletedBy();
+        if (deletedBy == null) {
+            return false;
+        }
+        return deletedBy.lamport() <= stable.get(deletedBy.replicaId());
+    }
+
+    /** Adds the characters an operation depends on to the set GC must not remove. */
+    private static void addReferences(Set<Id> referenced, Op op) {
+        switch (op) {
+            case Op.AddMark add -> {
+                referenced.add(add.start().charId());
+                referenced.add(add.end().charId());
+            }
+            case Op.RemoveMark remove -> {
+                referenced.add(remove.start().charId());
+                referenced.add(remove.end().charId());
+            }
+            case Op.Insert insert -> {
+                if (insert.originLeft() != null) {
+                    referenced.add(insert.originLeft());
+                }
+            }
+            case Op.Delete delete -> {
+                // A buffered deletion is handled by RANGE rather than by identifier — see
+                // isInAwaitedRange. Its start is added here as well only because it costs nothing
+                // and keeps the two mechanisms agreeing about the one character they share.
+                for (Op.Range range : delete.targets()) {
+                    referenced.add(range.start());
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether a block holds any character a buffered deletion is still waiting for.
+     *
+     * <h2>Why the START of the range is not enough, which is what this replaces</h2>
+     * The first version of this protected only {@code range.start}, reasoning that "the interior
+     * is unreachable without the start being present". That is false, and the failure it produces
+     * is permanent divergence rather than a delayed operation.
+     *
+     * <p>{@link #isRangeFullyPresent} walks a range <b>block by block</b>, stepping by the length
+     * of whatever block it lands in. A range that was one run-length block on the sender can be
+     * several on the receiver — a concurrent insert anchored inside it splits it — so removing any
+     * block after the first breaks the walk at that point and the deletion can never apply. It
+     * stays in {@code pending} for the life of the process while every other replica shows the
+     * text deleted, which is exactly the "every replica agrees except this one" outcome the
+     * algorithm exists to prevent.
+     *
+     * <p>Tested by overlap rather than by adding every identifier to {@code referenced}: a delete
+     * range covers as many characters as the user selected, and a large deleted paste would put
+     * hundreds of thousands of entries into a set that is otherwise a handful. There are at most
+     * {@code max-pending-operations} ranges, and almost always none.
+     */
+    private static boolean isInAwaitedRange(Block block, List<Op.Range> awaited) {
+        for (Op.Range range : awaited) {
+            if (range.start().replicaId() != block.start().replicaId()) {
+                continue;
+            }
+            long rangeFrom = range.start().lamport();
+            long rangeTo = rangeFrom + range.length();
+            long blockFrom = block.start().lamport();
+            long blockTo = blockFrom + block.length();
+            if (blockFrom < rangeTo && rangeFrom < blockTo) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isAnyCharReferenced(Block block, Set<Id> referenced) {
@@ -568,8 +802,20 @@ public final class RgaDocument {
         return false;
     }
 
+    /**
+     * The boundary below which tombstones have already been physically removed.
+     *
+     * <p>An operation whose origin is BOTH absent from the structure and below this boundary can
+     * never be anchored: the character it pointed at is gone for good. Absence alone means nothing
+     * (the operation may have outrun its cause), and being below the boundary alone means nothing
+     * either (GC removes only tombstones).
+     */
+    public VersionVector gcWatermark() {
+        return gcWatermark;
+    }
+
     // ------------------------------------------------------------------
-    // Snapshoty (ADR-0003)
+    // Snapshots
     // ------------------------------------------------------------------
 
     /** A snapshot of the full state, to be stored as a cache in the database. */
@@ -579,7 +825,8 @@ public final class RgaDocument {
             copies.add(copyOf(block));
         }
         return new DocumentSnapshot(
-            DocumentSnapshot.CURRENT_FORMAT_VERSION, clock, maxSeen, copies, marks.all());
+            DocumentSnapshot.CURRENT_FORMAT_VERSION, clock, maxSeen, copies, marks.all(),
+            gcWatermark.asMap());
     }
 
     /**
@@ -602,11 +849,12 @@ public final class RgaDocument {
         for (Op mark : snapshot.marks()) {
             document.marks.apply(mark);
         }
+        document.gcWatermark = VersionVector.of(snapshot.gcWatermark());
         return document;
     }
 
     // ------------------------------------------------------------------
-    // Odczyt stanu
+    // Reading the state
     // ------------------------------------------------------------------
 
     /**
@@ -617,8 +865,10 @@ public final class RgaDocument {
      */
     private static Block copyOf(Block block) {
         return block.hasContent()
-            ? new Block(block.start(), block.text(), block.originLeft(), block.deleted())
-            : Block.withoutContent(block.start(), block.length(), block.originLeft());
+            ? new Block(block.start(), block.text(), block.originLeft(), block.deleted(),
+                block.deletedBy())
+: Block.withoutContent(block.start(), block.length(), block.originLeft(),
+                block.deletedBy());
     }
 
     public String text() {
@@ -661,7 +911,26 @@ public final class RgaDocument {
         return VersionVector.of(maxSeen);
     }
 
-    public BlockList blocks() {
+    /**
+     * The blocks in document order, read-only.
+     *
+     * <p>This used to return the live {@link BlockList}, which is the same door
+     * {@link Block#markDeleted} was made package-private to close, one level up: any caller could
+     * invoke {@code remove}, {@code insert}, {@code set} or {@code markDeleted} on the structure
+     * and desynchronise {@code clock}, {@code maxSeen} and {@code gcWatermark} from it, with no
+     * compiler complaint and no symptom until the next insertion in that spot.
+     *
+     * <p>Both production callers outside this package — {@code HistoryService} and
+     * {@code SuggestionService} — only iterate, so narrowing the type costs them nothing. The
+     * structural accessor stays as {@link #blockList} for the tests and the benchmark, which are
+     * in this package and do need it.
+     */
+    public Iterable<Block> blocks() {
+        return blocks;
+    }
+
+    /** The structure itself — package-private, for the invariant checks and the benchmark. */
+    BlockList blockList() {
         return blocks;
     }
 
@@ -671,13 +940,13 @@ public final class RgaDocument {
      *
      * <p>Needed to distinguish two very different situations that look the same from outside: "the
      * operation arrived before its cause" (transient, it will wait in the buffer) from "the cause
-     * was removed by GC" (permanent, it can no longer be merged — ADR-0005).
+     * was removed by GC" (permanent, it can no longer be merged — the tombstone-collection design).
      */
     public boolean contains(Id id) {
         return blocks.locateId(id) != null;
     }
 
-    /** The identifier of the character at a given index in the visible text — a cursor position (ADR-0006). */
+    /** The identifier of the character at a given index in the visible text — a cursor position. */
     public Id idAtVisible(int visibleIndex) {
         BlockList.Locator loc = blocks.locateVisible(visibleIndex);
         if (loc == null) {

@@ -24,8 +24,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * instance that handled the revocation.
  *
  * <h2>Why this one is not "eventually consistent is fine"</h2>
- * Nearly everything else in this project is built on the opposite premise — ADR-0001 picks a CRDT
- * so replicas can disagree and converge, and ADR-0004 makes the cluster bus deliberately
+ * Nearly everything else in this project is built on the opposite premise — the CRDT decision picks a CRDT
+ * so replicas can disagree and converge, and the cluster design makes the cluster bus deliberately
  * unreliable on the same reasoning. That reasoning does not extend to access. A text operation
  * arriving late is still the same document; a revocation arriving late is a window in which the
  * system keeps doing what it was told to stop doing.

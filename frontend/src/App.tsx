@@ -6,18 +6,21 @@ import { DiagnosticsBar } from './ui/DiagnosticsBar'
 import { DocumentList } from './ui/DocumentList'
 import { initials, peopleLabel, wordCount } from './ui/format'
 import { CommentsPanel } from './ui/CommentsPanel'
+import { FailureNote } from './ui/FailureNote'
 import { HistoryPanel } from './ui/HistoryPanel'
 import { SaveIndicator } from './ui/SaveIndicator'
 import { SharePanel } from './ui/SharePanel'
 import { SuggestionsPanel } from './ui/SuggestionsPanel'
+import { copyText } from './ui/browser'
 import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
+import { useFailure } from './ui/useFailure'
 
 /**
  * The application shell.
  *
  * **The interface shows only things that are a feature of the product.** The network simulator and
  * the CRDT state view — two tools that were invaluable while working on this project — are hidden
- * behind the `?debug=1` parameter and are seen by nobody who simply opened the editor (ADR-0007, a
+ * behind the `?debug=1` parameter and are seen by nobody who simply opened the editor (a
  * revised decision).
  *
  * The reason: a user has no idea what a tombstone or a version vector is, and a "packet loss"
@@ -27,16 +30,6 @@ import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(loadSession)
-
-  // The token has to be set BEFORE the first REST request goes out — including for a session
-  // restored from sessionStorage, where there is no login at which to set it. useState with an
-  // initialiser function runs before the first render, so setting it here precedes any useEffect in
-  // child components.
-  const [, setTokenReady] = useState(() => {
-    setAuthToken(session?.token ?? null)
-    return true
-  })
-  void setTokenReady
 
   function remember(next: Session): void {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(next))
@@ -50,12 +43,20 @@ export default function App() {
 function Login({ onLogin }: { onLogin: (session: Session) => void }) {
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
-
+  const failure = useFailure()
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     setBusy(true)
+    // There was a `finally` here and no `catch`, so a login that failed — a backend that is down,
+    // which is the ordinary way to arrive at this screen and get nothing — re-enabled the button
+    // and said nothing at all. The user presses it again, and again, with the interface behaving
+    // exactly as it does when nothing is wrong. This is the FIRST screen of the application; it
+    // is the worst possible place to be silent about a failure.
     try {
-      onLogin(await api.login(name))
+      await failure.attempt(
+        'Could not sign in. The server may be unavailable — try again in a moment.',
+        async () => onLogin(await api.login(name)),
+      )
     } finally {
       setBusy(false)
     }
@@ -78,6 +79,9 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
         <button type="submit" disabled={busy}>
           {busy ? 'Connecting…' : 'Get started'}
         </button>
+        {failure.message !== null && (
+          <FailureNote message={failure.message} onDismiss={failure.dismiss} />
+        )}
       </form>
     </div>
   )
@@ -93,7 +97,10 @@ function Workspace({ session }: { session: Session }) {
     return list
   }, [])
 
+  const [bootstrapFailed, setBootstrapFailed] = useState(false)
+
   useEffect(() => {
+    let cancelled = false
     void refresh().then(async (list) => {
       const params = new URLSearchParams(window.location.search)
 
@@ -140,7 +147,16 @@ function Workspace({ session }: { session: Session }) {
         return
       }
       setOpenId(list[0].id)
+    }).catch(() => {
+      // Without this the failure was an uncaught rejection in the console and a page stuck on
+      // "Loading…" for ever: `openId` stayed null, so Workspace rendered the placeholder and
+      // nothing ever replaced it. A list that cannot be fetched is a normal thing to survive —
+      // an expired token, a backend that is down — and the user needs a way out of it.
+      if (!cancelled) setBootstrapFailed(true)
     })
+    return () => {
+      cancelled = true
+    }
   }, [refresh])
 
   /**
@@ -168,6 +184,16 @@ function Workspace({ session }: { session: Session }) {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
+  /**
+   * Creates a document, and lets the failure travel.
+   *
+   * It deliberately does NOT catch: the button that triggers it lives inside `DocumentWorkspace`,
+   * which is where a message about it has to appear, so the error is reported there. Before this
+   * change nobody caught it at all — the button simply did nothing, no document appeared, and
+   * nothing said why. Creating a document is a gesture people repeat when it looks like it did not
+   * work, so silence here also risks a handful of real documents arriving at once when the
+   * connection comes back.
+   */
   async function createDocument() {
     const created = await api.createDocument('Untitled document')
     setDocuments((current) => [created, ...current])
@@ -186,7 +212,14 @@ function Workspace({ session }: { session: Session }) {
     />
   ) : (
     <div className="app">
-      <div className="loading">Loading…</div>
+      {bootstrapFailed ? (
+        <div className="loading">
+          <p>The document list could not be loaded.</p>
+          <button onClick={() => window.location.reload}>Try again</button>
+        </div>
+      ): (
+        <div className="loading">Loading…</div>
+      )}
     </div>
   )
 }
@@ -196,7 +229,8 @@ function DocumentWorkspace(props: {
   documentId: string
   documents: DocumentSummary[]
   onSelect: (id: string) => void
-  onCreate: () => void
+  /** Rejects on failure — this component owns the message, because it owns the screen. */
+  onCreate: () => Promise<void>
   /** The list needs refreshing — after a rename, a delete or a restore. */
   onRefresh: () => void
 }) {
@@ -211,7 +245,16 @@ function DocumentWorkspace(props: {
   const [panel, setPanel] = useState<'history' | 'comments' | 'suggestions'>('history')
   const [shared, setShared] = useState(false)
   const [sharing, setSharing] = useState(false)
-
+  /**
+   * The address, shown when the clipboard could not be reached.
+   *
+   * Not a failure message: nothing went wrong that the user needs explaining, they simply have to
+   * copy it themselves. See `ui/browser.ts` for why a plain-`http:` deployment — which
+   * `config.ts` supports on purpose, and which is how two browsers on a LAN demonstrate this
+   * product — has no clipboard API at all.
+   */
+  const [linkToCopy, setLinkToCopy] = useState<string | null>(null)
+  const failure = useFailure()
   /**
    * Sharing (CP21).
    *
@@ -220,15 +263,24 @@ function DocumentWorkspace(props: {
    * is private, so the address alone lets nobody in. Copying it is still a sensible gesture
    * for somebody without access management ("send me that again"), but it is the invitation
    * that opens the door — and only the owner can issue one.
+   *
+   * The copy used to be a bare `await navigator.clipboard.writeText(...)` in a function nothing
+   * awaited. On any page that is not `https:` or `localhost` that property does not exist, so the
+   * call threw a `TypeError` into an unhandled rejection: no copy, no "Copied", no message.
    */
   async function share() {
     if (doc.role === 'owner') {
       setSharing(true)
       return
     }
-    await navigator.clipboard.writeText(window.location.href)
-    setShared(true)
-    setTimeout(() => setShared(false), 2000)
+    const address = window.location.href
+    if (await copyText(address)) {
+      setShared(true)
+      setLinkToCopy(null)
+      setTimeout(() => setShared(false), 2000)
+      return
+    }
+    setLinkToCopy(address)
   }
 
   const others = doc.presence.filter((entry) => entry.userId !== session.userId)
@@ -273,9 +325,37 @@ function DocumentWorkspace(props: {
               {doc.canComment ? 'You can comment' : 'Read-only'}
             </span>
           )}
-          <button className="btn-outline" onClick={share}>
+          {/* An editor whose replica has no identifier yet cannot type, and is told so.
+              The alternative considered was leaving only the "Connecting…" save indicator to
+              carry it: rejected, because a caret blinking in a document that silently discards
+              keystrokes is the interface telling somebody their work is being taken when it is
+              not. It is a fraction of a second on a live connection and permanent on a dead one,
+              and the second case is exactly the one worth naming. See `replicaAssigned`. */}
+          {doc.canWrite && !doc.replicaAssigned && (
+            <span
+              className="role-badge"
+              title="Waiting for the server to assign this browser a replica identifier — editing
+                     starts the moment it arrives"
+            >
+              Connecting…
+            </span>
+          )}
+          <button className="btn-outline" onClick={() => void share}>
             {shared ? 'Copied' : 'Share'}
           </button>
+          {linkToCopy !== null && (
+            // The clipboard was not available, so the address goes on screen instead, selected,
+            // for the user to copy by hand. A worse gesture than a working button and a far
+            // better one than a button that quietly does nothing.
+            <input
+              className="share-fallback"
+              readOnly
+              value={linkToCopy}
+              aria-label="Document address — copy it manually"
+              autoFocus
+              onFocus={(event) => event.target.select}
+            />
+          )}
         </div>
       </header>
 
@@ -286,7 +366,6 @@ function DocumentWorkspace(props: {
           network={doc.network}
           onChange={doc.updateNetwork}
           document={doc.model}
-          characters={doc.characters}
         />
       )}
 
@@ -295,13 +374,26 @@ function DocumentWorkspace(props: {
           documents={props.documents}
           openId={documentId}
           onSelect={props.onSelect}
-          onCreate={props.onCreate}
+          onCreate={() =>
+            void failure.attempt(
+              'Could not create the document. Check your connection and try again.',
+              props.onCreate,
+            )
+          }
           onChanged={props.onRefresh}
         />
 
         <main className="canvas-col">
           <div className="editor-toolbar">
             <FormatButtons onToggle={doc.toggleMark} disabled={!doc.canWrite} />
+            <span className="tb-divider" />
+            {/* Block structure (CP30). The command and its styling both existed and nothing
+                called it, so heading, quotation and list were unreachable through the product —
+                the same shape of gap CP21 found in sharing, where grant and revoke were called
+                only from tests. The original UI scope's rule cuts both ways: a button that does nothing is a
+                lie in the interface, and a working gesture with no button is a feature that
+                is not there. */}
+            <BlockButtons onToggle={doc.toggleBlock} disabled={!doc.canWrite} />
             <span className="tb-divider" />
             <button
               className={`tb-icon${panel === 'comments' ? ' active' : ''}`}
@@ -356,11 +448,25 @@ function DocumentWorkspace(props: {
                   was lost.
                 </div>
               )}
+              {doc.notice !== null && (
+                <div className="notice-banner" role="status">
+                  <span>{doc.notice}</span>
+                  <button
+                    className="notice-dismiss"
+                    onClick={doc.dismissNotice}
+                    aria-label="Dismiss">
+                    ×
+                  </button>
+                </div>
+              )}
               {doc.unavailable && (
                 <div className="unavailable-banner">
                   <strong>We cannot open this document.</strong> It may have been deleted, or you
                   may not have access to it — ask whoever sent you the link to share it again.
                 </div>
+              )}
+              {failure.message !== null && (
+                <FailureNote message={failure.message} onDismiss={failure.dismiss} />
               )}
               {doc.ready && doc.model && doc.undo && (
                 <Editor
@@ -374,7 +480,15 @@ function DocumentWorkspace(props: {
                   onSelectionChange={doc.onSelectionChange}
                   onUndo={doc.runUndo}
                   onRedo={doc.runRedo}
-                  readOnly={!doc.canWrite}
+                  // Two conditions, not one. The role is the obvious half. The other is that this
+                  // browser has not yet been told which replica it is, and until it has been, a
+                  // keystroke mints a character identity from the placeholder id 0 — which a
+                  // second browser in the same window mints too, so the merge algorithm treats two
+                  // different characters as one and one author's text disappears with nothing said
+                  // to either of them. `useCollaborativeDocument`'s `replicaAssigned` documents the
+                  // whole path; the short version is that `ready` fires before the socket is even
+                  // built, and it was the only gate here.
+                  readOnly={!doc.canWrite || !doc.replicaAssigned}
                   registerRemoteApply={doc.registerRemoteApply}
                 />
               )}
@@ -400,6 +514,8 @@ function DocumentWorkspace(props: {
             selection={doc.selection}
             revision={doc.characters}
             onAnchor={doc.anchorComment}
+            captureAnchor={doc.captureAnchor}
+            onAnchorAt={doc.anchorCommentAt}
             readOnly={!doc.canComment}
           />
         )}
@@ -423,43 +539,25 @@ function DocumentWorkspace(props: {
 }
 
 /**
- * The save indicator — the only information about the connection state a user sees.
- *
- * Deliberately in the product's language ("Saved", "Working offline") rather than the protocol's
- * ("resynchronising", "N operations buffered"). The user should know whether their work is safe —
- * not how the transport works.
- */
-
-/**
  * The formatting buttons.
  *
- * They act on the CURRENT SELECTION read from the DOM, not from React state. The reason is
- * practical: clicking a button takes focus away from the editor, so if the selection were held in
- * state and updated by an event, it would already be empty by the time of the click. `onMouseDown`
- * with `preventDefault` stops the focus loss before it happens.
+ * They act on the selection CodeMirror last reported, which is the same source the keyboard
+ * shortcuts use. Clicking a button would normally take focus away from the editor and destroy the
+ * selection first, which is what `onMouseDown` with `preventDefault` prevents — the selection is
+ * still live when the click handler runs, and the hook's tracked range is still current.
+ *
+ * **This used to measure the range out of the DOM**, by summing the length of `Range.toString()`
+ * over `.cm-content`. CodeMirror renders one `<div class="cm-line">` per line and
+ * `Range.toString` concatenates only text-node data — it synthesises nothing for a block
+ * boundary — so newlines were never counted and every offset was short by the number of lines
+ * above the selection. On a document long enough to be virtualised only the lines near the caret
+ * are in the DOM at all, so it was worse still. The bold landed on the wrong words, which reads as
+ * a decision the author made.
  */
 function FormatButtons(
   { onToggle, disabled }:
-    { onToggle: (type: string, from: number, to: number) => void; disabled: boolean },
+    { onToggle: (type: string) => void; disabled: boolean },
 ) {
-  function apply(type: string) {
-    const selection = window.getSelection()
-    if (selection === null || selection.isCollapsed) return
-    const editor = window.document.querySelector('.cm-content')
-    if (editor === null) return
-
-    // Offsets are computed relative to the editor's content, not a DOM node — CodeMirror splits
-    // the text across many elements, so an offset within a node says nothing about the position in
-    // the document.
-    const range = selection.getRangeAt(0)
-    const before = range.cloneRange()
-    before.selectNodeContents(editor)
-    before.setEnd(range.startContainer, range.startOffset)
-    const from = before.toString().length
-    const to = from + range.toString().length
-    if (from < to) onToggle(type, from, to)
-  }
-
   const buttons: { type: string; label: string; title: string; render: React.ReactNode }[] = [
     { type: 'bold', label: 'Bold', title: 'Bold (⌘B)', render: <strong>B</strong> },
     { type: 'italic', label: 'Italic', title: 'Italic (⌘I)', render: <em>I</em> },
@@ -477,7 +575,46 @@ function FormatButtons(
           title={button.title}
           aria-label={button.label}
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => apply(button.type)}
+          onClick={() => onToggle(button.type)}
+          disabled={disabled}
+        >
+          {button.render}
+        </button>
+      ))}
+    </>
+  )
+}
+
+/**
+ * Heading, quotation and list (CP30).
+ *
+ * Separate from `FormatButtons` because the gesture is different in kind: these act on the LINE the
+ * caret is on rather than on the selection. The `preventDefault` on mousedown is still needed and
+ * for the same reason — without it the button takes the focus, the editor loses the caret, and
+ * there is no line to act on. The heading level travels as the mark's value, which is why
+ * `heading` carries one and the other two do not.
+ */
+function BlockButtons(
+  { onToggle, disabled }:
+    { onToggle: (type: string, value: string | null) => void; disabled: boolean },
+) {
+  const buttons: { type: string; value: string | null; label: string; render: React.ReactNode }[] = [
+    { type: 'heading', value: '1', label: 'Heading', render: <span>H1</span> },
+    { type: 'heading', value: '2', label: 'Subheading', render: <span>H2</span> },
+    { type: 'quote', value: null, label: 'Quotation', render: <span>&ldquo;</span> },
+    { type: 'list', value: null, label: 'List item', render: <span>&#8226;</span> },
+  ]
+
+  return (
+    <>
+      {buttons.map((button) => (
+        <button
+          key={button.label}
+          className="tb-icon tb-format"
+          title={button.label}
+          aria-label={button.label}
+          onMouseDown={(event) => event.preventDefault}
+          onClick={() => onToggle(button.type, button.value)}
           disabled={disabled}
         >
           {button.render}

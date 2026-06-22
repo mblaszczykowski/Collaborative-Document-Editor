@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import dev.collabedit.app.persist.PendingOperation;
 import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.RgaDocument;
+import dev.collabedit.crdt.VersionVector;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
@@ -23,7 +24,7 @@ import org.junit.jupiter.api.Test;
  *           arbitrarily long, blocking every other writer.</td></tr>
  *   <tr><td>{@code drainPreservesOrderAcrossBatches}</td>
  *       <td>Splitting into batches scrambling the order. {@code server_seq} is assigned in drain
- *           order, and ADR-0004 bases detection of lost messages on its CONTINUITY — reordering
+ *           order, and the cluster design bases detection of lost messages on its CONTINUITY — reordering
  *           operations breaks the resynchronisation cursor.</td></tr>
  *   <tr><td>{@code drainLeavesNothingBehind}</td>
  *       <td>An operation staying in the buffer forever and never reaching the log. The client gets
@@ -85,7 +86,7 @@ class DocumentReplicaTest {
         }
 
         assertThat(drained.toString())
-            .as("server_seq is assigned in drain order — reordering breaks ADR-0004")
+            .as("server_seq is assigned in drain order — reordering breaks the cluster design")
             .isEqualTo("abcdefghij");
     }
 
@@ -111,5 +112,48 @@ class DocumentReplicaTest {
 
         assertThat(replica.drainUnwritten(LIMIT)).hasSize(2);
         assertThat(replica.drainUnwritten(LIMIT)).isEmpty();
+    }
+
+    /**
+     * The two clocks answer two different questions, and conflating them stops snapshots.
+     *
+     * <p>Eviction asks "is anybody here" — a progress report is a yes, and a client sends one every
+     * 15 seconds. The snapshot sweep's quiet branch asks "has this document been STILL for 30
+     * seconds", which is about edits. While one field served both, an open tab made the quiet
+     * threshold unreachable: a document edited a little and left open was never snapshotted, so its
+     * search vector and list preview never updated and its log tail grew without bound.
+     *
+     * <p>A unit test rather than an integration one, deliberately. The rig reports progress every
+     * 500 ms against a 500 ms test threshold, so an integration test of this is a coin flip — which
+     * is exactly why nothing caught the regression.
+     */
+    @Test
+    @DisplayName("a progress report keeps the replica alive without making the document look edited")
+    void progressReportIsActivityButNotAnEdit() {
+        DocumentReplica replica = new DocumentReplica(
+            UUID.randomUUID(), new RgaDocument(-1), 0, 0);
+
+        replica.reportProgress(7, VersionVector.empty(), 10_000);
+
+        assertThat(replica.lastActivityMillis())
+            .as("a connected client reporting progress must postpone eviction")
+            .isEqualTo(10_000);
+        assertThat(replica.lastEditMillis())
+            .as("a progress report is not an edit; counting it as one makes the snapshot sweep's "
+                + "quiet threshold unreachable for as long as anybody keeps the document open")
+            .isZero();
+    }
+
+    @Test
+    @DisplayName("an edit advances both clocks")
+    void anEditIsBothActivityAndAnEdit() {
+        DocumentReplica replica = new DocumentReplica(
+            UUID.randomUUID(), new RgaDocument(-1), 0, 0);
+        RgaDocument browser = new RgaDocument(1);
+
+        replica.merge(browser.insert(0, "a"), "tester", null, 5_000);
+
+        assertThat(replica.lastActivityMillis()).isEqualTo(5_000);
+        assertThat(replica.lastEditMillis()).isEqualTo(5_000);
     }
 }

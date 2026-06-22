@@ -1,10 +1,10 @@
-import { compareIds, id, idEquals, idPlus, type Id } from './types'
+import { idEquals, idPlus, type Id } from './types'
 
 /**
  * A contiguous run of characters from one replica — the unit of storage.
  *
  * A document is not a list of characters but a list of blocks: typing 20 characters in a row is one
- * object, not 20. The justification and the invariants are in `docs/crdt-design.md` section 3.
+ * object, not 20. The justification and the invariants are in the README, "The document is a list of runs".
  *
  * INVARIANT: a block is either entirely alive or entirely deleted. Deleting part of one splits the
  * block first.
@@ -98,11 +98,7 @@ export class Block {
     return new Block(this.start, this.text + more, this.originLeft, this.deleted)
   }
 
-  /** A representation matching Block.toString() in Java — used when diagnosing divergence. */
-  describe(): string {
-    const origin = this.originLeft === null ? 'null' : `${this.originLeft.replicaId}@${this.originLeft.lamport}`
-    return `${this.deleted ? '~' : ''}${this.start.replicaId}@${this.start.lamport}:"${this.text}"←${origin}`
-  }
+  // describe() used to live here, for the diagnostics view. Its only caller was
+  // RgaDocument.describeBlocks(), which had no caller of its own.
 }
 
-export { compareIds, id, idEquals, idPlus }

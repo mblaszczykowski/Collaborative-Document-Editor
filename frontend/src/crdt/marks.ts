@@ -22,8 +22,17 @@ export interface Span {
   readonly marks: ReadonlyMap<string, string | null>
 }
 
-/** An anchor's position in visible coordinates; null when the character is not in the structure. */
-export type AnchorResolver = (anchor: Anchor) => number | null
+/**
+ * Resolves an anchor to a position in the visible text.
+ *
+ * This replaced a `(anchor) => number | null` callback that walked **every block** on each call —
+ * twice per mark, on the keystroke path. See `RgaDocument.anchorIndex` for the measurements and
+ * for the structure that answers it in logarithmic time instead.
+ *
+ * Returns `undefined` when the character is not in the structure, which is not an error: the mark
+ * covers nothing until its anchor arrives.
+ */
+export type AnchorPositions = (anchor: Anchor) => number | undefined
 
 interface Resolved {
   readonly op: Op
@@ -61,21 +70,25 @@ export class MarkSet {
     return this.operations.size
   }
 
-  all(): Op[] {
-    return [...this.operations.values()]
+  /** Drops every mark — see `RgaDocument.restoreFrom`, which replaces the whole state. */
+  clear(): void {
+    this.operations.clear()
   }
+
+  // all() used to sit here, mirroring MarkSet.all() in Java. It exists there because the
+  // server WRITES snapshots; the client only reads them, so nothing ever called this one.
 
   /**
    * The visible text's formatting as disjoint, ordered runs.
    *
    * Runs with no formatting at all are omitted — the view layer receives only what it has to draw.
    */
-  spans(resolve: AnchorResolver): Span[] {
-    const resolved = this.resolveAll(resolve)
+  spans(positions: AnchorPositions): Span[] {
+    const resolved = this.resolveAll(positions)
     if (resolved.length === 0) return []
 
     // The boundaries: the start and end of every range. Between two consecutive boundaries the
-    // formatting is constant by definition.
+    // formatting is constant by definition, because no range begins or ends there.
     const boundaries = new Set<number>()
     for (const entry of resolved) {
       boundaries.add(entry.from)
@@ -83,36 +96,78 @@ export class MarkSet {
     }
     const points = [...boundaries].sort((a, b) => a - b)
 
-    // Descending by (lamport, replicaId): the first matching operation of a given type wins.
-    const byPriority = [...resolved].sort((a, b) => compareIds(b.op.id, a.op.id))
+    // The ranges starting and ending at each boundary, so the sweep does not have to walk every
+    // mark at every boundary.
+    //
+    // This is the CP20 rewrite from `MarkSet.java`, ported. The version it replaces re-scanned
+    // every resolved mark at every boundary — O(marks^2) — and combined with a per-anchor linear
+    // block scan it made `formatting()` cost 31 ms on a document with 10 000 blocks and 800 marks,
+    // on the keystroke path. The server's own header had already argued this exact case with
+    // numbers; this file said it was "kept close to the structure of the Java version" and was
+    // three checkpoints behind it.
+    const startingAt = new Map<number, Resolved[]>()
+    const endingAt = new Map<number, Resolved[]>()
+    for (const entry of resolved) {
+      const starts = startingAt.get(entry.from)
+      if (starts === undefined) startingAt.set(entry.from, [entry])
+      else starts.push(entry)
+      const ends = endingAt.get(entry.to)
+      if (ends === undefined) endingAt.set(entry.to, [entry])
+      else ends.push(entry)
+    }
+
+    // Active ranges per type, kept sorted DESCENDING by (lamport, replicaId) — the same total
+    // order RGA uses for siblings, so no new arbiter appears in the mark layer. The first element
+    // is the winner for that type on the current segment.
+    //
+    // A sorted array rather than a tree: the active set for one type is the number of marks of
+    // that type OVERLAPPING at a single position, which is a handful even in a heavily annotated
+    // document. A binary insert into a short array beats a tree here and needs no dependency.
+    const activeByType = new Map<string, Resolved[]>()
 
     const spans: Span[] = []
     for (let i = 0; i + 1 < points.length; i++) {
+      // Strictly increasing: `points` comes from a Set that was sorted, so `from < to` always
+      // holds and the guard that used to stand here was unreachable.
       const from = points[i]
       const to = points[i + 1]
-      if (from >= to) continue
+
+      // Remove the ranges ending at this boundary FIRST, then add the ones starting here. The
+      // reverse order would briefly have [a,b) and [b,c) of the same type active together.
+      for (const ending of endingAt.get(from) ?? []) {
+        const active = activeByType.get(ending.type)
+        if (active === undefined) continue
+        const at = active.indexOf(ending)
+        if (at >= 0) active.splice(at, 1)
+        if (active.length === 0) activeByType.delete(ending.type)
+      }
+      for (const starting of startingAt.get(from) ?? []) {
+        const active = activeByType.get(starting.type)
+        if (active === undefined) {
+          activeByType.set(starting.type, [starting])
+        } else {
+          insertByPriority(active, starting)
+        }
+      }
 
       const marks = new Map<string, string | null>()
-      const decided = new Set<string>()
-      for (const entry of byPriority) {
-        if (from < entry.from || from >= entry.to) continue
-        if (decided.has(entry.type)) continue
-        decided.add(entry.type)
-        if (entry.adding) marks.set(entry.type, entry.value)
+      for (const [type, active] of activeByType) {
+        const winner = active[0]
+        if (winner.adding) marks.set(type, winner.value)
       }
       if (marks.size > 0) spans.push({ from, to, marks })
     }
     return mergeAdjacent(spans)
   }
 
-  private resolveAll(resolve: AnchorResolver): Resolved[] {
+  private resolveAll(positions: AnchorPositions): Resolved[] {
     const resolved: Resolved[] = []
     for (const op of this.operations.values()) {
       if (op.kind !== 'addMark' && op.kind !== 'removeMark') continue
 
-      const from = resolve(op.start)
-      const to = resolve(op.end)
-      if (from === null || to === null || from >= to) {
+      const from = positions(op.start)
+      const to = positions(op.end)
+      if (from === undefined || to === undefined || from >= to) {
         // The anchor is outside the structure, or the range is empty after its content was
         // deleted. The mark covers nothing — which is not an error.
         continue
@@ -128,6 +183,18 @@ export class MarkSet {
     }
     return resolved
   }
+}
+
+/** Keeps the active list sorted descending by (lamport, replicaId) — the winner is index 0. */
+function insertByPriority(active: Resolved[], entry: Resolved): void {
+  let low = 0
+  let high = active.length
+  while (low < high) {
+    const mid = (low + high) >>> 1
+    if (compareIds(active[mid].op.id, entry.op.id) > 0) low = mid + 1
+    else high = mid
+  }
+  active.splice(low, 0, entry)
 }
 
 /**

@@ -65,9 +65,14 @@ final class EditScript {
      *
      * <p>This is a scenario closer to reality than {@link #runIndependently}, but above all it is
      * the <b>only</b> scenario in which a replica generates an operation after receiving somebody
-     * else's. Without it the Lamport clock bumping rule is never executed at all, and the tests
-     * pass despite its removal — verified experimentally by introducing a mutation into production
-     * code.
+     * else's. Without it the Lamport clock bumping rule is never executed at all.
+     *
+     * <p>This paragraph used to continue "and the tests pass despite its removal — verified
+     * experimentally". The first half was right and the conclusion drawn from it was not: the
+     * tests passed despite its removal <b>with this scenario in place too</b>, because executing a
+     * line is not the same as asserting on it. The mutation is caught by the timestamp condition
+     * in {@link RgaInvariants#violations}, and this scenario is what makes that condition
+     * reachable — necessary, not sufficient.
      */
     static void runInterleaved(ReplicaSet replicas, List<Cmd> script, Random random, int roundSize) {
         int executed = 0;

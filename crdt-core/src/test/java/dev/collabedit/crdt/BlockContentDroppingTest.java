@@ -136,7 +136,7 @@ class BlockContentDroppingTest {
     @Test
     @DisplayName("reading dropped content fails loudly instead of returning nothing")
     void readingDroppedContentFailsLoudly() {
-        Block dropped = Block.withoutContent(new Id(1, 1), 3, null);
+        Block dropped = Block.withoutContent(new Id(1, 1), 3, null, new Id(2, 9));
 
         assertThat(dropped.hasContent()).isFalse();
         assertThat(dropped.length()).isEqualTo(3);
@@ -152,7 +152,7 @@ class BlockContentDroppingTest {
     @Test
     @DisplayName("a dropped block can still be split, by length alone")
     void droppedBlockSplitsByLength() {
-        Block dropped = Block.withoutContent(new Id(1, 1), 5, null);
+        Block dropped = Block.withoutContent(new Id(1, 1), 5, null, new Id(2, 9));
         Block[] halves = dropped.splitAt(2);
 
         assertThat(halves[0].length()).isEqualTo(2);
@@ -196,10 +196,11 @@ class BlockContentDroppingTest {
         document.insert(0, "hello");
         DocumentSnapshot current = document.snapshot();
         DocumentSnapshot pretendingToBeOld = new DocumentSnapshot(
-            2, current.clock(), current.maxSeen(), current.blocks(), current.marks());
+            2, current.clock(), current.maxSeen(), current.blocks(), current.marks(),
+            current.gcWatermark());
 
         assertThat(SnapshotCodec.decode(SnapshotCodec.encode(pretendingToBeOld)))
-            .as("a snapshot from an older format was accepted; ADR-0003 says ignore, not migrate")
+            .as("a snapshot from an older format was accepted; the operation-log decision says ignore, not migrate")
             .isNull();
     }
 }

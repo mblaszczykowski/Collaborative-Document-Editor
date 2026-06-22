@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.collabedit.app.auth.TokenService;
 import dev.collabedit.app.domain.DocumentRegistry;
+import dev.collabedit.app.domain.RegistryTestAccess;
 import dev.collabedit.app.domain.DocumentService;
 import dev.collabedit.app.persist.SnapshotStore;
 import java.time.Duration;
@@ -19,7 +20,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * the other clients.
  *
  * <p>Each of them answers a question a <b>unit test cannot</b> — because it concerns layers
- * cooperating, the ordering of steps from ADR-0004, or the behaviour of a real database.
+ * cooperating, the ordering of steps from the cluster design, or the behaviour of a real database.
  */
 class DocumentCollaborationIT extends IntegrationTestBase {
 
@@ -96,7 +97,7 @@ class DocumentCollaborationIT extends IntegrationTestBase {
                 .contains("hello")
                 .contains("world");
 
-            // The server replica is a third participant and has to agree too (ADR-0004).
+            // The server replica is a third participant and has to agree too.
             assertThat(documents.textOf(document)).isEqualTo(anna.text());
         }
     }
@@ -109,14 +110,18 @@ class DocumentCollaborationIT extends IntegrationTestBase {
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 111)) {
             anna.insert(0, "Inkline");
             anna.insert(7, " works");
-            anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "write acknowledged");
+            // BOTH operations, not just one. Acknowledgements follow the write, so `> 0` proved
+            // only that the FIRST had reached the log — and the two are sent back to back with a
+            // 20 ms batch window, so a flush tick landing between them left the second unwritten
+            // and the replay produced "Inkline". That is a flake in the test, not in the system.
+            anna.awaitCondition(() -> anna.lastAckSeq() >= 2, PATIENCE, "both writes acknowledged");
         }
 
         String beforeEviction = documents.textOf(document);
 
         // Simulating an instance crash: the replica disappears from memory. The state has to be
-        // rebuildable from the SOURCE OF TRUTH, that is, the operation log (ADR-0003).
-        registry.forget(document);
+        // rebuildable from the SOURCE OF TRUTH, that is, the operation log.
+        RegistryTestAccess.forget(registry, document);
 
         assertThat(documents.textOf(document))
             .as("replaying the log gave different text from the state before the replica was lost")
@@ -142,11 +147,11 @@ class DocumentCollaborationIT extends IntegrationTestBase {
 
         String withSnapshots = documents.textOf(document);
 
-        // ADR-0003: a snapshot is a cache and may be deleted at any moment. Without this test the
+        // the operation-log decision: a snapshot is a cache and may be deleted at any moment. Without this test the
         // cache would quietly become the source of truth — and we would find out only at a failure
         // or at a change to the serialisation format.
         snapshots.deleteAll(document);
-        registry.forget(document);
+        RegistryTestAccess.forget(registry, document);
 
         assertThat(documents.textOf(document))
             .as("replaying without snapshots gave a different result — the cache stopped being a cache")
@@ -164,10 +169,16 @@ class DocumentCollaborationIT extends IntegrationTestBase {
 
             // Retransmitting the same operation — exactly what a client does after reconnecting
             // when it never saw an acknowledgement.
+            int before = anna.syncResponseCount();
             anna.requestSync(0);
-            anna.awaitCondition(() -> anna.receivedCount() >= 0, Duration.ofMillis(500), "a moment");
-
-            Thread.sleep(300);
+            // Waits for the RESPONSE, not for a fixed interval. The previous condition counted
+            // operations received on the ops topic and asked whether that count was >= 0, which is
+            // true on the first iteration — a size is never negative — so the real synchronisation
+            // was the sleep below, and a negative assertion guarded by a fixed sleep passes
+            // whenever the machine is slower than the sleep. (That counter has since been removed
+            // from TestStompClient; nothing else was using it either.)
+            anna.awaitCondition(() -> anna.syncResponseCount() > before, PATIENCE,
+                "the resynchronisation response");
 
             assertThat(documents.textOf(document))
                 .as("the retransmission duplicated the text")
@@ -196,7 +207,7 @@ class DocumentCollaborationIT extends IntegrationTestBase {
             anna.awaitCondition(() -> anna.text().equals(marek.text()), PATIENCE, "convergence");
             Thread.sleep(300);
 
-            // ADR-0004 bases detection of lost Redis messages on the CONTINUITY of this
+            // the cluster design bases detection of lost Redis messages on the CONTINUITY of this
             // numbering. A gap would mean an instance asking the database forever for an operation
             // that was never there.
             Integer count = jdbc.queryForObject(

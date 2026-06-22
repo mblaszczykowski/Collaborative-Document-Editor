@@ -27,7 +27,7 @@ import org.springframework.stereotype.Component;
  * hours. A trace context in an HTTP header would therefore cover <b>the whole session</b> rather
  * than a single edit — that is, it would be useless. STOMP frame headers are the only place a
  * per-operation context can be carried, and that is the concrete, practical reason behind the
- * choice in ADR-0002.
+ * choice in the transport decision.
  *
  * <h2>Why the broadcast is joined by a link rather than by nesting</h2>
  * One operation comes in, and goes out to N clients. A parent-child relationship would suggest that
@@ -110,7 +110,7 @@ public class EditTracer {
      * A span for a batched operation, LINKED to the traces of the operations making up the batch.
      *
      * <p>A write to the log covers many operations at once and happens on a different thread, at a
-     * different moment from their arrival (batching every 50 ms — ADR-0003). Nesting it under any
+     * different moment from their arrival (batching every 50 ms — the operation-log decision). Nesting it under any
      * one of those traces would be false: it would suggest the write is part of handling that one
      * operation and that its duration contains it. In a batch of a hundred operations,
      * ninety-nine traces would then show someone else's write time.

@@ -5,7 +5,7 @@ import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemir
  * Other users' cursors and selections.
  *
  * The key decision lives elsewhere — in the fact that presence carries **CRDT character
- * identifiers, not offsets** (ADR-0006). If Marek's cursor were "column 42", Anna inserting a
+ * identifiers, not offsets**. If Marek's cursor were "column 42", Anna inserting a
  * character before that position would move the text but not the cursor, and Marek would be
  * pointing at someone else's character. An identifier moves with the text, because it is attached
  * to a character.
@@ -18,7 +18,15 @@ export interface RemoteCursor {
   replicaId: number
   displayName: string
   color: string
-  /** The cursor's position in the visible text; null when its character has just been deleted. */
+  /**
+   * The cursor's position in the visible text; null when its character has just been deleted.
+   *
+   * **Zero is a position, not an absence**, and the code below has always treated it as one — the
+   * reason a caret at the start of the document used to vanish for everybody was upstream, in the
+   * editor reporting `null` for a place it had no way to express (see `Editor.reportCursor` and
+   * `transport/cursorAnchor.ts`). Worth stating here because the guard on the next lines is one
+   * `!cursor.head` away from reintroducing it.
+   */
   head: number | null
   /** The selection's start; null when there is no selection. */
   anchor: number | null
@@ -29,7 +37,8 @@ export const setRemoteCursors = StateEffect.define<RemoteCursor[]>()
 
 /**
  * The name flag above the caret — the look comes straight from the mockup
- * (`docs/design/mockup-inkline.html`, the `.cursor-caret` class).
+ * (the mockup described in the original UI scope, its `.cursor-caret` class — the mockup itself is not in
+ * the repository).
  */
 class CaretWidget extends WidgetType {
   private readonly name: string

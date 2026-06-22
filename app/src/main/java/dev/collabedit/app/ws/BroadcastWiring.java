@@ -1,11 +1,10 @@
 package dev.collabedit.app.ws;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import dev.collabedit.app.config.CollabEditProperties;
 import dev.collabedit.app.domain.DocumentService;
-import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.OpCodec;
 import jakarta.annotation.PostConstruct;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
@@ -13,10 +12,10 @@ import org.springframework.stereotype.Component;
 /**
  * Connects the domain layer to the transport.
  *
- * <p>It exists so that {@link DocumentService} — where the ordering of steps from ADR-0004 is
+ * <p>It exists so that {@link DocumentService} — where the ordering of steps from the cluster design is
  * written down — does not depend on {@code SimpMessagingTemplate}. That makes the write path
  * testable without standing up the whole WebSocket stack, and a change of transport (should
- * ADR-0002 ever be revised) touches one file rather than the heart of the logic.
+ * the transport decision ever be revised) touches one file rather than the heart of the logic.
  */
 @Component
 public class BroadcastWiring {
@@ -24,59 +23,47 @@ public class BroadcastWiring {
     private final DocumentService documents;
     private final SimpMessagingTemplate messaging;
 
-    public BroadcastWiring(DocumentService documents, SimpMessagingTemplate messaging) {
+    /**
+     * Injected for one value: the frame budget.
+     *
+     * <p>The budget used to be {@code FRAME_BUDGET_BYTES = 32 * 1024}, pinned here, with a javadoc
+     * saying it was half of the transport decision's 64 KiB — while {@code DocumentStompController} derived the
+     * identical number from {@code max-message-size-bytes / 2}. Two numbers documented as the same
+     * derivation, only one of which followed the configuration: raising the limit moved the sync
+     * path and left the broadcast path where it was. See {@link FrameChunks}.
+     */
+    private final CollabEditProperties properties;
+
+    public BroadcastWiring(DocumentService documents, SimpMessagingTemplate messaging,
+                           CollabEditProperties properties) {
         this.documents = documents;
         this.messaging = messaging;
+        this.properties = properties;
     }
 
     /**
-     * The byte budget for a single broadcast frame.
+     * Why splitting is here at all.
      *
-     * <h2>Why bytes rather than a count of operations</h2>
-     * Counting operations is wrong <b>in principle</b>, not merely at the wrong value: an operation
-     * carries text of arbitrary length, so pasting a large fragment is one operation weighing tens
-     * of kilobytes. A limit of "300 operations" would then mean a multi-megabyte frame. The only
-     * quantity we actually care about bounding is the frame size — so we bound it directly.
+     * <p>With one-operation-per-frame broadcasting (up to CP10) the frame limit was unreachable,
+     * which is why there was no splitting. Coalescing broadcasts changed that assumption — and with
+     * 50 clients typing at once a batch can grow arbitrarily. It is the same class of bug CP8 found
+     * in the resynchronisation response: the frame simply never arrives, with no trace
+     * on the server side.
      *
-     * <h2>Where 32 KiB comes from</h2>
-     * ADR-0002 sets 64 KiB as the single-message limit. Half of that leaves room for the STOMP and
-     * JSON envelopes around the operations themselves, whose exact size we do not compute. A single
-     * operation larger than the budget goes out in a frame of its own — nothing better can be done,
-     * and the server's inbound limit would not have accepted a larger one anyway.
-     *
-     * <h2>Why splitting is here at all</h2>
-     * With one-operation-per-frame broadcasting (up to CP10) the limit was unreachable, which is
-     * why there was no splitting. Coalescing broadcasts changed that assumption — and with 50
-     * clients typing at once a batch can grow arbitrarily. It is the same class of bug CP8 found in
-     * the resynchronisation response (ADR-0002): the frame simply never arrives, with no trace on
-     * the server side.
+     * <p>The rule itself lives in {@link FrameChunks} now, shared with the resynchronisation path,
+     * which means {@code SyncChunkingTest} covers this path too.
      */
-    private static final int FRAME_BUDGET_BYTES = 32 * 1024;
-
-    /** Headroom for a single entry's envelope: {@code {"op":...,"serverSeq":null},}. */
-    private static final int ENTRY_OVERHEAD_BYTES = 32;
-
     @PostConstruct
     void wire() {
-        // Step 2 from ADR-0004: broadcast after the merge, BEFORE the write.
+        // Step 2 from the cluster design: broadcast after the merge, BEFORE the write.
         // This is the step responsible for what the user sees.
         documents.onFastPath((documentId, ops) -> {
-            List<Messages.OpBroadcast> frame = new ArrayList<>();
-            int bytes = 0;
-            for (Op op : ops) {
-                var json = OpCodec.toJson(op);
-                int size = json.toString().getBytes(StandardCharsets.UTF_8).length
-                    + ENTRY_OVERHEAD_BYTES;
-                if (!frame.isEmpty() && bytes + size > FRAME_BUDGET_BYTES) {
-                    messaging.convertAndSend("/topic/doc/" + documentId + "/ops", frame);
-                    frame = new ArrayList<>();
-                    bytes = 0;
-                }
-                frame.add(new Messages.OpBroadcast(json, null));
-                bytes += size;
-            }
-            if (!frame.isEmpty()) {
-                messaging.convertAndSend("/topic/doc/" + documentId + "/ops", frame);
+            List<JsonNode> encoded =
+                ops.stream().<JsonNode>map(OpCodec::toJson).toList();
+            for (List<JsonNode> chunk
+: FrameChunks.byBytes(encoded, FrameChunks.budgetBytes(properties))) {
+                messaging.convertAndSend("/topic/doc/" + documentId + "/ops",
+                    chunk.stream().map(Messages.OpBroadcast::new).toList());
             }
         });
 

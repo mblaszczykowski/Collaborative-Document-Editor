@@ -20,7 +20,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *   <tr><td>{@code softDeleteKeepsOperationLog}</td>
  *       <td><b>Irreversible destruction of the source of truth.</b> {@code operations} has
  *           {@code ON DELETE CASCADE} on {@code doc_id}, so one {@code DELETE} on a document
- *           erases its entire history — a table that per ADR-0003 is append-only. It cannot be
+ *           erases its entire history — a table that per the operation-log decision is append-only. It cannot be
  *           undone and is invisible until somebody asks for a restore.</td></tr>
  *   <tr><td>{@code deletedDocumentDisappearsFromList}</td>
  *       <td>A delete that hides nothing. Without this, "delete" does nothing visible.</td></tr>
@@ -49,6 +49,16 @@ class DocumentCatalogIT extends IntegrationTestBase {
     JdbcTemplate jdbc;
     @Autowired
     TokenService tokens;
+
+    /**
+     * Any signed-in user.
+     *
+     * <p>The listings are scoped to the caller since the LIMIT was moved behind the access
+     * rule. These fixtures create documents through {@code catalog.create}, which leaves
+     * {@code visibility} at its default of {@code link} — readable by anybody signed in — so
+     * the identity here does not select anything, it only has to exist.
+     */
+    private static final String ANY_USER = "user-" + UUID.randomUUID();
 
     private UUID newDocument(String title) {
         UUID id = UUID.randomUUID();
@@ -88,14 +98,14 @@ class DocumentCatalogIT extends IntegrationTestBase {
     @DisplayName("a deleted document disappears from the list and appears in the bin")
     void deletedDocumentDisappearsFromList() {
         UUID document = newDocument("Vanishing");
-        assertThat(catalog.list(null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
+        assertThat(catalog.list(ANY_USER, null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
 
         catalog.softDelete(document);
 
-        assertThat(catalog.list(null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
+        assertThat(catalog.list(ANY_USER, null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
             .doesNotContain(document);
-        assertThat(catalog.listDeleted(500)).extracting(DocumentCatalog.DocumentSummary::id)
+        assertThat(catalog.listDeleted(ANY_USER, 500)).extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
         assertThat(catalog.find(document)).isEmpty();
     }
@@ -156,7 +166,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
         String marker = "quantum" + System.nanoTime();
         UUID byTitle = newDocument("Report " + marker);
 
-        assertThat(catalog.search(marker, 50))
+        assertThat(catalog.search(ANY_USER, null, marker, 50))
             .as("search does not find by title")
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(byTitle);
@@ -175,7 +185,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
 
         boolean found = false;
         for (int attempt = 0; attempt < 200 && !found; attempt++) {
-            found = catalog.search(contentMarker, 50).stream()
+            found = catalog.search(ANY_USER, null, contentMarker, 50).stream()
                 .anyMatch(d -> d.id().equals(byContent));
             if (!found) {
                 Thread.sleep(20);

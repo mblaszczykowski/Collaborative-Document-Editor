@@ -1,7 +1,9 @@
 package dev.collabedit.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.collabedit.app.domain.DocumentService;
 import dev.collabedit.app.persist.OperationStore;
 import dev.collabedit.app.persist.PendingOperation;
 import dev.collabedit.app.persist.StoredOperation;
@@ -16,7 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Batched writes to the operation log (ADR-0003, ADR-0004).
+ * Batched writes to the operation log (the cluster design).
  *
  * <p>The tests target two properties the rest of the system rests on and that cannot be checked
  * without a real database: <b>write idempotence</b> (which follows from the primary key) and the
@@ -26,6 +28,8 @@ class OperationStoreIT extends IntegrationTestBase {
 
     @Autowired
     OperationStore operations;
+    @Autowired
+    DocumentService documents;
     @Autowired
     JdbcTemplate jdbc;
 
@@ -101,7 +105,7 @@ class OperationStoreIT extends IntegrationTestBase {
             .isEmpty();
 
         // The numbers must be untouched: spending them on a rejected batch would create exactly
-        // the gap in the numbering that filtering-before-allocation guards against (ADR-0004).
+        // the gap in the numbering that filtering-before-allocation guards against.
         Long nextSeq = jdbc.queryForObject(
             "SELECT next_server_seq FROM documents WHERE id = ?", Long.class, document);
         assertThat(nextSeq).isEqualTo(11L);
@@ -125,6 +129,19 @@ class OperationStoreIT extends IntegrationTestBase {
         assertThat(operations.append(document, pending(batch))).hasSize(500);
         assertNoGapsInSequence(document, 500);
     }
+
+    // ------------------------------------------------------------------
+    // Replica identifiers belong to somebody (CP12, completed)
+    // ------------------------------------------------------------------
+
+    private String newUser(String name) {
+        String id = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
+            id, name, "#4C5FD5");
+        return id;
+    }
+
+
 
     private void assertNoGapsInSequence(UUID document, int expectedCount) {
         Integer count = jdbc.queryForObject(

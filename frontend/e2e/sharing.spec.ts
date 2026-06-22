@@ -1,5 +1,4 @@
-import { expect, test } from '@playwright/test'
-import { APP, joinAs, typeInto } from './helpers'
+import { expect, test, APP, joinAs, typeInto } from './helpers'
 
 /**
  * Sharing a document (CP21) in a real browser.
@@ -16,14 +15,35 @@ import { APP, joinAs, typeInto } from './helpers'
  * mechanism under examination here.
  */
 
-/** A fresh user and their own (private) document. */
+/**
+ * A fresh user and their own (private) document.
+ *
+ * The document is created **explicitly**, by clicking "New document", rather than by relying on
+ * the automatic creation an empty list triggers. That reliance is why these scenarios never passed:
+ * `freshDocument` in `helpers.ts` deliberately flips its documents to `link` visibility — it exists
+ * for the convergence scenarios, which are not about access — so by the time this file runs, the
+ * list a brand-new user sees is full of them. The workspace then opens `list[0]`, which belongs to
+ * somebody else, and Anna is not its owner, so the Share panel never appears.
+ *
+ * Nobody noticed because this whole file was absent from the `e2e` script and therefore from CI.
+ */
 async function ownerWithDocument(browser: Parameters<typeof joinAs>[0], name: string) {
   const context = await browser.newContext()
   const page = await context.newPage()
   await page.goto(APP)
   await page.getByPlaceholder('Your name').fill(name)
   await page.getByRole('button', { name: 'Get started' }).click()
-  // An empty document list ends with the first one being created — and since CP21 it is private.
+  await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
+
+  // Ours, and private — which is what every scenario in this file is about.
+  //
+  // Waited on by the ADDRESS, because that is the only signal that says the new document is the
+  // open one: creating from the sidebar pushes `?doc=<id>`, while the automatic creation on an
+  // empty list does not touch the address at all. Waiting on something already true — the absence
+  // of a role badge, say, which is also absent while somebody else's document is open — returns
+  // immediately and hands the next line the wrong document.
+  await page.getByRole('button', { name: '+ New document' }).click()
+  await page.waitForURL(/[?&]doc=/, { timeout : 15_000 })
   await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
   return page
 }
@@ -32,7 +52,7 @@ test('an invitation lets somebody in with exactly the role it carries', async ({
   const anna = await ownerWithDocument(browser, 'Anna')
   await typeInto(anna, "Anna's text. ")
 
-  await anna.getByRole('button', { name: 'Share' }).click()
+  await anna.getByRole('button', { name: 'Share', exact: true }).click()
   const panel = anna.getByRole('dialog', { name: 'Share this document' })
   await expect(panel).toBeVisible()
 
@@ -83,7 +103,7 @@ test('without an invitation the address alone lets nobody in', async ({ browser 
 test('raising a role takes effect without a reload', async ({ browser }) => {
   const anna = await ownerWithDocument(browser, 'Anna')
 
-  await anna.getByRole('button', { name: 'Share' }).click()
+  await anna.getByRole('button', { name: 'Share', exact: true }).click()
   const panel = anna.getByRole('dialog', { name: 'Share this document' })
   await panel.getByRole('combobox').first().selectOption('viewer')
   await panel.getByRole('button', { name: 'Create link' }).click()
@@ -102,7 +122,7 @@ test('raising a role takes effect without a reload', async ({ browser }) => {
   // Anna raises his role. This is the thing the README listed as open: the role arrived once,
   // with the initial state, so granting permissions did NOTHING until a reload — which is to
   // say a working feature looked broken.
-  await anna.getByRole('button', { name: 'Share' }).click()
+  await anna.getByRole('button', { name: 'Share', exact: true }).click()
   const reopened = anna.getByRole('dialog', { name: 'Share this document' })
   const member = reopened.locator('.share-list li', { hasText: 'Bartek' })
   await member.getByRole('combobox').selectOption('editor')

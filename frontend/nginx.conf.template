@@ -3,7 +3,7 @@
 # ## Why this changed
 #
 # The previous version served static files only and said so deliberately: "traffic to the API
-# and the WebSocket goes from the browser STRAIGHT to :8080, so the configuration matches what
+# and the WebSocket goes from the browser STRAIGHT to:8080, so the configuration matches what
 # the client code shows instead of hiding the backend address in a layer the code knows nothing
 # about." That reasoning is good and it held for exactly as long as everything ran on one
 # machine over plain HTTP.
@@ -67,9 +67,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Longer than the STOMP heartbeat interval (10 s, ADR-0002) by a wide margin. nginx
+        # Longer than the STOMP heartbeat interval (10 s, the transport decision) by a wide margin. nginx
         # closes an idle proxied connection after 60 s by default, and a WebSocket carrying
-        # nothing but heartbeats looks idle to it in exactly the way ADR-0002 warns about for
+        # nothing but heartbeats looks idle to it in exactly the way the transport decision warns about for
         # intermediaries generally — this is that intermediary.
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;

@@ -6,7 +6,7 @@ import type { Op } from '../crdt/types'
 /**
  * The bridge between CodeMirror and the CRDT.
  *
- * ADR-0006 sets the boundary: **the CRDT is the source of truth, CodeMirror is a projection.**
+ * The editor-layer decision sets the boundary: **the CRDT is the source of truth, CodeMirror is a projection.**
  * Every local change follows the path `CM -> CRDT operation -> merge -> back to CM`, never "change
  * CM and separately the CRDT". This file is the only place the two models meet — deliberately, so
  * that divergence has exactly one possible source.
@@ -24,7 +24,7 @@ import type { Op } from '../crdt/types'
 /**
  * The largest number of characters one insert operation may carry (CP28).
  *
- * 8192 characters is at most 32 KiB of UTF-8, half the frame limit from ADR-0002 — the same
+ * 8192 characters is at most 32 KiB of UTF-8, half the frame limit from the transport decision — the same
  * margin the broadcast and resynchronisation paths use on the server, and for the same reason:
  * the operation is not the whole frame. Around it come the JSON envelope, the STOMP headers and
  * whatever the broker prepends, and budgeting to the exact limit means discovering their size in
@@ -60,7 +60,7 @@ export function changesToOps(
       //
       // Typing produces one character at a time and this loop runs once. Pasting does not: a
       // pasted chapter is a single change of tens of kilobytes, and as a single operation it
-      // would exceed the 64 KiB frame limit from ADR-0002 — in both directions. On the way out
+      // would exceed the 64 KiB frame limit from the transport decision — in both directions. On the way out
       // the send fails; on the way back, a client resynchronising receives a frame it cannot
       // accept and stalls silently, which is the failure CP8 already found once.
       //

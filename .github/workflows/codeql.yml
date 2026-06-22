@@ -3,7 +3,7 @@ name: CodeQL
 # Why a scanner in a project that argues against dependencies:
 #
 # Three access-control holes shipped in this repository and every one was found by a person
-# reading code (ADR-0012). That is the failure plan v3 is about — not carelessness, but relying
+# reading code. That is the failure plan v3 is about — not carelessness, but relying
 # on somebody noticing. A scanner notices a different class of thing than a reviewer does, and
 # it notices it every time.
 #
@@ -21,10 +21,23 @@ on:
     # clean in January can be flagged in March without a line of it changing.
     - cron: '0 4 * * 1'
 
+# The same rule ci.yml has and this file did not: a new push to a branch cancels the previous
+# analysis. CodeQL builds the whole reactor before it can query anything, so two runs of a
+# superseded commit are minutes of runner spent on an answer nobody will read.
+#
+# `cancel-in-progress` is NOT set on the scheduled run: the group key includes github.ref, and the
+# weekly cron and a push to main share `refs/heads/main`, so an unqualified setting would let a
+# push cancel the weekly sweep that exists precisely to re-examine code nobody is touching.
+# github.event_name in the key keeps the two apart.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: analyze — ${{ matrix.language }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60 # the java leg builds the whole reactor before it can query it
     permissions:
       security-events: write
       contents: read

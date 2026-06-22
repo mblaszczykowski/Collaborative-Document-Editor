@@ -14,8 +14,8 @@ import org.springframework.stereotype.Component;
  * Telling the other instances that somebody's access to a document has changed.
  *
  * <h2>The one place in this system where eventual consistency is not good enough</h2>
- * Everything else here is built on the opposite assumption. ADR-0001 chooses a CRDT precisely so
- * that replicas may disagree for a while and still converge; ADR-0004 makes the cluster bus
+ * Everything else here is built on the opposite assumption. The CRDT decision chooses a CRDT precisely so
+ * that replicas may disagree for a while and still converge; the cluster design makes the cluster bus
  * <b>deliberately unreliable</b>, because a dropped operation is a latency problem rather than a
  * correctness problem. That reasoning is sound, and it does not extend here.
  *
@@ -40,7 +40,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>Making it reliable would mean a durable queue and acknowledgements from every instance, which
  * is a large amount of machinery to shorten a five-second window that already has a floor. That
- * would be the mirror of the mistake ADR-0011 names: reaching for a mechanism because it is
+ * would be the mirror of the mistake the comment split names: reaching for a mechanism because it is
  * available rather than because the problem needs it.
  *
  * <h2>Separate channel, separate class</h2>
@@ -59,13 +59,14 @@ public class PermissionInvalidationBus implements MessageListener {
     public static final String CHANNEL = "collabedit:permissions:invalidate";
 
     /** Messages from this instance are already applied locally; pub/sub does not filter them. */
-    private final String instanceId = UUID.randomUUID().toString();
+    private final String instanceId;
 
     private final StringRedisTemplate redis;
     private volatile Consumer<UUID> handler = documentId -> { };
 
-    public PermissionInvalidationBus(StringRedisTemplate redis) {
+    public PermissionInvalidationBus(StringRedisTemplate redis, InstanceIdentity identity) {
         this.redis = redis;
+        this.instanceId = identity.id();
     }
 
     /** This instance's identifier, used to filter out its own messages. */

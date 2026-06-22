@@ -269,7 +269,7 @@ class SuggestionIT extends IntegrationTestBase {
         var after = suggestions.openFor(document).getFirst();
         assertThat(after.range().from())
             .as("the proposal is anchored to characters, not to positions — the same principle "
-                + "as cursors (ADR-0006) and marks (ADR-0010)")
+                + "as cursors and marks")
             .isEqualTo(12);
         assertThat(UUID.fromString(id)).isEqualTo(after.id());
 
@@ -300,7 +300,13 @@ class SuggestionIT extends IntegrationTestBase {
             anna.token(), null).statusCode())
             .as("the second decision must not re-open a settled one — two editors pressing at "
                 + "the same moment is the ordinary case, not the exotic one")
-            .isEqualTo(404);
+            // 409, not 404, and the change is the point rather than a cosmetic renumbering.
+            // "Already decided" and "no such proposal" used to be the same answer, because
+            // SuggestionService.resolve returned one boolean for both — and they mean opposite
+            // things on screen: one says the list is stale in a way re-reading fixes, the other
+            // says the link is wrong. CommentController answers 409 for the same situation one
+            // package over, which is now the convention everywhere.
+                .isEqualTo(409);
         assertThat(documents.textOf(document)).isEqualTo("The cat sat on the mat");
     }
 

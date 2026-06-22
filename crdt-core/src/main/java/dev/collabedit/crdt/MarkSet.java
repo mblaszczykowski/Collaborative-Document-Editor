@@ -46,11 +46,21 @@ import java.util.TreeSet;
  * incrementally: each range enters and leaves exactly once. The winner for a type is read off the
  * front of a sorted set, and there is a fixed handful of types ({@link MarkTypes}), so the
  * per-segment cost does not grow with the number of marks.
+ *
+ * <p><b>That paragraph is true of {@link #spans} and NOT of {@link #placementsOf}</b>, which is
+ * still {@code O(additions × removals)} for one type — and the heading above implies the quadratic
+ * path is gone from the file. It is not; it is gone from the path called on every keystroke. The
+ * other one answers "where is thread X" for the comments and suggestions panels, so it runs per
+ * request, over the marks of a single type, and the counts there are tens rather than thousands.
+ * Left alone deliberately: making it asymptotically better needs an interval structure, which is
+ * more machinery than the measurement justifies. Said out loud rather than left for a reader to
+ * discover, because a heading claiming a complexity the file only mostly has is the same kind of
+ * false comfort CP20 removed.
  */
 public final class MarkSet {
 
     /**
-     * Operacje znacznikowe, kluczowane identyfikatorem.
+     * The mark operations, keyed by their own identifier.
      *
      * <p>{@link LinkedHashMap} rather than a plain map, for repeatable iteration — the result does
      * not depend on it (the resolution order is explicit), but a test that fails one run in ten is
@@ -58,8 +68,24 @@ public final class MarkSet {
      */
     private final Map<Id, Op> operations = new LinkedHashMap<>();
 
-    /** A resolved mark over a segment of visible text {@code [from, to)}. */
+    /**
+     * A resolved mark over a segment of visible text {@code [from, to)}.
+     *
+     * <p>The map is copied on construction. It used to be handed out as the very
+     * {@link LinkedHashMap} the sweep built, so a caller could mutate a result the document had
+     * just computed — and {@code spans} returned {@code List.of()} when there were no marks and a
+     * live {@code ArrayList} otherwise, which is an API whose mutability depends on the answer.
+     * Both are now immutable in both cases; the copy is per segment rather than per character and
+     * does not show up next to the sweep itself.
+     */
     public record Span(int from, int to, Map<String, String> marks) {
+        public Span {
+            // NOT Map.copyOf: a mark without a value — bold, italic — resolves to a null value,
+            // and Map.copyOf rejects nulls with an NPE from inside ImmutableCollections. The
+            // nullable value is deliberate (it is what distinguishes decoration from a link or a
+            // comment thread), so the copy has to be one that tolerates it.
+            marks = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(marks));
+        }
     }
 
     /**
@@ -106,11 +132,112 @@ public final class MarkSet {
     }
 
     // ------------------------------------------------------------------
-    // Wyliczanie formatowania
+    // Resolving the formatting
     // ------------------------------------------------------------------
 
     /** An operation with its range resolved into visible coordinates. */
     private record Resolved(Op op, String type, String value, boolean adding, int from, int to) {
+    }
+
+    /** Where one mark ends up, in visible coordinates. Half-open, like every range here. */
+    public record Placement(int from, int to) {
+    }
+
+    /**
+     * Where each <b>distinct value</b> of one mark type currently sits — ignoring which of them
+     * wins the render.
+     *
+     * <h2>Why this exists next to {@link #spans}</h2>
+     * {@link #spans} answers "what should this segment of text look like", and for that exactly one
+     * value per type can win: text is either bold or it is not. For {@code bold} the value is
+     * decoration and the question is the right one.
+     *
+     * <p>For {@code comment}, {@code suggest-insert} and {@code suggest-delete} the value is an
+     * <b>identity</b>, and two of them can legitimately cover the same characters — two people
+     * commenting on one sentence is the ordinary case, not the exotic one. Reading those through
+     * {@code spans} loses every value but the newest, and the callers that did it answered two
+     * questions wrongly:
+     *
+     * <ul>
+     *   <li>a comment thread whose text was entirely present reported as <b>detached</b>, because
+     *       a later overlapping thread had won its segments — and detached is the presentation
+     *       reserved for a thread whose text was deleted;</li>
+     *   <li>a suggested deletion resolved to the sub-range it happened to win, so accepting it
+     *       deleted less than was proposed and still answered 204.</li>
+     * </ul>
+     *
+     * <p>One sweep for the whole type rather than one per value, because the callers ask about
+     * every open thread or proposal at once and {@link #resolveAll} is the expensive half.
+     *
+     * <p>A removal of the same type that outranks a mark and covers it <b>entirely</b> takes it
+     * away — that is an editor deleting somebody's comment anchor, which should read as detached.
+     * A partial removal leaves the mark in place: the conversation is still about that text.
+     *
+     * <h2>Why the answer is a union rather than one operation's range</h2>
+     * One value can come from more than one surviving operation: a suggestion re-applied over a
+     * range that grew, a comment anchor extended in a second gesture. Reporting only the
+     * highest-priority of them narrows the answer, and the narrowing is not cosmetic in either
+     * caller — accepting a suggested deletion would delete part of what was proposed and still
+     * report success, which is the same failure this method was written to fix, one level down.
+     *
+     * <p>The union is min-from to max-to rather than a list of ranges, which matches what the
+     * callers do with it (delete it, jump to it) and what the code this replaced produced. The
+     * simplification it buys is worth stating precisely rather than as "in practice": a gap
+     * between two operations of one identity is reported as covered, so accepting a suggestion
+     * would delete across it.
+     *
+     * <p>That is unreachable today and only because of an invariant held ELSEWHERE:
+     * {@code SuggestionService} emits exactly one {@code AddMark} per suggestion and the client
+     * emits none, so one identity never has two operations to span. The invariant is not enforced
+     * here and not enforced on the wire — {@code DocumentAccessInterceptor} restricts mark types
+     * only for the {@code commenter} role, so a client with editor rights could send a second
+     * {@code suggest-delete} carrying an existing identity. It buys no privilege it does not
+     * already have (accepting a suggestion needs editor rights, and an editor can delete anything
+     * directly), which is why this stays a documented limit rather than a per-value list of
+     * ranges threaded through both callers. If that invariant ever moves, this is where it lands.
+     *
+     * <h2>What {@code RemoveMark} cannot express</h2>
+     * A removal carries a type but no value, so "remove this comment's anchor" is really "remove
+     * comment marks over this range". Two threads on exactly the same characters cannot be
+     * detached one at a time — removing either detaches both. Fixing that means a value on
+     * {@code RemoveMark}, which is a wire-format change; it is recorded here rather than pretended
+     * away, because the alternative is a reader assuming an identity-aware removal exists.
+     *
+     * @param type marks with no value are skipped; there is no identity to key them on
+     */
+    public Map<String, Placement> placementsOf(BlockList blocks, String type) {
+        List<Resolved> resolved = resolveAll(blocks);
+        List<Resolved> additions = new ArrayList<>();
+        List<Resolved> removals = new ArrayList<>();
+        for (Resolved entry : resolved) {
+            if (!entry.type().equals(type)) {
+                continue;
+            }
+            if (!entry.adding()) {
+                removals.add(entry);
+            } else if (entry.value() != null) {
+                additions.add(entry);
+            }
+        }
+
+        Map<String, Placement> placements = new LinkedHashMap<>();
+        for (Resolved mark : additions) {
+            boolean removed = false;
+            for (Resolved removal : removals) {
+                if (removal.from() <= mark.from() && removal.to() >= mark.to()
+                    && BY_PRIORITY_DESCENDING.compare(removal, mark) < 0) {
+                    removed = true;
+                    break;
+                }
+            }
+            if (removed) {
+                continue;
+            }
+            placements.merge(mark.value(), new Placement(mark.from(), mark.to()),
+                (existing, added) -> new Placement(Math.min(existing.from(), added.from()),
+                    Math.max(existing.to(), added.to())));
+        }
+        return placements;
     }
 
     /**
@@ -155,6 +282,8 @@ public final class MarkSet {
         List<Span> spans = new ArrayList<>();
         List<Integer> points = new ArrayList<>(boundaries);
         for (int i = 0; i + 1 < points.size(); i++) {
+            // Strictly increasing: `points` is drained from a TreeSet, so `from < to` always
+            // holds and the guard that used to stand below the two updates was unreachable.
             int from = points.get(i);
             int to = points.get(i + 1);
 
@@ -176,15 +305,12 @@ public final class MarkSet {
                     .add(starting);
             }
 
-            if (from >= to) {
-                continue;
-            }
             Map<String, String> marks = winnersOf(activeByType);
             if (!marks.isEmpty()) {
                 spans.add(new Span(from, to, marks));
             }
         }
-        return mergeAdjacent(spans);
+        return List.copyOf(mergeAdjacent(spans));
     }
 
     /**
@@ -275,7 +401,7 @@ public final class MarkSet {
                     value = null;
                     adding = false;
                 }
-                default -> throw new IllegalStateException("nieznacznikowa operacja w zbiorze");
+                default -> throw new IllegalStateException("this is not a mark operation: " + op);
             }
 
             Integer from = position(start, blocks);

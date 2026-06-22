@@ -14,7 +14,8 @@
  * (SuggestionIT), and this is only about not inviting a gesture that ends in a rejected request.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { api, type Suggestion } from '../api'
+import { ApiError, api, type Suggestion } from '../api'
+import { useDebouncedValue } from './useDebouncedValue'
 
 export function SuggestionsPanel(props: {
   documentId: string
@@ -38,21 +39,40 @@ export function SuggestionsPanel(props: {
     setSuggestions(await api.listSuggestions(documentId))
   }, [documentId])
 
+  // Debounced, for the same reason as the other two panels: `revision` changes on every keystroke.
+  const settledRevision = useDebouncedValue(revision)
   useEffect(() => {
-    void reload()
-  }, [reload, revision])
+    // Caught, like the other panels. A 404 here is the document being deleted or access being
+    // revoked underneath an open panel, which the workspace already reports; anything else is a
+    // defect and belongs in the console rather than in an unhandled rejection.
+    reload().catch((error: unknown) => {
+      if (error instanceof ApiError && error.status === 404) return
+      console.error('could not load the suggestions', error)
+    })
+  }, [reload, settledRevision])
 
-  async function run(action: () => Promise<void>) {
+  /**
+   * Runs one of the panel's gestures, and says whether it worked.
+   *
+   * The return value is the fix for a real loss of work: the caller used to write
+   * `void run(...).then(() => setDraft(''))`, and since `run` swallows the error, `.then` fired
+   * whatever happened. So a proposal the server refused cleared the user's text AND told them it
+   * had failed — the interface taking the one copy of the words it had just said it could not
+   * send.
+   */
+  async function run(action: () => Promise<void>): Promise<boolean> {
     setBusy(true)
     setFailed(null)
     try {
       await action()
       await reload()
+      return true
     } catch {
       // The one failure worth naming: the text a proposal was about is gone, deleted by
       // somebody editing while the proposal was being written. The server answers 409 and says
       // so rather than inventing a place to put it.
       setFailed('That text is no longer there — somebody changed it while you were writing.')
+      return false
     } finally {
       setBusy(false)
     }
@@ -80,7 +100,11 @@ export function SuggestionsPanel(props: {
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && draft !== '') {
-                  void run(() => props.onProposeInsertion(draft)).then(() => setDraft(''))
+                  // Cleared on SUCCESS only. See `run` — the previous `.then` ran unconditionally,
+                  // so a refused proposal took the user's text with it.
+                  void run(() => props.onProposeInsertion(draft)).then((sent) => {
+                    if (sent) setDraft('')
+                  })
                 }
               }}
             />

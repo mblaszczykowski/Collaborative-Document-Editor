@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
  * typed, it did not for you" — that is, the same gesture produces a different document depending on
  * who performed it.
  *
- * <p>ADR-0010 claimed the table was guarded by "a separate unit test on both sides". A review found
+ * <p>The mark layer claimed the table was guarded by "a separate unit test on both sides". A review found
  * that no such test existed <b>on either side</b> — the documentation described a safeguard that
  * did not exist. This file and its twin {@code markTypes.test.ts} read the same JSON file, so
  * changing one side fails that side's tests.
@@ -55,6 +55,11 @@ class MarkTypesConformanceTest {
         assertThat(expanding)
             .as("an empty list of expanding types would let any regression through")
             .isNotEmpty();
+        assertThat(notExpanding)
+            .as("an empty list of non-expanding types would let any regression through — the "
+                + "guard above existed for the other list only, and the TypeScript twin checked "
+                + "both, so the two sides disagreed about how carefully to read the same file")
+            .isNotEmpty();
 
         for (String type : expanding) {
             assertThat(MarkTypes.expandsAtEnd(type))
@@ -74,5 +79,54 @@ class MarkTypesConformanceTest {
             .as("an unknown type expands — a newer client would change the look of somebody "
                 + "else's text")
             .isFalse();
+    }
+
+    /**
+     * The table has to be COMPLETE, not merely consistent.
+     *
+     * <p>The assertions above walk the file and check Java agrees with each entry. Nothing walked
+     * the other way, so a thirteenth constant added to {@link MarkTypes} and forgotten in
+     * {@code mark-types.json} left both suites green — and the client, which reads only the table,
+     * would never learn the type exists. The failure is the exact one this file was written to
+     * prevent, arriving through the one direction it did not check: the same gesture producing a
+     * different document depending on who made it.
+     *
+     * <p>Reflection rather than a hand-maintained list, deliberately. A list here would be a third
+     * copy of the table, and a third copy is a third thing to forget.
+     */
+    @Test
+    @DisplayName("every declared mark type appears in the shared table")
+    void tableCoversEveryDeclaredType() throws IOException {
+        JsonNode root = OpCodec.mapper().readTree(Files.readString(TABLE));
+        List<String> listed = new ArrayList<>(stringsAt(root, "expandsAtEnd"));
+        listed.addAll(stringsAt(root, "doesNotExpandAtEnd"));
+
+        List<String> declared = new ArrayList<>();
+        for (java.lang.reflect.Field field : MarkTypes.class.getDeclaredFields()) {
+            int modifiers = field.getModifiers();
+            if (field.getType() == String.class
+                && java.lang.reflect.Modifier.isPublic(modifiers)
+                && java.lang.reflect.Modifier.isStatic(modifiers)) {
+                try {
+                    declared.add((String) field.get(null));
+                } catch (IllegalAccessException e) {
+                    throw new IllegalStateException("cannot read " + field.getName(), e);
+                }
+            }
+        }
+
+        assertThat(declared)
+            .as("no mark type constants were found; the scan is broken, not the code")
+            .isNotEmpty();
+        assertThat(listed)
+            .as("a mark type is declared in MarkTypes and missing from the shared table. The "
+                + "client reads ONLY the table, so it does not know this type exists — and the "
+                + "expansion behaviour of the same gesture then depends on who performed it, "
+                + "which is the divergence this file exists to prevent.")
+            .containsAll(declared);
+        assertThat(declared)
+            .as("the shared table lists a type MarkTypes does not declare — the two have drifted "
+                + "the other way")
+            .containsAll(listed);
     }
 }

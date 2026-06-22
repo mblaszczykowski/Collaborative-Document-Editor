@@ -32,9 +32,16 @@ services:
       # 'role "collabedit" does not exist' — a confusing message, because the role does exist in
       # the container. Found on the first end-to-end run. Shifting the port is cheaper than
       # explaining this to everyone who clones the repository.
-      - "55432:5432"
+      #
+      # BOUND TO 127.0.0.1, not to every interface. "55432:5432" publishes on 0.0.0.0, so the
+      # database — with the password three lines above, in the repository, in plain text — is
+      # reachable from anything that can route to this machine: the coffee shop's wifi, the
+      # conference network, a container on the same host. The comment on that password says the
+      # environment "never leaves the compose network", and that was true of the value and false of
+      # the port. Local development is unaffected: the application connects to localhost.
+      - "127.0.0.1:55432:5432"
     command:
-      # Log slow queries above 200 ms. The value is chosen for ADR-0003: reading "the document's
+      # Log slow queries above 200 ms. The value is chosen for the operation-log decision: reading "the document's
       # state at time T" (a snapshot plus a tail replay) is the heaviest query in the system, and
       # I want the log to show when it starts crossing that threshold rather than finding out
       # from the CP8 benchmarks.
@@ -61,19 +68,33 @@ services:
     image: redis:7-alpine
     container_name: collabedit-redis
     ports:
-      # As above — the port is shifted so it does not collide with a local installation.
-      - "56379:6379"
+      # As above — the port is shifted so it does not collide with a local installation, and bound
+      # to the loopback address rather than to every interface.
+      #
+      # This one matters more than Postgres, and it is worth being precise about why. Redis here has
+      # NO requirepass, and the cluster messages on it are unauthenticated by design (makes
+      # this bus best-effort and puts the authority in Postgres). Published on 0.0.0.0 that is an
+      # open pub/sub bus: anything on the network could publish onto collabedit:doc:*:ops and have
+      # every instance merge the operations, or onto collabedit:permissions:invalidate, or simply
+      # subscribe and read every document's edits as they happen. None of that needs a password,
+      # because there is nothing to guess.
+      #
+      # Binding to 127.0.0.1 is the fix that fits this file's purpose — it is the local development
+      # environment, and the application, the tests and redis-cli all reach it through localhost.
+      # A deployment that genuinely needs Redis reachable off-box needs requirepass and a network
+      # policy, which is a different file and a different conversation.
+      - "127.0.0.1:56379:6379"
     command:
       - "redis-server"
       # NO persistence (--save "") deliberately. Redis is purely the unreliable fast path for
-      # pub/sub here (ADR-0004) — it holds nothing whose loss would matter. The source of truth
+      # pub/sub here — it holds nothing whose loss would matter. The source of truth
       # is Postgres. Enabling AOF/RDB would give a false sense that this data is important.
       - "--save"
       - ""
       - "--appendonly"
       - "no"
       # A memory limit — when full, Redis rejects writes rather than growing without bound. That
-      # is EXACTLY the message-loss scenario the anti-entropy from ADR-0004 exists to repair, so I
+      # is EXACTLY the message-loss scenario the anti-entropy from the cluster design exists to repair, so I
       # want to be able to induce it in the chaos test (CP8).
       - "--maxmemory"
       - "256mb"
@@ -118,7 +139,21 @@ services:
       # that, this line could be omitted and you would get a server signing tokens with a key
       # known to everyone who read the repository. A public instance must take this value from
       # the environment, never from a file in the image.
-      COLLABEDIT_AUTH_SECRET: local-development-secret-not-for-production
+      #
+      # AND THE PREVIOUS LINE MADE THAT IMPOSSIBLE. It read
+      #
+      # COLLABEDIT_AUTH_SECRET: local-development-secret-not-for-production
+      #
+      # which Compose treats as a literal: an environment variable of the same name on the host
+      # does NOT override a value written in the file. So the sentence above told the reader to
+      # supply the secret from the environment, and the line beneath it silently ignored them —
+      # every deployment of this compose file signed tokens with a key printed in the repository,
+      # including the deployments that had done exactly what the comment asked.
+      #
+      # `${VAR:-default}` is what makes the instruction true: the host's value wins when it is set,
+      # and the local default applies when it is not, so `docker compose --profile app up` still
+      # works with nothing configured.
+      COLLABEDIT_AUTH_SECRET: ${COLLABEDIT_AUTH_SECRET:-local-development-secret-not-for-production}
     ports:
       - "8080:8080"
     depends_on:
@@ -183,6 +218,12 @@ services:
     volumes:
       - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
+    # ops/prometheus.yml scrapes the app on the HOST (see the comment there for why), through
+    # host.docker.internal. Docker Desktop provides that name automatically; plain Linux Docker
+    # does not, so without this line scraping simply resolves to nothing and every panel in the
+    # Grafana dashboard is empty — with no error anywhere to say why.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "9090:9090"
 

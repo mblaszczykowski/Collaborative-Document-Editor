@@ -1,5 +1,4 @@
-import { expect, test } from '@playwright/test'
-import { freshDocument, joinAs, typeInto } from './helpers'
+import { expect, test, freshDocument, joinAs, typeInto } from './helpers'
 
 /**
  * Comments (CP14) on real browsers.
@@ -42,7 +41,7 @@ test('a comment created by one person is visible to the other', async ({
 
   await expect(ania.locator('.comment-quote')).toContainText('a sentence', { timeout: 10_000 })
   await ania.locator('.comment-draft').fill('Is this clear?')
-  await ania.getByRole('button', { name: 'Comment' }).click()
+  await ania.getByRole('button', { name: 'Comment', exact: true }).click()
 
   await expect(ania.locator('.comment-thread')).toContainText('Is this clear?', {
     timeout: 10_000,
@@ -74,8 +73,8 @@ test('a thread stays after its anchored text is deleted and is marked detached',
   await openCommentsPanel(page)
   await selectFromStart(page, 8)
   await page.locator('.comment-draft').fill('Does this stay?')
-  await page.getByRole('button', { name: 'Comment' }).click()
-  await expect(page.locator('.comment-thread')).toContainText('Does this stay?', { timeout: 10_000 })
+  await page.getByRole('button', { name: 'Comment', exact: true }).click()
+  await expect(page.locator('.comment-thread')).toContainText('Does this stay?', { timeout : 10_000 })
 
   // Delete the anchored fragment.
   await selectFromStart(page, 8)
@@ -99,10 +98,10 @@ test('resolving a thread hides it from the list, but the conversation stays', as
   await openCommentsPanel(page)
   await selectFromStart(page, 4)
   await page.locator('.comment-draft').fill('To be resolved')
-  await page.getByRole('button', { name: 'Comment' }).click()
+  await page.getByRole('button', { name: 'Comment', exact: true }).click()
   await expect(page.locator('.comment-thread')).toContainText('To be resolved', { timeout: 10_000 })
 
-  await page.getByRole('button', { name: 'Resolve' }).click()
+  await page.getByRole('button', { name: 'Resolve', exact: true }).click()
   await expect(page.locator('.comment-thread')).toHaveCount(0, { timeout: 10_000 })
 
   // ...but the conversation has not disappeared — it is behind the toggle.

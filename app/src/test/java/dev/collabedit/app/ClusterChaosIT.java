@@ -16,7 +16,7 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * The cluster chaos test (CP8) — verification of the strongest claim in ADR-0004.
+ * The cluster chaos test (CP8) — verification of the strongest claim in the cluster design.
  *
  * <p>The claim is: <b>a lost Redis message is not a correctness problem, only a repair-latency
  * one.</b> That is a nice sentence, and until it is checked it remains a nice sentence.
@@ -162,7 +162,7 @@ class ClusterChaosIT extends IntegrationTestBase {
 
             // Once Redis is back, the second instance will not receive the lost messages — those
             // are gone for good. The ANTI-ENTROPY SWEEP is what has to repair it, pulling the
-            // missing operations from the log (ADR-0004). That is the whole thesis of this
+            // missing operations from the log. That is the whole thesis of this
             // architecture.
             onSecond.awaitCondition(() -> onSecond.text().contains("during the outage"),
                 PATIENCE, "anti-entropy repairs the divergence after the Redis outage");

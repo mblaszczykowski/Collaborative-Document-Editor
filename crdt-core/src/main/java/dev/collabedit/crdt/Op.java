@@ -4,12 +4,12 @@ import java.util.List;
 
 /**
  * A CRDT operation — the unit of change sent between replicas and written to the operation log
- * (ADR-0003, where {@code (doc_id, replica_id, lamport)} is the primary key, so every operation
+ * (where {@code (doc_id, replica_id, lamport)} is the primary key, so every operation
  * must have its own identifier).
  *
  * <p>Operations are <b>commutative</b> and <b>idempotent</b>: any order of application gives the
  * same result, and applying one twice changes nothing. That is the property the {@code convergence}
- * property test proves — and the only reason the architecture from ADR-0004 (every backend instance
+ * property test proves — and the only reason the architecture from the cluster design (every backend instance
  * a peer replica, unreliable broadcast) is safe.
  */
 public sealed interface Op permits Op.Insert, Op.Delete, Op.AddMark, Op.RemoveMark {
@@ -160,14 +160,8 @@ public sealed interface Op permits Op.Insert, Op.Delete, Op.AddMark, Op.RemoveMa
             }
         }
 
-        public boolean contains(Id id) {
-            return id.replicaId() == start.replicaId()
-                && id.lamport() >= start.lamport()
-                && id.lamport() < start.lamport() + length;
-        }
-
-        public Id endExclusive() {
-            return start.plus(length);
-        }
+        // contains(Id) and endExclusive used to sit here. Neither had a caller anywhere in the
+        // codebase or the tests: a deletion range is walked by RgaDocument, which needs the
+        // per-character identifiers rather than a membership test.
     }
 }

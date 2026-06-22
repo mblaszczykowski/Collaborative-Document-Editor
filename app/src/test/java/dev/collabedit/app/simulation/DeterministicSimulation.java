@@ -30,7 +30,7 @@ import java.util.Random;
  * </blockquote>
  *
  * <h2>What it does not do</h2>
- * This is a simulation of the design in ADR-0004, driven by the <b>real</b> merge algorithm from
+ * This is a simulation of the design in the cluster design, driven by the <b>real</b> merge algorithm from
  * {@code crdt-core}. It does not touch Postgres, Redis, Spring or a socket. So it can find a bug
  * in the distributed logic and cannot find a bug in the wiring — which is why
  * {@code ClusterChaosIT} stays exactly where it is. Replacing one with the other would be the

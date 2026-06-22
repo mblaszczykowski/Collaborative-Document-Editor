@@ -4,7 +4,7 @@ package dev.collabedit.crdt;
  * A place in the document pinned to a <b>character</b> rather than to a position.
  *
  * <h2>Why not an offset</h2>
- * The same reason cursors are character identifiers (ADR-0006): an offset stops pointing at the
+ * The same reason cursors are character identifiers: an offset stops pointing at the
  * same place as soon as somebody inserts text earlier on. An anchor moves with the text, because it
  * is attached to a character.
  *
@@ -36,7 +36,14 @@ package dev.collabedit.crdt;
 public record Anchor(Id charId, Side side) {
 
     public enum Side {
-        /** Just before the character. Text inserted directly before it ends up AFTER the anchor. */
+        /**
+         * Just before the character — the anchor sits at that character's own index, so it moves
+         * right along with it and text inserted directly before it ends up BEFORE the anchor.
+         *
+         * <p>(This line used to say AFTER, which contradicted both {@code MarkSet.position} and
+         * the paragraph in {@code RgaDocument.addMark} that depends on it — the one sentence
+         * inverted, on the class whose whole purpose is explaining that the two sides differ.)
+         */
         BEFORE,
         /** Just after the character. Text inserted directly after it ends up AFTER the anchor. */
         AFTER

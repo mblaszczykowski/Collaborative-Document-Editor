@@ -1,5 +1,7 @@
 package dev.collabedit.app.auth;
 
+import java.util.function.Predicate;
+
 /**
  * What an endpoint needs to be allowed to do — the vocabulary of {@link RequiresDocumentAccess}.
  *
@@ -32,9 +34,9 @@ public enum Capability {
     /** Changes who may do the above. Owner only. */
     MANAGE_ACCESS(Role::canManageAccess);
 
-    private final java.util.function.Predicate<Role> permitted;
+    private final Predicate<Role> permitted;
 
-    Capability(java.util.function.Predicate<Role> permitted) {
+    Capability(Predicate<Role> permitted) {
         this.permitted = permitted;
     }
 

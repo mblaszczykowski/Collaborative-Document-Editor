@@ -17,7 +17,7 @@ import { decodeSnapshot } from './snapshot'
 const DIRECTORY = join(__dirname, '..', '..', '..', 'conformance', 'snapshots')
 
 function fixture(): Uint8Array {
-  return new Uint8Array(readFileSync(join(DIRECTORY, 'document-v3.bin')))
+  return new Uint8Array(readFileSync(join(DIRECTORY, 'document-v5.bin')))
 }
 
 interface Expected {
@@ -26,7 +26,7 @@ interface Expected {
 }
 
 const expected = JSON.parse(
-  readFileSync(join(DIRECTORY, 'document-v3.expected.json'), 'utf8'),
+  readFileSync(join(DIRECTORY, 'document-v5.expected.json'), 'utf8'),
 ) as Expected
 
 describe('snapshot decoding', () => {
@@ -92,5 +92,78 @@ describe('snapshot decoding', () => {
 
   it('treats unreadable bytes as a cache miss rather than an error', async () => {
     expect(await decodeSnapshot(new Uint8Array([1, 2, 3, 4]))).toBeNull()
+  })
+
+  /**
+   * The one branch of the format the shared fixture cannot carry.
+   *
+   * A block split between the two halves of an emoji holds a lone surrogate, so the document's
+   * text is not a well-formed string — and writing it into `document-v5.expected.json` would
+   * corrupt it in exactly the way this fixture exists to detect. Java covers the round trip in
+   * `SnapshotCodecTest`; this covers the decoder, against bytes assembled to the spec in
+   * `SnapshotCodec`'s class javadoc rather than to whatever the decoder happens to do.
+   */
+  it('reads a block whose text is not well-formed UTF-16', async () => {
+    const parts: number[] = []
+    const int = (value: number) => {
+      parts.push((value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff)
+    }
+    const long = (value: number) => {
+      int(0)
+      int(value)
+    }
+    int(5) //                       formatVersion
+    long(3) //                      clock
+    int(0) //                       no version-vector entries
+    int(1) //                       one block
+    int(9)
+    long(0) //                      start = 9@0
+    parts.push(0) //                no origin
+    parts.push(0) //                not deleted
+    parts.push(1) //                has content
+    parts.push(0) //                ... and it is NOT well-formed
+    int(2) //                       two UTF-16 code units
+    parts.push(0xd8, 0x3d) //       a high surrogate, alone
+    parts.push(0x00, 0x78) //       'x'
+    int(0) //                       no marks
+    int(0) //                       no GC-watermark entries
+
+    const gzipped = new Uint8Array(
+      await new Response(
+        new Blob([new Uint8Array(parts) as BlobPart])
+          .stream()
+          .pipeThrough(new CompressionStream('gzip')),
+      ).arrayBuffer(),
+    )
+
+    const decoded = await decodeSnapshot(gzipped)
+    expect(decoded).not.toBeNull()
+    expect(decoded!.blocks).toHaveLength(1)
+    const text = decoded!.blocks[0].text
+    // Indexed by CODE UNIT, not by code point: spreading the string would iterate code points and
+    // is exactly the distinction under test here.
+    expect(Array.from({ length: text.length }, (_, i) => text.charCodeAt(i)))
+      .toEqual([0xd83d, 0x78])
+  })
+
+  /**
+   * A stream that is valid gzip but SHORT.
+   *
+   * The contract three paragraphs into `snapshot.ts` is that an unreadable snapshot returns `null`
+   * and the caller replays the log. The `try` only wrapped `gunzip`, so a truncated body — a cut
+   * response, a partial write — made `DataView.getInt32` throw `RangeError` straight out of a
+   * function documented never to throw. `SnapshotCodec.decode` catches `RuntimeException` for
+   * exactly this case; this side caught only the compression failure, which is the one the format
+   * can already describe.
+   */
+  it('returns null for a truncated snapshot rather than throwing', async () => {
+    const truncated = new Uint8Array(
+      await new Response(
+        new Blob([new Uint8Array([0, 0, 0, 5, 0, 0]) as BlobPart])
+          .stream()
+          .pipeThrough(new CompressionStream('gzip')),
+      ).arrayBuffer(),
+    )
+    await expect(decodeSnapshot(truncated)).resolves.toBeNull()
   })
 })

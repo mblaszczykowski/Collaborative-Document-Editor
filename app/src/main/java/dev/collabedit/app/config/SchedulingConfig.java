@@ -40,10 +40,20 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  *
  * <p>The heartbeat scheduler stays where it is, in {@code WebSocketConfig}, and is no longer
  * shared with anything: every {@code @Scheduled} method in this application names its pool
- * explicitly through {@code @Scheduled(scheduler = ...)}. A new periodic job that forgets to
- * name one fails to start rather than quietly landing on whichever pool wins the lookup, which
- * is the same reasoning that {@link dev.collabedit.app.auth.DocumentAccessGuard} applies to
- * authorization.
+ * explicitly through {@code @Scheduled(scheduler = ...)}.
+ *
+ * <p><b>A new periodic job that forgets to name a pool does NOT fail to start</b>, and this
+ * paragraph used to say it did. Spring resolves the attribute when it is present and otherwise
+ * binds whichever {@code TaskScheduler} the context offers — which is exactly the silent
+ * resolution that produced the arrangement described above, so claiming it now errors is claiming
+ * the original bug cannot recur. What actually enforces the rule is {@code SchedulingWiringTest},
+ * at BUILD time: it scans every {@code @Scheduled} method in the application and fails if one
+ * names no pool or names an unknown one. {@code SchedulingWiringTest} states this correctly and
+ * this file contradicted it.
+ *
+ * <p>That is the same shape of guarantee {@link dev.collabedit.app.auth.DocumentAccessGuard} gives
+ * for authorization, with one difference worth naming: the guard also refuses at RUNTIME, so
+ * forgetting is caught twice. Here there is one net, and it is the build.
  */
 @Configuration
 public class SchedulingConfig {

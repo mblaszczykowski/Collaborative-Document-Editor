@@ -5,7 +5,7 @@ package dev.collabedit.crdt;
  *
  * <p>{@code lamport} is a <b>Lamport clock</b> value, not a per-replica sequence counter. That
  * distinction is a correctness requirement rather than a matter of style — details, with a
- * counterexample, in {@code docs/crdt-design.md}, section 1. In short: RGA's insertion rule ("walk
+ * counterexample, in the README, "What the Lamport clock is actually for". In short: RGA's insertion rule ("walk
  * right while the elements you meet have a higher timestamp") is correct only when an element
  * created causally later is guaranteed to have a higher timestamp. A per-replica sequence counter
  * does not have that property.
@@ -17,7 +17,7 @@ package dev.collabedit.crdt;
  * <p>Natural order: {@code lamport} first, then {@code replicaId} as the tie-break. Ties are common
  * — two replicas working concurrently on the same state will generate the same {@code lamport}.
  * {@code replicaId} makes the order total without needing an arbiter, which is the entire point of
- * the choice in ADR-0001.
+ * the choice in the CRDT decision.
  */
 public record Id(int replicaId, long lamport) implements Comparable<Id> {
 
@@ -34,7 +34,7 @@ public record Id(int replicaId, long lamport) implements Comparable<Id> {
 
     /**
      * Whether this identifier and {@code other} come from the same replica and are consecutive
-     * clock values. Used when merging blocks (run-length) — see {@code docs/crdt-design.md},
+     * clock values. Used when merging blocks (run-length) — see the README,
      * section 3.
      */
     public boolean isDirectSuccessorOf(Id other) {

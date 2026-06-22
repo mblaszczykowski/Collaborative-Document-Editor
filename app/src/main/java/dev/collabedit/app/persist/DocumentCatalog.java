@@ -6,6 +6,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -16,7 +17,7 @@ import org.springframework.stereotype.Repository;
  * in-memory replicas — this catalog knows only what is needed to <b>render a list</b>. The split is
  * deliberate: listing a hundred documents should be one query rather than a hundred loaded CRDT
  * replicas. The {@code preview_text} column exists for exactly that and is a cache on the same
- * terms as snapshots (ADR-0003) — it may be discarded at any moment.
+ * terms as snapshots — it may be discarded at any moment.
  *
  * <h2>Why deletion is soft</h2>
  * {@code operations} has {@code ON DELETE CASCADE} on {@code doc_id}. A hard delete of a document
@@ -51,7 +52,37 @@ public class DocumentCatalog {
     private static final String SUMMARY_COLUMNS =
         "id, title, workspace_id, preview_text, updated_at";
 
-    private static final org.springframework.jdbc.core.RowMapper<DocumentSummary> SUMMARY =
+    /**
+     * Whether the caller can read the document — as SQL, so that a {@code LIMIT} applies to rows
+     * they can actually see.
+     *
+     * <h2>Why the rule is here as well as in PermissionService</h2>
+     * Every listing used to be "the N most recently updated documents ON THE INSTANCE", filtered
+     * for permission afterwards in Java. On an instance holding more than {@code LIST_LIMIT}
+     * recently updated documents, a user whose own documents were not in that global slice got an
+     * EMPTY list — and empty search results for a word that is in their own document. Silently, on
+     * the first screen of the product, and worse the busier the instance gets.
+     *
+     * <p>So the predicate has to be in the query. That duplicates the resolution order from
+     * {@code PermissionService.roleFrom}, and the duplication is pinned rather than trusted:
+     * {@code DocumentCatalogPermissionParityTest} generates ownership, membership and visibility
+     * combinations and fails if the two ever disagree.
+     *
+     * <p>The Java filter in {@code DocumentRestController} stays as well. This narrows the
+     * candidate set; that one remains the authority. So a mistake here can only ever show too
+     * FEW documents, never somebody else's.
+     *
+     * <p>Takes the caller's id three times.
+     */
+    private static final String READABLE_BY_CALLER =
+        "(d.owner_id = ? "
+            + " OR d.visibility = 'link' "
+            + " OR EXISTS (SELECT 1 FROM document_members dm "
+            + " WHERE dm.doc_id = d.id AND dm.user_id = ?) "
+            + " OR EXISTS (SELECT 1 FROM workspace_members wm "
+            + " WHERE wm.workspace_id = d.workspace_id AND wm.user_id = ?)) ";
+
+    private static final RowMapper<DocumentSummary> SUMMARY =
         (rs, rowNum) -> new DocumentSummary(
             UUID.fromString(rs.getString("id")),
             rs.getString("title"),
@@ -63,21 +94,26 @@ public class DocumentCatalog {
     // Reads
     // ------------------------------------------------------------------
 
-    /** The visible documents — that is, the ones not deleted. Most recently changed first. */
-    public List<DocumentSummary> list(UUID workspaceId, int limit) {
+    /** The caller's visible documents — the ones not deleted. Most recently changed first. */
+    public List<DocumentSummary> list(String callerId, UUID workspaceId, int limit) {
         if (workspaceId == null) {
-            return jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM documents "
-                + "WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?", SUMMARY, limit);
+            return jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM documents d "
+                + "WHERE d.deleted_at IS NULL AND " + READABLE_BY_CALLER
+                + "ORDER BY d.updated_at DESC LIMIT ?",
+                SUMMARY, callerId, callerId, callerId, limit);
         }
-        return jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM documents "
-            + "WHERE deleted_at IS NULL AND workspace_id = ? ORDER BY updated_at DESC LIMIT ?",
-            SUMMARY, workspaceId, limit);
+        return jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM documents d "
+            + "WHERE d.deleted_at IS NULL AND d.workspace_id = ? AND " + READABLE_BY_CALLER
+            + "ORDER BY d.updated_at DESC LIMIT ?",
+            SUMMARY, workspaceId, callerId, callerId, callerId, limit);
     }
 
     /** The bin — soft-deleted documents, available to restore. */
-    public List<DocumentSummary> listDeleted(int limit) {
-        return jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM documents "
-            + "WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT ?", SUMMARY, limit);
+    public List<DocumentSummary> listDeleted(String callerId, int limit) {
+        return jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM documents d "
+            + "WHERE d.deleted_at IS NOT NULL AND " + READABLE_BY_CALLER
+            + "ORDER BY d.deleted_at DESC LIMIT ?",
+            SUMMARY, callerId, callerId, callerId, limit);
     }
 
     public Optional<DocumentSummary> find(UUID documentId) {
@@ -112,19 +148,24 @@ public class DocumentCatalog {
      * actually type into a search box (quotes, {@code or}, {@code -}) and does not blow up on the
      * syntax, interpreting it as best it can instead.
      */
-    public List<DocumentSummary> search(String query, int limit) {
+    public List<DocumentSummary> search(String callerId, UUID workspaceId, String query, int limit) {
         return jdbc.query(
-            "SELECT " + SUMMARY_COLUMNS + " FROM documents "
-                + "WHERE deleted_at IS NULL "
-                + "AND (search_vector @@ websearch_to_tsquery('simple', ?) "
+            "SELECT " + SUMMARY_COLUMNS + " FROM documents d "
+                + "WHERE d.deleted_at IS NULL "
+                + "AND (d.search_vector @@ websearch_to_tsquery('simple', ?) "
                 // The title, separately, for two reasons that are both about staleness rather
                 // than about titles being special. A document that has never been snapshotted has
                 // no vector at all — a document created a second ago is exactly the one somebody
                 // is most likely to look for. And renaming does not rebuild the vector, so
                 // between a rename and the next snapshot the new title exists only here.
-                + "  OR to_tsvector('simple', title) @@ websearch_to_tsquery('simple', ?)) "
-                + "ORDER BY updated_at DESC LIMIT ?",
-            SUMMARY, query, query, limit);
+                + " OR to_tsvector('simple', d.title) @@ websearch_to_tsquery('simple', ?)) "
+                // Scoped to the workspace when one was asked for. The endpoint accepts `q` and
+                // `workspace` together and used to drop the second silently, so "search inside
+                // this workspace" searched every workspace and returned other people's results.
+                + "AND (CAST(? AS uuid) IS NULL OR d.workspace_id = CAST(? AS uuid)) "
+                + "AND " + READABLE_BY_CALLER
+                + "ORDER BY d.updated_at DESC LIMIT ?",
+            SUMMARY, query, query, workspaceId, workspaceId, callerId, callerId, callerId, limit);
     }
 
     // ------------------------------------------------------------------

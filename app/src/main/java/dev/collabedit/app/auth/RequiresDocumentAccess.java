@@ -32,8 +32,24 @@ public @interface RequiresDocumentAccess {
     /** What the endpoint needs to be permitted to do. */
     Capability value();
 
-    /** Name of the path variable carrying the identifier. */
-    String param() default "id";
+    /**
+     * Name of the path variable carrying the identifier.
+     *
+     * <h2>Why the default is {@code documentId}</h2>
+     * It used to be {@code "id"}, matching {@code DocumentRestController} and nothing else. Every
+     * other controller in the project spells the variable {@code {documentId}}, so <b>fifteen
+     * endpoints repeated {@code param = "documentId"}</b> to override a default that four used —
+     * and a default nobody wants is a default that will be got wrong.
+     *
+     * <p>Getting it wrong is invisible. {@link DocumentAccessGuard} looks the name up in the
+     * request's URI template variables, finds nothing, and answers 404: the endpoint is permanently
+     * unreachable for everyone, with no log line, no exception and no failing test — a mistake that
+     * looks exactly like "this document does not exist". Fail-closed is the right direction and
+     * silent is the wrong volume, so {@code EndpointAuthorizationArchitectureTest} now asserts that
+     * every declared {@code param} actually appears in that endpoint's combined class and method
+     * mapping.
+     */
+    String param() default "documentId";
 
     /** Which identifier {@link #param()} holds. */
     Source from() default Source.DOCUMENT;

@@ -1,6 +1,7 @@
 package dev.collabedit.crdt;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
 import java.util.List;
 import java.util.Map;
@@ -59,7 +60,7 @@ class MarkTest {
         Op.Insert base = ania.insert(0, "abcdef");
         bartek.apply(base);
 
-        // Ania pogrubia „bcde" (pozycje 1..5).
+        // Ania bolds "bcde" (positions 1..5).
         Op.AddMark bold = ania.addMark(1, 5, MarkTypes.BOLD, null);
 
         // Bartek — NOT having seen the bold yet — types "XY" into the middle of that range.
@@ -85,7 +86,7 @@ class MarkTest {
     void expandingMarkGrowsAtEnd() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
-        document.addMark(1, 3, MarkTypes.BOLD, null);   // „bc"
+        document.addMark(1, 3, MarkTypes.BOLD, null); // "bc"
 
         assertThat(marksAt(document, 2)).containsKey(MarkTypes.BOLD);
         assertThat(marksAt(document, 3)).doesNotContainKey(MarkTypes.BOLD);
@@ -118,7 +119,7 @@ class MarkTest {
     void markDoesNotGrowBackwards() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
-        document.addMark(2, 4, MarkTypes.BOLD, null);   // „cd"
+        document.addMark(2, 4, MarkTypes.BOLD, null); // "cd"
 
         document.insert(2, "X");   // immediately BEFORE the bold
 
@@ -151,11 +152,11 @@ class MarkTest {
 
         // The order of application must not matter — this is the same property the property tests
         // prove for the text itself.
-        RgaDocument trzeci = document(3);
-        trzeci.apply(base);
-        trzeci.apply(unbold);
-        trzeci.apply(bold);
-        assertThat(trzeci.formatting()).isEqualTo(ania.formatting());
+        RgaDocument third = document(3);
+        third.apply(base);
+        third.apply(unbold);
+        third.apply(bold);
+        assertThat(third.formatting()).isEqualTo(ania.formatting());
     }
 
     @Test
@@ -163,9 +164,9 @@ class MarkTest {
     void markSurvivesDeletionOfNeighbourhood() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
-        document.addMark(2, 4, MarkTypes.BOLD, null);   // „cd"
+        document.addMark(2, 4, MarkTypes.BOLD, null); // "cd"
 
-        document.delete(0, 2);   // kasujemy „ab" przed zakresem
+        document.delete(0, 2); // delete "ab", which is before the range
 
         assertThat(document.text()).isEqualTo("cdef");
         assertThat(marksAt(document, 0))
@@ -175,7 +176,7 @@ class MarkTest {
     }
 
     @Test
-    @DisplayName("znacznik czeka w buforze na swoje kotwice")
+    @DisplayName("a mark waits in the buffer for its anchors")
     void markWaitsForItsAnchors() {
         RgaDocument ania = document(1);
         RgaDocument bartek = document(2);
@@ -186,7 +187,7 @@ class MarkTest {
         // Bartek receives the mark BEFORE he receives the text it concerns.
         assertThat(bartek.apply(bold)).isEqualTo(RgaDocument.ApplyResult.BUFFERED);
         assertThat(bartek.formatting())
-            .as("znacznik zastosowany bez kotwic — formatowanie w przypadkowym miejscu")
+            .as("a mark was applied without its anchors — formatting in a random place")
             .isEmpty();
 
         bartek.apply(base);
@@ -265,17 +266,17 @@ class MarkTest {
         // Bartek is rebuilt from a snapshot and then receives a higher-priority REMOVAL of the
         // formatting. If the snapshot stored resolved segments rather than operations, he would
         // have nothing to resolve that conflict with.
-        RgaDocument odtworzony = RgaDocument.restore(
+        RgaDocument restored = RgaDocument.restore(
             2, new TreapBlockList(), SnapshotCodec.decode(SnapshotCodec.encode(bartek.snapshot())));
 
         Op.RemoveMark unbold = ania.removeMark(1, 4, MarkTypes.BOLD);
-        odtworzony.apply(unbold);
+        restored.apply(unbold);
         bartek.apply(unbold);
 
-        assertThat(odtworzony.formatting())
+        assertThat(restored.formatting())
             .as("a replica rebuilt from a snapshot resolved the conflict differently from one that was not")
             .isEqualTo(bartek.formatting());
-        assertThat(odtworzony.formatting()).isEqualTo(ania.formatting());
+        assertThat(restored.formatting()).isEqualTo(ania.formatting());
     }
 
     @Test
@@ -288,7 +289,7 @@ class MarkTest {
         //
         // The first version anchored in the middle of the text and passed even with anchor
         // protection switched off: a character in the middle is the ORIGIN of the next one, so the
-        // ADR-0005 rule already protected it. The test was checking nothing new. The last character
+        // the tombstone-collection design rule already protected it. The test was checking nothing new. The last character
         // is the origin of nothing, so the only thing that can save it is the protection added in
         // CP13.
         //
@@ -310,7 +311,7 @@ class MarkTest {
     }
 
     @Test
-    @DisplayName("tekst wpisany w miejsce skasowanego fragmentu NIE dziedziczy jego formatowania")
+    @DisplayName("text typed where a deleted fragment was does NOT inherit its formatting")
     void textTypedOverDeletedRangeDoesNotInheritItsMark() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
@@ -353,7 +354,7 @@ class MarkTest {
     }
 
     @Test
-    @DisplayName("format przewodowy znacznika przechodzi w obie strony")
+    @DisplayName("a mark's wire format round-trips in both directions")
     void markSurvivesWireRoundTrip() {
         RgaDocument document = document(1);
         document.insert(0, "abcdef");
@@ -363,5 +364,101 @@ class MarkTest {
 
         assertThat(OpCodec.decode(OpCodec.encode(added))).isEqualTo(added);
         assertThat(OpCodec.decode(OpCodec.encode(removed))).isEqualTo(removed);
+    }
+
+    // ------------------------------------------------------------------
+    // Marks whose value is an IDENTITY rather than decoration
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("two overlapping comments both keep their place — the newer does not hide the older")
+    void overlappingIdentityMarksAreBothVisibleToPlacements() {
+        RgaDocument document = document(1);
+        document.insert(0, "The quick brown fox jumps");
+        document.addMark(4, 9, MarkTypes.COMMENT, "THREAD-1"); // "quick"
+        document.addMark(0, 25, MarkTypes.COMMENT, "THREAD-2"); // the whole sentence, later
+
+        // The RENDER collapses to one value per type per segment, and that is correct for
+        // rendering — but reading anchoring out of it made a thread whose text is entirely
+        // present report as detached, which is the presentation reserved for DELETED text.
+        assertThat(document.formatting())
+            .as("the render is expected to keep resolving one winner per type")
+            .hasSize(1);
+
+        assertThat(document.markPlacements(MarkTypes.COMMENT))
+            .as("an older comment disappeared because a later one overlapped it")
+            .containsOnlyKeys("THREAD-1", "THREAD-2")
+            .containsEntry("THREAD-1", new MarkSet.Placement(4, 9))
+            .containsEntry("THREAD-2", new MarkSet.Placement(0, 25));
+    }
+
+    @Test
+    @DisplayName("an overlapping suggestion does not shrink another suggestion's range")
+    void overlappingSuggestionsKeepTheirOwnRanges() {
+        RgaDocument document = document(1);
+        document.insert(0, "The quick brown fox");
+        document.addMark(0, 9, MarkTypes.SUGGEST_DELETE, "S-A"); // proposes "The quick"
+        document.addMark(4, 19, MarkTypes.SUGGEST_DELETE, "S-B"); // overlapping, later
+
+        // Reading this from the render resolved S-A to [0,4) — so accepting it deleted "The "
+        // instead of "The quick", and still answered 204.
+        assertThat(document.markPlacements(MarkTypes.SUGGEST_DELETE))
+            .containsEntry("S-A", new MarkSet.Placement(0, 9))
+            .containsEntry("S-B", new MarkSet.Placement(4, 19));
+    }
+
+    @Test
+    @DisplayName("a mark whose anchored text is deleted has no placement")
+    void deletedTextTakesTheAnchorWithIt() {
+        RgaDocument document = document(1);
+        document.insert(0, "abcdef");
+        document.addMark(1, 4, MarkTypes.COMMENT, "THREAD-1");
+        document.delete(1, 3);
+
+        assertThat(document.markPlacements(MarkTypes.COMMENT))
+            .as("a thread whose text is gone must not report as anchored — that is the one case "
+                + "the detached presentation exists for")
+            .doesNotContainKey("THREAD-1");
+    }
+
+    @Test
+    @DisplayName("removing the anchor of one comment does not detach the other")
+    void removalOnlyTakesAwayTheMarkItCovers() {
+        RgaDocument document = document(1);
+        document.insert(0, "The quick brown fox jumps");
+        document.addMark(4, 9, MarkTypes.COMMENT, "THREAD-1");
+        document.addMark(0, 25, MarkTypes.COMMENT, "THREAD-2");
+        // An editor removes the anchor over "quick" — which covers THREAD-1 entirely and
+        // THREAD-2 only in part.
+        document.removeMark(4, 9, MarkTypes.COMMENT);
+
+        assertThat(document.markPlacements(MarkTypes.COMMENT))
+            .as("the removal either took away too much or too little")
+            .containsOnlyKeys("THREAD-2");
+    }
+
+    @Test
+    @DisplayName("two operations carrying one identity report the range they jointly cover")
+    void oneIdentitySpreadOverTwoOperationsIsUnioned() {
+        RgaDocument document = document(1);
+        document.insert(0, "The quick brown fox jumps");
+        document.addMark(4, 9, MarkTypes.SUGGEST_DELETE, "S-A"); // "quick"
+        document.addMark(10, 15, MarkTypes.SUGGEST_DELETE, "S-A"); // "brown", same proposal
+
+        // Keeping only the strongest operation per value is the same class of mistake as reading
+        // the range out of the render: accepting this proposal would delete "quick" alone, report
+        // 204, and leave the other half of what was proposed in the document.
+        assertThat(document.markPlacements(MarkTypes.SUGGEST_DELETE))
+            .containsExactly(entry("S-A", new MarkSet.Placement(4, 15)));
+    }
+
+    @Test
+    @DisplayName("marks with no value carry no identity and are left out")
+    void decorationMarksHaveNoPlacement() {
+        RgaDocument document = document(1);
+        document.insert(0, "abcdef");
+        document.addMark(1, 4, MarkTypes.BOLD, null);
+
+        assertThat(document.markPlacements(MarkTypes.BOLD)).isEmpty();
     }
 }

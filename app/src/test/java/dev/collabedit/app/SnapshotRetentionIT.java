@@ -26,9 +26,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * fastest for the documents people actually used.
  *
  * <p>The asymmetry is the interesting part. Tombstone GC <i>in memory</i> has
- * [ADR-0005](../../../../../../docs/adr/0005-tombstone-gc.md), a causal-stability calculation, a
+ * a causal-stability calculation, a
  * rule for excluding unresponsive replicas, and a checkpoint of its own. The cache <i>on disk</i>
- * had no policy at all. ADR-0003 describes the snapshot as a disposable cache throughout; the
+ * had no policy at all. The operation-log decision describes the snapshot as a disposable cache throughout; the
  * code had implemented "cache" and skipped "disposable".
  *
  * <h2>Why retention is not one</h2>
@@ -148,7 +148,7 @@ class SnapshotRetentionIT extends IntegrationTestBase {
      *
      * <p>CP5 established that deleting every snapshot changes no result. Pruning is deletion, so
      * it has to hold afterwards too — otherwise retention would have quietly promoted the cache
-     * to a source of truth, which is the failure ADR-0003 is written to prevent.
+     * to a source of truth, which is the failure the operation-log decision is written to prevent.
      */
     @Test
     @DisplayName("pruning changes no result — the log is still the source of truth")
@@ -164,7 +164,7 @@ class SnapshotRetentionIT extends IntegrationTestBase {
         assertThat(fromLogAlone)
             .as("""
                 The text differs depending on whether a snapshot was available, which means the \
-                snapshot is no longer a cache but a second source of truth (ADR-0003).""")
+                snapshot is no longer a cache but a second source of truth.""")
             .isEqualTo(withSnapshots);
         assertThat(fromLogAlone).isNotEmpty();
     }

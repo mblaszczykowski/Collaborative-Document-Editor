@@ -5,7 +5,7 @@
 -- as a limit of CP14.
 --
 -- WHAT THIS COLUMN IS, AND WHY IT IS NOT A CRDT. The temptation is to make comments a CRDT too:
--- the machinery is right there. ADR-0011 said no, on the grounds that a comment message has one
+-- the machinery is right there. The comment split said no, on the grounds that a comment message has one
 -- author, is written in one go, and is never concurrently edited character by character. CP27 is
 -- where that claim gets tested by use rather than by argument — and it holds, because the property
 -- the offline path actually needs is not merging. It is EXACTLY ONCE.

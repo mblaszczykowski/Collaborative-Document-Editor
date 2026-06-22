@@ -4,7 +4,7 @@
  * The split with the server is deliberate (see DocumentRestController): the WebSocket channel
  * carries only incremental changes, and the initial state is fetched over ordinary HTTP. That way,
  * opening a large document does not push several hundred kilobytes through a channel optimised for
- * messages of about a hundred bytes (ADR-0002 sets a 64 KiB per-frame limit).
+ * messages of about a hundred bytes (sets a 64 KiB per-frame limit).
  */
 
 import { API_BASE as BASE } from './config'
@@ -68,32 +68,82 @@ function authHeaders(): Record<string, string> {
   return authToken === null ? {} : { Authorization: `Bearer ${authToken}` }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
-  })
-  if (!response.ok) {
-    throw new Error(`${init?.method ?? 'GET'} ${path} → ${response.status}`)
+/**
+ * A refusal from the server, carrying the status that caused it.
+ *
+ * Every call in this file used to fail with a bare `Error` whose only content was a message ending
+ * in `→ 404`. Two call sites then had to decide what to DO about a failure, and both had to guess:
+ *
+ * - `useCollaborativeDocument`'s `onAccessChanged` treated every failure of `myRole` as "you have
+ * lost access" and replaced the document with the permanent "we cannot open this" banner. A 500,
+ * or a connection dropped for the half second an `ACCESS_CHANGED` broadcast happened to arrive
+ * in, produced the same screen — and nothing clears it, because `setUnavailable(false)` runs
+ * only on a fresh open and the workspace is keyed by document id. The comment there asserted "a
+ * 404 means…" over code that could not tell a 404 from a dead socket;
+ * - `CommentsPanel.permanentlyRefused` recovered the status by running a regular expression over
+ * the message — a parser for a format nothing declared, one string edit away from silently
+ * answering "not permanent" to everything and turning the comment outbox into a queue that
+ * retries a refusal for ever.
+ *
+ * Carrying the status is the whole fix, and it belongs here because this is the only place that
+ * has it. `status === 0` is reserved for "the request never got an answer" — `fetch` rejects on a
+ * network failure rather than resolving, and a caller asking "was this a refusal?" needs those two
+ * to be distinguishable rather than both being "an Error".
+ */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(method: string, path: string, status: number, options?: ErrorOptions) {
+    super(status === 0 ? `${method} ${path} → no answer`: `${method} ${path} → ${status}`, options)
+    this.name = 'ApiError'
+    this.status = status
   }
-  return (await response.json()) as T
 }
 
 /**
- * A request with no response body (204).
+ * One request, whether or not it answers with a body.
  *
- * A separate function, because `request` calls `response.json()` unconditionally — and on an empty
- * response that throws a parse error. It would manifest as "renaming does not work" even though the
- * server had done it correctly.
+ * `request` and `requestNoContent` used to be two functions duplicating the whole fetch call for
+ * one difference: a 204 has an empty body, and `response.json` on it throws a parse error that
+ * would read as "renaming does not work" even though the server had done it correctly. That
+ * difference is one branch, not one function — and while they were separate, every change to
+ * headers or error handling had to be made twice, which is exactly how one of them would have
+ * ended up not throwing `ApiError`.
  */
-async function requestNoContent(path: string, init: RequestInit): Promise<void> {
-  const response = await fetch(`${BASE}${path}`, {
+async function send<T>(path: string, init: RequestInit | undefined, expectBody: boolean): Promise<T> {
+  const method = init?.method ?? 'GET'
+  let response: Response
+  try {
+    response = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init.headers ?? {}) },
-  })
-  if (!response.ok) {
-    throw new Error(`${init.method ?? 'GET'} ${path} → ${response.status}`)
+      headers: { 'Content-Type': 'application/json',...authHeaders,...(init?.headers ?? {}) },
+    })
+  } catch (cause) {
+    // The `status === 0` case the class above reserves — and which nothing produced until now,
+    // because `fetch` REJECTS on a network failure instead of resolving and that rejection was
+    // left to propagate as a bare `TypeError`. Every caller then had to handle two error shapes
+    // to ask one question, and the documented contract was true of no code path.
+    //
+    // Behaviour is unchanged for every existing caller: `permanentlyRefused` answers false for
+    // status 0 exactly as it did for a `TypeError`, and the `status === 404` checks fail closed
+    // either way. What changes is that "the request never got an answer" is now something a
+    // caller can ask about instead of infer.
+    throw new ApiError(method, path, 0, { cause })
   }
+  if (!response.ok) {
+    throw new ApiError(method, path, response.status)
+  }
+  // `undefined as T` for the no-content case rather than a separate return type: the callers that
+  // pass `false` are typed `Promise<void>` and never look at the value.
+  return expectBody ? ((await response.json()) as T) : (undefined as T)
+}
+
+function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return send<T>(path, init, true)
+}
+
+function requestNoContent(path: string, init: RequestInit): Promise<void> {
+  return send<void>(path, init, false)
 }
 
 /** One run of text in a version comparison (CP22). */
@@ -102,11 +152,26 @@ export interface DiffSegment {
   text: string
 }
 
-/** A range with uniform formatting — the same shape as `Span` in the CRDT layer. */
-export interface Span {
+/**
+ * A range with uniform formatting, **as the server serialises it**.
+ *
+ * Named `WireSpan` rather than `Span`, and the rename is not cosmetic: `crdt/marks.ts` also
+ * exports a `Span`, with a different shape — its `marks` is a `Map`, this one's is a plain object,
+ * because JSON has no maps. Two exported types with one name and different shapes is a mistake
+ * waiting for the first file that imports both, and the compiler would not catch it: the import
+ * that lost the race simply wins, and `span.marks.has(type)` fails at runtime in whichever half
+ * was not thinking about the other.
+ *
+ * `string | null`, not `string`: a mark with no value — bold, italic, a quotation — serialises as
+ * `{"bold": null}`, so the old type was a lie about every mark this editor actually applies.
+ * `HistoryPanel`'s preview survived it only because it compares against `undefined`, which is what
+ * a MISSING key gives; had anybody written the obvious `!== null` check, every bold run in the
+ * history preview would have rendered unstyled.
+ */
+export interface WireSpan {
   from: number
   to: number
-  marks: Record<string, string>
+  marks: Record<string, string | null>
 }
 
 export interface Version {
@@ -186,7 +251,11 @@ export const api = {
    * revisited after CP13.
    */
   textAt: (documentId: string, throughServerSeq: number) =>
-    request<{ throughServerSeq: number; text: string; marks: Span[] }>(
+    // `marks` is optional in the TYPE because it is optional in practice: a running server has
+    // been observed answering `{"throughServerSeq":0,"text":""}` with the key absent entirely.
+    // Declaring it as always present is how `HistoryPanel` ended up crashing on it — see the
+    // comment on `FormattedPreview`.
+    request<{ throughServerSeq: number; text: string; marks?: WireSpan[] }>(
       `/documents/${documentId}/history/at?seq=${throughServerSeq}`,
     ),
 
@@ -209,7 +278,7 @@ export const api = {
    *
    * There is nothing for the client to do here beyond the call — the restore comes back to every
    * connected browser over the ordinary operation channel, because it is an ordinary change
-   * (ADR-0003, point 6). The same mechanism, the same code, no special path.
+   * (point 6). The same mechanism, the same code, no special path.
    */
   restore: (documentId: string, throughServerSeq: number) =>
     request<{ operationsGenerated: number; text: string }>(
@@ -223,7 +292,7 @@ export const api = {
    * Bytes rather than JSON, and a header rather than a field, because the whole point is how
    * much crosses the wire — see DocumentSnapshotController. A failure here is not an error to
    * report: a snapshot is a cache, so the caller falls back to replaying the log, which is
-   * slower and always correct (ADR-0003).
+   * slower and always correct.
    */
   snapshot: async (
     documentId: string,
@@ -264,7 +333,7 @@ export const api = {
   restoreDocument: (id: string) =>
     requestNoContent(`/documents/${id}/restore`, { method: 'POST' }),
 
-  /** The rescue save of a local version after a refused merge (ADR-0005). */
+  /** The rescue save of a local version after a refused merge. */
   createRecovered: (title: string, text: string) =>
     request<DocumentSummary>('/documents/recovered', {
       method: 'POST',
@@ -342,7 +411,7 @@ export const api = {
   // Until CP21 these calls did not exist, and there was nothing to call: `grant`/`revoke`
   // lived on the server for the tests only. Inviting goes by LINK rather than by user name,
   // because passwordless login mints a new identifier on every visit — there is nothing to
-  // type into a "share with…" box (ADR-0014).
+  // type into a "share with…" box.
 
   access: (documentId: string) => request<AccessState>(`/documents/${documentId}/access`),
 

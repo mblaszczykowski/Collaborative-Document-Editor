@@ -6,11 +6,14 @@ import dev.collabedit.app.persist.SnapshotStore;
 import dev.collabedit.app.persist.StoredOperation;
 import dev.collabedit.crdt.RgaDocument;
 import dev.collabedit.crdt.TreapBlockList;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -18,9 +21,9 @@ import org.springframework.stereotype.Component;
 /**
  * The document replicas held in this instance's memory — loaded on demand, released when idle.
  *
- * <p>This follows from ADR-0004: a document open by clients connected to three instances lives in
+ * <p>This follows from the cluster design: a document open by clients connected to three instances lives in
  * three copies. That is the <b>deliberate cost</b> of doing without a document owner and sticky
- * sessions — written down explicitly in that ADR's negative consequences. With documents in the
+ * sessions — written down explicitly as a known cost rather than found later. With documents in the
  * megabytes, or with a dozen or more instances, the right answer would be a change of architecture
  * rather than an optimisation here.
  */
@@ -35,7 +38,7 @@ public class DocumentRegistry {
      * <p>Negative deliberately: clients get positive identifiers (the counter in Redis), so the two
      * spaces cannot intersect even if allocation goes wrong. A server instance almost never
      * generates operations of its own — the exception is restoring a version from history (CP5),
-     * which per ADR-0003 we record as new operations.
+     * which per the operation-log decision we record as new operations.
      */
     private final int serverReplicaId = -Math.abs(UUID.randomUUID().hashCode() % 1_000_000) - 1;
 
@@ -51,9 +54,9 @@ public class DocumentRegistry {
         this.properties = properties;
     }
 
-    public int serverReplicaId() {
-        return serverReplicaId;
-    }
+    // serverReplicaId used to sit here, a public accessor with no caller in main or in tests. The
+    // field itself is load-bearing — it is what `load` builds the RgaDocument with — and its
+    // javadoc above is the reason it is negative. Only the getter was decoration.
 
     /**
      * A document's replica, loaded from the database on first use.
@@ -62,9 +65,30 @@ public class DocumentRegistry {
      * log. When there is no snapshot, or it is in an unsupported format, we replay the whole log —
      * slower, with an identical result. That equivalence is tested explicitly (CP5), because
      * without a test the cache would quietly become the source of truth.
+     *
+     * <h2>Why the load happens OUTSIDE the map</h2>
+     * This was {@code replicas.computeIfAbsent(documentId, this::load)}, which runs the mapping
+     * function <b>while holding the bin lock for that key</b>. And {@code load} is not a cheap
+     * function: three JDBC queries plus a full replay of the log tail — it logs its own duration in
+     * milliseconds, which is the giveaway that it is not a lookup. For that whole time
+     * {@code ConcurrentHashMap} blocks every other operation landing in the same bin:
+     * {@code evictIdle}'s {@code remove}, the cluster listener's {@code get}, an edit to an
+     * <b>unrelated document</b> that happens to hash nearby.
+     *
+     * <p>Loading outside and finishing with {@code putIfAbsent} costs the possibility that two
+     * threads load the same document at once and one copy is thrown away. That is safe rather than
+     * merely tolerable: nothing has been mutated at that point — the loser is a freshly built
+     * replica nobody holds a reference to, not yet in the registry, so it cannot have accepted an
+     * operation — and both threads then return the same winner, which is the property that
+     * actually matters.
      */
     public DocumentReplica get(UUID documentId) {
-        DocumentReplica replica = replicas.computeIfAbsent(documentId, this::load);
+        DocumentReplica replica = replicas.get(documentId);
+        if (replica == null) {
+            DocumentReplica loaded = load(documentId);
+            DocumentReplica winner = replicas.putIfAbsent(documentId, loaded);
+            replica = winner == null ? loaded : winner;
+        }
         enforceMemoryLimit(documentId);
         return replica;
     }
@@ -100,8 +124,7 @@ public class DocumentRegistry {
      * enforced at all. With zero the subtraction is just the current epoch millis, which is
      * comfortably larger than any interval.
      */
-    private final java.util.concurrent.atomic.AtomicLong lastFutileAttemptMillis =
-        new java.util.concurrent.atomic.AtomicLong();
+    private final AtomicLong lastFutileAttemptMillis = new AtomicLong();
 
     /**
      * Enforces the upper bound on how many replicas are held in memory.
@@ -136,9 +159,9 @@ public class DocumentRegistry {
             return;
         }
 
-        List<DocumentReplica> candidates = new java.util.ArrayList<>(replicas.values());
+        List<DocumentReplica> candidates = new ArrayList<>(replicas.values());
         candidates.removeIf(r -> r.documentId().equals(justLoaded));
-        candidates.sort(java.util.Comparator.comparingLong(DocumentReplica::lastActivityMillis));
+        candidates.sort(Comparator.comparingLong(DocumentReplica::lastActivityMillis));
 
         int toEvict = replicas.size() - limit;
         int evicted = 0;
@@ -187,8 +210,18 @@ public class DocumentRegistry {
         }
 
         List<StoredOperation> tail = operations.loadAfter(documentId, fromSeq);
+        long applied = headSeq;
         for (StoredOperation stored : tail) {
             document.apply(stored.op());
+            // The label has to describe what was APPLIED, not what the log held when we asked.
+            //
+            // headSeq is read before the tail, so an operation another instance appends in between
+            // is in this list and is applied here — while appliedServerSeq claimed the older
+            // number. The replica then reported itself behind operations it was already holding,
+            // and anti-entropy dutifully pulled and re-applied them (harmless, idempotent) while
+            // any snapshot taken in that state was labelled BELOW the state it contained — which
+            // HistoryService.textAt reads as a state from the future.
+            applied = Math.max(applied, stored.serverSeq());
         }
 
         if (document.pendingCount() > 0) {
@@ -203,11 +236,32 @@ public class DocumentRegistry {
             documentId, snapshot.isPresent(), tail.size(), document.visibleLength(),
             document.tombstoneCount(), (System.nanoTime() - started) / 1_000_000);
 
-        return new DocumentReplica(documentId, document, headSeq, System.currentTimeMillis());
+        return new DocumentReplica(documentId, document, applied, System.currentTimeMillis());
     }
 
+    /**
+     * The replicas currently in memory.
+     *
+     * <p>A live view, not a copy, and the change is worth stating because {@code List.copyOf} looks
+     * like the safe choice. It bought nothing here: {@code ConcurrentHashMap.values} is weakly
+     * consistent, so iterating it across a concurrent {@code put} or {@code remove} is safe by
+     * specification — it may or may not reflect the change, and no caller here cares which. What
+     * the copy did buy was an allocation of the whole collection on a path taken about a hundred
+     * times a second from the flow scheduler (the 10 ms broadcast and the 50 ms flush both walk
+     * this), plus twice per Prometheus scrape.
+     */
     public Collection<DocumentReplica> loaded() {
-        return List.copyOf(replicas.values());
+        return replicas.values();
+    }
+
+    /**
+     * How many replicas are in memory — for the gauge, which needs the number and not the list.
+     *
+     * <p>Separate from {@link #loaded} because a gauge asking for a collection in order to call
+     * {@code size} on it is how a metric ends up costing more than the thing it measures.
+     */
+    public int loadedCount() {
+        return replicas.size();
     }
 
     public boolean isLoaded(UUID documentId) {
@@ -242,8 +296,22 @@ public class DocumentRegistry {
         return evicted;
     }
 
-    /** For tests only — forces the state to be read from the database again. */
-    public void forget(UUID documentId) {
+    /**
+     * Drops a replica WITHOUT going through {@link DocumentReplica#tryEvict} — for tests, so they
+     * can force the state to be read from the database again.
+     *
+     * <h2>Why this is package-private now</h2>
+     * It was public and documented "For tests only", which is a comment where a boundary was
+     * needed: a public method on a production component is reachable from every production caller,
+     * and this one bypasses the single check that stops a replica holding unwritten operations from
+     * being dropped. That check is not decoration — {@code DocumentReplica.tryEvict} exists because
+     * discarding a replica with a non-empty buffer loses operations already accepted from a client.
+     *
+     * <p>The tests that legitimately need it reach it through {@code RegistryTestAccess}, which
+     * lives in this package under {@code src/test}. That is the standard Java answer and it keeps
+     * the door where it belongs: visible to the tests, closed to {@code main}.
+     */
+    void forget(UUID documentId) {
         replicas.remove(documentId);
     }
 }

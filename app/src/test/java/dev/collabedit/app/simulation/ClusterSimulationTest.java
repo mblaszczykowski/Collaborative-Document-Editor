@@ -27,7 +27,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       <td>The seed is ignored and every run explores the same single interleaving — a suite
  *           that looks like it covers a thousand schedules while covering one.</td></tr>
  *   <tr><td>{@code clusterConvergesUnderAdversarialDelivery}</td>
- *       <td>The ADR-0004 claim is false: a dropped or reordered broadcast leaves instances
+ *       <td>The the cluster design claim is false: a dropped or reordered broadcast leaves instances
  *           permanently disagreeing rather than merely late.</td></tr>
  *   <tr><td>{@code clusterConvergesAcrossCrashAndRestart}</td>
  *       <td>Rebuilding a replica from the log produces a different document than the one that
@@ -154,7 +154,7 @@ class ClusterSimulationTest {
 
         scheduleTyping(sim, cluster, 4, 60);
 
-        // One instance dies mid-flight and comes back with nothing in memory. ADR-0003 says the
+        // One instance dies mid-flight and comes back with nothing in memory. The operation-log decision says the
         // log is the source of truth and the snapshot is a removable cache; if that is right,
         // the rebuilt replica must be indistinguishable from the one that was lost.
         sim.schedule(300, "crash", () -> cluster.crash(2));
@@ -190,7 +190,7 @@ class ClusterSimulationTest {
     @MethodSource("seeds")
     @DisplayName("with the fast path dropping everything, the log alone still converges")
     void totalFastPathFailureStillConverges(int seed) {
-        // The strongest statement of ADR-0004. If Redis contributes nothing whatsoever and the
+        // The strongest statement of the cluster design. If Redis contributes nothing whatsoever and the
         // instances still agree, then "unreliable fast path" is a true description rather than
         // an aspiration — losing it costs latency and nothing else.
         DeterministicSimulation sim = new DeterministicSimulation(seed);
@@ -221,7 +221,7 @@ class ClusterSimulationTest {
      * unacknowledged buffer and there was no client in the model. It ended with "that is the
      * first thing to add when extending this".
      *
-     * <p>The omission mattered more than it looks. ADR-0003 makes a promise a user cannot check
+     * <p>The omission mattered more than it looks. The operation-log decision makes a promise a user cannot check
      * for themselves — <b>an acknowledgement means the work is durable</b> — and the ordering it
      * rests on was written down only in prose, in the javadoc of
      * {@code DocumentReplica.drainForFlush}. Nothing executable held it. "CP17 found zero bugs
@@ -240,7 +240,7 @@ class ClusterSimulationTest {
         assertThat(run.cluster().acknowledgedButNotLogged())
             .as("""
                 The system told a client its work was durable and then lost it. This is the one \
-                promise in ADR-0003 that a user has no way of checking, which is why it is \
+                promise in the operation-log decision that a user has no way of checking, which is why it is \
                 asserted rather than trusted: the acknowledgement goes out AFTER the append, \
                 never after the broadcast.""")
             .isEmpty();

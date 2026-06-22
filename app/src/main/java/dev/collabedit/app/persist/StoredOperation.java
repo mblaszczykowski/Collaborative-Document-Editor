@@ -11,11 +11,11 @@ import java.time.Instant;
  *   <li>{@code op} carries the <b>causal</b> order (the Lamport clock, the origin) — that is what
  *       the CRDT algorithm uses, and only it decides the merge result,</li>
  *   <li>{@code serverSeq} carries the <b>write</b> order — that is what the transport uses when
- *       asking "what am I missing" (ADR-0003, ADR-0004).</li>
+ *       asking "what am I missing" (the cluster design).</li>
  * </ul>
  * Conflating the two orders is a classic source of bugs in systems of this kind: it is tempting to
  * use {@code serverSeq} to resolve conflicts, which immediately reintroduces the central arbiter
- * the whole of ADR-0001 set out to avoid.
+ * the whole of the CRDT decision set out to avoid.
  */
 public record StoredOperation(
     Op op,

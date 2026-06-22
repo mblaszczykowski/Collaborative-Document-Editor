@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.collabedit.app.auth.TokenService;
 import dev.collabedit.app.domain.DocumentRegistry;
+import dev.collabedit.app.domain.RegistryTestAccess;
 import dev.collabedit.app.domain.DocumentService;
 import dev.collabedit.app.history.HistoryService;
 import dev.collabedit.app.persist.SnapshotStore;
@@ -16,9 +17,9 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Change history and travelling back in time (ADR-0003, CP5).
+ * Change history and travelling back in time (CP5).
  *
- * <p>The most important test in this class is {@code timeTravelIgnoresSnapshots}. ADR-0003 rests on
+ * <p>The most important test in this class is {@code timeTravelIgnoresSnapshots}. The operation-log decision rests on
  * the claim that a snapshot is a <b>cache</b> and not the source of truth — and that claim has to
  * be checked, not declared. Without this test a snapshot would quietly become the only carrier of
  * the information, and we would find out at the first change to the serialisation format, that is,
@@ -123,7 +124,7 @@ class HistoryIT extends IntegrationTestBase {
         assertThat(withSnapshots).hasSize(30);
 
         snapshots.deleteAll(document);
-        registry.forget(document);
+        RegistryTestAccess.forget(registry, document);
 
         assertThat(history.textAt(document, midpoint))
             .as("without snapshots a different state came out — the cache stopped being a cache")
@@ -271,7 +272,7 @@ class HistoryIT extends IntegrationTestBase {
         Integer operationsAfter = jdbc.queryForObject(
             "SELECT COUNT(*) FROM operations WHERE doc_id = ?", Integer.class, document);
 
-        // ADR-0003, point 6: the log is append-only. Truncating it would destroy auditability
+        // the operation-log decision, point 6: the log is append-only. Truncating it would destroy auditability
         // (who restored, and when) and diverge the clients that still hold the removed operations.
         assertThat(operationsAfter)
             .as("the log shrank during the restore — meaning something was truncated")

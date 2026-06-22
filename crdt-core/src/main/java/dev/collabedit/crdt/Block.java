@@ -5,7 +5,7 @@ package dev.collabedit.crdt;
  *
  * <p>A document is not a list of characters but a list of blocks. Typing 20 characters in a row is
  * one {@code Block}, not 20 objects. The justification and the invariants are in
- * {@code docs/crdt-design.md}, section 3.
+ * the README, "The document is a list of runs".
  *
  * <p><b>Invariant:</b> a block is entirely alive or entirely deleted. Deleting part of one splits
  * the block first. The alternative (an array of per-character flags) would complicate every
@@ -19,7 +19,7 @@ package dev.collabedit.crdt;
  * identity ({@link #start}), its {@link #length}, its {@link #originLeft} and its position;
  * it loses only the characters, which nobody can see anyway.
  *
- * <p>This exists because {@link RgaDocument#gc} could barely reclaim anything. ADR-0005 lists
+ * <p>This exists because {@link RgaDocument#gc} could barely reclaim anything. The tombstone-collection design lists
  * three reasons a tombstone must be kept, and CP15 measured the cost: a 1000-character document
  * written in one run, fully deleted, with 100 formatting marks, reclaimed <b>0%</b>. All three
  * reasons — being another block's origin, being a mark anchor, causal stability — need the
@@ -57,15 +57,61 @@ public final class Block {
     private final Id originLeft;
     private boolean deleted;
 
+    /**
+     * The identifier of the operation that tombstoned this block; {@code null} while it is visible.
+     *
+     * <h2>Why the deleter's identity has to be stored</h2>
+     * The tombstone-collection design says a tombstone may be physically removed once <b>its deletion
+     * operation</b> is entirely below {@code stableVersion}. {@link RgaDocument#gc} used to test
+     * something else entirely — {@code block.lastId.lamport} against
+     * {@code stable.get(block.start.replicaId)}, which asks whether every replica has seen the
+     * <b>insertion</b>. Those are different questions with different answers, and the gap between
+     * them loses a user's work:
+     *
+     * <p>A replica that holds the character but not its deletion still <b>displays</b> it, and will
+     * anchor an insertion to it. In a document older than one progress-report cycle the insert
+     * lamports sit far below {@code stable} for unrelated reasons, so a character deleted a second
+     * ago was immediately collectable — and the peer that had not yet received the delete came back
+     * with an operation anchored to a character that no longer existed. That is
+     * {@code RESYNC_REQUIRED} on a sub-second race, on the one path in this system that refuses a
+     * user's edit by design, when the tombstone-collection design confines it to a seven-day absence.
+     *
+     * <p>Nothing else in the structure can answer the question. The insertion's identity is
+     * {@link #start}; the deletion's is an entirely separate operation from a possibly different
+     * replica, and the only place to keep it is here, beside the flag it justifies.
+     *
+     * <p><b>A {@code null} on a deleted block means "the deleter is unknown", and GC must then
+     * keep it.</b> That case is not reachable through any path in this class — every caller of
+     * {@link BlockList#markDeleted(int, Id)} has the operation in hand — but the conservative
+     * answer is written into {@link RgaDocument#gc} regardless, because the cost of being wrong in
+     * that direction is memory and the cost of being wrong in the other is the user's text.
+     */
+    private Id deletedBy;
+
     public Block(Id start, String text, Id originLeft, boolean deleted) {
+        this(start, text, originLeft, deleted, null);
+    }
+
+    /**
+     * A block with a known deleter — the form snapshots and splits use.
+     *
+     * @param deletedBy the identifier of the deleting operation, or {@code null} when the block is
+     * visible or its deleter is not known. See the field's javadoc.
+     */
+    public Block(Id start, String text, Id originLeft, boolean deleted, Id deletedBy) {
         if (text.isEmpty()) {
             throw new IllegalArgumentException("a block cannot be empty");
+        }
+        if (!deleted && deletedBy != null) {
+            throw new IllegalArgumentException(
+                "a visible block cannot carry a deleter: " + start + " deletedBy=" + deletedBy);
         }
         this.start = start;
         this.text = text;
         this.length = text.length();
         this.originLeft = originLeft;
         this.deleted = deleted;
+        this.deletedBy = deletedBy;
     }
 
     /**
@@ -74,19 +120,20 @@ public final class Block {
      * <p>Only ever deleted: dropping the content of a visible block would delete text nobody
      * asked to delete, so the constructor refuses rather than trusting the caller.
      */
-    static Block withoutContent(Id start, int length, Id originLeft) {
+    static Block withoutContent(Id start, int length, Id originLeft, Id deletedBy) {
         if (length <= 0) {
             throw new IllegalArgumentException("a block cannot be empty");
         }
-        return new Block(start, length, originLeft);
+        return new Block(start, length, originLeft, deletedBy);
     }
 
-    private Block(Id start, int length, Id originLeft) {
+    private Block(Id start, int length, Id originLeft, Id deletedBy) {
         this.start = start;
         this.text = null;
         this.length = length;
         this.originLeft = originLeft;
         this.deleted = true;
+        this.deletedBy = deletedBy;
     }
 
     public Id start() {
@@ -132,8 +179,48 @@ public final class Block {
         return deleted;
     }
 
-    public void markDeleted() {
+    /** The operation that tombstoned this block, or {@code null}. See the field's javadoc. */
+    public Id deletedBy() {
+        return deletedBy;
+    }
+
+    // Package-private, not public. BlockList.markDeleted exists precisely because the indexed
+    // implementation must update the treap's aggregates at the same moment, and mutating a
+    // block off to the side silently corrupts the structure — a failure the README
+    // records as one of the three that mutation testing had to find. Leaving this public left
+    // the door the neighbouring javadoc says must not be used; the two callers are both
+    // in-package, so closing it costs nothing and makes the invariant a compiler's problem.
+    //
+    // Takes the deleting operation's identifier, because GC needs to know whether THAT operation
+    // is causally stable rather than whether the insertion is — see the deletedBy field.
+    //
+    // The SMALLEST deleting identifier wins among those that REACH this method, which is not the
+    // same as the smallest that exists, and the difference is worth stating because an earlier
+    // version of this comment claimed otherwise.
+    //
+    // It claimed the minimum makes the recorded deleter "a function of the operation SET". It does
+    // not. RgaDocument.apply asks isAlreadyKnown BEFORE tryApplyDelete, and isEntirelyDeleted
+    // answers true for any deletion whose target characters are already tombstones — so when two
+    // replicas delete the same range concurrently, whichever arrives second is dismissed as a
+    // duplicate and its identifier never gets here. Deliver them in the other order and the block
+    // records the other deleter. Measured: the same operation set in two orders produces different
+    // snapshot bytes, and a GC that reclaims three characters in one order and none in the other.
+    //
+    // That is a real asymmetry between instances and it is NOT a safety violation, which is why it
+    // is recorded rather than fixed: the deleter stored is always one this replica actually
+    // applied, so "every counted replica has seen it" still implies every replica considers the
+    // character deleted. Two instances already GC at different moments by design (each sweeps on
+    // its own schedule), so which tombstones are physically gone was never identical between them.
+    // What is lost is snapshot byte-reproducibility across instances — worth knowing, and cheaper
+    // to know than to remove, since removing it means changing how deletions are deduplicated.
+    //
+    // The minimum is still the better of the two available choices: it is the earliest deletion,
+    // so it is the one most likely to be causally stable already.
+    void markDeleted(Id deleteId) {
         this.deleted = true;
+        if (deleteId != null && (this.deletedBy == null || deleteId.compareTo(this.deletedBy) < 0)) {
+            this.deletedBy = deleteId;
+        }
     }
 
     public int length() {
@@ -181,14 +268,19 @@ public final class Block {
             throw new IllegalArgumentException(
                 "split outside the block's interior: offset=" + offset + ", length=" + length);
         }
+        // Both halves inherit the deleter, because a split changes the representation and not the
+        // logical structure — the characters on either side were tombstoned by the same operation.
+        // Losing it here would leave GC unable to prove either half collectable, which is safe but
+        // means a document that has been split often can never reclaim anything.
         if (text == null) {
             return new Block[] {
-                new Block(start, offset, originLeft),
-                new Block(start.plus(offset), length - offset, start.plus(offset - 1))
+                new Block(start, offset, originLeft, deletedBy),
+                new Block(start.plus(offset), length - offset, start.plus(offset - 1), deletedBy)
             };
         }
-        Block left = new Block(start, text.substring(0, offset), originLeft, deleted);
-        Block right = new Block(start.plus(offset), text.substring(offset), start.plus(offset - 1), deleted);
+        Block left = new Block(start, text.substring(0, offset), originLeft, deleted, deletedBy);
+        Block right = new Block(
+            start.plus(offset), text.substring(offset), start.plus(offset - 1), deleted, deletedBy);
         return new Block[] {left, right};
     }
 

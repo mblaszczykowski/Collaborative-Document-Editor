@@ -1,6 +1,7 @@
 package dev.collabedit.app.auth;
 
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
@@ -61,7 +62,7 @@ public class TokenService {
      * Generating a random secret per instance would break horizontal scaling outright — two
      * instances could not validate each other's tokens, and {@link
      * dev.collabedit.app.cluster.ClusterBus} assumes any instance can serve any session
-     * (ADR-0004). Warning and continuing is what the old code effectively did.
+     *. Warning and continuing is what the old code effectively did.
      *
      * <p>The cost is real and is not hidden: {@code ./mvnw -pl app spring-boot:run} now fails
      * without an environment variable. Docker Compose and CI set it; the README documents the
@@ -170,7 +171,7 @@ public class TokenService {
             Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(key);
             return mac.doFinal(encodedPayload.getBytes(StandardCharsets.UTF_8));
-        } catch (java.security.GeneralSecurityException e) {
+        } catch (GeneralSecurityException e) {
             throw new IllegalStateException("cannot sign the token", e);
         }
     }

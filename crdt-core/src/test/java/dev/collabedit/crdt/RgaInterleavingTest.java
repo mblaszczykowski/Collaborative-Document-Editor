@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
  * place at once and the result is their texts interleaved character by character.
  *
  * <p>This class contains both the case RGA handles correctly and the case it <b>does not</b> — the
- * latter is here deliberately, as executable documentation of the algorithm's boundary (ADR-0001,
+ * latter is here deliberately, as executable documentation of the algorithm's boundary (the CRDT decision,
  * the "Known limitation" section).
  */
 class RgaInterleavingTest {
@@ -91,9 +91,9 @@ class RgaInterleavingTest {
         // ...but the result is an interleaving rather than two contiguous words.
         // This assertion is DELIBERATELY inverted: it documents the defect instead of hiding it.
         // If it ever stops being true (for example after a move to Fugue), the test will fail, and
-        // that is a signal to update ADR-0001 rather than a regression.
+        // that is a signal to update the CRDT decision rather than a regression.
         assertThat(merged)
-            .as("ADR-0001: RGA is not maximally non-interleaving. "
+            .as("the CRDT decision: RGA is not maximally non-interleaving. "
                 + "The solution is Fugue, deliberately rejected on budget. "
                 + "The actual merge result: %s", merged)
             .doesNotContain("abc")

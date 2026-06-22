@@ -11,6 +11,7 @@ import dev.collabedit.crdt.RgaDocument;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -30,7 +31,7 @@ import org.springframework.stereotype.Service;
  * <h2>Why the mark layer again</h2>
  * This is the third feature built out of the layer CP13 introduced for formatting, after comments
  * (CP14), and the first one nobody had in mind when that layer was designed. The character
- * sequence does not change by a single field — which is the claim ADR-0010 made and this is the
+ * sequence does not change by a single field — which is the claim the mark layer made and this is the
  * strongest evidence for it so far, because a feature the design never anticipated fitted anyway.
  *
  * <h2>Why the server generates the operations</h2>
@@ -44,8 +45,8 @@ import org.springframework.stereotype.Service;
  * lists as a debt in the one place it exists. Two instances of a debt is a design.
  *
  * <h2>Anchors, not offsets — for the third time in this project</h2>
- * The client names positions by <b>character identifier</b>, the way cursors (ADR-0006) and marks
- * (ADR-0010) do. An offset sent to the server is stale the moment somebody else types before it,
+ * The client names positions by <b>character identifier</b>, the way cursors and marks
+ * do. An offset sent to the server is stale the moment somebody else types before it,
  * and the failure it produces is a proposal attached to the wrong words — silently, and in
  * somebody else's name.
  */
@@ -105,7 +106,11 @@ public class SuggestionService {
         // this order is not a matter of taste.
         record(suggestionId, documentId, authorId, Kind.INSERT, text);
 
-        List<Op> generated = registry.get(documentId).withLock(document -> {
+        // Generated AND enqueued under ONE lock acquisition. Both used to be separate steps —
+        // withLock here, then publish asking the registry for the replica again — with an
+        // eviction window between them in which the operations were enqueued on a replica that
+        // never saw them. See DocumentService.generateAndSubmit.
+        List<Op> generated = documents.generateAndSubmit(documentId, document -> {
             Integer anchor = afterId == null ? -1 : visibleIndexOf(document, afterId);
             if (anchor == null) {
                 return null;
@@ -119,14 +124,13 @@ public class SuggestionService {
             ops.add(document.addMark(position, position + text.length(),
                 MarkTypes.SUGGEST_INSERT, suggestionId.toString()));
             return ops;
-        });
+        }, null);
 
         if (generated == null) {
             // The anchor is gone. The row stays, listed as unanchored — a proposal nobody can
             // apply, which is exactly what happened, and is visible rather than silent.
             return Optional.empty();
         }
-        publish(documentId, generated);
         log.info("Suggestion {} (insert) proposed in document {} by {}", suggestionId, documentId,
             authorId);
         return Optional.of(suggestionId);
@@ -135,9 +139,6 @@ public class SuggestionService {
     /** Proposes deleting the range from {@code fromId} to {@code toId}, both inclusive. */
     public Optional<UUID> proposeDeletion(UUID documentId, String authorId, Id fromId, Id toId) {
         UUID suggestionId = UUID.randomUUID();
-
-        record Proposal(List<Op> ops, String quoted) {
-        }
 
         // The quoted text has to be read before the row can be written, and the row has to be
         // written before the mark is applied — so this path reads first, WITHOUT changing
@@ -155,22 +156,21 @@ public class SuggestionService {
         }
         record(suggestionId, documentId, authorId, Kind.DELETE, quoted);
 
-        Proposal proposal = registry.get(documentId).withLock(document -> {
+        List<Op> generated = documents.generateAndSubmit(documentId, document -> {
             Integer from = visibleIndexOf(document, fromId);
             Integer to = visibleIndexOf(document, toId);
             if (from == null || to == null || to < from) {
                 return null;
             }
-            return new Proposal(List.of(document.addMark(from, to + 1,
-                MarkTypes.SUGGEST_DELETE, suggestionId.toString())), quoted);
-        });
+            return List.of(document.addMark(from, to + 1,
+                MarkTypes.SUGGEST_DELETE, suggestionId.toString()));
+        }, null);
 
-        if (proposal == null) {
+        if (generated == null) {
             // Somebody deleted the range between the two passes. The row stays as an unanchored
             // proposal rather than becoming a mark over text that is not there.
             return Optional.empty();
         }
-        publish(documentId, proposal.ops());
         log.info("Suggestion {} (delete) proposed in document {} by {}", suggestionId, documentId,
             authorId);
         return Optional.of(suggestionId);
@@ -183,24 +183,30 @@ public class SuggestionService {
     /**
      * Accepts or rejects a suggestion.
      *
-     * <h2>Why this is idempotent by construction</h2>
-     * Two people may press the button at the same instant, from two instances. The second call
-     * finds no mark — the first one removed it — and generates nothing, which is the correct
-     * outcome rather than a race that has to be prevented. The row records the first resolution;
-     * a second one does not overwrite it, because {@code resolved_at IS NULL} is part of the
-     * update.
+     * <h2>Why this is idempotent: the ROW is the arbiter</h2>
+     * Two people may press the button at the same instant, from two instances. The row is settled
+     * first, and {@code resolved_at IS NULL} is part of the update, so exactly one caller sees
+     * {@code updated == 1} — and only that one touches the document.
+     *
+     * <p>This paragraph used to describe the previous mechanism, which the ordering below
+     * deliberately replaced: "the second call finds no mark, because the first one removed it".
+     * That relied on the loser reaching the replica after the winner had already changed it, which
+     * is a race narrowed rather than closed. The second caller never reaches the mark check now.
      *
      * <p>The same mechanism covers the case where the anchored text was deleted by somebody
      * editing normally: there is nothing to accept or reject, so the suggestion is resolved with
      * no operations. It stops being open, which is what the reader needs, and nothing pretends
      * the proposal was applied.
      *
-     * @return {@code false} when the suggestion is unknown or already resolved
+     * @return which of the three things happened; see {@link Outcome}
      */
-    public boolean resolve(UUID documentId, UUID suggestionId, String userId, boolean accept) {
+    public Outcome resolve(UUID documentId, UUID suggestionId, String userId, boolean accept) {
         Kind kind = kindOf(documentId, suggestionId);
         if (kind == null) {
-            return false;
+            // Not there, or already decided — and the caller needs to know WHICH, because it tells
+            // the reader two different things about why their screen is out of date. The extra
+            // query costs nothing: it runs only on the path that is about to answer an error.
+            return existsAtAll(documentId, suggestionId) ? Outcome.ALREADY_RESOLVED : Outcome.UNKNOWN;
         }
 
         String markType = kind == Kind.INSERT
@@ -222,10 +228,13 @@ public class SuggestionService {
              WHERE id = ? AND doc_id = ? AND resolved_at IS NULL
             """, userId, accept ? "accepted" : "rejected", suggestionId, documentId);
         if (updated == 0) {
-            return false;
+            // Somebody else's UPDATE won the race and settled the row first.
+            return Outcome.ALREADY_RESOLVED;
         }
 
-        List<Op> generated = registry.get(documentId).withLock(document -> {
+        // Generated and enqueued together — see DocumentService.generateAndSubmit for the eviction
+        // window that splitting them leaves open.
+        documents.generateAndSubmit(documentId, document -> {
             Range range = rangeOf(document, markType, suggestionId.toString());
             if (range == null) {
                 return List.<Op>of();
@@ -240,11 +249,28 @@ public class SuggestionService {
                 ops.add(document.delete(range.from(), range.to() - range.from()));
             }
             return ops;
-        });
+        }, null);
 
-        publish(documentId, generated);
         log.info("Suggestion {} {} by {}", suggestionId, accept ? "accepted" : "rejected", userId);
-        return true;
+        return Outcome.RESOLVED;
+    }
+
+    /**
+     * What resolving did.
+     *
+     * <p>Three values rather than a boolean, because {@code false} meant two situations that a
+     * client has to describe differently: a proposal that is not there at all (a stale link, or the
+     * wrong document) and one that somebody else has already accepted or rejected (a stale list, on
+     * a document being worked on right now). The controller maps them to 404 and 409.
+     */
+    public enum Outcome {
+        RESOLVED, ALREADY_RESOLVED, UNKNOWN
+    }
+
+    /** Whether the suggestion exists at all, resolved or not — only asked on the failure path. */
+    private boolean existsAtAll(UUID documentId, UUID suggestionId) {
+        return !jdbc.queryForList("SELECT 1 FROM suggestions WHERE id = ? AND doc_id = ?",
+            Integer.class, suggestionId, documentId).isEmpty();
     }
 
     // ------------------------------------------------------------------
@@ -277,12 +303,22 @@ public class SuggestionService {
         }
 
         return registry.get(documentId).withLock(document -> {
+            // Both sweeps taken ONCE for the whole list, not once per row. Each one resolves every
+            // mark anchor in the document, and this method is what the suggestions panel polls —
+            // so with twenty open proposals on a heavily formatted document it was twenty full
+            // sweeps, all of them holding the same lock every keystroke also needs.
+            Map<String, MarkSet.Placement> insertions =
+                document.markPlacements(MarkTypes.SUGGEST_INSERT);
+            Map<String, MarkSet.Placement> deletions =
+                document.markPlacements(MarkTypes.SUGGEST_DELETE);
+
             List<Suggestion> result = new ArrayList<>();
             for (Row row : rows) {
-                String markType = row.kind() == Kind.INSERT
-                    ? MarkTypes.SUGGEST_INSERT
-                    : MarkTypes.SUGGEST_DELETE;
-                Range range = rangeOf(document, markType, row.id().toString());
+                MarkSet.Placement placement =
+                    (row.kind == Kind.INSERT ? insertions : deletions).get(row.id.toString());
+                Range range = placement == null
+                    ? null
+: new Range(placement.from(), placement.to());
                 result.add(new Suggestion(row.id(), documentId, row.authorId(), row.authorName(),
                     row.authorColor(), row.kind(), row.quotedText(), row.createdAt(),
                     range != null, range));
@@ -306,7 +342,7 @@ public class SuggestionService {
      * <p>With the row first, the same failure produces a suggestion listed as unanchored: a
      * proposal that cannot be applied, which is visible, resolvable, and true.
      *
-     * <p>The rule is the same one ADR-0003 applies to the acknowledgement: when two orderings
+     * <p>The rule is the same one the operation-log decision applies to the acknowledgement: when two orderings
      * both have a failure window, take the one whose failure is the smaller lie.
      */
     private void record(UUID suggestionId, UUID documentId, String authorId, Kind kind,
@@ -317,13 +353,10 @@ public class SuggestionService {
             """, suggestionId, documentId, authorId, kind.name().toLowerCase(), quoted);
     }
 
-    private void publish(UUID documentId, List<Op> generated) {
-        for (Op op : generated) {
-            // Already merged on the server replica, where they were created — this only writes
-            // and broadcasts them. The same path a restore takes, for the same reason.
-            documents.submitAlreadyMerged(documentId, op, null);
-        }
-    }
+    // publish used to sit here, looping over already-generated operations and handing each to
+    // documents.submitAlreadyMerged — which asks the registry for the replica AGAIN, after the
+    // generating lock has been released. Every caller now generates and enqueues in one step
+    // instead; see DocumentService.generateAndSubmit for what could happen in between.
 
     private Kind kindOf(UUID documentId, UUID suggestionId) {
         List<String> kinds = jdbc.query(
@@ -336,22 +369,24 @@ public class SuggestionService {
      * Where a suggestion's mark currently is, in visible positions.
      *
      * <p>Read from the document rather than stored, because it moves: every insertion before it
-     * shifts it, and that is precisely what anchors are for. Spans carrying the same mark type
-     * for the same suggestion are contiguous by construction, so the first and last of them
-     * bound the range.
+     * shifts it, and that is precisely what anchors are for.
+     *
+     * <h2>Why not {@code formatting}</h2>
+     * This used to scan the resolved spans for ones carrying this suggestion's identifier, on the
+     * stated assumption that "spans carrying the same mark type for the same suggestion are
+     * contiguous by construction". The assumption is false as soon as a second proposal of the same
+     * kind overlaps the first: the render resolves ONE value per type per segment, so the older
+     * proposal was left holding whichever sub-range it happened to win.
+     *
+     * <p>Both directions of that were wrong and silent. Accepting a suggested deletion of
+     * {@code "The quick"} that another proposal overlapped deleted only {@code "The "} and answered
+     * 204; rejecting a suggested insertion nested inside another one deleted the other one's
+     * characters. {@code markPlacements} asks the mark layer for this operation's own range and is
+     * blind to who wins the render.
      */
     private static Range rangeOf(RgaDocument document, String markType, String value) {
-        int from = -1;
-        int to = -1;
-        for (MarkSet.Span span : document.formatting()) {
-            if (value.equals(span.marks().get(markType))) {
-                if (from < 0) {
-                    from = span.from();
-                }
-                to = span.to();
-            }
-        }
-        return from < 0 ? null : new Range(from, to);
+        MarkSet.Placement placement = document.markPlacements(markType).get(value);
+        return placement == null ? null : new Range(placement.from(), placement.to());
     }
 
     /**

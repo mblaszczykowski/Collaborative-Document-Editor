@@ -2,8 +2,11 @@ package dev.collabedit.crdt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
@@ -17,10 +20,14 @@ import net.jqwik.api.constraints.LongRange;
  * <p>Each of them answers a specific "what real failure mode does this catch" — none exists for
  * coverage. The table is in the README.
  *
- * <p>The tests run by default with a <b>fixed seed</b> (determinism — a counterexample can be
- * reproduced with one command), and in the nightly build with a random seed and 10× the number of
- * tries ({@code -Pjqwik.thorough}). A counterexample found overnight goes into the repository as an
- * ordinary regression test.
+ * <p>The seed is <b>random on every run</b>, so each one explores a different 1000 cases — these
+ * properties search rather than confirm. The nightly build adds depth rather than randomness:
+ * {@code -Pthorough} raises the try count to 10 000. A failure reports its seed, and
+ * {@code @Property(seed = "…")} replays it exactly; a rerun also retries the last failing seed
+ * first, through the jqwik failure database.
+ *
+ * <p>(An earlier version of this paragraph, and of three other places, said the seed was fixed by
+ * default. It never was — jqwik has no configuration key for one.)
  */
 class RgaConvergenceProperties {
 
@@ -63,9 +70,17 @@ class RgaConvergenceProperties {
      *
      * <p><b>This test exists because it was missing.</b> The original suite contained only the
      * non-interleaved scenario, in which a replica never receives an operation before generating
-     * its own — so the entire Lamport clock bumping path ({@code docs/crdt-design.md} section 1)
+     * its own — so the entire Lamport clock bumping path (the README, "What the Lamport clock is actually for")
      * was never executed once. Found by deliberately introducing a mutation into production code
      * and checking whether the tests would catch it.
+     *
+     * <p><b>And it was not enough, which this comment claimed it was.</b> Executing the path is
+     * not the same as depending on it: with {@code observeClock} neutered entirely, this property
+     * and the other fourteen stayed green at 3000 tries. What it needed was an assertion that can
+     * tell — the timestamp condition added to {@link RgaInvariants#violations}, which asks whether
+     * a block's timestamp really is above its origin's rather than whether the replicas agree.
+     * They always agree; they were agreeing on the wrong thing. The property is now red under that
+     * mutation, and this scenario is what makes the condition reachable.
      */
     @Property
     void convergenceWithInterleavedDelivery(
@@ -114,7 +129,7 @@ class RgaConvergenceProperties {
      * once.
      *
      * <p><b>Failure mode:</b> a retransmission after reconnect (CP6) or a repeated message from
-     * Redis (ADR-0004) duplicates text. Without this property the entire architecture with an
+     * Redis duplicates text. Without this property the entire architecture with an
      * unreliable broadcast is unsafe.
      */
     @Property
@@ -142,7 +157,7 @@ class RgaConvergenceProperties {
      * random orders gives the same text.
      *
      * <p><b>Failure mode:</b> the algorithm is deterministic but order-dependent — that is, two
-     * backend instances (ADR-0004) diverge despite holding the full set of operations. This is
+     * backend instances diverge despite holding the full set of operations. This is
      * insidious, because such a system works correctly in single-server tests and only breaks when
      * scaled out.
      */
@@ -249,8 +264,7 @@ class RgaConvergenceProperties {
      * visible text or corrupt the structure.
      *
      * <p><b>Failure mode:</b> GC deletes a node that is another character's origin — the structure
-     * breaks immediately, but the symptom appears only at the next insertion in that spot. See
-     * ADR-0005.
+     * breaks immediately, but the symptom appears only at the next insertion in that spot.
      */
     @Property
     void gcPreservesText(
@@ -283,5 +297,98 @@ class RgaConvergenceProperties {
         RgaDocument first = replicas.get(0);
         first.insert(first.visibleLength(), "x");
         assertThat(first.text()).endsWith("x");
+    }
+
+    /**
+     * <b>GC never removes a character somebody else can still see.</b>
+     *
+     * <h2>The hole this closes, and why every other GC test was blind to it</h2>
+     * Every GC assertion in this suite ran with a <b>fully stable</b> version vector — either a
+     * hand-written {@code Map.of(1, 1000L)} or, as in {@link #gcPreservesText}, the meet taken
+     * <i>after</i> {@code deliverAllShuffled} had given every replica everything. Under those
+     * conditions the difference between "the insertion is stable" and "the deletion is stable" does
+     * not exist, because both are. So the condition {@code RgaDocument.gc} actually used — the
+     * insertion's timestamp against the inserting replica's entry — was unreachable by
+     * construction, and it stayed wrong through five checkpoints while the tombstone-collection design §Mechanism/3 stated
+     * the correct rule one directory away.
+     *
+     * <p>What it cost: a character deleted a moment ago in a document older than one progress
+     * report was instantly collectable, and the peer that had not yet received the delete came back
+     * with an operation anchored to a character the collector had destroyed. That is
+     * {@code RESYNC_REQUIRED} — the refusal the tombstone-collection design reserves for a client absent longer than the
+     * seven-day window — on a race measured in milliseconds.
+     *
+     * <h2>What is asserted, and why not convergence</h2>
+     * The invariant is <b>structural and per-replica</b>: if replica A physically removed character
+     * {@code c}, then no replica may still be displaying {@code c}. That is precisely the safety
+     * property causal stability is supposed to buy, and it is checkable without delivering anything
+     * further.
+     *
+     * <p>Convergence is deliberately <b>not</b> the assertion here. GC under a partial vector has a
+     * real, documented and narrow window — an operation created before its author saw the delete
+     * can still be in flight — which the tombstone-collection design accepts and answers with {@code RESYNC_REQUIRED}.
+     * Asserting convergence would be asserting something the design does not promise, and the test
+     * would be flaky for a correct reason, which is the worst kind.
+     */
+    @Property
+    void gcNeverRemovesWhatAnotherReplicaStillShows(
+        @ForAll("editScripts") List<EditScript.Cmd> script,
+        @ForAll @IntRange(min = 2, max = 4) int replicaCount,
+        @ForAll @LongRange(min = 0, max = Long.MAX_VALUE) long deliverySeed
+    ) {
+        ReplicaSet replicas = new ReplicaSet(replicaCount, TreapBlockList::new);
+        Random random = new Random(deliverySeed);
+        // Interleaved and PARTIAL: some operations are still undelivered when GC runs, so the meet
+        // below is a genuine partial vector rather than the total one every other GC test uses.
+        EditScript.runInterleaved(replicas, script, random, 2);
+
+        VersionVector stable = VersionVector.meet(
+            java.util.stream.IntStream.range(0, replicas.size())
+                .mapToObj(i -> replicas.get(i).version())
+                .toList());
+
+        List<Set<Id>> heldBefore = new ArrayList<>();
+        for (int i = 0; i < replicas.size(); i++) {
+            heldBefore.add(idsIn(replicas.get(i), false));
+        }
+        for (int i = 0; i < replicas.size(); i++) {
+            replicas.get(i).gc(stable);
+        }
+
+        for (int collector = 0; collector < replicas.size(); collector++) {
+            Set<Id> removed = new HashSet<>(heldBefore.get(collector));
+            removed.removeAll(idsIn(replicas.get(collector), false));
+            if (removed.isEmpty()) {
+                continue;
+            }
+            for (int other = 0; other < replicas.size(); other++) {
+                if (other == collector) {
+                    continue;
+                }
+                Set<Id> stillVisible = idsIn(replicas.get(other), true);
+                stillVisible.retainAll(removed);
+                assertThat(stillVisible)
+                    .as("replica %d physically removed characters that replica %d is still "
+                        + "DISPLAYING — it has not seen the deletion, so it can still anchor to "
+                        + "them.%nstable = %s%ncollector = %s%nother = %s",
+                        collector, other, stable.asMap(),
+                        replicas.get(collector), replicas.get(other))
+                            .isEmpty();
+            }
+        }
+    }
+
+    /** Every character identifier the replica holds; {@code visibleOnly} skips tombstones. */
+    private static Set<Id> idsIn(RgaDocument document, boolean visibleOnly) {
+        Set<Id> ids = new HashSet<>();
+        for (Block block : document.blocks()) {
+            if (visibleOnly && block.deleted()) {
+                continue;
+            }
+            for (int offset = 0; offset < block.length(); offset++) {
+                ids.add(block.idAt(offset));
+            }
+        }
+        return ids;
     }
 }

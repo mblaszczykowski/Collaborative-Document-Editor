@@ -40,8 +40,8 @@ import org.junit.jupiter.api.Test;
 class SnapshotFixtureTest {
 
     private static final Path DIRECTORY = Path.of("..", "conformance", "snapshots");
-    private static final Path BYTES = DIRECTORY.resolve("document-v3.bin");
-    private static final Path EXPECTED = DIRECTORY.resolve("document-v3.expected.json");
+    private static final Path BYTES = DIRECTORY.resolve("document-v5.bin");
+    private static final Path EXPECTED = DIRECTORY.resolve("document-v5.expected.json");
 
     /**
      * A document exercising every branch of the format.
@@ -50,6 +50,18 @@ class SnapshotFixtureTest {
      * and one without — and text outside ASCII, because the length prefix counts <b>bytes</b>
      * while the client counts characters, and that is the classic way a binary format decoder
      * goes wrong on the second language it meets.
+     *
+     * <p>Since version 4 it also runs {@link RgaDocument#gc}, which is what produces a block with
+     * <b>no content</b> — the branch format version 3 was raised for and the one branch neither
+     * side had ever exercised against the other. That branch is also where the two lengths differ
+     * in kind: a block with content writes a count of UTF-8 <i>bytes</i>, one without writes a
+     * count of <i>characters</i>. They agree today, and now something says so.
+     *
+     * <p>What is deliberately NOT here is a block split between the halves of an astral character.
+     * The document's text would then contain a lone surrogate, which cannot survive being written
+     * to the expected-JSON file — the fixture would corrupt in exactly the way it exists to detect.
+     * That branch is covered on the Java side by {@code SnapshotCodecTest} and on the client side
+     * by a decoder test that builds the bytes by hand.
      */
     private static RgaDocument sampleDocument() {
         RgaDocument document = new RgaDocument(7, new TreapBlockList());
@@ -57,9 +69,13 @@ class SnapshotFixtureTest {
         // diacritics are multi-byte in UTF-8 — which is the whole point of the case.
         document.insert(0, "Zażółć gęślą jaźń");
         document.insert(17, " and then some ASCII");
+        document.insert(37, " 😀 astral");
         document.delete(6, 6);
         document.addMark(0, 5, MarkTypes.BOLD, null);
         document.addMark(6, 11, MarkTypes.LINK, "https://example.test/a");
+        // Everything this replica has seen is causally stable, because it is the only replica —
+        // so the tombstone above becomes collectable and gives up its content.
+        document.gc(document.version());
         return document;
     }
 
@@ -75,11 +91,30 @@ class SnapshotFixtureTest {
             Files.writeString(EXPECTED, expectedJson(built));
         }
 
+        // The ENCODER is pinned too, not only the decoder. Comparing the freshly encoded bytes with
+        // the committed ones is what catches a change to `encode` that `decode` still happens to
+        // accept — a reordered field, an added trailing one, a different length unit with a
+        // tolerant reader. Without this the test proved only "our decoder reads our old bytes",
+        // and the TypeScript twin proved the same thing about the same old bytes, so an encoder
+        // drift would have shipped green from both sides.
+        //
+        // This assertion is only safe because version 4 writes the version vector in replica order;
+        // before that, `Map.copyOf` made the output differ between JVM runs.
+        assertThat(encoded)
+            .as("the encoder no longer produces the committed fixture — if that is intended, delete "
+                + "conformance/snapshots/document-v5.* and run this test once")
+            .isEqualTo(Files.readAllBytes(BYTES));
+
         DocumentSnapshot decoded = SnapshotCodec.decode(Files.readAllBytes(BYTES));
         assertThat(decoded)
             .as("the committed fixture no longer decodes at all — the format version changed, and "
                 + "every client that has not been updated is now opening documents from the log")
             .isNotNull();
+
+        assertThat(decoded.blocks())
+            .as("the fixture stopped covering the content-dropped branch, which is the only part "
+                + "of the format the two sides measure in different units")
+            .anyMatch(block -> !block.hasContent());
 
         RgaDocument restored = RgaDocument.restore(1, new TreapBlockList(), decoded);
         assertThat(restored.text()).isEqualTo(built.text());
@@ -111,7 +146,7 @@ class SnapshotFixtureTest {
     void unknownFormatIsIgnored() {
         byte[] encoded = SnapshotCodec.encode(new DocumentSnapshot(
             DocumentSnapshot.CURRENT_FORMAT_VERSION + 1, 5, Map.of(1, 4L),
-            List.of(new Block(new Id(1, 0), "abcde", null, false)), List.of()));
+            List.of(new Block(new Id(1, 0), "abcde", null, false)), List.of(), Map.of()));
 
         assertThat(SnapshotCodec.decode(encoded))
             .as("a cache in a format we do not know must lead to a rebuild from the log, not to a "
