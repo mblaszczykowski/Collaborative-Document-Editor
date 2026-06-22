@@ -135,7 +135,7 @@ public class AccessController {
         }
         permissions.setVisibility(documentId, visibility);
         // Everybody, not one person: switching to `private` changes what every non-member may do.
-        announce(documentId, null, null);
+        announce(documentId);
         log.info("Visibility of document {} set to {}", documentId, visibility);
         return ResponseEntity.noContent().build();
     }
@@ -152,8 +152,16 @@ public class AccessController {
         if (role == null) {
             return ResponseEntity.badRequest().build();
         }
+        // A user identifier nobody holds hits a foreign key and comes back as a 500 — an
+        // unhandled server error for a caller who simply named somebody who does not exist.
+        // Checked here rather than caught below, because the two cases deserve different
+        // answers: "there is no such person" is the caller's mistake, and a constraint failing
+        // for any other reason is ours and should stay loud.
+        if (!permissions.userExists(userId)) {
+            return ResponseEntity.notFound().build();
+        }
         permissions.grant(documentId, userId, role);
-        announce(documentId, userId, role);
+        announce(documentId);
         log.info("User {} is now {} in document {}", userId, role.wire(), documentId);
         return ResponseEntity.noContent().build();
     }
@@ -172,7 +180,7 @@ public class AccessController {
             return ResponseEntity.status(HttpStatus.CONFLICT).build();
         }
         permissions.revoke(documentId, userId);
-        announce(documentId, userId, null);
+        announce(documentId);
         log.info("Access of user {} to document {} revoked", userId, documentId);
         return ResponseEntity.noContent().build();
     }
@@ -251,33 +259,35 @@ public class AccessController {
         if (documentId.isEmpty() || role.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
-        announce(documentId.get(), caller, role.get());
+        announce(documentId.get());
         return ResponseEntity.ok(new RedeemResult(documentId.get().toString(), role.get().wire()));
     }
 
     // ------------------------------------------------------------------
 
     /**
-     * Tells the connected clients that access changed.
+     * Tells the connected clients that access changed — <b>without saying whose, or to what</b>.
      *
      * <p>The README lists under <i>open, unresolved</i>: the role arrives once, with the initial
      * state, so raising somebody's permissions does nothing until they reload. Revocation was
      * never a hole — the server rejects the operation regardless — but a grant that visibly does
      * nothing is how a working feature reads as broken.
      *
+     * <p><b>The frame is empty on purpose.</b> It used to carry the affected user and their new
+     * role, which handed every subscriber the answer to a question this very class refuses to
+     * answer without {@code MANAGE_ACCESS}: who has access to this document. Each client now
+     * re-asks about itself, which costs one small request per connected client on a rare event.
+     *
      * <p><b>Instance-local, deliberately.</b> A client connected to another instance learns of the
      * change when its permission cache entry expires (five seconds), which is the same bound that
      * already governs revocation. Publishing this on the cluster channel would mean a second
      * mechanism carrying the same fact as the permission invalidation broadcast, and two channels
      * for one fact is how they drift apart.
-     *
-     * @param userId the person affected, or {@code null} for "everybody re-check" (visibility)
-     * @param role   the new role, or {@code null} when access was taken away
      */
-    private void announce(UUID documentId, String userId, Role role) {
+    private void announce(UUID documentId) {
         try {
             messaging.convertAndSend("/topic/doc/" + documentId + "/access",
-                new Messages.AccessChanged(userId, role == null ? null : role.wire()));
+                new Messages.AccessChanged());
         } catch (RuntimeException e) {
             // The change is already in the database; failing to announce it costs at most the
             // five seconds it would have taken anyway. Not worth failing the request over.

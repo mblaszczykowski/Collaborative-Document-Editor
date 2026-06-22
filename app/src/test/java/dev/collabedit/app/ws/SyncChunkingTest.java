@@ -29,9 +29,14 @@ class SyncChunkingTest {
 
     /** Operations of a given size, as pasting produces them. */
     private static List<StoredOperation> operations(int count, int charactersEach) {
+        return operations(count, charactersEach, "x");
+    }
+
+    private static List<StoredOperation> operations(int count, int charactersEach,
+                                                    String character) {
         RgaDocument document = new RgaDocument(1);
         List<StoredOperation> stored = new ArrayList<>();
-        String piece = "x".repeat(charactersEach);
+        String piece = character.repeat(charactersEach);
         for (int i = 0; i < count; i++) {
             Op op = document.insert(i * charactersEach, piece);
             stored.add(new StoredOperation(op, i + 1, null, java.time.Instant.EPOCH));
@@ -86,6 +91,26 @@ class SyncChunkingTest {
         // client would be missing text with nothing to retry. The place that must not create one
         // is the client's paste path.
         assertThat(bytesOf(chunks.getFirst())).isGreaterThan(32 * 1024);
+    }
+
+    @Test
+    @DisplayName("a document in a non-Latin script does not overflow the budget")
+    void multiByteTextIsMeasuredInBytes() {
+        int budget = 32 * 1024;
+        // Every character is three bytes in UTF-8 and one UTF-16 unit, so String.length() reports
+        // a third of the truth. With a count-of-characters budget these chunks would each be
+        // three times the size they were budgeted for — hidden on Latin text, and found in
+        // production by whoever writes in Chinese.
+        List<StoredOperation> ops = operations(20, 6_000, "\u4e2d");
+
+        for (List<JsonNode> chunk : DocumentStompController.chunkByBytes(ops, budget)) {
+            int bytes = chunk.stream()
+                .mapToInt(node -> node.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
+                .sum();
+            assertThat(bytes)
+                .as("a chunk of %d bytes against a %d byte budget", bytes, budget)
+                .isLessThanOrEqualTo(budget + 20_000);
+        }
     }
 
     @Test

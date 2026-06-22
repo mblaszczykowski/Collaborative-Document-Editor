@@ -178,10 +178,30 @@ public class DocumentCatalog {
         // truth for the text.
         jdbc.update("UPDATE documents SET preview_text = ?, "
                 + "search_vector = to_tsvector('simple', title || ' ' || ?) WHERE id = ?",
-            preview, text, documentId);
+            preview, indexable(text), documentId);
     }
 
     public static final int PREVIEW_LENGTH = 200;
+
+    /**
+     * The upper bound on what is handed to {@code to_tsvector}.
+     *
+     * <p>Postgres refuses a string of about a megabyte with <i>"string is too long for
+     * tsvector"</i>, and that refusal would land on the SNAPSHOT path — which is the one place
+     * that must not throw. It would not lose data (the snapshot is written first) and it would
+     * do something worse than losing it: {@code snapshotTaken()} would never run, so the sweep
+     * would re-snapshot the same document every second, forever, for as long as it stayed above
+     * the limit.
+     *
+     * <p>250 000 characters is at most a megabyte of UTF-8 even for four-byte characters. Beyond
+     * it, a document is searchable by its first quarter-million characters — a limit worth
+     * naming, and a much later one than the 200 characters CP29 started from.
+     */
+    private static final int INDEXABLE_LENGTH = 250_000;
+
+    private static String indexable(String text) {
+        return text.length() <= INDEXABLE_LENGTH ? text : text.substring(0, INDEXABLE_LENGTH);
+    }
 
     // ------------------------------------------------------------------
     // Workspaces

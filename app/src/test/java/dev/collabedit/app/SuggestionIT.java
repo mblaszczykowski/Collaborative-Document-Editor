@@ -1,6 +1,7 @@
 package dev.collabedit.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.collabedit.app.auth.PermissionService;
@@ -301,6 +302,32 @@ class SuggestionIT extends IntegrationTestBase {
                 + "the same moment is the ordinary case, not the exotic one")
             .isEqualTo(404);
         assertThat(documents.textOf(document)).isEqualTo("The cat sat on the mat");
+    }
+
+    @Test
+    @DisplayName("a proposal that cannot be recorded does not change the document either")
+    void aProposalThatCannotBeRecordedLeavesNoTrace() throws Exception {
+        User anna = newUser("Anna");
+        UUID document = privateDocument(anna, "Ordering");
+        Op seedOp = seed(document, anna, 820, "The cat sat");
+
+        // An author the users table does not know. The row hits a foreign key and the insert
+        // throws — which is the point of the test rather than its setup: whatever fails while a
+        // proposal is being made, the in-memory document must not be left holding text that was
+        // never written to the log and never broadcast. That state survives no restart and no
+        // other client ever sees it.
+        var missingAuthor = new User(UUID.randomUUID().toString(), null);
+        assertThatThrownBy(() -> suggestions.proposeInsertion(document, missingAuthor.id(),
+            new dev.collabedit.crdt.Id(seedOp.id().replicaId(), seedOp.id().lamport() + 10),
+            " on the mat"))
+            .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        Thread.sleep(200);
+
+        assertThat(documents.textOf(document))
+            .as("the row is written BEFORE the replica is touched, so a failure to record leaves "
+                + "the document exactly as it was")
+            .isEqualTo("The cat sat");
+        assertThat(suggestions.openFor(document)).isEmpty();
     }
 
     @Test

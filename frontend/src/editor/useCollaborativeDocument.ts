@@ -239,8 +239,17 @@ export function useCollaborativeDocument(
           if (!cancelled && saved !== null) undoManager.restore(saved)
         })
         .catch(() => {})
+      // Debounced, because `observe` fires on every recorded change — that is, on every
+      // keystroke, since coalescing mutates the top entry rather than skipping the callback.
+      // Undoing the last second of typing after a reload is a convenience; paying a second
+      // IndexedDB write per keystroke for it, on the same thread as the offline buffer's write,
+      // is not.
+      let saveTimer: number | undefined
       undoManager.observe(() => {
-        void offlineStore.saveUndo(documentId, undoManager.serialise()).catch(() => {})
+        window.clearTimeout(saveTimer)
+        saveTimer = window.setTimeout(() => {
+          void offlineStore.saveUndo(documentId, undoManager.serialise()).catch(() => {})
+        }, 1_000)
       })
       setTitle(state.title)
       setRole(state.role)
@@ -280,8 +289,7 @@ export function useCollaborativeDocument(
          * We ask for the role alone rather than through `openDocument`: that one also carries
          * the whole text.
          */
-        onAccessChanged: (userId) => {
-          if (userId !== null && userId !== session.userId) return
+        onAccessChanged: () => {
           void api.myRole(documentId)
             .then((mine) => setRole(mine.role))
             // A 404 means "you no longer have access" — the same answer as for a document one

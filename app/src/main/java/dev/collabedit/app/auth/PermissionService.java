@@ -357,6 +357,12 @@ public class PermissionService {
             documentId).stream().findFirst();
     }
 
+    /** Whether anybody holds this identifier — see AccessController.setMemberRole. */
+    public boolean userExists(String userId) {
+        return userId != null && !jdbc.queryForList(
+            "SELECT 1 FROM users WHERE id = ?", Integer.class, userId).isEmpty();
+    }
+
     public record Member(String userId, String displayName, Role role) {
     }
 

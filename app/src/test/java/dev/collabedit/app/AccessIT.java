@@ -214,6 +214,20 @@ class AccessIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("granting access to somebody who does not exist is a 404, not a 500")
+    void grantingToAnUnknownUserIsRefusedCleanly() throws Exception {
+        User anna = newUser("Anna");
+        UUID document = createDocument(anna, "Notes");
+
+        assertThat(send("PUT",
+            "/api/documents/" + document + "/access/members/" + UUID.randomUUID(),
+            anna.token(), "{\"role\":\"editor\"}").statusCode())
+            .as("the identifier hits a foreign key, and an unhandled constraint violation is a "
+                + "500 — a server error reported for a caller who simply named nobody")
+            .isEqualTo(404);
+    }
+
+    @Test
     @DisplayName("the owner cannot revoke themselves out of their own document")
     void ownerCannotRevokeThemselves() throws Exception {
         User anna = newUser("Anna");

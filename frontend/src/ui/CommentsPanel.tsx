@@ -14,6 +14,18 @@ import { formatTime, initials } from './format'
  * **Resolving is not deletion either** — the thread leaves the default list and comes back when the
  * view is toggled.
  */
+/**
+ * Whether the server refused in a way that repeating will not fix (CP27 review).
+ *
+ * `request` throws with the status in the message, which is enough to tell a refusal from a
+ * failure to reach anybody at all — a network error has no status. 4xx other than 408 (timeout)
+ * and 429 (too many requests) is the server saying "not this, ever".
+ */
+function permanentlyRefused(error: unknown): boolean {
+  const status = Number(String((error as Error)?.message ?? '').match(/→ (\d{3})$/)?.[1])
+  return Number.isFinite(status) && status >= 400 && status < 500 && status !== 408 && status !== 429
+}
+
 export function CommentsPanel(props: {
   documentId: string
   /** The selected fragment of text; empty when nothing is selected. */
@@ -121,6 +133,7 @@ export function CommentsPanel(props: {
       return
     }
     let sent = 0
+    let dropped = 0
     for (const entry of waiting) {
       try {
         if (entry.kind === 'thread') {
@@ -136,12 +149,23 @@ export function CommentsPanel(props: {
         }
         await offlineStore.forgetComment(entry.clientId)
         sent++
-      } catch {
+      } catch (error) {
+        if (permanentlyRefused(error)) {
+          // Not a connection problem: the server will answer the same way forever. Access was
+          // revoked while this sat in the outbox, or the thread it replies to is gone. Keeping
+          // it means retrying on every panel refresh and a badge that never clears — a queue
+          // that cannot drain is worse than a lost comment, because it also hides the ones that
+          // could still be sent.
+          await offlineStore.forgetComment(entry.clientId)
+          setFailed('One comment could not be posted — you no longer have access to it.')
+          dropped++
+          continue
+        }
         // Still no connection. Stop rather than hammering the rest of the queue.
         break
       }
     }
-    setQueued(waiting.length - sent)
+    setQueued(waiting.length - sent - dropped)
     if (sent > 0) await reload()
   }, [props.documentId, reload])
 

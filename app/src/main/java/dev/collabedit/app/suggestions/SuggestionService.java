@@ -101,6 +101,10 @@ public class SuggestionService {
         }
         UUID suggestionId = UUID.randomUUID();
 
+        // The row FIRST, before a single operation touches the replica. See record() for why
+        // this order is not a matter of taste.
+        record(suggestionId, documentId, authorId, Kind.INSERT, text);
+
         List<Op> generated = registry.get(documentId).withLock(document -> {
             Integer anchor = afterId == null ? -1 : visibleIndexOf(document, afterId);
             if (anchor == null) {
@@ -118,9 +122,10 @@ public class SuggestionService {
         });
 
         if (generated == null) {
+            // The anchor is gone. The row stays, listed as unanchored — a proposal nobody can
+            // apply, which is exactly what happened, and is visible rather than silent.
             return Optional.empty();
         }
-        record(suggestionId, documentId, authorId, Kind.INSERT, text);
         publish(documentId, generated);
         log.info("Suggestion {} (insert) proposed in document {} by {}", suggestionId, documentId,
             authorId);
@@ -134,21 +139,37 @@ public class SuggestionService {
         record Proposal(List<Op> ops, String quoted) {
         }
 
+        // The quoted text has to be read before the row can be written, and the row has to be
+        // written before the mark is applied — so this path reads first, WITHOUT changing
+        // anything, and does the work in a second pass.
+        String quoted = registry.get(documentId).withLock(document -> {
+            Integer from = visibleIndexOf(document, fromId);
+            Integer to = visibleIndexOf(document, toId);
+            if (from == null || to == null || to < from) {
+                return null;
+            }
+            return document.text().substring(from, to + 1);
+        });
+        if (quoted == null) {
+            return Optional.empty();
+        }
+        record(suggestionId, documentId, authorId, Kind.DELETE, quoted);
+
         Proposal proposal = registry.get(documentId).withLock(document -> {
             Integer from = visibleIndexOf(document, fromId);
             Integer to = visibleIndexOf(document, toId);
             if (from == null || to == null || to < from) {
                 return null;
             }
-            String quoted = document.text().substring(from, to + 1);
             return new Proposal(List.of(document.addMark(from, to + 1,
                 MarkTypes.SUGGEST_DELETE, suggestionId.toString())), quoted);
         });
 
         if (proposal == null) {
+            // Somebody deleted the range between the two passes. The row stays as an unanchored
+            // proposal rather than becoming a mark over text that is not there.
             return Optional.empty();
         }
-        record(suggestionId, documentId, authorId, Kind.DELETE, proposal.quoted());
         publish(documentId, proposal.ops());
         log.info("Suggestion {} (delete) proposed in document {} by {}", suggestionId, documentId,
             authorId);
@@ -189,6 +210,21 @@ public class SuggestionService {
         // goes". Rejecting an insertion and accepting a deletion both mean "the text goes".
         boolean textStays = accept == (kind == Kind.INSERT);
 
+        // The row is settled FIRST, and that makes it the arbiter of the race rather than the
+        // replica lock: exactly one caller sees `updated == 1`, and only that one touches the
+        // document. The previous order — apply, then record — relied on the loser finding the
+        // mark already gone, which was true and left a worse failure behind it: if the UPDATE
+        // threw, the operations were already in the in-memory replica and had been neither
+        // written nor broadcast, so the server's document silently disagreed with its own log.
+        int updated = jdbc.update("""
+            UPDATE suggestions
+               SET resolved_at = now(), resolved_by = ?, resolution = ?
+             WHERE id = ? AND doc_id = ? AND resolved_at IS NULL
+            """, userId, accept ? "accepted" : "rejected", suggestionId, documentId);
+        if (updated == 0) {
+            return false;
+        }
+
         List<Op> generated = registry.get(documentId).withLock(document -> {
             Range range = rangeOf(document, markType, suggestionId.toString());
             if (range == null) {
@@ -205,15 +241,6 @@ public class SuggestionService {
             }
             return ops;
         });
-
-        int updated = jdbc.update("""
-            UPDATE suggestions
-               SET resolved_at = now(), resolved_by = ?, resolution = ?
-             WHERE id = ? AND doc_id = ? AND resolved_at IS NULL
-            """, userId, accept ? "accepted" : "rejected", suggestionId, documentId);
-        if (updated == 0) {
-            return false;
-        }
 
         publish(documentId, generated);
         log.info("Suggestion {} {} by {}", suggestionId, accept ? "accepted" : "rejected", userId);
@@ -266,6 +293,22 @@ public class SuggestionService {
 
     // ------------------------------------------------------------------
 
+    /**
+     * Writes the suggestion row.
+     *
+     * <h2>Why every path here writes the row BEFORE touching the replica</h2>
+     * Operations applied to the in-memory replica are only durable once {@code publish} hands
+     * them to {@code DocumentService}, which writes and broadcasts them. Anything that throws
+     * between the two leaves the server's document holding text nobody else has and nothing can
+     * reproduce — the state diverges from its own log, and the divergence surfaces at the next
+     * restart, as text disappearing.
+     *
+     * <p>With the row first, the same failure produces a suggestion listed as unanchored: a
+     * proposal that cannot be applied, which is visible, resolvable, and true.
+     *
+     * <p>The rule is the same one ADR-0003 applies to the acknowledgement: when two orderings
+     * both have a failure window, take the one whose failure is the smaller lie.
+     */
     private void record(UUID suggestionId, UUID documentId, String authorId, Kind kind,
                         String quoted) {
         jdbc.update("""

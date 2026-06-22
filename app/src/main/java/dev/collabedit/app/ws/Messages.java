@@ -147,19 +147,23 @@ public final class Messages {
     }
 
     /**
-     * Somebody's access to this document changed (CP21).
+     * Access to this document changed — <b>and deliberately says nothing else</b> (CP21).
      *
      * <p>Sent on {@code /topic/doc/{id}/access} after a grant, a revocation or a visibility
-     * change. The client does not trust the contents — it re-asks the server what its role is
-     * now. That is not caution for its own sake: the frame reaches every subscriber, so treating
-     * it as an authority would mean one client's role arriving over a channel anybody in the
-     * document can hear.
+     * change. Every client re-asks the server what its own role is now.
      *
-     * @param userId the person affected, or {@code null} for "everybody re-check", which is what
-     *               a visibility change is
-     * @param role   the new role, or {@code null} when access was taken away
+     * <p>The first version carried the affected user's identifier and their new role, and a
+     * review of CP21 found that this contradicted the checkpoint's own decision one file away:
+     * reading the member list requires {@code MANAGE_ACCESS}, because "who has access to this" is
+     * a different question from "what does this say". Broadcasting a name and a role to every
+     * subscriber answered that question for anybody holding the document open — including
+     * viewers, and including about people who are not in the room.
+     *
+     * <p>The cost of an empty frame is one small request per connected client per access change,
+     * which is a rare event. The alternative was a channel that leaks exactly what the endpoint
+     * beside it refuses to hand out.
      */
-    public record AccessChanged(String userId, String role) {
+    public record AccessChanged() {
     }
 
     /**

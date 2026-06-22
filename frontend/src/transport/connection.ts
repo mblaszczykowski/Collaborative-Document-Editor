@@ -50,16 +50,14 @@ export interface ConnectionHandlers {
   onStateChange: (state: ConnectionState, pendingCount: number) => void
   onError: (code: string, message: string) => void
   /**
-   * Somebody's access to this document changed (CP21).
+   * Access to this document changed (CP21).
    *
-   * The message does NOT carry this client's new role in a form worth trusting — it goes to
-   * the document topic, so every participant hears it. All the client learns from it is that
-   * it should ask the server about ITS OWN role.
-   *
-   * @param userId the person affected; `null` means "everybody re-check", which is what a
-   *               visibility change looks like
+   * The frame carries nothing, and that is the point: it goes to the document topic, so every
+   * participant hears it, and "who was granted what" is precisely what the access endpoints
+   * refuse to hand out without permission to manage access. All a client learns is that it
+   * should ask the server about ITS OWN role.
    */
-  onAccessChanged: (userId: string | null) => void
+  onAccessChanged: () => void
 }
 
 export class DocumentConnection {
@@ -176,9 +174,8 @@ export class DocumentConnection {
       client.subscribe(`/topic/doc/${this.documentId}/presence`, (message) =>
         this.onPresence(message),
       ),
-      client.subscribe(`/topic/doc/${this.documentId}/access`, (message) => {
-        const change = JSON.parse(message.body) as { userId: string | null }
-        this.handlers.onAccessChanged(change.userId)
+      client.subscribe(`/topic/doc/${this.documentId}/access`, () => {
+        this.handlers.onAccessChanged()
       }),
       client.subscribe('/user/queue/session', (message) => {
         const info = JSON.parse(message.body) as { replicaId: number }

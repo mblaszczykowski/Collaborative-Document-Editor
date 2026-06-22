@@ -112,6 +112,33 @@ class ContentSearchIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("a document too large for a tsvector is still indexed, up to the bound")
+    void aVeryLargeDocumentDoesNotBreakTheSnapshotPath() {
+        UUID document = newDocument("Huge");
+        String needle = "needle" + System.nanoTime();
+
+        // Postgres refuses a string of about a megabyte with "string is too long for tsvector",
+        // and this call sits on the SNAPSHOT path. The failure would not lose data — the snapshot
+        // is written first — and would do something worse: `snapshotTaken()` never runs, so the
+        // sweep re-snapshots the same document every second, forever.
+        // DISTINCT words, not one word repeated: the limit is on the resulting tsvector, and a
+        // repeated word compresses to a single lexeme with positions. Prose has hundreds of
+        // thousands of distinct forms in a document this size, and that is what overflows.
+        StringBuilder builder = new StringBuilder(needle).append(' ');
+        for (int i = 0; i < 200_000; i++) {
+            builder.append("wyraz").append(i).append(' ');
+        }
+        String huge = builder.toString();
+        assertThat(huge.length()).isGreaterThan(1_000_000);
+
+        catalog.updatePreview(document, huge);
+
+        assertThat(catalog.search(needle, 20))
+            .extracting(DocumentCatalog.DocumentSummary::id)
+            .contains(document);
+    }
+
+    @Test
     @DisplayName("a renamed document is searchable under its new name at once")
     void renamingIsVisibleToSearchImmediately() {
         UUID document = newDocument("Before" + System.nanoTime());

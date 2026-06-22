@@ -272,7 +272,12 @@ public class DocumentStompController {
         int bytes = 0;
 
         for (StoredOperation stored : operations) {
-            int size = OpCodec.encode(stored.op()).length();
+            // Bytes, not characters. The budget is a FRAME size and a frame is bytes, while
+            // `String.length()` counts UTF-16 units — for Polish text that is about 10% short,
+            // for CJK three times short. The margin (half the frame limit) hid it; a document in
+            // a non-Latin script would have found it in production instead.
+            int size = OpCodec.encode(stored.op())
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
             if (!current.isEmpty() && bytes + size > budget) {
                 chunks.add(current);
                 current = new java.util.ArrayList<>();
