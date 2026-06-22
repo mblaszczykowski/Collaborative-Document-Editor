@@ -1,729 +1,740 @@
-# Plan v3 — z czujności w konstrukcję
+# Plan v3 — from vigilance to construction
 
-> **Status: CP16–CP20 zamknięte, §0 w większości nie. Audyt końcowy w [§10](#10-audyt-końcowy--po-cp20).** Następca [`PLAN-v2.md`](PLAN-v2.md) (CP10–CP15,
-> zamknięty) i [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) (CP1–CP9, zamknięty).
+> **Status: CP16–CP20 closed, §0 mostly not. The final audit is in [§10](#10-final-audit--after-cp20).** The successor to [`PLAN-v2.md`](PLAN-v2.md) (CP10–CP15,
+> closed) and [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) (CP1–CP9, closed).
 >
-> | Checkpoint | Stan |
+> | Checkpoint | State |
 > |---|---|
-> | §0 — Dotarcie (hosting, język, kondensacja README) | **w ~15 %** — patrz [audyt](#101-niezrobione--i-to-jest-najważniejsza-część-tego-audytu) |
-> | CP16 — Autoryzacja wymuszona strukturalnie | **zamknięty** — przy okazji znaleziona czwarta dziura tej samej klasy |
-> | CP17 — Deterministyczna symulacja | **zamknięty** — 806 scenariuszy < 1 s; zero błędów w systemie, trzy w samej symulacji |
-> | CP18 — Blok bez treści, format snapshotu v3 | **zamknięty** — odzysk GC z 0 % na 100 % |
-> | CP19 — Bramka regresji wydajności + automatyzacja bezpieczeństwa | **zamknięty inaczej** — bramka na kształt złożoności, bo progu na milisekundy nie dało się obronić |
-> | CP20 — Zamiatanie w `MarkSet` + zaległe długi | **zamknięty częściowo** — `MarkSet` i `retry-after` zrobione, cztery długi nie |
+> | §0 — Reach (hosting, language, condensing the README) | **~15 %** — see the [audit](#101-not-done--and-this-is-the-most-important-part-of-this-audit) |
+> | CP16 — Structurally enforced authorization | **closed** — a fourth hole of the same class was found along the way |
+> | CP17 — Deterministic simulation | **closed** — 806 scenarios in < 1 s; zero bugs in the system, three in the simulation itself |
+> | CP18 — A block without content, snapshot format v3 | **closed** — GC reclamation from 0 % to 100 % |
+> | CP19 — A performance regression gate + security automation | **closed differently** — a gate on the shape of the complexity, because a threshold in milliseconds could not be defended |
+> | CP20 — Sweeping in `MarkSet` + outstanding debts | **partially closed** — `MarkSet` and `retry-after` done, four debts not |
 >
-> Zasady prowadzenia dokumentu przejęte z v1 i v2 bez zmian: jeśli decyzja z planu okaże się
-> zła w praktyce, poprawiamy **tutaj** i commitujemy zmianę planu razem z powodem.
+> The rules for keeping this document are carried over from v1 and v2 unchanged: if a decision from
+> the plan turns out badly in practice, we fix it **here** and commit the plan change together with
+> the reason.
 >
-> Sekcja „audyt końcowy" (§10) jest **wypełniona**: przejście punkt po punkcie przeciw kodowi.
-> W v2 takie przejście znalazło otwarty endpoint historii; tutaj znalazło czwartą dziurę tej
-> samej klasy jeszcze przed pierwszym checkpointem, jedno twierdzenie z README obalone własnym
-> pomiarem i siedem usterek w kodzie napisanym w ramach tego planu.
+> The "final audit" section (§10) is **filled in**: a point-by-point pass against the code. In v2
+> such a pass found an open history endpoint; here it found a fourth hole of the same class before
+> the first checkpoint, one claim in the README refuted by our own measurement, and seven defects in
+> code written under this plan.
 
 ---
 
-## Teza — czym v3 różni się od v2
+## The thesis — how v3 differs from v2
 
-v1 była **wąskim artefaktem**: jeden dokument, jeden problem, maksymalna głębia.
-v2 była **zmianą tezy**: rich text, komentarze, uprawnienia, wiele dokumentów — dowód,
-że rdzeń unosi produkt.
+v1 was a **narrow artifact**: one document, one problem, maximum depth. v2 was a **change of
+thesis**: rich text, comments, permissions, many documents — proof that the core can carry a
+product.
 
-v3 **nie zmienia tezy i nie dokłada ani jednej funkcji produktowej.** Ma jeden motyw
-przewodni, i wszystkie sześć pozycji spełniają go bez wyjątku:
+v3 **does not change the thesis and adds not one product feature.** It has a single organising
+theme, and all six items satisfy it without exception:
 
-> **Wszędzie tam, gdzie system dziś polega na tym, że ktoś pamięta, zauważy albo trafi —
-> zastąpić to konstrukcją, która nie pozwala inaczej.**
+> **Wherever the system today relies on somebody remembering, noticing or happening to hit
+> something — replace it with a construction that does not allow otherwise.**
 
-| Dziś polegamy na tym, że… | v3 zastępuje to… |
+| Today we rely on… | v3 replaces it with… |
 |---|---|
-| ktoś sklonuje repo i uruchomi `docker compose` | działającym linkiem (§0) |
-| autor nowego kontrolera pamięta o sprawdzeniu uprawnień | testem architektury wywalającym build (CP16) |
-| test chaosu **trafi** w złe uszeregowanie zdarzeń | ziarnem, które je odtwarza (CP17) |
-| GC coś odzyska, choć pomiar mówi, że nie odzyskuje nic | reprezentacją, w której blok oddaje pamięć bez zbierania (CP18) |
-| ktoś zauważy, że liczba w README się pogorszyła | bramką CI porównującą z baseline'em (CP19) |
-| dokumenty pozostaną małe, bo przy dużych `MarkSet` zwalnia | złożonością `O(m log m)` zamiast `O(m²)` (CP20) |
+| somebody cloning the repository and running `docker compose` | a working link (§0) |
+| the author of a new controller remembering to check permissions | an architecture test that fails the build (CP16) |
+| the chaos test **happening to hit** a bad event ordering | a seed that reproduces it (CP17) |
+| GC reclaiming something, even though the measurement says it reclaims nothing | a representation in which a block gives memory back without being collected (CP18) |
+| somebody noticing that a number in the README got worse | a CI gate comparing against a baseline (CP19) |
+| documents staying small, because `MarkSet` slows down on large ones | `O(m log m)` complexity instead of `O(m²)` (CP20) |
 
-To jest ta sama zasada, którą projekt zastosował już raz i opisał w README: *„zabezpieczenie
-oparte na tym, że ktoś pamięta o punkcie z dokumentu, nie jest zabezpieczeniem"*. v3 rozciąga
-ją z autoryzacji na cały system.
+This is the same principle the project already applied once and described in the README: *"a
+protection resting on somebody remembering a point from a document is not a protection"*. v3
+extends it from authorization to the whole system.
 
-**Czego v3 świadomie nie robi: nie dokłada zakresu.** [ADR-0008](adr/0008-scope-extension.md)
-postawił warunek, że każda nowa funkcja ma wnosić własny problem inżynierski. Po CP15 nie
-zostały już funkcje spełniające ten warunek — zostały **domknięcia**, i to jest cały ten plan.
+**What v3 deliberately does not do: it adds no scope.** [ADR-0008](adr/0008-scope-extension.md)
+set the condition that every new feature has to bring its own engineering problem. After CP15 there
+were no features left satisfying that condition — what was left were **closures**, and that is this
+entire plan.
 
 ---
 
-## 0. Dotarcie — zanim ruszy CP16
+## 0. Reach — before CP16 begins
 
-Ta sekcja nie jest inżynierią i celowo stoi przed checkpointami. Powód jest niewygodny,
-ale prawdziwy: **wszystko, co zbudowały v1 i v2, jest dziś dostępne wyłącznie dla kogoś,
-kto sklonuje repozytorium i poczeka kilka minut na Mavena.** Recenzent z trzema minutami
-tego nie zrobi. Najlepiej udowodniona teza świata nie działa, jeśli nikt nie dochodzi
-do punktu, w którym ją widać.
+This section is not engineering and deliberately stands before the checkpoints. The reason is
+uncomfortable but true: **everything v1 and v2 built is today available only to somebody who clones
+the repository and waits a few minutes for Maven.** A reviewer with three minutes will not do that.
+The best-proven thesis in the world does nothing if nobody reaches the point where it can be seen.
 
-### 0.1 Hostowana instancja
+### 0.1 A hosted instance
 
-PLAN-v2 §11 wymienia to jako niezrobione (*„Docker Compose uruchamia całość jedną komendą;
-hostingu nie ma"*). Do zrobienia: jedna instancja na Fly.io albo Railway, link **nad
-pierwszym GIF-em** w README.
+PLAN-v2 §11 lists this as not done (*"Docker Compose brings the whole thing up with one command;
+there is no hosting"*). To do: one instance on Fly.io or Railway, with a link **above the first
+GIF** in the README.
 
-**Trzy rzeczy do rozstrzygnięcia przy okazji, bo inaczej hosting zaszkodzi bardziej,
-niż pomoże:**
+**Three things to settle at the same time, because otherwise hosting does more harm than good:**
 
-1. **Zimny start.** Darmowe plany usypiają kontenery. Pierwsze żądanie po uśpieniu to
-   10–30 s białego ekranu — czyli dokładnie ten czas, po którym recenzent zamyka kartę,
-   i **gorsze wrażenie niż brak linku**. Albo najtańszy plan bez usypiania, albo pinger,
-   albo świadoma rezygnacja. GIF-y zostają w README niezależnie od decyzji, jako plan B.
-2. **Dane demonstracyjne.** Instancja publiczna z jednym dokumentem, w którym każdy pisze
-   po każdym, po tygodniu jest nieczytelna. Potrzebny reset (`tools/reset-demo-data.sh`
-   już istnieje) uruchamiany cyklicznie.
-3. **Sekret tokenu.** `TokenService` ma domyślny sekret `rozwojowy-sekret-nie-do-produkcji`.
-   Na instancji publicznej musi przyjechać ze zmiennej środowiskowej — inaczej **każdy,
-   kto przeczyta repo, wystawia sobie token dowolnego użytkownika**. To jest jedyny punkt
-   tej sekcji, który jest realną dziurą, a nie kwestią odbioru.
+1. **Cold start.** Free plans put containers to sleep. The first request after a sleep is 10–30 s
+   of a white screen — exactly the interval after which a reviewer closes the tab, and **a worse
+   impression than no link at all**. Either the cheapest plan without sleeping, or a pinger, or a
+   deliberate decision not to. The GIFs stay in the README regardless, as plan B.
+2. **Demo data.** A public instance with one document that everybody types over becomes unreadable
+   within a week. A reset is needed (`tools/reset-demo-data.sh` already exists), run on a schedule.
+3. **The token secret.** `TokenService` has a default secret of
+   `rozwojowy-sekret-nie-do-produkcji`. On a public instance it has to arrive from an environment
+   variable — otherwise **anyone who reads the repository can mint a token for any user**. This is
+   the only point in this section that is a real hole rather than a matter of perception.
 
-### 0.2 Decyzja językowa
+### 0.2 The language decision
 
-README, wszystkie ADR-y, komentarze w kodzie i komunikaty commitów są po polsku. To nie jest
-wada — to jest **rozwidlenie, które trzeba wybrać świadomie, a nie przez inercję**:
+The README, all the ADRs, the code comments and the commit messages are in Polish. That is not a
+flaw — it is **a fork in the road that has to be chosen deliberately rather than by inertia**:
 
-| Wybór | Konsekwencja |
+| Choice | Consequence |
 |---|---|
-| Zostaje po polsku | Rynek PL. Komentarze tej jakości po polsku są wyróżnikiem, nie obciążeniem |
-| Wszystko po angielsku | Rynek zdalny. Koszt: przepisanie ~4 000 linii dokumentacji, ryzyko utraty precyzji |
-| **README + indeks ADR po angielsku, reszta po polsku** | Sygnalizuje dwujęzyczność zamiast ukrywać głębię. Koszt ~1 dzień |
+| Stay in Polish | The Polish market. Comments of this quality in Polish are a differentiator, not a burden |
+| Everything in English | The remote market. The cost: rewriting ~4 000 lines of documentation, with a risk of losing precision |
+| **README + ADR index in English, the rest in Polish** | Signals bilingualism rather than hiding the depth. Cost ~1 day |
 
-Rekomendacja: trzecia opcja, jeśli celem jest rynek zdalny; pierwsza, jeśli PL. **Nie ma
-tu dobrej odpowiedzi bez wiedzy, której ten dokument nie ma** — decyzja należy do autora
-i powinna zostać wpisana tutaj, razem z powodem.
+The recommendation: the third option if the goal is the remote market; the first if it is Poland.
+**There is no good answer here without knowledge this document does not have** — the decision
+belongs to the author and should be written in here, together with the reason.
 
-#### DECYZJA (podjęta przez autora): **angielski**, opcja druga
+#### THE DECISION (taken by the author): **English**, the second option
 
-Cel to rynek zdalny, więc język przestaje być wyróżnikiem, a zaczyna być filtrem
-odcinającym czytelników. Wybrana została opcja **pełna, nie kompromisowa** — bo repozytorium
-w dwóch językach naraz czyta się gorzej niż w każdym z nich osobno: czytelnik trafiający
-z angielskiego README na polski komentarz w kodzie dostaje sygnał „tu się kończy to,
-co dla ciebie napisano".
+The goal is the remote market, so the language stops being a differentiator and starts being a
+filter that cuts readers off. The **full option was chosen, not the compromise** — because a
+repository in two languages at once reads worse than in either of them alone: a reader arriving
+from an English README at a Polish comment in the code gets the signal "this is where what was
+written for you ends".
 
-**Kolejność migracji — od najczęściej czytanego do najrzadziej**, bo migracja tej wielkości
-nie dzieje się jednym commitem i w trakcie repozytorium **będzie** niespójne:
+**The order of migration — from most to least frequently read**, because a migration of this size
+does not happen in one commit and the repository **will** be inconsistent along the way:
 
-| # | Co | Dlaczego w tej kolejności |
+| # | What | Why in this order |
 |---|---|---|
-| 1 | `README.md` | Drzwi wejściowe. Czyta je 100 % odwiedzających, resztę — ułamek |
-| 2 | `docs/adr/` | Druga rzecz, do której prowadzi README, i główny dowód na świadomość decyzji |
-| 3 | Komentarze w kodzie i javadoc | Największa objętość, ale czytelnik dochodzi tu dopiero po 1 i 2 |
-| 4 | `docs/architecture.md`, `docs/crdt-design.md` | Jw. |
-| 5 | Plany (`IMPLEMENTATION_PLAN.md`, `PLAN-v2.md`, ten plik) | **Ostatnie i być może wcale.** To jest seria historyczna — zapis tego, co myślano w danym momencie. Tłumaczenie zapisu historycznego niesie ryzyko, że przy okazji „poprawi się" wnioski, które wtedy brzmiały inaczej |
+| 1 | `README.md` | The front door. 100 % of visitors read it; a fraction read the rest |
+| 2 | `docs/adr/` | The second place the README leads to, and the main evidence of deliberate decisions |
+| 3 | Code comments and javadoc | The largest volume, but a reader only gets here after 1 and 2 |
+| 4 | `docs/architecture.md`, `docs/crdt-design.md` | As above |
+| 5 | The plans (`IMPLEMENTATION_PLAN.md`, `PLAN-v2.md`, this file) | **Last, and perhaps not at all.** This is a historical series — a record of what was thought at a given moment. Translating a historical record carries the risk of "improving" conclusions that read differently at the time |
 
-**Nowa treść od tego commita powstaje po angielsku** — kod, testy, ADR-y i komunikaty
-commitów. Ten dokument zostaje po polsku zgodnie z wierszem 5, jako część serii z v1 i v2.
+**New content from this commit onwards is written in English** — code, tests, ADRs and commit
+messages. This document stays in Polish per row 5, as part of the series with v1 and v2.
 
-**Konsekwencja negatywna, wpisana świadomie:** przez czas trwania migracji repozytorium jest
-dwujęzyczne, czyli dokładnie w stanie, który powyżej nazwano najgorszym. Jest to koszt
-przejścia, nie stan docelowy — ale gdyby migracja utknęła w połowie, byłby to najgorszy
-możliwy wynik tej decyzji. Punkt kontrolny: jeśli po CP20 wiersze 1–3 nie są zrobione,
-**lepiej wrócić do polskiego w całości** niż zostawić repozytorium w połowie drogi.
+**A negative consequence, accepted deliberately:** for the duration of the migration the repository
+is bilingual, that is, in exactly the state described above as the worst. That is a cost of
+transition rather than a target state — but if the migration stalled halfway, that would be the
+worst possible outcome of this decision. A checkpoint: if rows 1–3 are not done after CP20, **it is
+better to go back to Polish entirely** than to leave the repository halfway.
 
-**Dlaczego to nie dostaje ADR-a:** ADR-y w tym projekcie opisują decyzje architektoniczne.
-Język dokumentacji i wybór hostingu to decyzje redakcyjne i operacyjne. Pisanie ADR-a
-dla wszystkiego jest tym samym błędem co stosowanie CRDT tam, gdzie nie ma współbieżnej
-edycji ([ADR-0011](adr/0011-comments.md)) — kosztem bez korzyści.
+> **UPDATE (2026-08-16): row 5 was superseded.** The author decided the migration was to be
+> complete — the plans included — and that anything left in Polish was a mistake rather than a
+> deliberate historical record. So this document is now in English too, and the "perhaps not at
+> all" above describes a decision that no longer holds. The risk named in that row is real and the
+> mitigation was to translate rather than rewrite: the conclusions stay as they were, including the
+> ones that later proved wrong.
 
-### 0.3 Kondensacja README
+**Why this does not get an ADR:** the ADRs in this project describe architectural decisions. The
+language of the documentation and the choice of hosting are editorial and operational decisions.
+Writing an ADR for everything is the same mistake as applying a CRDT where there is no concurrent
+editing ([ADR-0011](adr/0011-comments.md)) — a cost with no benefit.
 
-README ma **630 linii**, a sekcja „co zrobiłbym inaczej w produkcji" — około trzydziestu
-punktów. Sekcja jest jednym z najmocniejszych elementów tego repozytorium i **nie wolno jej
-usunąć ani skrócić co do treści.** Ale istnieje próg, powyżej którego uczciwość co do granic
-zaczyna się czytać jako lista rzeczy, które nie działają, i trzydzieści punktów jest już
-za tym progiem.
+### 0.3 Condensing the README
 
-Do zrobienia bez utraty ani jednego zdania: 4–5 najciekawszych pozycji zostaje na wierzchu,
-reszta trafia do `<details>`. Zmiana czysto redakcyjna, odbiór inny.
+The README is **630 lines**, and the "what I would do differently in production" section has about
+thirty points. That section is one of the strongest elements of this repository and **must not be
+removed or cut in substance.** But there is a threshold above which honesty about boundaries starts
+to read as a list of things that do not work, and thirty points is past that threshold.
 
-**Po CP16–CP20 ta sekcja i tak wymaga przejścia**, bo pięć jej pozycji zostanie zamkniętych.
-Konwencja domu obowiązuje: **przekreślić, nie usuwać**, razem z tym, co się przy okazji
-potwierdziło i co okazało się nieprawdą.
+To be done without losing a single sentence: the 4–5 most interesting items stay on the surface,
+the rest go into a `<details>`. A purely editorial change, with a different reception.
 
----
-
-## 1. Kolejność i dlaczego akurat taka
-
-Tylko jedna zależność jest twarda, reszta to kolejność wg zwrotu:
-
-```
-§0    Dotarcie ─────────────────┐  Nie blokuje niczego technicznie, ale każdy dzień
-      (hosting, język, README)  │  bez linku to dzień, w którym gotowa praca jest
-                                │  niewidoczna. Dlatego pierwsze, nie ostatnie.
-                                ▼
-CP16  Autoryzacja ──────────────┐  ZALEŻNOŚĆ TWARDA, i to podwójna:
-      strukturalnie             │  (a) hosting publiczny bez tego wystawia
-                                │      model uprawnień, który trzyma się
-                                │      czujności autora — a ta zawiodła
-                                │      już dwa razy (CP11, HistoryController);
-                                │  (b) CP18 rusza reprezentację bloku, więc
-                                │      chcemy mieć testy dostępu zabetonowane
-                                │      ZANIM ruszy się rdzeń.
-                                ▼
-CP17  Deterministyczna ─────────┐  Przed CP18, nie po. DST ma być narzędziem
-      symulacja                 │  DO przeprojektowania bloku, a nie sposobem
-                                │  sprawdzenia po fakcie, czy się udało.
-                                │  Odwrotna kolejność marnuje jego jedyną
-                                │  przewagę: odtwarzalność awarii.
-                                ▼
-CP18  Blok bez treści ──────────┐  Jedyna zmiana w rdzeniu w całym planie.
-      (snapshot v3)             │  Po niej wszystkie liczby wydajnościowe
-                                │  opisują inny system — dokładnie tak jak
-                                │  po CP13.
-                                ▼
-CP19  Bramka regresji ──────────┐  Musi być PO CP18, bo baseline zdjęty przed
-      + bezpieczeństwo          │  zmianą rdzenia byłby baseline'em systemu,
-                                │  którego już nie ma.
-                                ▼
-CP20  MarkSet + długi              Niezależny od wszystkiego powyżej.
-                                   Celowo ostatni: to jest jedyny checkpoint,
-                                   który da się bezboleśnie uciąć, jeśli
-                                   budżet się skończy.
-```
-
-**Sensowne punkty zatrzymania**, gdyby budżet nie starczył na całość: koniec CP16 (projekt
-bezpieczny do wystawienia publicznie) albo koniec CP17 (nowy filar testowy, spójna całość).
-**Zatrzymanie w środku CP18 nie jest punktem zatrzymania** — reprezentacja bloku byłaby
-rozjechana między Javą a TypeScriptem, a korpus konformancyjny przestałby cokolwiek chronić.
+**After CP16–CP20 that section needs a pass anyway**, because five of its items will be closed. The
+house convention applies: **strike through, do not delete**, together with what was confirmed along
+the way and what turned out to be untrue.
 
 ---
 
-## 2. CP16 — Autoryzacja wymuszona strukturalnie (2–2,5 dnia)
+## 1. The order, and why this one
 
-### 2.1 Problem
+Only one dependency is hard; the rest is an ordering by return:
 
-Autoryzacja jest dziś sprawdzana w **około piętnastu miejscach w czterech plikach**:
+```
+§0    Reach ─────────────────────┐  It blocks nothing technically, but every day
+      (hosting, language, README)│  without a link is a day in which finished work
+                                 │  is invisible. Hence first, not last.
+                                 ▼
+CP16  Authorization ─────────────┐  A HARD DEPENDENCY, and a double one:
+      structurally               │  (a) public hosting without it exposes a
+                                 │      permission model resting on the author's
+                                 │      vigilance — which has already failed
+                                 │      twice (CP11, HistoryController);
+                                 │  (b) CP18 touches the block representation, so
+                                 │      we want the access tests set in concrete
+                                 │      BEFORE the core moves.
+                                 ▼
+CP17  Deterministic ─────────────┐  Before CP18, not after. DST is to be a tool
+      simulation                 │  FOR redesigning the block, not a way of
+                                 │  checking after the fact whether it worked.
+                                 │  The reverse order wastes its one advantage:
+                                 │  reproducible failures.
+                                 ▼
+CP18  A block without content ───┐  The only change to the core in the whole plan.
+      (snapshot v3)              │  After it, every performance number describes
+                                 │  a different system — exactly as after CP13.
+                                 ▼
+CP19  A regression gate ─────────┐  It has to come AFTER CP18, because a baseline
+      + security                 │  taken before the core changed would be the
+                                 │  baseline of a system that no longer exists.
+                                 ▼
+CP20  MarkSet + debts               Independent of everything above. Deliberately
+                                    last: it is the one checkpoint that can be cut
+                                    painlessly if the budget runs out.
+```
+
+**Sensible stopping points** if the budget did not stretch to the whole: the end of CP16 (a project
+safe to expose publicly) or the end of CP17 (a new testing pillar, a coherent whole). **Stopping in
+the middle of CP18 is not a stopping point** — the block representation would be out of step
+between Java and TypeScript, and the conformance corpus would stop protecting anything.
+
+---
+
+## 2. CP16 — Structurally enforced authorization (2–2.5 days)
+
+### 2.1 The problem
+
+Authorization is today checked in **about fifteen places across four files**:
 `DocumentRestController`, `HistoryController`, `CommentController`, `DocumentAccessInterceptor`.
-Każde sprawdzenie z osobna jest poprawne. Nic nie wymusza istnienia następnego.
+Every check on its own is correct. Nothing forces the next one to exist.
 
-Ta klasa błędu **ugryzła ten projekt dwa razy**:
+This class of bug **has bitten this project twice**:
 
-1. CP11 otworzył IDOR-a (znajomość identyfikatora = dostęp do dokumentu), CP12 go zamknął
-   w dwóch warstwach;
-2. `HistoryController` **nie sprawdzał uprawnień w ogóle** przez cały checkpoint — trzy
-   endpointy, w tym pełny odczyt treści cudzego dokumentu i jego nadpisanie. Znalazł to
-   dopiero audyt końcowy planu, mimo że plan wymieniał tę ścieżkę wprost.
+1. CP11 opened an IDOR (knowing an identifier = access to the document), and CP12 closed it in two
+   layers;
+2. `HistoryController` **checked no permissions at all** for a whole checkpoint — three endpoints,
+   including a full read of somebody else's document content and overwriting it. Only the plan's
+   final audit found it, even though the plan named that path explicitly.
 
-README nazywa właściwe rozwiązanie i nazywa je dobrze:
+The README names the right solution, and names it well:
 
-> *„jedna reguła na wszystkie ścieżki `/api/documents/{id}/**`, wymuszona filtrem albo
-> `@PreAuthorize` — czyli miejsce, w którym pominięcie sprawdzenia wymaga świadomej decyzji,
-> a nie przeoczenia"*
+> *"one rule for every `/api/documents/{id}/**` path, enforced by a filter or `@PreAuthorize` —
+> that is, a place where skipping the check requires a deliberate decision rather than an
+> oversight"*
 
-### 2.2 Decyzja — i dlaczego o krok dalej, niż mówi README
+### 2.2 The decision — and why a step further than the README says
 
-Sama centralizacja **nie jest wystarczająca**, bo nie broni przed endpointem, który po prostu
-nie pasuje do wzorca ścieżki. Dokładnie tak zniknął `HistoryController`: był zamontowany pod
-`/api/documents/{documentId}/history`, czyli w miejscu, w którym reguła by go objęła — gdyby
-reguła istniała. Ale następny może wylądować pod `/api/threads/...` i znów nikt tego
-nie zauważy.
+Centralisation alone is **not sufficient**, because it does not defend against an endpoint that
+simply does not match the path pattern. That is exactly how `HistoryController` disappeared: it was
+mounted under `/api/documents/{documentId}/history`, that is, in a place a rule would have covered
+— had the rule existed. But the next one may land under `/api/threads/...` and again nobody will
+notice.
 
-Dlatego CP16 to **dwie rzeczy, nie jedna**:
+So CP16 is **two things, not one**:
 
-**(a) Jedna reguła.** Filtr albo `@PreAuthorize` na `/api/documents/{id}/**`, wyliczający
-rolę raz i wstawiający ją do kontekstu żądania. Kontrolery przestają wołać `PermissionService`
-i zaczynają czytać gotową rolę.
+**(a) One rule.** A filter or `@PreAuthorize` on `/api/documents/{id}/**`, resolving the role once
+and putting it into the request context. The controllers stop calling `PermissionService` and start
+reading a role that is already there.
 
-**(b) Test architektury, który wywala build.** ArchUnit (nowa zależność, tylko testowa):
+**(b) An architecture test that fails the build.** ArchUnit (a new dependency, test-scope only):
 
-- każda metoda z adnotacją `@GetMapping`/`@PostMapping`/… w pakiecie `app` **albo** jest
-  pokryta regułą ścieżkową, **albo** ma jawną adnotację `@PublicEndpoint` z uzasadnieniem;
-- to samo dla `@MessageMapping`;
-- lista endpointów publicznych jest **wypisana w teście**, więc dodanie nowego wymaga
-  dopisania go tam — czyli świadomej decyzji, dokładnie tak jak chce README.
+- every method annotated `@GetMapping`/`@PostMapping`/… in the `app` package is **either** covered
+  by the path rule **or** carries an explicit `@PublicEndpoint` annotation with a justification;
+- the same for `@MessageMapping`;
+- the list of public endpoints is **spelled out in the test**, so adding a new one requires adding
+  it there — a deliberate decision, exactly as the README wants.
 
-Trzy endpointy są dziś legalnie publiczne i trafiają na tę listę: `POST /api/login`,
-`GET /api/documents` (filtruje po uprawnieniach w środku, bo lista musi zwrócić „to,
-co widzisz", a nie 403), `POST /api/documents`.
+Three endpoints are legitimately public today and go on that list: `POST /api/login`,
+`GET /api/documents` (it filters by permission internally, because a list has to return "what you
+can see" rather than a 403), and `POST /api/documents`.
 
-**ADR-0012 — autoryzacja wymuszona strukturalnie.** Do napisania przed kodem, układ jak
-w pozostałych. Konsekwencje negatywne do opisania szczerze, bo są realne:
+**ADR-0012 — structurally enforced authorization.** To be written before the code, in the same
+layout as the others. The negative consequences to describe honestly, because they are real:
 
-- reguła ścieżkowa jest **mniej czytelna w punkcie użycia** niż jawne `if` w kontrolerze —
-  czytelnik kontrolera nie widzi już, co go chroni;
-- `commenter` wymaga zaglądania w treść ramki (README, „autoryzacja zagląda w treść ramki"),
-  a tego reguła ścieżkowa nie rozwiązuje — zostaje w interceptorze i zostaje długiem;
-- ArchUnit to zależność, która **potrafi wywalić build z powodu zmiany nazwy pakietu**,
-  czyli fałszywy alarm w zamian za prawdziwe.
+- a path rule is **less legible at the point of use** than an explicit `if` in the controller — a
+  reader of the controller no longer sees what protects it;
+- `commenter` requires looking inside the frame's body (README, "authorization looks inside the
+  frame"), and a path rule does not solve that — it stays in the interceptor and stays a debt;
+- ArchUnit is a dependency that **can fail the build because a package was renamed**, that is, a
+  false alarm in exchange for the true ones.
 
-### 2.3 Znalezione przy pisaniu tego planu — `POST /api/documents/recovered`
+### 2.3 Found while writing this plan — `POST /api/documents/recovered`
 
-**Sprawdzone przeciw kodowi, nie podejrzewane.** Ten endpoint ustawia właściciela
-i widoczność `private`, ale **wyłącznie wewnątrz `if (caller != null)`**. A `caller`
-bywa `null` częściej, niż wygląda:
+**Checked against the code, not suspected.** This endpoint sets the owner and `private` visibility,
+but **only inside `if (caller != null)`**. And `caller` is `null` more often than it looks:
 
-1. `TokenAuthFilter` **z założenia nie odrzuca** żądań bez tokenu — *„ustala jedynie
-   tożsamość; decyzję o odmowie podejmuje kontroler"*. To jest świadoma i dobrze
-   udokumentowana decyzja.
-2. Ten konkretny kontroler **decyzji o odmowie nie podejmuje** — nie ma tu żadnego
-   sprawdzenia.
-3. Więc przy nieobecnym **albo wygasłym** tokenie dokument powstaje bez właściciela,
-   a `visibility` przyjmuje wartość domyślną ze schematu: **`'link'`** (`V3__permissions.sql:21`).
-4. A reguła 4 w `PermissionService` mówi: widoczność `link` → **`EDITOR` dla każdego
-   zalogowanego**.
+1. `TokenAuthFilter` **by design does not reject** requests without a token — *"it only establishes
+   identity; the decision to refuse belongs to the endpoint"*. That is a deliberate and
+   well-documented decision.
+2. This particular controller **makes no decision to refuse** — there is no check here at all.
+3. So with an absent **or expired** token the document is created with no owner, and `visibility`
+   takes the schema default: **`'link'`** (`V3__permissions.sql:21`).
+4. And rule 4 in `PermissionService` says: `link` visibility → **`EDITOR` for every logged-in
+   user**.
 
-Czyli szkic, który commit `b5c6ba1` uczynił prywatnym („odzyskany szkic nie jest publiczny"),
-**wraca do bycia edytowalnym przez wszystkich, jeśli tylko żądanie przyjdzie bez ważnego
-tokenu**. Naprawa zamknęła ścieżkę uwierzytelnioną i ominęła nieuwierzytelnioną.
+So a draft that commit `b5c6ba1` made private ("a recovered draft is not public") **goes back to
+being editable by everyone, as long as the request arrives without a valid token**. The fix closed
+the authenticated path and missed the unauthenticated one.
 
-**Dlaczego to nie jest scenariusz teoretyczny — i to jest tu najciekawsze.** Token żyje
-12 godzin (`TokenService.LIFETIME`). Ten endpoint istnieje **wyłącznie po to, żeby obsłużyć
-klienta, który był offline dłużej niż okno GC** (README, failure mode `RESYNC_REQUIRED`,
-okno 7 dni). Populacja, dla której endpoint powstał, to więc dokładnie ta populacja,
-której token na pewno wygasł. Ścieżka nieuwierzytelniona nie jest tu przypadkiem brzegowym —
-jest **przypadkiem typowym**.
+**Why this is not a theoretical scenario — and this is the interesting part.** A token lives 12
+hours (`TokenService.LIFETIME`). This endpoint exists **solely to serve a client that was offline
+longer than the GC window** (README, the `RESYNC_REQUIRED` failure mode, a 7-day window). The
+population the endpoint was written for is therefore exactly the population whose token has
+certainly expired. The unauthenticated path is not an edge case here — it is **the typical case**.
 
-Skutkiem nie jest wyciek cudzych danych (treść podaje sam wywołujący), tylko **odwrotność
-intencji `b5c6ba1`**: prywatna praca ląduje jako dokument otwarty do edycji dla wszystkich,
-w momencie, w którym użytkownik martwi się o jej utratę. Dodatkowo endpoint pozwala tworzyć
-dokumenty **bez jakiegokolwiek uwierzytelnienia**.
+The effect is not a leak of somebody else's data (the caller supplies the content) but **the
+inverse of `b5c6ba1`'s intent**: private work lands as a document open for anyone to edit, at the
+moment the user is worried about losing it. On top of that, the endpoint allows creating documents
+**with no authentication whatsoever**.
 
-**To jest trzecia odsłona tej samej klasy błędu** (po IDOR-ze z CP11 i `HistoryController`),
-i najlepszy możliwy argument za tym, dlaczego CP16 jest w tym planie pierwszy: znalazł ją
-przegląd, a nie test — czyli znowu czujność, a nie konstrukcja. Reguła z §2.2 obejmuje
-`/api/documents/**`, więc zamyka ją **bez pisania osobnej poprawki**; test z listą endpointów
-publicznych pilnuje, żeby nikt jej nie otworzył ponownie.
+**This is the third instance of the same class of bug** (after the CP11 IDOR and
+`HistoryController`), and the best possible argument for why CP16 comes first in this plan: a
+review found it, not a test — that is, vigilance again rather than construction. The rule from §2.2
+covers `/api/documents/**`, so it closes this **without a separate fix**; the test with the list of
+public endpoints keeps anybody from opening it again.
 
-### 2.4 Testy
+### 2.4 Tests
 
-| Test | Jaki realny failure mode wyłapuje |
+| Test | The real failure mode it catches |
 |---|---|
-| `everyDocumentScopedEndpointIsCoveredByTheRule` (ArchUnit) | **Nowy kontroler startuje bez autoryzacji i milczy o tym** — dokładnie `HistoryController` z CP14 |
-| `everyMessageMappingIsCoveredByTheRule` (ArchUnit) | Jw. dla ścieżki WebSocket, którą zamknął CP12 |
-| `publicEndpointsAreExactlyTheseThree` | Ktoś dopisuje endpoint do listy publicznych, żeby uciszyć test — lista jest jawna, więc widać to w diffie |
-| `recoveredDraftIsPrivateEvenWithoutAToken` | **Znalezione w §2.3.** Wygasły token sprawia, że odzyskany szkic powstaje jako `link`, czyli edytowalny dla wszystkich — odwrotność intencji `b5c6ba1`. Test musi jechać **bez nagłówka `Authorization`**, bo tylko ta ścieżka jest dziurawa |
-| `roleIsResolvedOncePerRequest` | Regresja wydajności: reguła + kontroler pytają `PermissionService` dwa razy na żądanie |
-| cały istniejący `PermissionIT` | **Regresja dostępu wprowadzona przez sam refaktor** — to jest główne ryzyko tego checkpointu, patrz §8 |
+| `everyDocumentScopedEndpointIsCoveredByTheRule` (ArchUnit) | **A new controller starts with no authorization and says nothing about it** — exactly `HistoryController` in CP14 |
+| `everyMessageMappingIsCoveredByTheRule` (ArchUnit) | As above for the WebSocket path CP12 closed |
+| `publicEndpointsAreExactlyTheseThree` | Somebody adds an endpoint to the public list to silence the test — the list is explicit, so it shows in the diff |
+| `recoveredDraftIsPrivateEvenWithoutAToken` | **Found in §2.3.** An expired token makes a recovered draft come out as `link`, that is, editable by everyone — the inverse of `b5c6ba1`'s intent. The test has to run **without an `Authorization` header**, because only that path is broken |
+| `roleIsResolvedOncePerRequest` | A performance regression: the rule and the controller each ask `PermissionService`, twice per request |
+| the whole existing `PermissionIT` | **An access regression introduced by the refactor itself** — that is this checkpoint's main risk, see §8 |
 
-**Weryfikacja mutacją, zgodnie z konwencją domu:** usunięcie reguły ma wywalić `PermissionIT`,
-a nie tylko test architektury. Jeśli wywala wyłącznie ArchUnit, znaczy że reguła nie jest
-podpięta do niczego, co ma znaczenie.
+**Mutation verification, per the house convention:** removing the rule has to fail `PermissionIT`,
+not only the architecture test. If it fails only ArchUnit, the rule is not wired to anything that
+matters.
 
 ---
 
-## 3. CP17 — Deterministyczna symulacja (4–6 dni)
+## 3. CP17 — Deterministic simulation (4–6 days)
 
-### 3.1 Problem — najlepiej widać go w `nightly.yml`
+### 3.1 The problem — best seen in `nightly.yml`
 
-Nocny przebieg uruchamia `ClusterChaosIT` **dziesięć razy pod rząd** i szuka niedeterminizmu.
-Komentarz w workflow jest szczery: *„test, który przechodzi raz, mógł przejść przypadkiem;
-test, który przechodzi dziesięć razy pod rząd, jest przesłanką znacznie mocniejszą"*.
+The nightly run executes `ClusterChaosIT` **ten times in a row** and looks for non-determinism. The
+comment in the workflow is honest: *"a test that passes once may have passed by chance; a test that
+passes ten times in a row is much stronger evidence"*.
 
-Przesłanką — nie dowodem. I co ważniejsze: **awaria, gdy w końcu wystąpi, nie jest
-odtwarzalna.** Wynik zależy od uszeregowania wątków i od obciążenia runnera. Debugowanie
-takiego przebiegu polega na uruchamianiu go w pętli i nadziei.
+Evidence — not proof. And more importantly: **the failure, when it eventually happens, is not
+reproducible.** The outcome depends on thread scheduling and on the runner's load. Debugging such a
+run means running it in a loop and hoping.
 
-To jest jedyne miejsce w tym projekcie, gdzie testowanie opiera się na trafieniu.
-Property testy w `crdt-core` już tego problemu nie mają — mają stałe ziarno i determinizm,
-i to jest dokładnie ta własność, której brakuje warstwie rozproszonej.
+This is the one place in this project where testing rests on happening to hit something. The
+property tests in `crdt-core` no longer have that problem — they have a fixed seed and determinism,
+and that is exactly the property the distributed layer lacks.
 
-### 3.2 Decyzja — trzeci filar testowy
+### 3.2 The decision — a third testing pillar
 
-Podejście z FoundationDB i TigerBeetle: **jednowątkowy, deterministyczny scheduler, w którym
-ziarno steruje wszystkim, co dziś jest przypadkiem** — kolejnością dostarczenia wiadomości,
-opóźnieniami, partycjami sieci, momentem pada i powrotu instancji, momentem zapisu do bazy.
+The approach from FoundationDB and TigerBeetle: **a single-threaded, deterministic scheduler in
+which a seed drives everything that is chance today** — the order of message delivery, the delays,
+network partitions, the moment an instance dies and comes back, the moment of a database write.
 
-Konsekwencja, dla której warto to zrobić: **nieudany przebieg przestaje być „raz na dziesięć"
-i staje się `@Test void seed_8471293()`** — jednolinijkowym testem regresyjnym, który
-odtwarza dokładnie to samo uszeregowanie zdarzeń na każdej maszynie.
+The consequence that makes it worth doing: **a failed run stops being "one in ten" and becomes
+`@Test void seed_8471293()`** — a one-line regression test reproducing exactly the same event
+ordering on any machine.
 
-**Połowa klocków już leży**, i to jest główny argument za tym, że mieści się w 4–6 dniach:
+**Half the pieces are already there**, and that is the main argument for it fitting in 4–6 days:
 
-| Jest | Do napisania |
+| Present | To be written |
 |---|---|
-| `ReplicaSet`, `EditScript` — sterowane repliki i skrypty edycji | Scheduler zdarzeń z kolejką priorytetową po czasie wirtualnym |
-| `simulator.ts` — symulator opóźnień i utraty pakietów po stronie klienta | Jego odpowiednik po stronie serwera, sterowany ziarnem |
-| `ClusterChaosIT` — scenariusz zatrzymania Redisa | Ten sam scenariusz jako **zdarzenie w harmonogramie**, nie jako `Thread.sleep` |
-| `RgaInvariants` — niezmienniki do sprawdzania | Sprawdzanie ich **po każdym zdarzeniu**, nie tylko na końcu |
+| `ReplicaSet`, `EditScript` — driven replicas and edit scripts | An event scheduler with a priority queue over virtual time |
+| `simulator.ts` — a client-side simulator of delays and packet loss | Its server-side counterpart, driven by a seed |
+| `ClusterChaosIT` — the Redis-stop scenario | The same scenario as an **event in the schedule**, not as a `Thread.sleep` |
+| `RgaInvariants` — invariants to check | Checking them **after every event**, not only at the end |
 
-### 3.3 Zakres — zamknąć wąsko, potem rozszerzać
+### 3.3 Scope — close it narrowly, then extend
 
-To jest to samo ryzyko, które w v2 dotyczyło CP13, i to samo przeciwdziałanie: **zamknąć
-na jednym scenariuszu z pełnym determinizmem, dopiero potem rozszerzać.** Scenariusze
-są tanie, scheduler jest drogi.
+This is the same risk that applied to CP13 in v2, and the same mitigation: **close it on one
+scenario with full determinism, and only then extend.** Scenarios are cheap, the scheduler is
+expensive.
 
-Pierwszy scenariusz: **partycja Redisa w trakcie pisania przez N replik** — czyli dokładnie
-to, co dziś robi `ClusterChaosIT`, tylko odtwarzalnie. Dopiero po nim: pad instancji,
-opóźniony zapis, klient wracający po oknie GC.
+The first scenario: **a Redis partition while N replicas are typing** — that is, exactly what
+`ClusterChaosIT` does today, only reproducibly. Only after that: an instance crash, a delayed
+write, a client returning after the GC window.
 
-**Twardy warunek zaliczenia checkpointu, bez którego to jest tylko ładniejszy test chaosu:**
-to samo ziarno musi dawać **bajt w bajt ten sam log zdarzeń** na dwóch różnych maszynach
-i przy dwóch różnych obciążeniach. Test pilnujący tego jest ważniejszy od wszystkich
-scenariuszy razem wziętych — bo bez niego cała przewaga znika, a nikt tego nie zauważy.
+**A hard condition for passing the checkpoint, without which this is merely a prettier chaos
+test:** the same seed has to produce a **byte-for-byte identical event log** on two different
+machines and under two different loads. A test enforcing that matters more than all the scenarios
+put together — because without it the entire advantage disappears and nobody notices.
 
-**Czego to nie zastąpi:** symulacja nie dotyka prawdziwego Postgresa, prawdziwego Redisa ani
-prawdziwej sieci. `ClusterChaosIT` na Testcontainers **zostaje** — symulacja szuka błędów
-logiki rozproszonej, integracyjne pilnują, że model zgadza się z rzeczywistością. Zastąpienie
-jednego drugim byłoby tą samą pomyłką co uznanie snapshotu za źródło prawdy.
+**What it does not replace:** the simulation touches neither a real Postgres, nor a real Redis, nor
+a real network. `ClusterChaosIT` on Testcontainers **stays** — the simulation looks for bugs in
+distributed logic, the integration tests make sure the model matches reality. Replacing one with
+the other would be the same mistake as treating a snapshot as the source of truth.
 
-**ADR-0013 — deterministyczna symulacja jako trzeci filar testów.** Konsekwencje negatywne
-do opisania: kod produkcyjny musi przyjąć zegar i źródło losowości z zewnątrz (`Clock`,
-`RandomGenerator`) — czyli **testowalność wycieka do sygnatur**; symulator to druga
-implementacja warstwy transportowej, więc **ten sam dług, co przy dwóch implementacjach CRDT**,
-tylko mniejszy; ziarno chroni przed niedeterminizmem symulacji, nie przed niedeterminizmem
-JVM (GC, JIT) — i to jest granica, której ten checkpoint nie przekracza.
+**ADR-0013 — deterministic simulation as the third testing pillar.** The negative consequences to
+describe: production code has to take its clock and its source of randomness from outside (`Clock`,
+`RandomGenerator`) — that is, **testability leaks into the signatures**; the simulator is a second
+implementation of the transport layer, so **the same debt as with two CRDT implementations**, only
+smaller; a seed protects against non-determinism in the simulation, not against non-determinism in
+the JVM (GC, JIT) — and that is a boundary this checkpoint does not cross.
 
-### 3.4 Testy
+### 3.4 Tests
 
-| Test | Jaki realny failure mode wyłapuje |
+| Test | The real failure mode it catches |
 |---|---|
-| `sameSeedProducesIdenticalEventLog` | **Symulacja nie jest deterministyczna** — czyli cały checkpoint nie działa, a wygląda, że działa |
-| `redisPartitionUnderSeed(...)` ×1000 ziaren | Uszeregowanie zdarzeń, którego `ClusterChaosIT` nie trafił w dziesięciu przebiegach |
-| `invariantsHoldAfterEveryEvent` | Rozspójnienie **przejściowe** — struktura zła między dwoma zdarzeniami, poprawna na końcu, więc sprawdzenie końcowe go nie widzi |
-| `knownFailingSeedStaysFixed` | Regresja naprawionego błędu — to jest ta pozycja, dla której robi się cały ten checkpoint |
+| `sameSeedProducesIdenticalEventLog` | **The simulation is not deterministic** — that is, the whole checkpoint does not work while looking as though it does |
+| `redisPartitionUnderSeed(...)` × 1000 seeds | An event ordering `ClusterChaosIT` did not hit in ten runs |
+| `invariantsHoldAfterEveryEvent` | A **transient** divergence — the structure is wrong between two events and correct at the end, so a final check does not see it |
+| `knownFailingSeedStaysFixed` | A regression of a fixed bug — that is the item this whole checkpoint is done for |
 
 ---
 
-## 4. CP18 — Blok bez treści, format snapshotu v3 (3–5 dni)
+## 4. CP18 — A block without content, snapshot format v3 (3–5 days)
 
-### 4.1 Dlaczego to przestało być opcjonalne
+### 4.1 Why this stopped being optional
 
-[ADR-0005](adr/0005-tombstone-gc.md) po pomiarze z CP15 mówi wprost: *„kierunek się nie zmienia,
-ale **przestaje być opcjonalny**"*. Zmierzone: **0 % odzysku GC** przy tekście napisanym ciągiem,
-80 % przy tekście pisanym znak po znaku. Ta sama implementacja, ten sam tekst, te same
-znaczniki — różni się wyłącznie historia pisania.
+[ADR-0005](adr/0005-tombstone-gc.md), after the CP15 measurement, says outright: *"the direction
+does not change, but it **stops being optional**"*. Measured: **0 % GC reclamation** on text
+written in one continuous run, 80 % on text typed character by character. The same implementation,
+the same text, the same marks — the only difference is the typing history.
 
-Przyczyna jest w `RgaDocument.gc` (linia 492) i w `isAnyCharReferenced` (linia 540): **GC
-iteruje po blokach, a warunek referencji jest warunkiem na blok, nie na znak.** Jedna kotwica
-ratuje cały blok run-length.
+The cause is in `RgaDocument.gc` (line 492) and in `isAnyCharReferenced` (line 540): **GC iterates
+over blocks, and the reference condition is a condition on a block rather than on a character.** One
+anchor saves a whole run-length block.
 
-Jedna zmiana zamyka **dwa** udokumentowane ograniczenia naraz:
+One change closes **two** documented limitations at once:
 
-1. „GC odzyskuje mniej, niż zakłada ADR-0005" — tombstone w środku tekstu jest originem
-   następnego bloku, więc nie wolno go usunąć;
-2. „Kotwica formatowania blokuje CAŁY blok run-length" — zmierzone w CP15.
+1. "GC reclaims less than ADR-0005 assumes" — a tombstone in the middle of the text is the origin
+   of the next block, so it must not be removed;
+2. "A formatting anchor blocks the WHOLE run-length block" — measured in CP15.
 
-Obydwa mają tę samą przyczynę i tę samą odpowiedź, wskazaną już w ADR-0005:
+Both have the same cause and the same answer, already indicated in ADR-0005:
 
-> **Wszystkie trzy warunki ochrony potrzebują TOŻSAMOŚCI znaku, a nie jego treści.**
+> **All three protection conditions need a character's IDENTITY, not its content.**
 
-### 4.2 Zmiana
+### 4.2 The change
 
-Dziś `Block` (`crdt-core/.../Block.java`) trzyma `Id start`, `String text`, `Id originLeft`,
-`boolean deleted`, z niezmiennikiem **„blok nie może być pusty"** i `length()` liczonym
-jako `text.length()`.
+Today `Block` (`crdt-core/.../Block.java`) holds an `Id start`, a `String text`, an `Id originLeft`
+and a `boolean deleted`, with the invariant **"a block cannot be empty"** and `length()` computed
+as `text.length()`.
 
-Po zmianie blok usunięty **porzuca treść, zachowując tożsamość i długość**. Niezmiennik
-zmienia brzmienie z „blok nie może być pusty" na **„blok ma dodatnią długość, ale blok
-usunięty może nie mieć treści"**. `length()` staje się polem, nie funkcją tekstu.
+After the change a deleted block **drops its content while keeping its identity and length**. The
+invariant changes from "a block cannot be empty" to **"a block has a positive length, but a deleted
+block may have no content"**. `length()` becomes a field rather than a function of the text.
 
-Dzięki temu blok **oddaje pamięć nie będąc zbieranym** — a wtedy cała trudność z §4.1 znika,
-bo nie trzeba go usuwać ze struktury, żeby odzyskać miejsce.
+That lets a block **give memory back without being collected** — and then the whole difficulty from
+§4.1 disappears, because it no longer has to be removed from the structure to reclaim space.
 
-**Co to rusza — pełna lista, bo koszt jest tu ciekawszy niż zmiana:**
+**What it touches — the full list, because the cost here is more interesting than the change:**
 
-| Miejsce | Dlaczego |
+| Place | Why |
 |---|---|
-| `Block`, `RgaDocument.gc` | rdzeń zmiany |
-| `TreapBlockList` | agregaty liczą się z `length()`, które przestaje pochodzić z tekstu |
-| `ArrayBlockList` | jw.; obie implementacje muszą zgadzać się dalej (`BlockListEquivalenceProperties`) |
+| `Block`, `RgaDocument.gc` | the core of the change |
+| `TreapBlockList` | the aggregates are computed from `length()`, which stops coming from the text |
+| `ArrayBlockList` | as above; the two implementations still have to agree (`BlockListEquivalenceProperties`) |
 | `SnapshotCodec`, `DocumentSnapshot` | `CURRENT_FORMAT_VERSION` 2 → 3 |
-| `frontend/src/crdt/block.ts`, `document.ts` | **bliźniak w TypeScripcie** — dług z README materializuje się tutaj po raz drugi |
-| `conformance/` | korpus do regeneracji; job CI pilnuje, że się nie rozjedzie |
+| `frontend/src/crdt/block.ts`, `document.ts` | **the TypeScript twin** — the debt from the README materialises here for the second time |
+| `conformance/` | the corpus needs regenerating; the CI job keeps it from drifting |
 
-**Migracja danych jest darmowa i to nie przypadek.** `SnapshotCodec` przy niezgodnej wersji
-**ignoruje snapshot zamiast go migrować** ([ADR-0003](adr/0003-change-history.md): snapshot
-to usuwalny cache), więc stan odtworzy się z logu operacji. Prawdziwy koszt tego checkpointu
-to bliźniak w TS i agregaty treapa, a nie dane — i warto to napisać w ADR-ze, bo decyzja
-z CP5 („snapshot to cache, nie źródło prawdy") **właśnie się tu spłaca po raz drugi**.
+**Data migration is free, and that is no accident.** On a version mismatch `SnapshotCodec`
+**ignores the snapshot rather than migrating it** ([ADR-0003](adr/0003-change-history.md): a
+snapshot is a disposable cache), so the state is rebuilt from the operation log. The real cost of
+this checkpoint is the TS twin and the treap's aggregates, not the data — and that is worth writing
+in the ADR, because the decision from CP5 ("a snapshot is a cache, not a source of truth") **pays
+off here for the second time**.
 
-### 4.3 Rozliczenie z przepuszczoną okazją
+### 4.3 Settling up with the missed opportunity
 
-ADR-0005 przyznaje, że najtańszy moment na tę zmianę — podniesienie formatu do wersji 2
-w CP13 — **został przepuszczony**, bo brakowało pomiaru. Pomiar jest, wypadł źle, więc
-okazja wraca przy wersji 3.
+ADR-0005 admits that the cheapest moment for this change — bumping the format to version 2 in CP13
+— **was missed**, because the measurement was absent. The measurement exists now, it came out
+badly, so the opportunity returns at version 3.
 
-Do dopisania w ADR-0005 po zamknięciu CP18, zgodnie z konwencją domu: **czy odłożenie
-decyzji faktycznie kosztowało tyle, ile zakładano.** Jeśli okaże się, że zrobienie tego
-w CP13 byłoby tańsze — to jest wniosek wart zapisania. Jeśli okaże się, że bez pomiaru
-zmiana poszłaby w złą stronę, to jest wniosek jeszcze ciekawszy.
+To be added to ADR-0005 once CP18 closes, per the house convention: **whether deferring the
+decision actually cost what was assumed.** If it turns out doing it in CP13 would have been
+cheaper, that is a conclusion worth recording. If it turns out that without the measurement the
+change would have gone the wrong way, that is a more interesting conclusion still.
 
-### 4.4 Pomiar — obowiązkowy, tak jak w CP15
+### 4.4 Measurement — mandatory, as in CP15
 
-Ten checkpoint **bez powtórzenia `MarkCostMeasurement` jest niezamknięty.** Ta sama tabela
-(1000 znaków, tekst skasowany, 100 znaczników, stabilny wektor wersji), te same dwie
-skrajności, kolumna „po CP18" obok istniejących.
+This checkpoint **is not closed without repeating `MarkCostMeasurement`.** The same table (1000
+characters, the text deleted, 100 marks, a stable version vector), the same two extremes, an "after
+CP18" column next to the existing ones.
 
-**Do zweryfikowania:** czy odzysk przy tekście pisanym ciągiem rośnie z 0 % do wartości
-zbliżonej do 100 %. Jeśli nie — hipoteza z ADR-0005 jest błędna i trzeba to napisać wprost,
-zamiast dopasowywać interpretację do wyniku. To już raz się w tym projekcie zdarzyło
-(warunek skanu RGA uznany za konieczny, obalony przez 200 tys. scenariuszy) i wtedy
-uczciwe rozliczenie było najciekawszą częścią.
+**To be verified:** whether reclamation on text written in one continuous run rises from 0 % to
+something close to 100 %. If not, the hypothesis in ADR-0005 is wrong and that has to be written
+down plainly, rather than fitting the interpretation to the result. That has already happened once
+in this project (an RGA scan condition believed necessary, refuted by 200 000 scenarios) and the
+honest reckoning was the most interesting part.
 
-### 4.5 Testy
+### 4.5 Tests
 
-| Test | Jaki realny failure mode wyłapuje |
+| Test | The real failure mode it catches |
 |---|---|
-| `droppedContentBlockKeepsIdentityAndLength` | Blok po porzuceniu treści przestaje się indeksować — pozycje kursora idą w rozsypkę |
-| `gcReclaimsRunLengthTextWithAnchors` | **Cel całego checkpointu.** Bez tego nie ma po co go robić |
-| `naiveAndIndexedProduceIdenticalDocuments` (istniejący) | Agregaty treapa nie zaktualizowane po zmianie źródła `length()` |
-| `snapshotV2IsIgnoredNotMigrated` | Snapshot w starym formacie zostaje odczytany „jakoś" i cicho psuje stan |
-| `garbageCollectionSparesMarkAnchors` (istniejący) | Regresja ochrony kotwic — test już raz w tym projekcie **nie sprawdzał tego, co deklarował**, więc weryfikacja mutacją obowiązkowa |
-| konformancja Java ↔ TS | Bliźniak w TypeScripcie nie dostał tej samej zmiany |
+| `droppedContentBlockKeepsIdentityAndLength` | A block that has dropped its content stops being indexable — cursor positions fall apart |
+| `gcReclaimsRunLengthTextWithAnchors` | **The goal of the whole checkpoint.** Without it there is no reason to do it |
+| `naiveAndIndexedProduceIdenticalDocuments` (existing) | The treap's aggregates not updated after the source of `length()` changed |
+| `snapshotV2IsIgnoredNotMigrated` | A snapshot in the old format read "somehow" and quietly corrupting the state |
+| `garbageCollectionSparesMarkAnchors` (existing) | A regression in anchor protection — this test already once in this project **did not check what it claimed**, so mutation verification is mandatory |
+| Java ↔ TS conformance | The TypeScript twin did not get the same change |
 
 ---
 
-## 5. CP19 — Bramka regresji + automatyzacja bezpieczeństwa (1–1,5 dnia)
+## 5. CP19 — A regression gate + security automation (1–1.5 days)
 
-### 5.1 Liczby w README zgniją po cichu
+### 5.1 The README's numbers will rot silently
 
-PLAN-v2 §9 wymienia to jako *„do rozważenia: job CI porównujący harness z zapisanym wynikiem"*.
-Niezrobione — a projekt, którego cała teza brzmi „mierz, nie deklaruj", ma dziś **dwadzieścia
-kilka liczb w README i nic, co pilnuje, żeby przestały być prawdziwe.** Pierwsza zmiana, która
-je pogorszy, przejdzie niezauważona, i README stanie się dokładnie tym, przed czym ostrzega
-`CLAUDE.md`: dokumentacją odtwarzaną z pamięci.
+PLAN-v2 §9 lists this as *"to consider: a CI job comparing the harness against a recorded result"*.
+Not done — and a project whose entire thesis is "measure, do not declare" today has **two dozen or
+so numbers in the README and nothing keeping them from becoming untrue.** The first change that
+makes them worse will pass unnoticed, and the README will become exactly what `CLAUDE.md` warns
+against: documentation reconstructed from memory.
 
-Do zrobienia: baseline w repo (plik, nie stan w usłudze — tak samo jak dashboard Grafany),
-job nocny uruchamiający `LoadHarnessIT`, porównanie i **wywalenie builda przy regresji
-powyżej progu**.
+To do: a baseline in the repository (a file, not state in a service — just like the Grafana
+dashboard), a nightly job running `LoadHarnessIT`, a comparison, and **failing the build on a
+regression above a threshold**.
 
-**Próg musi być uzasadniony, nie zgadnięty**, inaczej łamie zasadę z `CLAUDE.md` o domyślnych
-configach bez komentarza. Runner GitHuba jest współdzielony i zmienny — `nightly.yml` sam
-to mówi o benchmarkach JMH (*„jego wyniki nie są porównywalne między dniami w sposób, który
-da się obronić"*). Wniosek: **próg wyprowadzić z rozrzutu zmierzonego na runnerze**, nie
-z liczby wziętej z sufitu. Konkretnie — dziesięć przebiegów baseline'u, odchylenie standardowe,
-próg powyżej rozrzutu. Jeśli rozrzut okaże się tak duży, że próg musiałby wynosić 100 %,
-**bramka nie ma sensu na runnerze i trzeba to napisać** zamiast wstawiać martwy job.
+**The threshold has to be justified rather than guessed**, otherwise it breaks the `CLAUDE.md` rule
+about default configuration with no comment. A GitHub runner is shared and variable — `nightly.yml`
+says so itself about the JMH benchmarks (*"its results are not comparable between days in any
+defensible way"*). The conclusion: **derive the threshold from the spread measured on the runner**,
+not from a number pulled out of the air. Concretely — ten baseline runs, a standard deviation, and
+a threshold above the spread. If the spread turns out so large that the threshold would have to be
+100 %, **the gate makes no sense on a runner and that has to be written down** rather than
+installing a dead job.
 
-To jest realne ryzyko tego checkpointu, nie hipotetyczne — i dlatego estymata jest niska:
-możliwe, że wynikiem będzie „zmierzone, nie da się, oto dlaczego". To też jest wynik.
+That is a real risk of this checkpoint, not a hypothetical one — and that is why the estimate is
+low: the outcome may well be "measured, cannot be done, here is why". That is a result too.
 
-### 5.2 Automatyzacja bezpieczeństwa
+### 5.2 Security automation
 
-Brak Dependabota, brak CodeQL, brak skanowania zależności. Dla projektu, którego narracja
-zawiera **dwie naprawione dziury w kontroli dostępu**, jest to luka kosztująca kilka godzin
-i domykająca wątek, który już jest opowiedziany.
+No Dependabot, no CodeQL, no dependency scanning. For a project whose narrative contains **two
+fixed access-control holes**, that is a gap costing a few hours
+and closing a thread that is already told.
 
 - `dependabot.yml` — Maven, npm, GitHub Actions;
-- CodeQL dla Javy i TypeScriptu;
-- sprawdzenie, czy jest co naprawiać w obecnych zależnościach (Spring Boot 3.5.0,
+- CodeQL for Java and TypeScript;
+- a check of whether there is anything to fix in the current dependencies (Spring Boot 3.5.0,
   React 19, Vite 8).
 
-Bez ADR-a — to jest konwencja CI, nie decyzja architektoniczna. Uzasadnienie progów
-i wyborów idzie w komentarzach w plikach workflow, tak jak w `ci.yml` i `nightly.yml`.
+No ADR — this is a CI convention, not an architectural decision. The justification for the
+thresholds and the choices goes into comments in the workflow files, as in `ci.yml` and
+`nightly.yml`.
 
-### 5.3 Testy
+### 5.3 Tests
 
-Ten checkpoint testów nie dodaje — **on sam jest testem.** Weryfikacja polega na sprawdzeniu,
-że bramka faktycznie zapala się na sztucznie wprowadzonej regresji (np. `Thread.sleep(5)`
-w ścieżce scalania). Bramka, która nigdy nie zapaliła się na znanej regresji, jest tym samym,
-czym była klasa `*Measurement`, która się nie uruchamiała: zielonym buildem bez zawartości.
+This checkpoint adds no tests — **it is itself a test.** Verification consists of checking that the
+gate actually fires on an artificially introduced regression (a `Thread.sleep(5)` in the merge
+path, say). A gate that has never fired on a known regression is the same thing the `*Measurement`
+class that never ran was: a green build with no content.
 
 ---
 
-## 6. CP20 — Drzewo przedziałowe w `MarkSet` + zaległe długi (2–3 dni)
+## 6. CP20 — An interval tree in `MarkSet` + outstanding debts (2–3 days)
 
-### 6.1 `MarkSet` — O(m²) zmierzone, nie podejrzewane
+### 6.1 `MarkSet` — O(m²) measured, not suspected
 
-`MarkSet.java:36-42` sam dokumentuje własną złożoność, a CP15 ją zmierzył: **0,6 ms przy
-100 znacznikach, 5,3 ms przy 1600** (dokument 50 tys. znaków). Wołane **przy każdym
-naciśnięciu klawisza**, więc ostatni wiersz to widoczne opóźnienie. Granica użyteczności:
-setki znaczników na dokument.
+`MarkSet.java:36-42` documents its own complexity, and CP15 measured it: **0.6 ms at 100 marks,
+5.3 ms at 1600** (a 50k-character document). It is called **on every keystroke**, so the last row
+is visible latency. The usability boundary: hundreds of marks per document.
 
-Rozwiązanie jest nazwane w kodzie i w README: **zamiatanie z kopcem aktywnych zakresów,
-`O(m log m)`**, docelowo drzewo przedziałowe przeliczane przyrostowo. Zacząć od zamiatania —
-jest tańsze, a różnicę widać w tym samym pomiarze.
+The solution is named in the code and in the README: **a sweep with a heap of active ranges,
+`O(m log m)`**, eventually an interval tree recomputed incrementally. Start with the sweep — it is
+cheaper, and the difference shows in the same measurement.
 
-**Warunek zamknięcia:** ta sama tabela pomiarowa co w CP15, kolumna „po CP20". Bez niej
-ten checkpoint jest optymalizacją bez dowodu, czyli dokładnie tym, czego ten projekt unika.
+**The closing condition:** the same measurement table as in CP15, with an "after CP20" column.
+Without it this checkpoint is an optimisation with no proof, which is exactly what this project
+avoids.
 
-### 6.2 `retry-after` przy limicie tempa — poprawia liczbę, która JUŻ jest w README
+### 6.2 `retry-after` on rate limiting — it improves a number that is ALREADY in the README
 
-Serwer (`DocumentAccessInterceptor.notifyRateLimited`) odsyła `RATE_LIMITED` **bez informacji,
-jak długo czekać**. Klient (`connection.ts`, `scheduleRetryAfterThrottling`) czeka
-**na sztywno 1000 ms**, i README nazywa to wprost jako przyczynę grubych ogonów:
+The server (`DocumentAccessInterceptor.notifyRateLimited`) replies `RATE_LIMITED` **with no
+information about how long to wait**. The client (`connection.ts`,
+`scheduleRetryAfterThrottling`) waits a **hardcoded 1000 ms**, and the README names that outright
+as the cause of the fat tails:
 
-> *„Ogony (p99) są tu wyraźnie grubsze niż w poprzednim pomiarze i jest to CENA OGRANICZANIA
-> TEMPA (…) odrzucone operacje są ponawiane po sekundzie, i ta sekunda jest tym, co widać w p99."*
+> *"The tails (p99) here are markedly fatter than in the previous measurement, and that is THE
+> PRICE OF RATE LIMITING (…) refused operations are retried after a second, and that second is what
+> the p99 shows."*
 
-`RateLimiter.Bucket` **zna dokładny czas do następnego żetonu**: `(1.0 - tokens) / refillPerMs`
-milisekund. Wystarczy odesłać tę liczbę w `ErrorMessage` i uszanować ją po stronie klienta
-zamiast stałej.
+`RateLimiter.Bucket` **knows the exact time to the next token**: `(1.0 - tokens) / refillPerMs`
+milliseconds. It is enough to send that number back in the `ErrorMessage` and to respect it on the
+client instead of a constant.
 
-To jest najtańsza pozycja w całym planie z najlepszym stosunkiem wysiłku do efektu:
-**poprawia liczbę, która jest już opublikowana** (p99 1299 ms przy 50 klientach i dokumencie
-100 tys. znaków), zamiast dodawać nową. Zachowanie pozostaje poprawne — nic nie ginie — ale
-czas oczekiwania przestaje być zgadnięty.
+This is the cheapest item in the whole plan with the best effort-to-effect ratio: **it improves a
+number that is already published** (p99 1299 ms at 50 clients on a 100k-character document) rather
+than adding a new one. The behaviour stays correct — nothing is lost — but the wait stops being a
+guess.
 
-**Do zweryfikowania:** czy p99 faktycznie spada. Jeśli nie, znaczy że sekunda nie była
-dominującym składnikiem ogona i README twierdzi coś, czego nie zmierzono do końca — co samo
-w sobie jest wynikiem wartym zapisania.
+**To be verified:** whether p99 actually falls. If not, the second was not the dominant component
+of the tail and the README claims something that was not measured to the end — which is itself a
+result worth recording.
 
-### 6.3 Pozostałe długi z README
+### 6.3 The remaining debts from the README
 
-Uporządkowane wg tego, ile realnie kosztują użytkownika:
+Ordered by what they actually cost the user:
 
-| Dług | Gdzie | Co zrobić |
+| Debt | Where | What to do |
 |---|---|---|
-| **Klient odtwarza cały log przy otwarciu** | README, „Infrastruktura" | Serwer używa snapshotów wewnętrznie; klient ma dostawać zserializowany snapshot. To jest ta pozycja, która **boli prawdziwego użytkownika** przy dużym dokumencie |
-| **`SYNC_CHUNK` liczony w operacjach, nie w bajtach** | `DocumentStompController:209` | Ścieżka rozgłoszeń przeszła na budżet bajtowy w CP10, resynchronizacja nie. Wklejenie dużego fragmentu to **jedna** operacja o dziesiątkach kilobajtów |
-| **Presence lokalne dla instancji** | README | Redis już jest. Osobny kanał + wygasanie wpisów. Widoczna dziura produktowa: osoba na innej instancji jest niewidzialna |
-| **Indeks klienta O(n)** | README | Port treapa jest mechaniczny — **ciekawa jest brakująca połowa: pomiar w przeglądarce.** Bez niego to optymalizacja w ciemno, czyli to, czego projekt nie robi |
-| `App.tsx` — 655 linii | `frontend/src/App.tsx` | Jedyne miejsce, gdzie jakość kodu widocznie siada wobec backendu |
+| **The client replays the whole log on open** | README, "Infrastructure" | The server uses snapshots internally; the client should receive a serialised snapshot. This is the item that **hurts a real user** on a large document |
+| **`SYNC_CHUNK` counted in operations, not bytes** | `DocumentStompController:209` | The broadcast path moved to a byte budget in CP10; resynchronisation did not. Pasting a large fragment is **one** operation of tens of kilobytes |
+| **Presence is local to an instance** | README | Redis is already there. A separate channel plus entry expiry. A visible product gap: somebody on another instance is invisible |
+| **The client's index is O(n)** | README | Porting the treap is mechanical — **the interesting part is the missing half: a measurement in the browser.** Without it this is optimising blind, which is what this project does not do |
+| `App.tsx` — 655 lines | `frontend/src/App.tsx` | The one place where code quality visibly slips relative to the backend |
 
-**Ten checkpoint jest celowo ostatni i celowo podzielny.** Jeśli budżet się skończy, ucina się
-go od dołu bez szkody dla reszty planu — w odróżnieniu od CP18.
+**This checkpoint is deliberately last and deliberately divisible.** If the budget runs out it can
+be cut from the bottom with no harm to the rest of the plan — unlike CP18.
 
 ---
 
-## 7. Estymata
+## 7. Estimate
 
-| Checkpoint | Dni |
+| Checkpoint | Days |
 |---|---:|
-| §0 — Dotarcie | 1,5–2 |
-| CP16 — Autoryzacja strukturalnie | 2–2,5 |
-| CP17 — Deterministyczna symulacja | 4–6 |
-| CP18 — Blok bez treści | 3–5 |
-| CP19 — Bramka regresji + bezpieczeństwo | 1–1,5 |
-| CP20 — `MarkSet` + długi | 2–3 |
-| **Razem** | **13,5–20 dni roboczych** |
+| §0 — Reach | 1.5–2 |
+| CP16 — Structural authorization | 2–2.5 |
+| CP17 — Deterministic simulation | 4–6 |
+| CP18 — A block without content | 3–5 |
+| CP19 — A regression gate + security | 1–1.5 |
+| CP20 — `MarkSet` + debts | 2–3 |
+| **Total** | **13.5–20 working days** |
 
-Dla porównania: v1 ≈ 13–17 dni, v2 ≈ 15,5–21 dni. **v3 jest trzecim projektem tej samej
-wielkości** — z tą różnicą, że nie dokłada ani jednej funkcji. Warto to wiedzieć przed startem:
-plan, w którym nie przybywa nic widocznego, jest trudniejszy do doprowadzenia do końca
-niż plan, w którym co dwa dni działa coś nowego.
+For comparison: v1 ≈ 13–17 days, v2 ≈ 15.5–21 days. **v3 is a third project of the same size** —
+with the difference that it adds not one feature. Worth knowing before starting: a plan in which
+nothing visible accumulates is harder to carry to the end than a plan in which something new works
+every other day.
 
-**Jeśli budżet wynosi jedną pozycję:** §0. **Jeśli jedną inżynierską:** CP17.
-
----
-
-## 8. Ryzyka
-
-| Ryzyko | Prawdopodobieństwo | Przeciwdziałanie |
-|---|---|---|
-| **Refaktor autoryzacji wprowadza regresję dostępu** — czyli CP16 otwiera dokładnie to, co ma zamknąć | Średnie | `PermissionIT` przechodzi **przed i po**, bez zmian w samych testach. Weryfikacja mutacją po refaktorze, nie przed |
-| **CP17 przeciąga się** — scheduler deterministyczny to najtrudniejsza rzecz w tym planie | **Wysokie** | Zamknąć na JEDNYM scenariuszu (partycja Redisa) z pełnym determinizmem. Scenariusze są tanie, scheduler drogi. To samo przeciwdziałanie, co przy CP13 w v2 |
-| **Symulacja okazuje się niedeterministyczna** i nikt tego nie zauważa, bo testy przechodzą | Średnie | `sameSeedProducesIdenticalEventLog` **przed** pierwszym scenariuszem, nie po. Bez niego cały checkpoint jest ładniejszym testem chaosu |
-| **CP18 rozjeżdża Javę z TypeScriptem** | Średnie | Korpus konformancyjny + istniejący job CI. Mechanizm sprawdzony dwukrotnie (v1, CP13) |
-| **Bramka regresji nie da się obronić na runnerze** (rozrzut większy od progu) | Średnie | Zmierzyć rozrzut PRZED wstawieniem bramki. Wynik „nie da się, oto dlaczego" jest akceptowalnym zamknięciem CP19 — martwy job nie jest |
-| **Hosting usypia i pierwsze wrażenie jest gorsze niż brak linku** | Średnie | Rozstrzygnąć w §0.1 przed publikacją linku, nie po. GIF-y zostają jako plan B |
-| **Publiczna instancja z domyślnym sekretem tokenu** | Niskie, skutek wysoki | §0.1 pkt 3 — sekret ze zmiennej środowiskowej. Do sprawdzenia **przed** pierwszym deployem |
-| **Plan bez widocznych efektów traci napęd** w połowie | Średnie | §0 daje efekt widoczny w pierwszym tygodniu. CP20 jest podzielny i można go użyć jako odskoczni |
+**If the budget is one item:** §0. **If one engineering item:** CP17.
 
 ---
 
-## 9. Czego ten plan świadomie NIE obejmuje
+## 8. Risks
 
-- **Model checking (TLA+ / Stateright).** Kuszące i tematycznie trafione — README opowiada
-  historię *„200 tys. losowych scenariuszy pokazało, że warunek nie był konieczny"*, czyli
-  wniosek z **próbkowania**, na który model checker odpowiada wyczerpująco. Odrzucone,
-  bo **odpowiada na tę samą klasę pytań co CP17**, a przy tym budżecie robienie obu jest
-  nadmiarowe. DST wygrywa, bo obejmuje **cały system rozproszony** (transport, persystencja,
-  pady instancji), a nie samą regułę scalania, i bo połowa jego klocków już leży w repo.
-  **Najmocniejszy kandydat na v4** — i jedyna pozycja z tej listy, o której tak myślę.
-- **Fugue zamiast RGA.** Anomalia przeplotu jest udokumentowana i utrwalona testem
-  (`RgaInterleavingTest`). Przepisanie rdzenia zamienia mocne „rozumiem kompromis i umiem
-  go nazwać" na słabsze „mam nieco lepszy algorytm", za cenę tygodni. Bez zmian względem v2.
-- **Jedna implementacja skompilowana do WebAssembly.** Zlikwidowałaby dług dwóch implementacji,
-  ale korpus konformancyjny **już dziś obsługuje ryzyko**, które WASM by usunął — a koszt
-  jest rzędu całego planu.
-- **Ekran zarządzania dostępem i tabela zaproszeń.** Wymienione w audycie v2 jako niezrobione.
-  `grant`/`revoke`/`setVisibility` istnieją i są przetestowane; brakuje im wyłącznie ekranu.
-  To jest praca UI bez zawartości inżynierskiej — czyli dokładnie to, co `CLAUDE.md` nazywa
-  nadmiarowym zakresem. Zostaje w README jako granica.
-- **Funkcje produktowe** — powiadomienia, wzmianki, eksport, wersje mobilne, osadzone obiekty,
-  undo świadome CRDT, edycja offline komentarzy. PLAN-v2 §10 odrzucił je z uzasadnieniem,
-  które nie przestało obowiązywać. v3 nie jest planem produktowym.
-- **Rozdzielenie stanowiska pomiarowego na osobne maszyny.** README nazywa tę granicę
-  (klienci i serwer w jednym procesie, latencja sieci ≈ 0). Nadal poza zakresem — po CP10
-  nie jest już potrzebne do odpowiedzi na żadne otwarte pytanie, a samo w sobie niczego
-  nie demonstruje.
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| **The authorization refactor introduces an access regression** — that is, CP16 opens exactly what it is meant to close | Medium | `PermissionIT` passes **before and after**, with no changes to the tests themselves. Mutation verification after the refactor, not before |
+| **CP17 overruns** — a deterministic scheduler is the hardest thing in this plan | **High** | Close it on ONE scenario (a Redis partition) with full determinism. Scenarios are cheap, the scheduler is expensive. The same mitigation as for CP13 in v2 |
+| **The simulation turns out to be non-deterministic** and nobody notices, because the tests pass | Medium | `sameSeedProducesIdenticalEventLog` **before** the first scenario, not after. Without it the whole checkpoint is a prettier chaos test |
+| **CP18 diverges Java from TypeScript** | Medium | The conformance corpus plus the existing CI job. The mechanism has been proven twice (v1, CP13) |
+| **The regression gate cannot be defended on a runner** (the spread exceeds the threshold) | Medium | Measure the spread BEFORE installing the gate. A result of "it cannot be done, here is why" is an acceptable close for CP19 — a dead job is not |
+| **Hosting sleeps and the first impression is worse than no link** | Medium | Settle it in §0.1 before publishing the link, not after. The GIFs remain as plan B |
+| **A public instance with the default token secret** | Low, high impact | §0.1 point 3 — the secret from an environment variable. To be checked **before** the first deploy |
+| **A plan with no visible effects loses momentum** halfway | Medium | §0 produces a visible effect in the first week. CP20 is divisible and can be used as a springboard |
 
 ---
 
-## 10. Audyt końcowy — po CP20
+## 9. What this plan deliberately does NOT cover
 
-Przejście punkt po punkcie **przeciw kodowi**, nie przeciw pamięci. W v2 takie przejście
-znalazło `HistoryController` bez żadnej autoryzacji; tym razem znalazło czwartą dziurę tej
-samej klasy, jeszcze zanim ruszył pierwszy checkpoint — i to jest najlepszy argument, że ta
-sekcja nie jest formalnością.
+- **Model checking (TLA+ / Stateright).** Tempting and thematically apt — the README tells the
+  story of *"200 000 random scenarios showed the condition was not necessary"*, that is, a
+  conclusion from **sampling**, to which a model checker answers exhaustively. Rejected because it
+  **answers the same class of question as CP17**, and doing both on this budget is redundant. DST
+  wins because it covers **the whole distributed system** (transport, persistence, instance
+  crashes) rather than the merge rule alone, and because half its pieces already sit in the
+  repository. **The strongest candidate for v4** — and the only item on this list I think of that
+  way.
+- **Fugue instead of RGA.** The interleaving anomaly is documented and pinned by a test
+  (`RgaInterleavingTest`). Rewriting the core trades a strong "I understand the trade-off and can
+  name it" for a weaker "I have a slightly better algorithm", at the cost of weeks. Unchanged from
+  v2.
+- **One implementation compiled to WebAssembly.** It would remove the debt of two implementations,
+  but the conformance corpus **already handles the risk** WASM would eliminate — and the cost is on
+  the order of a whole plan.
+- **An access management screen and an invitations table.** Listed in the v2 audit as not done.
+  `grant`/`revoke`/`setVisibility` exist and are tested; all they lack is a screen. That is UI work
+  with no engineering content — exactly what `CLAUDE.md` calls excessive scope. It stays in the
+  README as a boundary.
+- **Product features** — notifications, mentions, export, mobile versions, embedded objects,
+  CRDT-aware undo, offline editing of comments. PLAN-v2 §10 rejected them with a justification that
+  has not stopped applying. v3 is not a product plan.
+- **Splitting the measuring rig across separate machines.** The README names that boundary (clients
+  and server in one process, network latency ≈ 0). Still out of scope — after CP10 it is no longer
+  needed to answer any open question, and on its own it demonstrates nothing.
 
-### 10.1 Niezrobione — i to jest najważniejsza część tego audytu
+---
 
-| Punkt | Stan | Dlaczego |
+## 10. Final audit — after CP20
+
+A point-by-point pass **against the code**, not against memory. In v2 such a pass found
+`HistoryController` with no authorization at all; this time it found a fourth hole of the same
+class before the first checkpoint even began — and that is the best argument that this section is
+not a formality.
+
+### 10.1 Not done — and this is the most important part of this audit
+
+| Item | State | Why |
 |---|---|---|
-| **§0.1 Hosting** | **niezrobione** | Wymaga konta na Fly.io/Railway i decyzji o planie płatnym. Zrobione zostało to, co dało się zrobić w repo: sekret tokenu przestał mieć wartość domyślną, więc instancja publiczna nie wystartuje z kluczem znanym z repozytorium |
-| **§0.2 Migracja na angielski** | **zrobione w ~15 %** | Decyzja zapisana, cała nowa treść po angielsku (kod CP16–CP20, ADR-0012, ADR-0013, komunikaty commitów). **README, ADR 0001–0011 i istniejące komentarze zostają po polsku.** To jest dokładnie stan, przed którym ostrzega §0.2: repozytorium dwujęzyczne, czyli gorsze niż w każdym z języków osobno |
-| **§0.3 Kondensacja README** | **niezrobione** | README urosło, nie skurczyło się — doszły sekcje o CP18 i CP20 oraz sprostowanie do p99 |
-| **CP20 — snapshot CRDT do klienta** | **niezrobione** | Największy pozostały dług produktowy: klient nadal odtwarza cały log przy otwarciu |
-| **CP20 — `SYNC_CHUNK` w bajtach** | **niezrobione** | |
-| **CP20 — presence w klastrze** | **niezrobione** | |
-| **CP20 — pomiar indeksu w przeglądarce** | **niezrobione** | |
-| **CP20 — `App.tsx` (655 linii)** | **niezrobione** | |
-| **Testy e2e po zmianach** | **nieuruchomione** | Port 8080 zajmowała instancja uruchomiona przez autora. Uruchomienie wymagałoby albo jej zatrzymania, albo testowania nieaktualnego builda — pierwsze jest ingerencją w cudzą pracę, drugie dałoby wynik mylący. CI uruchamia e2e przy każdym pull requeście |
+| **§0.1 Hosting** | **not done** | It needs an account on Fly.io/Railway and a decision about a paid plan. What could be done in the repository was done: the token secret no longer has a default, so a public instance will not start with a key known from the repository |
+| **§0.2 Migration to English** | **~15 % done** | The decision is recorded and all new content is in English (the CP16–CP20 code, ADR-0012, ADR-0013, the commit messages). **The README, ADRs 0001–0011 and the existing comments stay in Polish.** That is exactly the state §0.2 warns against: a bilingual repository, that is, worse than either language alone |
+| **§0.3 Condensing the README** | **not done** | The README grew rather than shrank — sections about CP18 and CP20 arrived, plus the correction to p99 |
+| **CP20 — a CRDT snapshot to the client** | **not done** | The largest remaining product debt: the client still replays the whole log on open |
+| **CP20 — `SYNC_CHUNK` in bytes** | **not done** | |
+| **CP20 — cluster-wide presence** | **not done** | |
+| **CP20 — measuring the index in the browser** | **not done** | |
+| **CP20 — `App.tsx` (655 lines)** | **not done** | |
+| **e2e tests after the changes** | **not run** | Port 8080 was held by an instance the author had started. Running them would have required either stopping it or testing a stale build — the first is interfering with somebody else's work, the second would give a misleading result. CI runs e2e on every pull request |
 
-**Punkt kontrolny z §0.2 zadziałał i wypadł negatywnie.** Sekcja mówi: *„jeśli po CP20 wiersze
-1–3 nie są zrobione, lepiej wrócić do polskiego w całości niż zostawić repozytorium w połowie
-drogi"*. Nie są zrobione. Decyzja należy do autora, ale plan przewidział ten moment i wskazał
-wyjście — zostawienie tego bez rozstrzygnięcia jest gorsze niż każda z dwóch odpowiedzi.
+**The checkpoint from §0.2 fired and came out negative.** The section says: *"if rows 1–3 are not
+done after CP20, it is better to go back to Polish entirely than to leave the repository halfway"*.
+They are not done. The decision belongs to the author, but the plan foresaw this moment and pointed
+at the way out — leaving it unresolved is worse than either of the two answers.
 
-### 10.2 Zrobione inaczej, niż zakładał plan — świadomie
+> **UPDATE (2026-08-16): resolved in the other direction.** The author chose to complete the
+> migration rather than roll it back: the README, every ADR, all the comments, the configuration
+> and these plans are now in English, and the ADR filenames carry English slugs. The row above
+> stays as it was written — it is the record of a checkpoint that fired correctly, and the value of
+> that record does not depend on which way the decision then went.
 
-| Punkt planu | Jak jest | Dlaczego |
+### 10.2 Done differently from what the plan assumed — deliberately
+
+| Plan item | How it actually is | Why |
 |---|---|---|
-| CP16: „filtr albo `@PreAuthorize` na `/api/documents/{id}/**`" | **Trzy adnotacje przy endpointach + strażnik odmawiający obsługi niezadeklarowanego** | Reguła ścieżkowa nie obejmuje `/api/comments/{threadId}/…` i nie potrafi wyrazić, że przywracanie wymaga ZAPISU, a podgląd ODCZYTU — a pomylenie tych dwóch to dokładnie sposób, w jaki endpoint przywracania stał otworem dla czytelników |
-| CP16: „test ArchUnit" | **Refleksja, bez nowej zależności** | Cała reguła to jedno przejście po metodach. Ten sam kompromis, który `TokenService` robi wobec biblioteki JWT |
-| CP16: dwie adnotacje | **Trzy** | Znalazły się endpointy, które TWORZĄ dokument: nie ma czego autoryzować, ale anonimowy wywołujący nie może ich uruchomić. Zwinięcie tego do „publiczny" zostawiłoby obie dziury otwarte, wyglądając na decyzję |
-| CP17: „symulacja obejmuje cały system rozproszony" | **Model warstwy rozproszonej na PRAWDZIWYM algorytmie scalania** | Nie dotyka Springa, Postgresa ani gniazda. Granica nazwana w ADR-0013; `ClusterChaosIT` zostaje |
-| CP19: „bramka porównująca harness z baseline'em" | **Bramka na KSZTAŁT złożoności, nie na milisekundy** | Zmierzone: rozrzut tego stanowiska (28 ms kontra 43 ms na tym samym kodzie) przekracza regresję, którą taka bramka miałaby wykrywać. Plan przewidywał ten wynik jako dopuszczalny — §5.1 mówi wprost „jeśli rozrzut okaże się za duży, trzeba to napisać zamiast wstawiać martwy job" |
-| CP20: `retry-after` | **Zrobione, i NIE dało tego, co miało dać** | Patrz 10.4 |
+| CP16: "a filter or `@PreAuthorize` on `/api/documents/{id}/**`" | **Three annotations on the endpoints plus a guard that refuses to serve an undeclared one** | A path rule does not cover `/api/comments/{threadId}/…` and cannot express that restoring requires WRITE while previewing requires READ — and confusing those two is exactly how the restore endpoint stood open to readers |
+| CP16: "an ArchUnit test" | **Reflection, with no new dependency** | The whole rule is one pass over the methods. The same trade-off `TokenService` makes against a JWT library |
+| CP16: two annotations | **Three** | There turned out to be endpoints that CREATE a document: there is nothing to authorize, but an anonymous caller must not be able to run them. Collapsing that into "public" would have left both holes open while looking like a decision |
+| CP17: "the simulation covers the whole distributed system" | **A model of the distributed layer on the REAL merge algorithm** | It touches neither Spring, nor Postgres, nor a socket. The boundary is named in ADR-0013; `ClusterChaosIT` stays |
+| CP19: "a gate comparing the harness against a baseline" | **A gate on the SHAPE of the complexity, not on milliseconds** | Measured: this rig's own spread (28 ms versus 43 ms on the same code) exceeds the regression such a gate would have to detect. The plan foresaw this outcome as acceptable — §5.1 says outright "if the spread turns out too large, write that down rather than installing a dead job" |
+| CP20: `retry-after` | **Done, and it did NOT deliver what it was meant to** | See 10.4 |
 
-### 10.3 Znalezione audytem i przeglądem — naprawione
+### 10.3 Found by the audit and the review — fixed
 
-| Co | Gdzie |
+| What | Where |
 |---|---|
-| **Czwarta dziura w kontroli dostępu**: `POST /documents/recovered` z wygasłym tokenem dawał dokument bez właściciela i z widocznością `link` | §2.3, naprawione w CP16 |
-| **Ta sama klasa w `POST /documents`** — dokument bez właściciela, czyli niemożliwy do zabezpieczenia przez kogokolwiek | CP16 |
-| **Sekret tokenu z wartością domyślną w repo** — pełne obejście uwierzytelnienia, ciche | CP16 |
-| Metryka `crdt.gc.removed.characters.total` po CP18 liczyła coś innego, niż mówi nazwa | przegląd końcowy |
-| Log GC mówił „usunięto" przy niezmienionej liczbie bloków | przegląd końcowy |
-| `Block.append` na bloku bez treści wkleiłby do dokumentu napis `null` i zawyżył długość o cztery | przegląd końcowy |
-| `throttleRounds` w kliencie rósł bez ograniczenia i nie zerował się przy ponownym połączeniu; przy `advertised == 0` dałoby to `setTimeout(fn, NaN)`, czyli pętlę odpytywania | przegląd końcowy |
-| Martwa stała `DENIED` w `CommentController` | przegląd końcowy |
+| **A fourth access-control hole**: `POST /documents/recovered` with an expired token produced a document with no owner and `link` visibility | §2.3, fixed in CP16 |
+| **The same class in `POST /documents`** — a document with no owner, that is, one nobody can ever secure | CP16 |
+| **The token secret with a default value in the repository** — a total authentication bypass, silent | CP16 |
+| The `crdt.gc.removed.characters.total` metric counted something other than its name says after CP18 | the final review |
+| The GC log said "removed" while the block count was unchanged | the final review |
+| `Block.append` on a block with no content would paste the string `null` into the document and overstate the length by four | the final review |
+| `throttleRounds` on the client grew without bound and did not reset on reconnect; with `advertised == 0` that would give `setTimeout(fn, NaN)`, that is, a polling loop | the final review |
+| A dead `DENIED` constant in `CommentController` | the final review |
 
-### 10.4 Czego pomiar NIE potwierdził
+### 10.4 What the measurement did NOT confirm
 
-**`retry-after` nie poprawił p99, a sam z siebie go pogorszył.** Trzy przebiegi harnessu jeden
-po drugim, 100 tys. znaków / 50 klientów:
+**`retry-after` did not improve p99, and on its own made it worse.** Three harness runs back to
+back, 100k characters / 50 clients:
 
-| Wariant | p99 | odrzuceń |
+| Variant | p99 | refusals |
 |---|---:|---:|
-| przed (stała 1 s) | 872 ms | 1523 |
-| sam `retry-after` | **1352 ms** | 1614 |
-| `retry-after` + wydłużanie wykładnicze | 826 ms | 1368 |
+| before (a fixed 1 s) | 872 ms | 1523 |
+| `retry-after` alone | **1352 ms** | 1614 |
+| `retry-after` + exponential backoff | 826 ms | 1368 |
 
-Teza z README — *„odrzucone operacje są ponawiane po sekundzie, i ta sekunda jest tym, co widać
-w p99"* — jest **nieprawdziwa**. Ogon wyznacza tempo napełniania wiadra razy rozmiar
-zakolejkowanej paczki; klient z N operacjami za pustym wiadrem czeka N/60 sekundy niezależnie
-od tego, jak często pyta. Ponawianie co 17 ms zamiast co sekundę to odpytywanie w pętli.
+The claim in the README — *"refused operations are retried after a second, and that second is what
+the p99 shows"* — is **untrue**. The tail is set by the bucket's refill rate times the size of the
+queued batch; a client with N operations behind an empty bucket waits N/60 seconds however often it
+asks. Retrying every 17 ms instead of every second is polling in a loop.
 
-Zmiana zostaje, bo znika zgadnięta stała, a odmów jest o ~10 % mniej — ale **nie jest to zysk
-latencji i commit tego nie udaje**.
+The change stays, because a guessed constant disappears and there are ~10 % fewer refusals — but
+**it is not a latency gain and the commit does not pretend otherwise**.
 
-**CP17 nie znalazł ani jednego błędu w systemie.** Znalazł trzy w samym sobie. `REGRESSION_SEEDS`
-jest puste i opisane jako puste. Maszyna jest zbudowana i sprawdzona mutacją (odwrócenie warunku
-skanu RGA wywala 593 z 806 testów, z kontrprzykładem na czterech operacjach), ale na razie nie
-zarobiła na siebie prawdziwą wadą.
+**CP17 found not one bug in the system.** It found three in itself. `REGRESSION_SEEDS` is empty and
+described as empty. The machine is built and verified by mutation (inverting the RGA scan condition
+fails 593 of 806 tests, with a counterexample on four operations), but so far it has not earned its
+keep with a real defect.
 
-### 10.5 Zmierzone przy okazji, wcześniej nieznane
+### 10.5 Measured along the way, previously unknown
 
-**`ClusterChaosIT` jest flakiem zależnym od obciążenia, i teraz jest to liczba.** W izolacji
-**6 przebiegów na 6** zielonych; w pełnym buildzie padł w **2 z 4**. Nie jest to regresja
-wprowadzona przez v3 — padał tak samo przed CP17. Jest to natomiast dokładnie ten failure mode,
-dla którego CP17 powstał: awaria zależna od uszeregowania wątków, nieodtwarzalna, znikająca
-przy próbie zbadania. Nocny job `chaos ×10` nadal jej szuka; symulacja pokrywa tę samą klasę
-błędów odtwarzalnie, ale nie dotyka prawdziwego Redisa.
+**`ClusterChaosIT` is a load-dependent flake, and now that is a number.** In isolation, **6 runs out
+of 6** green; in a full build it failed **2 out of 4**. This is not a regression introduced by v3 —
+it failed the same way before CP17. It is, however, exactly the failure mode CP17 was created for:
+a failure dependent on thread scheduling, irreproducible, disappearing when you try to investigate
+it. The nightly `chaos ×10` job still hunts for it; the simulation covers the same class of bug
+reproducibly, but does not touch a real Redis.
 
-### 10.6 Uchybienie w prowadzeniu historii
+### 10.6 A lapse in keeping the history
 
-Commit CP17 (`a6908f2`) wciągnął `.github/dependabot.yml` i `.github/workflows/codeql.yml`,
-o których jego opis nie wspomina. `CLAUDE.md` §2 wymaga jednej logicznej zmiany na commit.
-Historia nie została przepisana, bo autor pracował równolegle na tej samej gałęzi i rebase
-zniszczyłby mu stan roboczy — ale uchybienie jest uchybieniem i lepiej stoi tutaj wypisane
-niż nieznalezione.
-
+The CP17 commit (`a6908f2`) swept in `.github/dependabot.yml` and `.github/workflows/codeql.yml`,
+which its message does not mention. `CLAUDE.md` §2 requires one logical change per commit. The
+history was not rewritten, because the author was working on the same branch in parallel and a
+rebase would have destroyed their working state — but a lapse is a lapse, and it stands better
+written down here than unfound.
