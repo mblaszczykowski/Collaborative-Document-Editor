@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 372" width="880" height="372" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Formatting as a range versus formatting as a character attribute</title>
+  <desc>Ann bolds a fragment. Marek, who has not received the mark yet, types inside it. As a range between anchors the bold covers the new text; as a per-character attribute it leaves a hole.</desc>
+  <rect width="880" height="372" fill="#FFFFFF"/>
+
+  <text x="32" y="34" font-size="15" font-weight="600" fill="#16191D">Ann bolds “llo”. Marek, who hasn’t received the mark yet, types “XX” inside it.</text>
+
+  <!-- baseline -->
+  <text x="32" y="70" font-size="11.5" fill="#667085">what Ann sees</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+    <rect x="150" y="54" width="28" height="30" rx="4" fill="#F4F5F7" stroke="#D6DAE0"/><text x="164" y="75" text-anchor="middle" fill="#16191D">H</text>
+    <rect x="182" y="54" width="28" height="30" rx="4" fill="#F4F5F7" stroke="#D6DAE0"/><text x="196" y="75" text-anchor="middle" fill="#16191D">e</text>
+    <rect x="214" y="54" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="228" y="75" text-anchor="middle" font-weight="700" fill="#16191D">l</text>
+    <rect x="246" y="54" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="260" y="75" text-anchor="middle" font-weight="700" fill="#16191D">l</text>
+    <rect x="278" y="54" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="292" y="75" text-anchor="middle" font-weight="700" fill="#16191D">o</text>
+    <rect x="310" y="54" width="28" height="30" rx="4" fill="#F4F5F7" stroke="#D6DAE0"/><text x="324" y="75" text-anchor="middle" fill="#667085">&#183;</text>
+    <rect x="342" y="54" width="28" height="30" rx="4" fill="#F4F5F7" stroke="#D6DAE0"/><text x="356" y="75" text-anchor="middle" fill="#16191D">w</text>
+  </g>
+  <path d="M 212 48 v 42" stroke="#2563A8" stroke-width="2" fill="none"/>
+  <path d="M 308 48 v 42" stroke="#2563A8" stroke-width="2" fill="none"/>
+  <text x="392" y="66" font-size="11" fill="#2563A8">start = BEFORE(l)</text>
+  <text x="392" y="82" font-size="11" fill="#2563A8">end = BEFORE(space)</text>
+
+  <line x1="32" y1="110" x2="848" y2="110" stroke="#D6DAE0" stroke-width="1"/>
+
+  <!-- as ranges -->
+  <rect x="32" y="130" width="816" height="94" rx="6" fill="#E7F3EE" stroke="#1F7A5C" stroke-width="1.2"/>
+  <text x="52" y="154" font-size="12.5" font-weight="600" fill="#1F7A5C">as a range between two anchors — what this project does</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+    <rect x="150" y="170" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#D6DAE0"/><text x="164" y="191" text-anchor="middle" fill="#16191D">H</text>
+    <rect x="182" y="170" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#D6DAE0"/><text x="196" y="191" text-anchor="middle" fill="#16191D">e</text>
+    <rect x="214" y="170" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="228" y="191" text-anchor="middle" font-weight="700" fill="#16191D">l</text>
+    <rect x="246" y="170" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="260" y="191" text-anchor="middle" font-weight="700" fill="#16191D">l</text>
+    <rect x="278" y="170" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="292" y="191" text-anchor="middle" font-weight="700" fill="#16191D">X</text>
+    <rect x="310" y="170" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="324" y="191" text-anchor="middle" font-weight="700" fill="#16191D">X</text>
+    <rect x="342" y="170" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="356" y="191" text-anchor="middle" font-weight="700" fill="#16191D">o</text>
+    <rect x="374" y="170" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#D6DAE0"/><text x="388" y="191" text-anchor="middle" fill="#667085">&#183;</text>
+    <rect x="406" y="170" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#D6DAE0"/><text x="420" y="191" text-anchor="middle" fill="#16191D">w</text>
+  </g>
+  <path d="M 212 164 v 42" stroke="#1F7A5C" stroke-width="2" fill="none"/>
+  <path d="M 372 164 v 42" stroke="#1F7A5C" stroke-width="2" fill="none"/>
+  <text x="456" y="188" font-size="12" fill="#1F7A5C" font-weight="600">the anchors never moved. Still one range.</text>
+
+  <!-- as attributes -->
+  <rect x="32" y="240" width="816" height="94" rx="6" fill="#F9EAE6" stroke="#B4402E" stroke-width="1.2"/>
+  <text x="52" y="264" font-size="12.5" font-weight="600" fill="#B4402E">as a per-character attribute</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+    <rect x="150" y="280" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#D6DAE0"/><text x="164" y="301" text-anchor="middle" fill="#16191D">H</text>
+    <rect x="182" y="280" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#D6DAE0"/><text x="196" y="301" text-anchor="middle" fill="#16191D">e</text>
+    <rect x="214" y="280" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="228" y="301" text-anchor="middle" font-weight="700" fill="#16191D">l</text>
+    <rect x="246" y="280" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="260" y="301" text-anchor="middle" font-weight="700" fill="#16191D">l</text>
+    <rect x="278" y="280" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#B4402E" stroke-width="1.6" stroke-dasharray="3 2"/><text x="292" y="301" text-anchor="middle" fill="#B4402E">X</text>
+    <rect x="310" y="280" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#B4402E" stroke-width="1.6" stroke-dasharray="3 2"/><text x="324" y="301" text-anchor="middle" fill="#B4402E">X</text>
+    <rect x="342" y="280" width="28" height="30" rx="4" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/><text x="356" y="301" text-anchor="middle" font-weight="700" fill="#16191D">o</text>
+    <rect x="374" y="280" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#D6DAE0"/><text x="388" y="301" text-anchor="middle" fill="#667085">&#183;</text>
+    <rect x="406" y="280" width="28" height="30" rx="4" fill="#FFFFFF" stroke="#D6DAE0"/><text x="420" y="301" text-anchor="middle" fill="#16191D">w</text>
+  </g>
+  <text x="456" y="292" font-size="12" fill="#B4402E" font-weight="600">a hole nobody made</text>
+  <text x="456" y="309" font-size="11.5" fill="#667085">they carry no attribute — their author never saw the mark</text>
+
+  <text x="32" y="360" font-size="12" fill="#667085">The character layer never gained a field for bold. Nor for comments, nor for suggestions — they are all ranges between anchors too.</text>
+</svg>

@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 520" width="880" height="520" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Declare what you need, or you are not served</title>
+  <desc>One interceptor on every request. A handler that declares no access requirement is answered with 500 and never reaches the controller, and the same rule is enforced at build time.</desc>
+  <rect width="880" height="520" fill="#FFFFFF"/>
+
+  <text x="32" y="32" font-size="15" font-weight="600" fill="#16191D">Declare what you need, or you are not served</text>
+
+  <rect x="342" y="54" width="196" height="34" rx="6" fill="#F4F5F7" stroke="#D6DAE0" stroke-width="1.3"/>
+  <text x="440" y="76" font-size="12" text-anchor="middle" fill="#16191D">HTTP request &#183; any /api/… path</text>
+
+  <path d="M 440 88 L 440 112" stroke="#667085" stroke-width="1.4" fill="none"/>
+  <path d="M 440 118 l -5 -8 h 10 z" fill="#667085"/>
+
+  <!-- decision -->
+  <rect x="322" y="118" width="236" height="44" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.6"/>
+  <text x="440" y="139" font-size="12.5" text-anchor="middle" font-weight="600" fill="#16191D">what does the handler declare?</text>
+  <text x="440" y="155" font-size="10.5" text-anchor="middle" fill="#667085">one HandlerInterceptor, every request</text>
+
+  <!-- nothing -->
+  <path d="M 322 134 L 160 134 L 160 168" stroke="#B4402E" stroke-width="1.6" fill="none"/>
+  <path d="M 160 176 l -5 -8 h 10 z" fill="#B4402E"/>
+  <text x="238" y="126" font-size="10.5" text-anchor="middle" fill="#B4402E">nothing, or two</text>
+  <rect x="32" y="176" width="256" height="58" rx="6" fill="#F9EAE6" stroke="#B4402E" stroke-width="1.6"/>
+  <text x="160" y="197" font-size="12.5" text-anchor="middle" font-weight="600" fill="#B4402E">500 — NOT SERVED</text>
+  <text x="160" y="213" font-size="10.5" text-anchor="middle" fill="#667085">our bug, not the caller’s —</text>
+  <text x="160" y="227" font-size="10.5" text-anchor="middle" fill="#667085">and it reads that way in a log</text>
+
+  <!-- public / authn -->
+  <path d="M 558 132 L 640 132" stroke="#667085" stroke-width="1.4" fill="none"/>
+  <path d="M 646 132 l -8 -5 v 10 z" fill="#667085"/>
+  <rect x="646" y="112" width="202" height="30" rx="5" fill="#F4F5F7" stroke="#D6DAE0"/>
+  <text x="660" y="132" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">@PublicEndpoint</text>
+
+  <path d="M 558 150 L 640 158" stroke="#667085" stroke-width="1.4" fill="none"/>
+  <path d="M 646 159 l -8 -4 v 10 z" fill="#667085"/>
+  <rect x="646" y="150" width="202" height="46" rx="5" fill="#F4F5F7" stroke="#D6DAE0"/>
+  <text x="660" y="168" font-size="11.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">@RequiresAuthentication</text>
+  <text x="660" y="186" font-size="10.5" fill="#667085">signed in? otherwise 401</text>
+
+  <!-- document access -->
+  <path d="M 440 162 L 440 216" stroke="#2563A8" stroke-width="1.6" fill="none"/>
+  <path d="M 440 222 l -5 -8 h 10 z" fill="#2563A8"/>
+  <rect x="300" y="222" width="280" height="48" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/>
+  <text x="440" y="242" font-size="11.5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">@RequiresDocumentAccess</text>
+  <text x="440" y="260" font-size="10.5" text-anchor="middle" fill="#667085">(capability, path variable, how to resolve it)</text>
+
+  <path d="M 440 270 L 440 296" stroke="#2563A8" stroke-width="1.4" fill="none"/>
+  <path d="M 440 302 l -5 -8 h 10 z" fill="#2563A8"/>
+  <rect x="300" y="302" width="280" height="46" rx="6" fill="#F4F5F7" stroke="#D6DAE0"/>
+  <text x="440" y="321" font-size="11.5" text-anchor="middle" fill="#16191D">resolve the document id</text>
+  <text x="440" y="338" font-size="10.5" text-anchor="middle" fill="#667085">from the declared path variable, or a comment thread</text>
+
+  <path d="M 440 348 L 440 374" stroke="#2563A8" stroke-width="1.4" fill="none"/>
+  <path d="M 440 380 l -5 -8 h 10 z" fill="#2563A8"/>
+  <rect x="322" y="380" width="236" height="38" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.4"/>
+  <text x="440" y="404" font-size="12" text-anchor="middle" fill="#16191D">role &#8805; the declared capability?</text>
+
+  <!-- deny -->
+  <path d="M 322 399 L 250 399 L 250 434" stroke="#B4402E" stroke-width="1.6" fill="none"/>
+  <path d="M 250 440 l -5 -8 h 10 z" fill="#B4402E"/>
+  <rect x="112" y="440" width="276" height="46" rx="6" fill="#F9EAE6" stroke="#B4402E" stroke-width="1.6"/>
+  <text x="250" y="461" font-size="12.5" text-anchor="middle" font-weight="600" fill="#B4402E">404 — not 403</text>
+  <text x="250" y="478" font-size="10.5" text-anchor="middle" fill="#667085">never confirm that the document exists</text>
+  <text x="286" y="392" font-size="10.5" text-anchor="middle" fill="#B4402E">no</text>
+
+  <!-- pass -->
+  <path d="M 558 399 L 632 399 L 632 434" stroke="#1F7A5C" stroke-width="1.6" fill="none"/>
+  <path d="M 632 440 l -5 -8 h 10 z" fill="#1F7A5C"/>
+  <rect x="494" y="440" width="276" height="46" rx="6" fill="#E7F3EE" stroke="#1F7A5C" stroke-width="1.6"/>
+  <text x="632" y="461" font-size="12.5" text-anchor="middle" font-weight="600" fill="#1F7A5C">through, carrying the resolved role</text>
+  <text x="632" y="478" font-size="10.5" text-anchor="middle" fill="#667085">the controller reads it instead of looking it up again</text>
+  <text x="596" y="392" font-size="10.5" text-anchor="middle" fill="#1F7A5C">yes</text>
+
+  <!-- build-time -->
+  <rect x="646" y="222" width="202" height="76" rx="6" fill="#E7F3EE" stroke="#1F7A5C" stroke-width="1.4"/>
+  <text x="660" y="242" font-size="11.5" font-weight="600" fill="#1F7A5C">the same rule, earlier</text>
+  <text x="660" y="260" font-size="10.5" fill="#667085">an undeclared @RequestMapping</text>
+  <text x="660" y="275" font-size="10.5" fill="#667085">fails the build, and the list of</text>
+  <text x="660" y="290" font-size="10.5" fill="#667085">public endpoints is pinned by name</text>
+  <path d="M 646 250 L 590 250 L 590 146 L 564 146" stroke="#1F7A5C" stroke-width="1.3" stroke-dasharray="4 3" fill="none"/>
+  <path d="M 558 146 l 8 -5 v 10 z" fill="#1F7A5C"/>
+</svg>

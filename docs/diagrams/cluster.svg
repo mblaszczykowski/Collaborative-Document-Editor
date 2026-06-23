@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 420" width="880" height="420" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Every backend instance is an ordinary CRDT replica</title>
+  <desc>No leader, no distributed lock, no sticky sessions. Redis is a best-effort fast path; the Postgres operation log is the source of truth, and an anti-entropy sweep repairs anything Redis dropped.</desc>
+  <rect width="880" height="420" fill="#FFFFFF"/>
+
+  <text x="32" y="34" font-size="15" font-weight="600" fill="#16191D">No leader, no lock, no sticky sessions — every instance is just another replica</text>
+
+  <!-- browsers -->
+  <rect x="32" y="62" width="132" height="40" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.2"/>
+  <text x="98" y="87" font-size="12" text-anchor="middle" fill="#16191D">browser A</text>
+  <rect x="32" y="112" width="132" height="40" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.2"/>
+  <text x="98" y="137" font-size="12" text-anchor="middle" fill="#16191D">browser B</text>
+
+  <rect x="716" y="62" width="132" height="40" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.2"/>
+  <text x="782" y="87" font-size="12" text-anchor="middle" fill="#16191D">browser C</text>
+  <rect x="716" y="112" width="132" height="40" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.2"/>
+  <text x="782" y="137" font-size="12" text-anchor="middle" fill="#16191D">browser D</text>
+
+  <!-- instances -->
+  <rect x="220" y="72" width="180" height="70" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.6"/>
+  <text x="310" y="97" font-size="12.5" text-anchor="middle" font-weight="600" fill="#16191D">instance #1</text>
+  <text x="310" y="117" font-size="11.5" text-anchor="middle" fill="#2563A8">RGA replica + marks</text>
+  <text x="310" y="133" font-size="11" text-anchor="middle" fill="#667085">a peer, not an owner</text>
+
+  <rect x="480" y="72" width="180" height="70" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.6"/>
+  <text x="570" y="97" font-size="12.5" text-anchor="middle" font-weight="600" fill="#16191D">instance #2</text>
+  <text x="570" y="117" font-size="11.5" text-anchor="middle" fill="#2563A8">RGA replica + marks</text>
+  <text x="570" y="133" font-size="11" text-anchor="middle" fill="#667085">a peer, not an owner</text>
+
+  <path d="M 164 82 L 214 96" stroke="#667085" stroke-width="1.3" fill="none"/>
+  <path d="M 164 132 L 214 118" stroke="#667085" stroke-width="1.3" fill="none"/>
+  <path d="M 716 82 L 666 96" stroke="#667085" stroke-width="1.3" fill="none"/>
+  <path d="M 716 132 L 666 118" stroke="#667085" stroke-width="1.3" fill="none"/>
+
+  <!-- redis -->
+  <rect x="330" y="184" width="220" height="50" rx="6" fill="#FBF2DE" stroke="#B07908" stroke-width="1.6"/>
+  <text x="440" y="205" font-size="12.5" text-anchor="middle" font-weight="600" fill="#16191D">Redis pub/sub</text>
+  <text x="440" y="223" font-size="11.5" text-anchor="middle" fill="#B07908">fast path &#183; best effort &#183; MAY DROP</text>
+
+  <path d="M 310 142 L 310 209 L 324 209" stroke="#B07908" stroke-width="1.4" stroke-dasharray="5 3" fill="none"/>
+  <path d="M 570 142 L 570 209 L 556 209" stroke="#B07908" stroke-width="1.4" stroke-dasharray="5 3" fill="none"/>
+
+  <!-- postgres -->
+  <rect x="290" y="278" width="300" height="54" rx="6" fill="#E7F3EE" stroke="#1F7A5C" stroke-width="1.8"/>
+  <text x="440" y="300" font-size="12.5" text-anchor="middle" font-weight="600" fill="#16191D">PostgreSQL operation log</text>
+  <text x="440" y="319" font-size="11.5" text-anchor="middle" fill="#1F7A5C">SOURCE OF TRUTH</text>
+
+  <path d="M 250 142 L 250 305 L 284 305" stroke="#1F7A5C" stroke-width="1.6" fill="none"/>
+  <path d="M 630 142 L 630 305 L 596 305" stroke="#1F7A5C" stroke-width="1.6" fill="none"/>
+  <text x="222" y="250" font-size="11.5" fill="#1F7A5C" text-anchor="middle">write</text>
+  <text x="654" y="250" font-size="11.5" fill="#1F7A5C" text-anchor="middle">write</text>
+
+  <!-- anti-entropy -->
+  <path d="M 590 318 L 700 318 L 700 170 L 600 170 L 600 150" stroke="#1F7A5C" stroke-width="1.4" stroke-dasharray="4 3" fill="none"/>
+  <path d="M 600 142 l -5 8 h 10 z" fill="#1F7A5C"/>
+  <text x="712" y="262" font-size="11.5" fill="#1F7A5C">anti-entropy sweep</text>
+  <text x="712" y="278" font-size="11" fill="#667085">has the log moved past</text>
+  <text x="712" y="293" font-size="11" fill="#667085">what I applied? pull it.</text>
+
+  <rect x="32" y="356" width="816" height="48" rx="6" fill="#F4F5F7" stroke="#D6DAE0"/>
+  <text x="48" y="376" font-size="12" fill="#16191D">Losing a Redis message is a <tspan font-weight="600">latency</tspan> problem rather than a correctness one, because the log is authoritative and the sweep repairs the difference.</text>
+  <text x="48" y="394" font-size="12" fill="#667085">A chaos test pauses the Redis container mid-write to check exactly that.</text>
+</svg>

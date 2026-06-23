@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 396" width="880" height="396" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>Run-length blocks and tombstones</title>
+  <desc>The document is a list of blocks rather than characters. Deleting part of a block splits it; the deleted half keeps its identity, its length and the identifier of the operation that deleted it.</desc>
+  <rect width="880" height="396" fill="#FFFFFF"/>
+
+  <text x="32" y="34" font-size="15" font-weight="600" fill="#16191D">The document is a list of runs, not of characters</text>
+
+  <!-- one block -->
+  <rect x="32" y="56" width="380" height="76" rx="6" fill="#EAF1F9" stroke="#2563A8" stroke-width="1.2"/>
+  <text x="48" y="78" font-size="12.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">Block { start: 1@1, text: "Hello world" }</text>
+  <text x="48" y="99" font-size="11.5" fill="#667085">11 characters &#183; <tspan fill="#2563A8" font-weight="600">one object</tspan>, <tspan fill="#2563A8" font-weight="600">one operation</tspan> on the wire</text>
+  <text x="48" y="119" font-size="11.5" fill="#667085">the character at offset <tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">i</tspan> has the identifier <tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">(1, 1 + i)</tspan></text>
+
+  <rect x="468" y="56" width="380" height="76" rx="6" fill="#F9EAE6" stroke="#B4402E" stroke-width="1.2"/>
+  <text x="484" y="78" font-size="12.5" fill="#B4402E" font-weight="600">the alternative, and why not</text>
+  <text x="484" y="99" font-size="11.5" fill="#16191D">One object per character means one operation per</text>
+  <text x="484" y="117" font-size="11.5" fill="#16191D">keystroke, forever, for every reader of the log.</text>
+
+  <line x1="32" y1="156" x2="848" y2="156" stroke="#D6DAE0" stroke-width="1"/>
+
+  <!-- delete: before -->
+  <text x="32" y="184" font-size="12.5" font-weight="600" fill="#16191D">Deleting “world” splits the block. The right half becomes a tombstone.</text>
+
+  <text x="32" y="216" font-size="11.5" fill="#667085">before</text>
+  <rect x="92" y="200" width="260" height="34" rx="5" fill="#F4F5F7" stroke="#D6DAE0"/>
+  <text x="106" y="222" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">1@1  "Hello world"</text>
+
+  <path d="M 214 244 L 214 268" stroke="#667085" stroke-width="1.3" fill="none"/>
+  <path d="M 214 268 l -4 -6 h 8 z" fill="#667085"/>
+  <text x="228" y="262" font-size="11.5" fill="#667085">delete the last five characters</text>
+
+  <text x="32" y="296" font-size="11.5" fill="#667085">after</text>
+  <rect x="92" y="280" width="150" height="34" rx="5" fill="#F4F5F7" stroke="#D6DAE0"/>
+  <text x="106" y="302" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">1@1  "Hello "</text>
+
+  <rect x="252" y="280" width="300" height="34" rx="5" fill="#FBF2DE" stroke="#B07908"/>
+  <text x="266" y="302" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#16191D">1@7  len 5  &#10007; deleted by 2@40</text>
+
+  <path d="M 470 322 L 470 344" stroke="#B07908" stroke-width="1.3" fill="none"/>
+  <text x="486" y="348" font-size="11.5" fill="#B07908" font-weight="600">which operation deleted it</text>
+  <text x="486" y="366" font-size="11.5" fill="#667085">garbage collection tests the stability of <tspan font-weight="600" fill="#16191D">this</tspan>, not of the insert</text>
+
+  <text x="32" y="348" font-size="11.5" fill="#667085">A tombstone keeps its</text>
+  <text x="32" y="366" font-size="11.5" fill="#667085">identity and its length,</text>
+  <text x="32" y="384" font-size="11.5" fill="#667085">so it can still be an origin.</text>
+</svg>
