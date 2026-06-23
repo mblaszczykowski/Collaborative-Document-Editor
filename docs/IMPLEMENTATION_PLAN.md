@@ -3,11 +3,29 @@
 > **Status: all 9 checkpoints closed.** The document stays in the repository as a record of what
 > was planned — including the places where the plan did not hold. The most significant departures:
 > Gradle replaced by Maven (CP1), Gatling replaced by a custom harness (CP8), and the reach of GC
-> turning out to be narrower than ADR-0005 assumed (CP6). All three are described where they
+> turning out to be narrower than the tombstone-collection design assumed (CP6). All three are described where they
 > belong.
+>
+> **The names below are the planned names, and four of them are not what shipped.** Kept as
+> written, because a plan that quietly acquires the vocabulary of the finished code stops being
+> evidence of what was known beforehand — but a reader should not have to discover it by grepping
+> and finding nothing:
+>
+> | In this plan | In the repository |
+> |---|---|
+> | `crdt-ts/` as a module | `frontend/src/crdt/`, inside the Vite app — a separate module was never carved out |
+> | `concurrentTyping_staysContiguous` | `RgaInterleavingTest.forwardTypingStaysContiguous`, and the companion is `backwardTypingInterleaves_knownLimitation` |
+> | `naiveEqualsIndexed` | `BlockListEquivalenceProperties.naiveAndIndexedProduceIdenticalDocuments` |
+> | `redis_gap_repairs_total` | `cluster.gap.repairs.total` (`cluster_gap_repairs_total` in Prometheus) |
+>
+> The last two also reached documents that are *not* records of intent —
+> the cluster design specified the metric under the planned name, and the algorithm notes cited
+> the planned test name, in both cases for the whole life of the project. Both are corrected in
+> the README, with the retraction spelled out. A planned name is
+> harmless; a planned name in a specification is a name somebody will search for.
 
-A working document. Written before the first line of code, on the basis of `idea.md` and
-`CLAUDE.md`. Updated as work progressed — if a decision from the plan turned out badly in practice,
+A working document. Written before the first line of code, on the basis of the [brief](brief.md)
+and `CLAUDE.md`. Updated as work progressed — if a decision from the plan turned out badly in practice,
 we fix it here **and** commit the plan change together with the reason (the history of iteration is
 part of the artifact).
 
@@ -63,7 +81,7 @@ for. Redis pub/sub is the **fast, unreliable path** (at-most-once). The Postgres
 **slow, authoritative path** — an instance that detects a gap in the version vector pulls the
 missing operations from the database (anti-entropy / read repair).
 
-This is ADR-004 and it is the architecture's strongest point: an unreliable broadcast is *safe by
+This is the architecture's strongest point: an unreliable broadcast is *safe by
 definition* here, rather than "safe because we hope so".
 
 ---
@@ -93,7 +111,7 @@ blocks.
 
 **The plan:** write a property-based test `concurrentTyping_staysContiguous`, find the case where
 RGA breaks it, and **leave it in the repository as an explicitly marked known-limitation test**
-(`@Disabled("ADR-001: a known RGA anomaly, see the Trade-offs section")`) with a link to the ADR.
+(`@Disabled("a known RGA anomaly, see the Trade-offs section")`).
 Honestly documenting the boundary of one's own algorithm beats pretending the boundary is not
 there.
 
@@ -214,8 +232,8 @@ restart.
 **Deliverables:**
 - `crdt-ts` — a port of RGA that passes the conformance vectors from CP2
 - CodeMirror 6 as a **view layer** (not the model): CM6 transactions → CRDT operations → back as
-  decorations. The justification goes into ADR-006: raw contentEditable is a month of fighting
-  IME/composition/the browser's undo, and `idea.md` explicitly allows a library as the UI layer
+  decorations. The justification: raw contentEditable is a month of fighting
+  IME/composition/the browser's undo, and the [brief](brief.md) explicitly allows a library as the UI layer
 - Remote cursors and selections — a cursor position held as a **CRDT id, not an offset** (an offset
   drifts under remote editing before the cursor — a classic bug worth writing about in the README)
 - Presence: a list of users, "X is typing", a colour per user
@@ -253,7 +271,7 @@ that as an ordinary edit.
   and export the local copy as a "recovered draft", instead of pretending to merge. That is a
   failure mode for the README
 - A network simulator: transport middleware with latency / jitter / packet loss / partition
-  sliders. The same code drives the demo (idea.md) and the chaos tests (CP8) — one thing, two uses
+  sliders. The same code drives the demo ([the brief](brief.md)) and the chaos tests (CP8) — one thing, two uses
 
 **Exit criteria:** turning the network off for 60 s while both sides are actively typing → after it
 returns, both clients hold identical text containing both sets of edits.
@@ -326,12 +344,11 @@ up from `docker compose up` with no manual configuration.
 ## 4. Decisions taken (2026-08-14)
 
 1. **Depth of the CRDT** → **RGA** alone, with the interleaving anomaly documented as a known
-   limitation (an explicitly marked test plus a section in ADR-001). Fugue as a second algorithm
+   limitation (an explicitly marked test plus a section in the README). Fugue as a second algorithm
    backend is **rejected** on cost (+2–3 days); it goes into the "what I would do differently in
    production" section as a deliberately skipped step.
 2. **The editor layer** → **CodeMirror 6** as a pure view layer (the document model is our CRDT;
-   CM6 renders and supplies the decorations for remote cursors). The justification goes into
-   ADR-006.
+   CM6 renders and supplies the decorations for remote cursors). The justification is the same one.
 3. **The scope of the benchmark** → up to **250 users / 1M characters**, one machine, with the
    hardware specification stated in the README alongside the results. No distributed Gatling.
 

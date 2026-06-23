@@ -19,10 +19,8 @@ Record the cost in the final report (see *Working mode* at the bottom of this fi
 **The project language is English.** The decision and its justification:
 [PLAN-v3 §0.2](docs/PLAN-v3.md).
 
-- **All new content is written in English** — code, comments, javadoc, tests, ADRs, commit
-  messages, README.
-- Existing Polish content is migrated in this order: README → `docs/adr/` → code comments →
-  `docs/architecture.md` and `docs/crdt-design.md` → the plans → configuration and UI strings.
+- **All new content is written in English** — code, comments, javadoc, tests, commit messages,
+  README.
 - **The migration covers everything, including the plans and this file.** An earlier version of
   this rule exempted the plans as a "historical series". That exemption is withdrawn: a repository
   in two languages reads worse than in either one, and a reader arriving from an English README at
@@ -30,33 +28,36 @@ Record the cost in the final report (see *Working mode* at the bottom of this fi
 - When translating, **do not shorten and do not smooth over**. The value of these comments is that
   they say *why* and admit mistakes. The English has to carry the same bluntness and the same
   specificity, including sentences like "this did not work, and here is why".
-- Filenames keep their original Polish slugs (`0003-change-history.md` and so on). Renaming them
-  would break every link in the README, in the ADRs and in the commit history in exchange for
-  cosmetics — and the commit history is part of the artifact here.
+- **Do not rename a file for cosmetics.** Every link in the README and in the commit history pays
+  for it, and the commit history is part of the artifact here.
 
 ## Technical context
 
 - Backend: Java 21, Spring Boot, PostgreSQL, WebSocket (STOMP)
 - Frontend: React + TypeScript
-- Sync algorithm: CRDT (not OT — see ADR-0001, the first document to be written in the project)
+- Sync algorithm: CRDT, not OT — the reasoning is in the README
 - Infrastructure: Docker Compose, GitHub Actions CI/CD
 - Observability: OpenTelemetry + Prometheus/Grafana
 
 ## Hard requirements — skip none of them
 
-### 1. Before you write the first line of domain code
-- Create `/docs/adr/` and record an ADR for: the CRDT vs OT choice, the transport choice
-  (WebSocket+STOMP vs SSE vs raw WS), the change-history strategy (event log vs periodic
-  snapshots), the horizontal scaling strategy (Redis pub/sub between instances)
-- ADR format: context → options considered → decision → consequences (including negative ones). If
-  you do not know the consequences yet, write "to be verified in phase X" — do not manufacture
-  certainty you do not have
+### 1. Every real decision is written down, in the README
+
+The project used to keep these as a `docs/adr/` series, one templated file per decision. That is
+withdrawn: sixteen documents in a fixed context/options/decision/consequences shape read as
+paperwork rather than as thinking, and a reader with five minutes never opened the folder. The
+reasoning now lives in the README, next to the thing it explains, in prose.
+
+What has *not* changed is the substance. For anything structural — the merge algorithm, the
+transport, the history strategy, the cluster design — say what was chosen, what else was
+considered, and what it costs, **including the costs that turned out worse than expected**. If a
+consequence is not known yet, write that instead of manufacturing certainty.
 
 ### 2. Commit history as narrative
 - Conventional Commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`)
 - Every commit is one logical change, not "wip" or "final v3"
 - Commit decisions that did not work out too, if they are instructive (e.g. "revert: naive
-  last-write-wins merge — see ADR-0001 for why it does not work") — a history of failures and
+  last-write-wins merge — see the CRDT decision for why it does not work") — a history of failures and
   iteration is more credible than linear success
 
 ### 3. Tests — prioritise in this order
@@ -101,11 +102,10 @@ your own solution — do not skip this section, even if it "spoils" the impressi
 
 - Off-the-shelf CRDT libraries (e.g. Yjs) as a black box with no implementation of your own — the
   goal is to show an understanding of the algorithm, not the ability to `npm install`. You may draw
-  on them and compare against them in an ADR, but the core logic must be ours
+  on them and compare against them, but the core logic must be ours
 - Excessive scope **at the cost of depth in the core problem** — better narrow and deep than broad
   and shallow. Up to the close of CP9 this meant plainly: no rich text, no comments, no
-  multi-document. Since [ADR-0008](docs/adr/0008-scope-extension.md) the scope is wider, but
-  the principle does NOT change — every new feature must bring its own engineering problem (rich
+  multi-document. The scope is wider now, but the principle does NOT change — every new feature must bring its own engineering problem (rich
   text: anchors surviving concurrent insertions; permissions: authorization per operation type)
   rather than being work around the core. A feature that adds nothing to the project's thesis is
   still excessive.
@@ -135,8 +135,8 @@ permission to move on.
 The reason for the change is concrete rather than cosmetic: in plans v1 and v2 asking made sense,
 because every checkpoint changed the shape of the product and a wrong order would cost days of
 work. Plan v3 adds no features — it closes items whose justification is **already measured and
-written down in this repository**. Asking "shall I continue" about an item ADR-0005 calls
-explicitly non-optional is a cost with no content.
+written down in this repository**. Asking "shall I continue" about an item the
+tombstone-collection design calls explicitly non-optional is a cost with no content.
 
 What replaces the approval to proceed — because removing the gate does not remove the accounting:
 

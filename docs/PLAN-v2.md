@@ -31,7 +31,7 @@
 > 3. **The GC concern from point 5.5 was confirmed more strongly than it assumed.** The plan
 >    predicted "two tombstones per mark"; the measurement showed "a whole run-length block per
 >    mark" — on a document written in one continuous run, GC reclaims **nothing** after formatting
->    is added. The numbers are in the README and in ADR-0005.
+>    is added. The numbers are in the README and in the tombstone-collection design.
 >
 > **The most important result of CP10, which the plan did not predict.** Point 2.1 assumed that the
 > lack of repeatable convergence above ~10 clients was a problem in the system, and that coalescing
@@ -39,14 +39,14 @@
 > cause of the non-convergence was the measuring rig**: the test client had the default 8 KiB
 > JSR-356 buffer, which let broadcasts through (~70 B per frame) and stopped resynchronisation
 > responses (300 operations ≈ 15 KB) — that is, the only mechanism capable of repairing a lost
-> operation. The details are in the README and ADR-0002.
+> operation. The details are in the README and the transport decision.
 >
 > The plan's hypothesis about the server's send buffer overflowing **was not confirmed**: the
 > `ws_sessions_closed_total{reason}` metric recorded not one such close at 50 clients.
 
 Version 1 was a **narrow engineering artifact**: one document, one problem (convergence of
 distributed data), maximum depth. Product scope was deliberately rejected in
-[ADR-0007](adr/0007-ui-scope.md), and the README closes with a "what I would do differently in
+the original UI scope, and the README closes with a "what I would do differently in
 production" section listing exactly the four gaps this plan now addresses.
 
 Version 2 changes the positioning: **a rich text editor with comments, many documents and a
@@ -67,10 +67,10 @@ documentation — the reader stops trusting the whole.
 | File | What it says now | What to do |
 |---|---|---|
 | `CLAUDE.md`, "What to avoid" | "Excessive scope (rich text formatting, comments, a multi-document workspace) at the cost of depth in the core problem" | Rewrite: the scope is extended deliberately after CP9 closed, on condition that the core's depth is maintained |
-| [ADR-0007](adr/0007-ui-scope.md) | The mockup's functional scope rejected | Status → **Superseded by ADR-0008**. Do not delete — the decision was right for v1 |
+| the original UI scope | The mockup's functional scope rejected | Status → **Superseded by the scope extension**. Do not delete — the decision was right for v1 |
 | README, "What I would do differently" | Lists these features as deliberate boundaries | Split into "done in v2" and "still out of scope" |
 
-### ADR-0008 — extending the scope into a product
+### the scope extension — extending the scope into a product
 
 The first thing to write, before any code. The same layout as the other ADRs.
 
@@ -91,7 +91,7 @@ into a product; (C) extend selectively — only multi-document and permissions, 
   as well. The debt described in the README grows in proportion to the new scope.
 - **Tombstone GC becomes even less effective** — see CP13, the section on anchors. This is the most
   serious technical consequence and may force a redesign of the block representation that
-  [ADR-0005](adr/0005-tombstone-gc.md) deferred.
+  the tombstone-collection design deferred.
 - **Every number in the README becomes stale.** Rich text changes the traffic profile. Leaving the
   old numbers would be dishonest — hence CP15 is mandatory rather than optional.
 
@@ -174,8 +174,8 @@ The steps:
    plus a panel on the dashboard. If it fires at 25 clients and stays silent at 10, the question is
    answered with a number. That is a result in itself, regardless of whether the hypothesis holds.
 2. **Coalesce broadcasts into a ~10–15 ms window**, in the same shape as `flushAll()`. This
-   requires updating [ADR-0002](adr/0002-transport.md) and
-   [ADR-0004](adr/0004-horizontal-scaling.md), because ADR-0004 says "broadcast immediately" and
+   requires updating the transport decision and
+   the cluster design, because the cluster design says "broadcast immediately" and
    that will stop being literally true. The cost: ≤15 ms of latency against a measured p50 of
    22–553 ms.
 3. **Separate the clients from the server** in the harness — the README itself names this as the
@@ -249,7 +249,7 @@ documents           + workspace_id (FK), + deleted_at (soft delete),
 ```
 
 `preview_text` is a **cache, not a source of truth** — exactly like the snapshots in
-[ADR-0003](adr/0003-change-history.md). The document list must not load CRDT replicas into memory
+the operation-log decision. The document list must not load CRDT replicas into memory
 merely to show the first three lines; that is the same trap the existing test "deleting every
 snapshot changes nothing" guards against.
 
@@ -338,7 +338,7 @@ past CP13.
 The `V3__permissions.sql` migration: `document_members.role`, `workspace_members` (a role inherited
 by the documents, overridable per document), `invitations`.
 
-**A decision to record in ADR-0009:** inheritance from the workspace versus per-document
+**A decision to record in the permission model:** inheritance from the workspace versus per-document
 permissions only. Inheritance is more convenient from a product point of view and harder to verify
 — an access check stops being one query, and cache invalidation has to cover every document in the
 workspace.
@@ -396,14 +396,14 @@ an existing wire format, and with consequences for GC.
 
 ### 5.1 Why this cannot be done "per character"
 
-A trap that has to be named in ADR-0010, because it is the most common wrong approach:
+A trap that has to be named in the mark layer, because it is the most common wrong approach:
 **formatting as an attribute of a character does not work.** If Ania bolds a range while Bartek
 concurrently inserts text into the middle of it, the inserted text has to be bold — and with
 per-character attributes there is nobody to make it bold, because at the moment of insertion Ania's
 operation had not arrived.
 
 Storing ranges as offsets does not work either. The reason is identical to the one for cursors in
-[ADR-0006](adr/0006-editor-layer.md): an offset stops pointing at the same place after somebody
+the editor-layer decision: an offset stops pointing at the same place after somebody
 else's edit. The project solved this once — by anchoring a cursor to a **CRDT character identifier**
 — and the same solution scales to formatting.
 
@@ -435,7 +435,7 @@ Op.RemoveMark(Id id, String type, Anchor start, Anchor end)
 
 `Op` is `sealed interface Op permits Op.Insert, Op.Delete`. Adding variants makes the compiler
 point at every exhaustive `switch` — `RgaDocument.isAlreadyKnown`, `RgaDocument.tryApply`,
-`OpCodec.toJson`. That is an advantage and worth naming in the ADR.
+`OpCodec.toJson`. That is an advantage and worth naming.
 
 But **two places use a ternary `instanceof` instead of a `switch`** and will pass
 compilation silently, with the wrong result:
@@ -455,13 +455,13 @@ Both to be rewritten as a `switch` **before** the variants are added, as a separ
   The V1 schema turns out to be sufficient here — worth noting.
 - `DocumentSnapshot.CURRENT_FORMAT_VERSION`: bump it. The migration is **free by design** —
   `V1__initial_schema.sql:46` says outright that a snapshot with a mismatched version is ignored and
-  the state rebuilt from the log. The decision from ADR-0003 pays off here.
+  the state rebuilt from the log. The decision from the operation-log decision pays off here.
 - **The conformance corpus needs regenerating**, plus new vectors for marks. The CI job "the
   conformance vectors are current" covers the rest.
 
 ### 5.5 The consequence for GC — the most serious in the whole plan
 
-[ADR-0005](adr/0005-tombstone-gc.md) forbids removing a tombstone that is another block's
+The tombstone-collection design forbids removing a tombstone that is another block's
 `originLeft`. The README already admits that as a result GC reclaims practically only the
 document's tail.
 
@@ -474,15 +474,15 @@ deleted nodes while keeping them in the structure** (the Yjs approach). It chang
 representation and invalidates the snapshot format — but the snapshot format is being bumped in
 this checkpoint anyway, so **if that change is going to happen, now is the cheapest moment.**
 
-A decision to be taken at the start of CP13, not during it. To be recorded in ADR-0011 together
-with a revision of ADR-0005.
+A decision to be taken at the start of CP13, not during it. To be recorded in the comment split together
+with a revision of the tombstone-collection design.
 
 ### 5.6 Frontend
 
 `remoteCursors.ts` is a ready-made pattern: CRDT identifiers → offsets → CodeMirror decorations,
 computed at the last moment before drawing. Marks travel the same road through
 `Decoration.mark()`. CodeMirror stays purely a view layer —
-[ADR-0006](adr/0006-editor-layer.md) needs no revision.
+the editor-layer decision needs no revision.
 
 A toolbar, keyboard shortcuts, and `bridge.ts` extended with formatting transactions.
 
@@ -516,7 +516,7 @@ than building it.
 author, is appended whole, and is not concurrently edited character by character. Ordinary
 relational tables suffice.
 
-That distinction is worth recording in ADR-0012, because the temptation of "we have a CRDT, so
+That distinction is worth recording in the authorization guard, because the temptation of "we have a CRDT, so
 everything will be a CRDT" is real, and the answer is: a CRDT solves a specific problem (concurrent
 editing of the same sequence), and applying it where that problem does not exist is a cost with no
 benefit.
@@ -572,7 +572,7 @@ memory instead of measured.
 |---|---|
 | A harness with presence and formatting | Done. **It revealed a bug, not just numbers** — rate limiting lost operations silently (12 scenarios, 351 refusals; after the fix, zero losses) |
 | The share of marks in a snapshot | **8 B per mark.** Negligible — a mark does not copy the text it covers |
-| GC overhead after adding anchors | **The concern is confirmed, and more strongly.** Not "two tombstones per mark" but a whole run-length block. On text written in one continuous run: 0 % reclaimed. [ADR-0005, the CP15 section](adr/0005-tombstone-gc.md) |
+| GC overhead after adding anchors | **The concern is confirmed, and more strongly.** Not "two tombstones per mark" but a whole run-length block. On text written in one continuous run: 0 % reclaimed. the tombstone-collection design, the CP15 measurement |
 | README: done in v2 vs still out of scope | Done by **strikethrough** rather than rewriting — it shows which original diagnosis was right and which was not |
 | New failure modes | Five new rows, including a role without write permission — found while writing that section |
 | A new demo | A second GIF, a separate Playwright scenario. One would have been too long or too cursory |
@@ -654,7 +654,7 @@ fact — and because the first item below is proof that the declaration would no
 
 The first item matters more than its fix. The plan **named that path explicitly** and that was not
 enough — which means a protection resting on somebody remembering a point from a document is not a
-protection. The conclusion went into ADR-0009 and into the README.
+protection. The conclusion went into the permission model and into the README.
 
 ### Done differently from what the plan assumed — deliberately
 

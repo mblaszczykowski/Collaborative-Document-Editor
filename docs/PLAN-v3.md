@@ -7,7 +7,7 @@
 > |---|---|
 > | §0 — Reach (hosting, language, condensing the README) | **~15 %** — see the [audit](#101-not-done--and-this-is-the-most-important-part-of-this-audit) |
 > | CP16 — Structurally enforced authorization | **closed** — a fourth hole of the same class was found along the way |
-> | CP17 — Deterministic simulation | **closed** — 806 scenarios in < 1 s; zero bugs in the system, three in the simulation itself |
+> | CP17 — Deterministic simulation | **closed** — 806 invocations in < 1 s (**1207 today**, see §10.4); zero bugs in the system, three in the simulation itself |
 > | CP18 — A block without content, snapshot format v3 | **closed** — GC reclamation from 0 % to 100 % |
 > | CP19 — A performance regression gate + security automation | **closed differently** — a gate on the shape of the complexity, because a threshold in milliseconds could not be defended |
 > | CP20 — Sweeping in `MarkSet` + outstanding debts | **partially closed** — `MarkSet` and `retry-after` done, four debts not |
@@ -48,7 +48,7 @@ This is the same principle the project already applied once and described in the
 protection resting on somebody remembering a point from a document is not a protection"*. v3
 extends it from authorization to the whole system.
 
-**What v3 deliberately does not do: it adds no scope.** [ADR-0008](adr/0008-scope-extension.md)
+**What v3 deliberately does not do: it adds no scope.** the scope extension
 set the condition that every new feature has to bring its own engineering problem. After CP15 there
 were no features left satisfying that condition — what was left were **closures**, and that is this
 entire plan.
@@ -90,7 +90,7 @@ flaw — it is **a fork in the road that has to be chosen deliberately rather th
 |---|---|
 | Stay in Polish | The Polish market. Comments of this quality in Polish are a differentiator, not a burden |
 | Everything in English | The remote market. The cost: rewriting ~4 000 lines of documentation, with a risk of losing precision |
-| **README + ADR index in English, the rest in Polish** | Signals bilingualism rather than hiding the depth. Cost ~1 day |
+| **README and decision index in English, the rest in Polish** | Signals bilingualism rather than hiding the depth. Cost ~1 day |
 
 The recommendation: the third option if the goal is the remote market; the first if it is Poland.
 **There is no good answer here without knowledge this document does not have** — the decision
@@ -131,10 +131,10 @@ better to go back to Polish entirely** than to leave the repository halfway.
 > mitigation was to translate rather than rewrite: the conclusions stay as they were, including the
 > ones that later proved wrong.
 
-**Why this does not get an ADR:** the ADRs in this project describe architectural decisions. The
+**Why this does not get a decision record:** those describe architectural decisions. The
 language of the documentation and the choice of hosting are editorial and operational decisions.
-Writing an ADR for everything is the same mistake as applying a CRDT where there is no concurrent
-editing ([ADR-0011](adr/0011-comments.md)) — a cost with no benefit.
+Writing one for everything is the same mistake as applying a CRDT where there is no concurrent
+editing (the comment split) — a cost with no benefit.
 
 ### 0.3 Condensing the README
 
@@ -244,7 +244,7 @@ Three endpoints are legitimately public today and go on that list: `POST /api/lo
 `GET /api/documents` (it filters by permission internally, because a list has to return "what you
 can see" rather than a 403), and `POST /api/documents`.
 
-**ADR-0012 — structurally enforced authorization.** To be written before the code, in the same
+**the authorization guard — structurally enforced authorization.** To be written before the code, in the same
 layout as the others. The negative consequences to describe honestly, because they are real:
 
 - a path rule is **less legible at the point of use** than an explicit `if` in the controller — a
@@ -361,7 +361,7 @@ a real network. `ClusterChaosIT` on Testcontainers **stays** — the simulation 
 distributed logic, the integration tests make sure the model matches reality. Replacing one with
 the other would be the same mistake as treating a snapshot as the source of truth.
 
-**ADR-0013 — deterministic simulation as the third testing pillar.** The negative consequences to
+**the deterministic simulation — deterministic simulation as the third testing pillar.** The negative consequences to
 describe: production code has to take its clock and its source of randomness from outside (`Clock`,
 `RandomGenerator`) — that is, **testability leaks into the signatures**; the simulator is a second
 implementation of the transport layer, so **the same debt as with two CRDT implementations**, only
@@ -383,7 +383,7 @@ the JVM (GC, JIT) — and that is a boundary this checkpoint does not cross.
 
 ### 4.1 Why this stopped being optional
 
-[ADR-0005](adr/0005-tombstone-gc.md), after the CP15 measurement, says outright: *"the direction
+The tombstone-collection design, after the CP15 measurement, says outright: *"the direction
 does not change, but it **stops being optional**"*. Measured: **0 % GC reclamation** on text
 written in one continuous run, 80 % on text typed character by character. The same implementation,
 the same text, the same marks — the only difference is the typing history.
@@ -394,11 +394,11 @@ anchor saves a whole run-length block.
 
 One change closes **two** documented limitations at once:
 
-1. "GC reclaims less than ADR-0005 assumes" — a tombstone in the middle of the text is the origin
+1. "GC reclaims less than the tombstone-collection design assumes" — a tombstone in the middle of the text is the origin
    of the next block, so it must not be removed;
 2. "A formatting anchor blocks the WHOLE run-length block" — measured in CP15.
 
-Both have the same cause and the same answer, already indicated in ADR-0005:
+Both have the same cause and the same answer, already indicated in the tombstone-collection design:
 
 > **All three protection conditions need a character's IDENTITY, not its content.**
 
@@ -427,19 +427,19 @@ That lets a block **give memory back without being collected** — and then the 
 | `conformance/` | the corpus needs regenerating; the CI job keeps it from drifting |
 
 **Data migration is free, and that is no accident.** On a version mismatch `SnapshotCodec`
-**ignores the snapshot rather than migrating it** ([ADR-0003](adr/0003-change-history.md): a
+**ignores the snapshot rather than migrating it** (the operation-log decision: a
 snapshot is a disposable cache), so the state is rebuilt from the operation log. The real cost of
 this checkpoint is the TS twin and the treap's aggregates, not the data — and that is worth writing
-in the ADR, because the decision from CP5 ("a snapshot is a cache, not a source of truth") **pays
+down, because the decision from CP5 ("a snapshot is a cache, not a source of truth") **pays
 off here for the second time**.
 
 ### 4.3 Settling up with the missed opportunity
 
-ADR-0005 admits that the cheapest moment for this change — bumping the format to version 2 in CP13
+The tombstone-collection design admits that the cheapest moment for this change — bumping the format to version 2 in CP13
 — **was missed**, because the measurement was absent. The measurement exists now, it came out
 badly, so the opportunity returns at version 3.
 
-To be added to ADR-0005 once CP18 closes, per the house convention: **whether deferring the
+To be added to the tombstone-collection design once CP18 closes, per the house convention: **whether deferring the
 decision actually cost what was assumed.** If it turns out doing it in CP13 would have been
 cheaper, that is a conclusion worth recording. If it turns out that without the measurement the
 change would have gone the wrong way, that is a more interesting conclusion still.
@@ -451,7 +451,7 @@ characters, the text deleted, 100 marks, a stable version vector), the same two 
 CP18" column next to the existing ones.
 
 **To be verified:** whether reclamation on text written in one continuous run rises from 0 % to
-something close to 100 %. If not, the hypothesis in ADR-0005 is wrong and that has to be written
+something close to 100 %. If not, the hypothesis in the tombstone-collection design is wrong and that has to be written
 down plainly, rather than fitting the interpretation to the result. That has already happened once
 in this project (an RGA scan condition believed necessary, refuted by 200 000 scenarios) and the
 honest reckoning was the most interesting part.
@@ -506,7 +506,7 @@ and closing a thread that is already told.
 - a check of whether there is anything to fix in the current dependencies (Spring Boot 3.5.0,
   React 19, Vite 8).
 
-No ADR — this is a CI convention, not an architectural decision. The justification for the
+No decision record — this is a CI convention, not an architectural decision. The justification for the
 thresholds and the choices goes into comments in the workflow files, as in `ci.yml` and
 `nightly.yml`.
 
@@ -654,7 +654,7 @@ not a formality.
 | Item | State | Why |
 |---|---|---|
 | **§0.1 Hosting** | **not done** | It needs an account on Fly.io/Railway and a decision about a paid plan. What could be done in the repository was done: the token secret no longer has a default, so a public instance will not start with a key known from the repository |
-| **§0.2 Migration to English** | **~15 % done** | The decision is recorded and all new content is in English (the CP16–CP20 code, ADR-0012, ADR-0013, the commit messages). **The README, ADRs 0001–0011 and the existing comments stay in Polish.** That is exactly the state §0.2 warns against: a bilingual repository, that is, worse than either language alone |
+| **§0.2 Migration to English** | **~15 % done** | The decision is recorded and all new content is in English (the CP16–CP20 code, the authorization guard, the deterministic simulation, the commit messages). **The README, ADRs 0001–0011 and the existing comments stay in Polish.** That is exactly the state §0.2 warns against: a bilingual repository, that is, worse than either language alone |
 | **§0.3 Condensing the README** | **not done** | The README grew rather than shrank — sections about CP18 and CP20 arrived, plus the correction to p99 |
 | **CP20 — a CRDT snapshot to the client** | **not done** | The largest remaining product debt: the client still replays the whole log on open |
 | **CP20 — `SYNC_CHUNK` in bytes** | **not done** | |
@@ -663,14 +663,24 @@ not a formality.
 | **CP20 — `App.tsx` (655 lines)** | **not done** | |
 | **e2e tests after the changes** | **not run** | Port 8080 was held by an instance the author had started. Running them would have required either stopping it or testing a stale build — the first is interfering with somebody else's work, the second would give a misleading result. CI runs e2e on every pull request |
 
+> **UPDATE (2026-08-16): five of the rows above were closed by [plan v4](PLAN-v4.md), and the table
+> is deliberately left saying "not done".** It is the state at the close of v3, which is what a
+> final audit is for; a table that silently updates itself is a table nobody can date. What v4
+> closed, for a reader who arrives here first: the CRDT snapshot to the client (CP24 — measured at
+> 12 158 B of log against 145 B of snapshot, **84×**), `SYNC_CHUNK` in bytes (CP28 — the constant
+> is gone and `DocumentStompController.syncBudgetBytes` derives a byte budget from the frame
+> limit), cluster-wide presence (CP26), and the English migration in full. Still open, and still
+> honestly open: hosting, condensing the README — which grew again while these corrections were
+> written — measuring the client's index in the browser, and `App.tsx`.
+
 **The checkpoint from §0.2 fired and came out negative.** The section says: *"if rows 1–3 are not
 done after CP20, it is better to go back to Polish entirely than to leave the repository halfway"*.
 They are not done. The decision belongs to the author, but the plan foresaw this moment and pointed
 at the way out — leaving it unresolved is worse than either of the two answers.
 
 > **UPDATE (2026-08-16): resolved in the other direction.** The author chose to complete the
-> migration rather than roll it back: the README, every ADR, all the comments, the configuration
-> and these plans are now in English, and the ADR filenames carry English slugs. The row above
+> migration rather than roll it back: the README, all the comments, the configuration
+> and these plans are now in English. The row above
 > stays as it was written — it is the record of a checkpoint that fired correctly, and the value of
 > that record does not depend on which way the decision then went.
 
@@ -681,7 +691,7 @@ at the way out — leaving it unresolved is worse than either of the two answers
 | CP16: "a filter or `@PreAuthorize` on `/api/documents/{id}/**`" | **Three annotations on the endpoints plus a guard that refuses to serve an undeclared one** | A path rule does not cover `/api/comments/{threadId}/…` and cannot express that restoring requires WRITE while previewing requires READ — and confusing those two is exactly how the restore endpoint stood open to readers |
 | CP16: "an ArchUnit test" | **Reflection, with no new dependency** | The whole rule is one pass over the methods. The same trade-off `TokenService` makes against a JWT library |
 | CP16: two annotations | **Three** | There turned out to be endpoints that CREATE a document: there is nothing to authorize, but an anonymous caller must not be able to run them. Collapsing that into "public" would have left both holes open while looking like a decision |
-| CP17: "the simulation covers the whole distributed system" | **A model of the distributed layer on the REAL merge algorithm** | It touches neither Spring, nor Postgres, nor a socket. The boundary is named in ADR-0013; `ClusterChaosIT` stays |
+| CP17: "the simulation covers the whole distributed system" | **A model of the distributed layer on the REAL merge algorithm** | It touches neither Spring, nor Postgres, nor a socket. The boundary is named in the deterministic simulation; `ClusterChaosIT` stays |
 | CP19: "a gate comparing the harness against a baseline" | **A gate on the SHAPE of the complexity, not on milliseconds** | Measured: this rig's own spread (28 ms versus 43 ms on the same code) exceeds the regression such a gate would have to detect. The plan foresaw this outcome as acceptable — §5.1 says outright "if the spread turns out too large, write that down rather than installing a dead job" |
 | CP20: `retry-after` | **Done, and it did NOT deliver what it was meant to** | See 10.4 |
 
@@ -721,6 +731,21 @@ The change stays, because a guessed constant disappears and there are ~10 % fewe
 described as empty. The machine is built and verified by mutation (inverting the RGA scan condition
 fails 593 of 806 tests, with a counterexample on four operations), but so far it has not earned its
 keep with a real defect.
+
+> **The two counts above are correct as of the close of v3 and are no longer the current ones.**
+> The suite runs **1207** invocations today and the same mutation fails **826** of them, with a
+> minimal counterexample of eight operations rather than four. Nothing regressed — the suite grew:
+> CP17 shipped four `seeds`-driven scenarios (4 × 200 = 800, plus six fixed-seed cases = 806),
+> and the crash-before-persist work added two more scenarios and a guard test
+> (`acknowledgedWorkSurvivesCrashes`, `unacknowledgedWorkIsRetransmitted`,
+> `durabilityScenarioReachesTheWindow`), which is 401 more invocations.
+>
+> Left in place rather than overwritten, because this is a plan audit and 806 is what was measured
+> when it was written. The lesson is about the shape of the claim rather than the arithmetic: a
+> mutation score is a fact about the suite **on the day it was taken**, and a number quoted in
+> three documents at once (the deterministic simulation and the README carried
+> it too) goes stale in all three the moment anyone adds a scenario. None of the three said when it
+> was measured.
 
 ### 10.5 Measured along the way, previously unknown
 

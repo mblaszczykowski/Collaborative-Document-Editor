@@ -1,3 +1,13 @@
+> **The original brief.** This is the assignment this repository answers, kept unedited apart from
+> the translation into English — it is the input, not a description of what was built. What was
+> actually decided, and what was built, is in [`../README.md`](../README.md), and
+> where the two diverge from this page, this page is the one that is out of date.
+>
+> It lived at the repository root as `idea.md`, linked from nothing and absent from the README's
+> own layout section, where it read as a leftover.
+
+---
+
 Collaborative Document Editor — project brief
 
 Concept

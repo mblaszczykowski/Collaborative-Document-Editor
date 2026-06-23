@@ -64,7 +64,7 @@ Ordered by return over cost, not by size.
 | **CP24** | CRDT snapshot to the client | 1.5–2 d | The largest remaining product debt by the previous plan's own account |
 | **CP25** | Mark-aware undo that survives a reload | 0.5–1 d | The cheapest item that closes a limit already written into the README |
 | **CP26** | Presence across the cluster | 1 d | A debt named in the javadoc; also the only place where best-effort has to be shown to the user |
-| **CP27** | Comments that work offline | 1 d | Closes ADR-0011 empirically instead of declaratively |
+| **CP27** | Comments that work offline | 1 d | Closes the comment split empirically instead of declaratively |
 | **CP28** | Large paste, resync budget in bytes | 0.5–1 d | Turns an open item into a test scenario |
 | **CP29** | Search inside document content | 1 d | Most product value per hour, least narrative value |
 | **CP30** | Block structure with a move operation | 5–7 d | Last because it is a plan in itself; first if v4 is meant to change the core |
@@ -143,7 +143,7 @@ when CP13 added marks. Today:
 
 ### 3.2 Decision — restore covers marks, and the diff is computed from identity
 
-Restore stays what ADR-0003 pt 6 made it: **a new change, never a truncation of the log**. It
+Restore stays what the operation-log decision pt 6 made it: **a new change, never a truncation of the log**. It
 gains a second half — after the text matches the target, compare the target's spans with the
 current ones and emit the `AddMark`/`RemoveMark` operations that make them equal.
 
@@ -218,7 +218,7 @@ Durability is the cheap half: the same IndexedDB the offline buffer already uses
 not appear in the list. A Redis channel plus entry expiry fixes it.
 
 The engineering content is in the failure mode, not in the fan-out: Redis is a **deliberately
-unreliable** path here (ADR-0004), so after an outage the list of participants must say "this
+unreliable** path here, so after an outage the list of participants must say "this
 may be incomplete" rather than present a partial list as complete. It is the only place in this
 system where best-effort has to be shown to the user instead of being hidden behind convergence.
 
@@ -230,7 +230,7 @@ The offline buffer covers CRDT operations, not REST, so a comment written withou
 disappears. An outbox with an idempotency key, on the IndexedDB that is already there.
 
 The conclusion is worth more than the code: a comment message is **immutable**, so it does not
-need merging — it needs exactly-once. That closes ADR-0011's claim that comments are not a CRDT
+need merging — it needs exactly-once. That closes the comment split's claim that comments are not a CRDT
 with evidence instead of with a design intention.
 
 ---
@@ -260,7 +260,7 @@ get slower.
 
 The document is a flat character sequence, so "make this a heading" is not expressible.
 (`Block` in `crdt-core` is a run-length block of characters, not a paragraph — the names collide
-and the ADR will have to say so.)
+and the documentation will have to say so.)
 
 The hard part is **concurrent movement of the same block**: naive designs either duplicate it or
 lose it (Kleppmann, *Moving Elements in List CRDTs*, 2020). It is the only remaining item that
@@ -341,9 +341,9 @@ Full suite after CP30: **1386 tests, 0 failures** (`./mvnw test`), plus 80 in vi
 
 | Plan | What was built | Why |
 |---|---|---|
-| CP21: "an access API" | API **plus invitation links**, and a table for them | Login has no password and mints a new identifier every time, so there is nobody to name in a share box. Without invitations the API is correct and unusable (ADR-0014) |
+| CP21: "an access API" | API **plus invitation links**, and a table for them | Login has no password and mints a new identifier every time, so there is nobody to name in a share box. Without invitations the API is correct and unusable |
 | CP23: "authorization by operation type — the debt turns into a requirement" | The debt was **not** extended; the server generates the operations instead | The plan predicted that a commenter sending inserts would force the frame-body parsing into a second place. It would have. Having the server replica generate them — as a history restore already does — removes the need entirely, which is a better answer to the same problem than the one predicted |
-| CP30: "a tree of blocks with a move operation" | Block marks over a line, and the missing move **pinned by a test** | Multi-day rewrite of the layer everything else stands on, arriving last in a plan whose other items are finished. Half a tree is worse than none. What the cheap variant buys that "do nothing" does not: the absence of a move is now demonstrable rather than described (ADR-0016) |
+| CP30: "a tree of blocks with a move operation" | Block marks over a line, and the missing move **pinned by a test** | Multi-day rewrite of the layer everything else stands on, arriving last in a plan whose other items are finished. Half a tree is worse than none. What the cheap variant buys that "do nothing" does not: the absence of a move is now demonstrable rather than described |
 
 ### 15.3 Found while building, not by review
 
