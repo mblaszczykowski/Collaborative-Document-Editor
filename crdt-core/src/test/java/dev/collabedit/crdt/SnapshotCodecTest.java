@@ -2,7 +2,12 @@ package dev.collabedit.crdt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -199,5 +204,78 @@ class SnapshotCodecTest {
             RgaDocument.restore(1, new TreapBlockList(), java.util.Objects.requireNonNull(decoded));
         assertThat(restored.text()).isEqualTo("still here");
         assertThat(restored.visibleLength()).isEqualTo("still here".length());
+    }
+
+    /**
+     * <b>The allocation ceiling has to be counted in the unit the number is counted in.</b>
+     *
+     * <p>{@code readLength} compared every count against {@code compressedBytes * 1032} — the most
+     * BYTES DEFLATE could have produced — while the numbers it guards count ELEMENTS, each costing
+     * a dozen wire bytes and allocating several more. A corrupted one-megabyte row therefore passed
+     * a block count around 1.03e9, and {@code new ArrayList<>(blockCount)} turned that into a
+     * four-gigabyte array reference: an {@link OutOfMemoryError}, which is an {@link Error} and so
+     * slips past {@code decode}'s {@code catch (IOException | RuntimeException)} and takes the
+     * process with it. The bound was present, its javadoc claimed it converted exactly this failure
+     * into a {@code null}, and it did not.
+     *
+     * <p>The count used below is half of what the flat ceiling admitted — comfortably inside the
+     * old bound, comfortably outside the per-element one, and small enough that a regression here
+     * fails the assertion rather than exhausting the heap.
+     */
+    @Test
+    @DisplayName("a corrupted mid-stream element count is refused rather than allocated")
+    void aCorruptedElementCountIsRefused() throws IOException {
+        RgaDocument document = new RgaDocument(1, new TreapBlockList());
+        document.insert(0, "abcdef");
+        byte[] encoded = SnapshotCodec.encode(document.snapshot());
+        assertThat(SnapshotCodec.decode(encoded))
+            .as("the unpatched snapshot must decode, or this test proves nothing about the patch")
+            .isNotNull();
+
+        // formatVersion(4) + clock(8) + version-vector entry count(4) + 12 bytes per entry.
+        byte[] plain = gunzip(encoded);
+        int blockCountAt = 16 + readInt(plain, 12) * 12;
+        assertThat(readInt(plain, blockCountAt))
+            .as("the offset arithmetic is wrong, so the patch below is corrupting something else")
+            .isEqualTo(document.blockCount());
+
+        int implausible = (int) ((long) encoded.length * 1032 / 2);
+        writeInt(plain, blockCountAt, implausible);
+        byte[] corrupted = gzip(plain);
+
+        assertThat((long) implausible)
+            .as("the corrupted count is outside the ceiling this test replaces, so refusing it "
+                + "would prove nothing")
+            .isLessThanOrEqualTo((long) corrupted.length * 1032);
+        assertThat(SnapshotCodec.decode(corrupted))
+            .as("a block count no arrangement of these bytes could describe was accepted, and the "
+                + "list it sizes is allocated before a single block is read")
+            .isNull();
+    }
+
+    private static byte[] gunzip(byte[] data) throws IOException {
+        try (GZIPInputStream in = new GZIPInputStream(new ByteArrayInputStream(data))) {
+            return in.readAllBytes();
+        }
+    }
+
+    private static byte[] gzip(byte[] data) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (GZIPOutputStream out = new GZIPOutputStream(bytes)) {
+            out.write(data);
+        }
+        return bytes.toByteArray();
+    }
+
+    private static int readInt(byte[] data, int offset) {
+        return ((data[offset] & 0xFF) << 24) | ((data[offset + 1] & 0xFF) << 16)
+            | ((data[offset + 2] & 0xFF) << 8) | (data[offset + 3] & 0xFF);
+    }
+
+    private static void writeInt(byte[] data, int offset, int value) {
+        data[offset] = (byte) (value >>> 24);
+        data[offset + 1] = (byte) (value >>> 16);
+        data[offset + 2] = (byte) (value >>> 8);
+        data[offset + 3] = (byte) value;
     }
 }

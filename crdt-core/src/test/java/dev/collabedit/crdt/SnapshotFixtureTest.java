@@ -86,6 +86,27 @@ class SnapshotFixtureTest {
         byte[] encoded = SnapshotCodec.encode(built.snapshot());
 
         if (!Files.exists(BYTES)) {
+            // A MISSING fixture is a failure, not an instruction to write one — unless somebody
+            // says otherwise on the command line.
+            //
+            // Regenerating silently made this test unable to fail in the one situation it most
+            // needs to: with the fixture absent, it encoded, wrote, and then compared against what
+            // it had just written, so the encoder-pinning assertion below asserted nothing. That is
+            // not hypothetical — the v5 fixture was untracked for a while, so every local run took
+            // this branch and every CI run would have hit the conformance drift gate instead, which
+            // reports "untracked files" rather than "your fixture is gone".
+            //
+            // Intentional regeneration is still one command: delete the files and pass
+            // -Dconformance.regenerate=true. Requiring the flag is what makes it a decision.
+            if (!Boolean.getBoolean("conformance.regenerate")) {
+                throw new AssertionError(
+                    BYTES + " is missing. The fixture is committed on purpose: it is what pins the "
+                        + "snapshot format across the Java and TypeScript implementations, and "
+                        + "regenerating it from the current encoder would pin whatever the encoder "
+                        + "does today. Restore it from version control, or — if the format change "
+                        + "is intended — rerun with -Dconformance.regenerate=true and commit the "
+                        + "new bytes as a reviewable change.");
+            }
             Files.createDirectories(DIRECTORY);
             Files.write(BYTES, encoded);
             Files.writeString(EXPECTED, expectedJson(built));

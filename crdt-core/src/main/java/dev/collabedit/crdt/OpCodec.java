@@ -108,9 +108,22 @@ public final class OpCodec {
             throw new IllegalArgumentException(
                 "anchor '" + field + "' is not a three-element array: " + node);
         }
+        // The side is VALIDATED rather than compared with `== 0`, and that is the single worst of
+        // the coercions described on requireIntegral below. `asInt()` invents a side for anything
+        // that is not a number: "0" is parsed, null and {} and [] coerce to 0, true coerces to 1.
+        // So [1,0,"0"] and [1,0,null] resolved to BEFORE while [1,0,2] and [1,0,true] resolved to
+        // AFTER — and decodeAnchor in the TypeScript twin refuses all four. Two implementations
+        // putting the same anchor on OPPOSITE sides of a character is precisely the divergence
+        // anchors exist to prevent.
+        JsonNode side = array.get(2);
+        if (!side.isIntegralNumber() || !side.canConvertToInt()
+            || (side.intValue() != 0 && side.intValue() != 1)) {
+            throw new IllegalArgumentException(
+                "an anchor side must be 0 (before) or 1 (after): " + array);
+        }
         return new Anchor(
-            new Id(array.get(0).asInt(), requireLamport(array.get(1).asLong())),
-            array.get(2).asInt() == 0 ? Anchor.Side.BEFORE : Anchor.Side.AFTER);
+            new Id(requireReplicaId(array.get(0)), requireLamport(array.get(1))),
+            side.intValue() == 0 ? Anchor.Side.BEFORE : Anchor.Side.AFTER);
     }
 
     /**
@@ -150,11 +163,106 @@ public final class OpCodec {
         return lamport;
     }
 
+    /**
+     * A whole number from the wire, or a refusal.
+     *
+     * <h2>Why every numeric field goes through this</h2>
+     * {@code JsonNode.asInt()} and {@code asLong()} <b>never throw</b>. An object, an array and a
+     * null all coerce to 0; {@code true} coerces to 1; a string is parsed if it looks like a number
+     * and coerces to 0 if it does not; a double is truncated. Every one of those produced a
+     * perfectly ordinary-looking operation out of a payload that did not carry it:
+     * <ul>
+     *   <li>{@code {"r":{},"l":5}} decoded to {@code 0@5} — the operation attributed to replica 0,
+     *       which is a replica identifier the allocator hands out, so it is not even an obviously
+     *       impossible one.</li>
+     *   <li>{@code [[2,3,1.5]]} truncated a deletion range to length 1, silently deleting a
+     *       different amount of text from what the sender described.</li>
+     *   <li>The anchor side, which is worse still — see {@link #readAnchor}.</li>
+     * </ul>
+     *
+     * <p>The TypeScript twin refuses every one of these — {@code requireReplicaId},
+     * {@code requireLamport} and the range-length check in {@code frontend/src/crdt/codec.ts} —
+     * and the comment on its {@code decodeAnchor} describes THIS class's coercion as the defect it
+     * corrects, <b>in the past tense</b>. It was never corrected here; only the client half of that
+     * fix ever landed. So the two implementations disagreed not about a value but about
+     * <b>which payloads are operations at all</b>, and a conformance corpus built from well-formed
+     * vectors cannot see that kind of disagreement at all.
+     *
+     * <p>{@code canConvertToLong} is not redundant beside {@code isIntegralNumber}: Jackson parses
+     * an integer literal too large for a {@code long} into a {@code BigIntegerNode}, which is an
+     * integral number and whose {@code asLong()} reports the loss to nobody. Measured on Jackson
+     * 2.19: the literal 2^64 comes back as <b>0</b> — inside the accepted Lamport range, and inside
+     * the accepted anchor sides.
+     */
+    private static long requireIntegral(JsonNode value, String what) {
+        if (!value.isIntegralNumber() || !value.canConvertToLong()) {
+            throw new IllegalArgumentException(what + " is not a whole number: " + value);
+        }
+        return value.longValue();
+    }
+
+    /**
+     * A replica identifier — a whole number that fits in an {@code int}.
+     *
+     * <p>The int range is not an arbitrary bound but the width of {@link Id#replicaId}: a larger
+     * value cannot be represented at all, and {@code asInt()} did not say so — it truncated to the
+     * low 32 bits. Measured: {@code 3000000000} decoded to replica {@code -1294967296}. The
+     * TypeScript side only asks for a safe integer, which is a wider set; the narrower answer is
+     * the right one here, because the wider one has nowhere to be stored.
+     */
+    private static int requireReplicaId(JsonNode value) {
+        long replicaId = requireIntegral(value, "replica identifier");
+        if (!value.canConvertToInt()) {
+            throw new IllegalArgumentException("replica identifier is not an int: " + replicaId);
+        }
+        return (int) replicaId;
+    }
+
+    private static long requireLamport(JsonNode value) {
+        return requireLamport(requireIntegral(value, "lamport"));
+    }
+
+    /** A string field, refusing the value {@code asText()} would have invented from a non-string. */
+    private static String requireString(JsonNode node, String field) {
+        JsonNode value = required(node, field);
+        if (!value.isTextual()) {
+            throw new IllegalArgumentException(
+                "the field '" + field + "' must be a string: " + node);
+        }
+        return value.textValue();
+    }
+
+    /**
+     * The text of an insert: a string, and not an empty one.
+     *
+     * <p>Both halves are rules {@link Op.Insert}'s constructor already enforces, and repeating them
+     * here is about the MESSAGE rather than about the outcome. {@code asText()} returns {@code ""}
+     * for an object or an array, so {@code {"s":[]}} reached the constructor as empty text and came
+     * back as "inserting empty text makes no sense" — which names a field the sender did send,
+     * pointing whoever reads the log at the wrong thing entirely.
+     */
+    private static String requireInsertText(JsonNode node) {
+        String text = requireString(node, "s");
+        if (text.isEmpty()) {
+            throw new IllegalArgumentException("an insert must carry text: " + node);
+        }
+        return text;
+    }
+
+    /** The type of a mark: a non-blank string, for the same reason {@link #requireInsertText} is. */
+    private static String requireMarkType(JsonNode node) {
+        String type = requireString(node, "k");
+        if (type.isBlank()) {
+            throw new IllegalArgumentException("a mark must have a type: " + node);
+        }
+        return type;
+    }
+
     /** An identifier from two named fields, with the timestamp bounded. */
     private static Id readId(JsonNode node, String replicaField, String lamportField) {
         return new Id(
-            required(node, replicaField).asInt(),
-            requireLamport(required(node, lamportField).asLong()));
+            requireReplicaId(required(node, replicaField)),
+            requireLamport(required(node, lamportField)));
     }
 
     /**
@@ -184,7 +292,7 @@ public final class OpCodec {
         return switch (type) {
             case "i" -> {
                 Id originLeft = node.hasNonNull("or") ? readId(node, "or", "ol") : null;
-                yield new Op.Insert(id, originLeft, required(node, "s").asText());
+                yield new Op.Insert(id, originLeft, requireInsertText(node));
             }
             case "d" -> {
                 List<Op.Range> targets = new ArrayList<>();
@@ -202,21 +310,31 @@ public final class OpCodec {
                         throw new IllegalArgumentException(
                             "a deletion range must be [replicaId, lamport, length]: " + entry);
                     }
+                    // The LENGTH is checked here rather than left to Op.Range, because Op.Range can
+                    // only see the number it is given and asInt() had already invented one: 1.5
+                    // truncated to 1, "5" parsed to 5, {} coerced to 0. The first is the dangerous
+                    // shape — it is not refused anywhere downstream, it just deletes a different
+                    // amount of text than the sender described.
+                    long length = requireIntegral(entry.get(2), "a deletion range length");
+                    if (length <= 0 || length > Integer.MAX_VALUE) {
+                        throw new IllegalArgumentException(
+                            "a deletion range must have a positive length: " + entry);
+                    }
                     targets.add(new Op.Range(
-                        new Id(entry.get(0).asInt(), requireLamport(entry.get(1).asLong())),
-                        entry.get(2).asInt()));
+                        new Id(requireReplicaId(entry.get(0)), requireLamport(entry.get(1))),
+                        (int) length));
                 }
                 yield new Op.Delete(id, targets);
             }
             case "m" -> new Op.AddMark(
                 id,
-                required(node, "k").asText(),
-                node.hasNonNull("v") ? node.get("v").asText() : null,
+                requireMarkType(node),
+                node.hasNonNull("v") ? requireString(node, "v") : null,
                 readAnchor(node, "a"),
                 readAnchor(node, "b"));
             case "x" -> new Op.RemoveMark(
                 id,
-                required(node, "k").asText(),
+                requireMarkType(node),
                 readAnchor(node, "a"),
                 readAnchor(node, "b"));
             default -> throw new IllegalArgumentException("unknown operation type: " + type);

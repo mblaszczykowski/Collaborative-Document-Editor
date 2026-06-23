@@ -160,15 +160,38 @@ public final class SnapshotCodec {
      * corruption-hardening rather than a security boundary. It costs one comparison per length and
      * it converts the one failure mode that cannot be caught into the one that is already handled.
      *
+     * <h2>Why the ceiling is divided, and why it did not work without that</h2>
+     * The first version compared every length against {@code compressedBytes * MAX_GZIP_EXPANSION}
+     * flat — that is, against the number of BYTES the input could decompress to — while the number
+     * being read counts ELEMENTS, each of which costs several bytes on the wire and allocates
+     * several more in memory. A corrupted one-megabyte row therefore passed a block count of about
+     * 1.03e9, which {@code new ArrayList<>(blockCount)} turns into a four-gigabyte array reference:
+     * an {@link OutOfMemoryError}, an {@link Error}, not caught by {@link #decode}'s
+     * {@code IOException | RuntimeException}, taking the process down. The bound was in place and
+     * the failure it names was still reachable, which is worse than no bound — the class javadoc
+     * promised it could not happen.
+     *
+     * <p>Each caller therefore passes the MINIMUM number of wire bytes one of its elements can
+     * occupy, read off the encoder above: 12 for a version-vector or watermark entry
+     * ({@code int} + {@code long}), 15 for the shortest possible block (identifier, three flags and
+     * a length), 5 for the shortest mark string (the well-formed flag and its length), 1 for a UTF-8
+     * byte and 2 for a UTF-16 code unit. Under-estimating is the safe direction: it only makes the
+     * bound looser, and the encoder's own output must never be refused — see
+     * {@link #readCharacterCount} for what happened the one time it was.
+     *
      * @param compressedBytes the size of the snapshot as stored; nothing inside it can describe
      * more elements than DEFLATE could have produced from that many bytes
+     * @param wireBytesPerElement the smallest number of bytes one element of this length occupies
+     * in the stream
      */
-    private static int readLength(DataInputStream in, int compressedBytes) throws IOException {
+    private static int readLength(DataInputStream in, int compressedBytes, int wireBytesPerElement)
+        throws IOException {
         int length = in.readInt();
-        long ceiling = (long) compressedBytes * MAX_GZIP_EXPANSION;
+        long ceiling = (long) compressedBytes * MAX_GZIP_EXPANSION / wireBytesPerElement;
         if (length < 0 || length > ceiling) {
             throw new IOException("implausible length in the snapshot: " + length
-                + " from " + compressedBytes + " compressed bytes");
+                + " from " + compressedBytes + " compressed bytes at "
+                + wireBytesPerElement + " bytes per element");
         }
         return length;
     }
@@ -205,11 +228,11 @@ public final class SnapshotCodec {
 
     private static String readText(DataInputStream in, int compressedBytes) throws IOException {
         if (in.readBoolean()) {
-            byte[] bytes = new byte[readLength(in, compressedBytes)];
+            byte[] bytes = new byte[readLength(in, compressedBytes, 1)];
             in.readFully(bytes);
             return new String(bytes, StandardCharsets.UTF_8);
         }
-        char[] units = new char[readLength(in, compressedBytes)];
+        char[] units = new char[readLength(in, compressedBytes, 2)];
         for (int i = 0; i < units.length; i++) {
             units[i] = in.readChar();
         }
@@ -322,13 +345,13 @@ public final class SnapshotCodec {
             }
             long clock = in.readLong();
 
-            int versionEntries = readLength(in, data.length);
+            int versionEntries = readLength(in, data.length, 12);
             Map<Integer, Long> maxSeen = new HashMap<>(versionEntries);
             for (int i = 0; i < versionEntries; i++) {
                 maxSeen.put(in.readInt(), in.readLong());
             }
 
-            int blockCount = readLength(in, data.length);
+            int blockCount = readLength(in, data.length, 15);
             List<Block> blocks = new ArrayList<>(blockCount);
             for (int i = 0; i < blockCount; i++) {
                 Id start = new Id(in.readInt(), in.readLong());
@@ -342,13 +365,13 @@ public final class SnapshotCodec {
                     ? new Block(start, readText(in, data.length), originLeft, deleted, deletedBy)
 : Block.withoutContent(start, readCharacterCount(in), originLeft, deletedBy));
             }
-            int markCount = readLength(in, data.length);
+            int markCount = readLength(in, data.length, 5);
             List<Op> marks = new ArrayList<>(markCount);
             for (int i = 0; i < markCount; i++) {
                 marks.add(OpCodec.decode(readText(in, data.length)));
             }
 
-            int watermarkEntries = readLength(in, data.length);
+            int watermarkEntries = readLength(in, data.length, 12);
             Map<Integer, Long> gcWatermark = new HashMap<>(watermarkEntries);
             for (int i = 0; i < watermarkEntries; i++) {
                 gcWatermark.put(in.readInt(), in.readLong());

@@ -176,4 +176,117 @@ class OpCodecTest {
         assertThat(OpCodec.decode("{\"t\":\"d\",\"r\":1,\"l\":9,\"g\":[[2,3,5]]}"))
             .isInstanceOf(Op.Delete.class);
     }
+
+    /**
+     * <b>The half of the two-implementation agreement that only ever landed on one side.</b>
+     *
+     * <p>{@code JsonNode.asInt()} and {@code asLong()} never throw: an object, an array and a null
+     * coerce to 0, {@code true} coerces to 1, a numeric string is parsed, a double is truncated. The
+     * TypeScript twin refuses every shape below, and the comment on its {@code decodeAnchor}
+     * describes this codec's coercion as the defect it corrects — <b>in the past tense</b>, for a
+     * fix that was never made here.
+     *
+     * <p>The conformance corpus cannot catch this class of disagreement, because every vector in it
+     * is well-formed by construction. What the two implementations disagreed about was not a value
+     * but which payloads are operations at all.
+     */
+    @Test
+    @DisplayName("a numeric field that is not a number is refused rather than coerced")
+    void coercedNumbersAreRefused() {
+        for (String payload : new String[] {
+            // The anchor SIDE. The four shapes below used to resolve to BEFORE, AFTER, BEFORE and
+            // AFTER respectively — a side invented out of a payload that did not carry one, and the
+            // client resolving the same anchor to the opposite side of the character.
+            "{\"t\":\"m\",\"r\":1,\"l\":9,\"k\":\"bold\",\"a\":[1,1,\"0\"],\"b\":[1,3,1]}",
+            "{\"t\":\"m\",\"r\":1,\"l\":9,\"k\":\"bold\",\"a\":[1,1,2],\"b\":[1,3,1]}",
+            "{\"t\":\"m\",\"r\":1,\"l\":9,\"k\":\"bold\",\"a\":[1,1,null],\"b\":[1,3,1]}",
+            "{\"t\":\"m\",\"r\":1,\"l\":9,\"k\":\"bold\",\"a\":[1,1,true],\"b\":[1,3,1]}",
+            // Replica identifiers. `{"r":{},"l":5}` decoded to 0@5 — the operation attributed to
+            // replica 0, an identifier the allocator really hands out, so nothing downstream had
+            // any reason to find it suspicious.
+            "{\"t\":\"i\",\"r\":{},\"l\":5,\"s\":\"a\"}",
+            "{\"t\":\"i\",\"r\":true,\"l\":5,\"s\":\"a\"}",
+            "{\"t\":\"i\",\"r\":\"1\",\"l\":5,\"s\":\"a\"}",
+            // Too wide for an int rather than the wrong kind: asInt() truncated to the low 32 bits,
+            // so this decoded to replica -1294967296.
+            "{\"t\":\"i\",\"r\":3000000000,\"l\":5,\"s\":\"a\"}",
+            "{\"t\":\"i\",\"r\":1,\"l\":5,\"or\":[],\"ol\":1,\"s\":\"a\"}",
+            "{\"t\":\"m\",\"r\":1,\"l\":9,\"k\":\"bold\",\"a\":[{},1,0],\"b\":[1,3,1]}",
+            "{\"t\":\"d\",\"r\":1,\"l\":9,\"g\":[[\"2\",3,1]]}",
+            // Lamports. A fractional one truncated; a string one parsed.
+            "{\"t\":\"i\",\"r\":1,\"l\":1.5,\"s\":\"a\"}",
+            "{\"t\":\"i\",\"r\":1,\"l\":\"5\",\"s\":\"a\"}",
+            "{\"t\":\"m\",\"r\":1,\"l\":9,\"k\":\"bold\",\"a\":[1,{},0],\"b\":[1,3,1]}",
+            // A range LENGTH. 1.5 is the dangerous one: nothing downstream refuses a length of 1,
+            // it simply deletes less text than the sender asked for.
+            "{\"t\":\"d\",\"r\":1,\"l\":9,\"g\":[[2,3,1.5]]}",
+            "{\"t\":\"d\",\"r\":1,\"l\":9,\"g\":[[2,3,0]]}",
+            "{\"t\":\"d\",\"r\":1,\"l\":9,\"g\":[[2,3,-1]]}",
+            "{\"t\":\"d\",\"r\":1,\"l\":9,\"g\":[[2,3,\"5\"]]}",
+            "{\"t\":\"d\",\"r\":1,\"l\":9,\"g\":[[2,3,null]]}",
+            // A whole-number literal too large for a long parses into a BigIntegerNode, which IS an
+            // integral number — and whose asLong() answers 0. So this one lands back inside the
+            // accepted Lamport range unless the conversion itself is checked, and the bound above
+            // that exists to stop a poisoned clock would have waved it through.
+            "{\"t\":\"i\",\"r\":1,\"l\":18446744073709551616,\"s\":\"a\"}",
+        }) {
+            assertThatThrownBy(() -> OpCodec.decode(payload))
+                .as("accepted: %s", payload)
+                .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    /**
+     * The two rules {@code Op}'s constructors enforce and the codec used to leave to them.
+     *
+     * <p>The outcome was already a refusal; what was wrong was the message. {@code asText()} on an
+     * array or an object returns the EMPTY string, so {@code {"s":[]}} arrived at the constructor as
+     * empty text and came back as "inserting empty text makes no sense" — a complaint about a field
+     * the sender did send, which points whoever reads the log at the wrong thing.
+     */
+    @Test
+    @DisplayName("an empty insert and a blank mark type are refused by name")
+    void constructorRulesAreEnforcedByTheCodec() {
+        assertThatThrownBy(() -> OpCodec.decode("{\"t\":\"i\",\"r\":1,\"l\":5,\"s\":\"\"}"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("must carry text");
+        assertThatThrownBy(() -> OpCodec.decode("{\"t\":\"i\",\"r\":1,\"l\":5,\"s\":[]}"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("must be a string");
+        assertThatThrownBy(() -> OpCodec.decode(
+            "{\"t\":\"m\",\"r\":1,\"l\":9,\"k\":\"  \",\"a\":[1,1,0],\"b\":[1,3,1]}"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("must have a type");
+        assertThatThrownBy(() -> OpCodec.decode(
+            "{\"t\":\"x\",\"r\":1,\"l\":9,\"k\":7,\"a\":[1,1,0],\"b\":[1,3,1]}"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("must be a string");
+        // A mark VALUE, unlike the type, may legitimately be absent — but not a number pretending
+        // to be a link address.
+        assertThatThrownBy(() -> OpCodec.decode(
+            "{\"t\":\"m\",\"r\":1,\"l\":9,\"k\":\"link\",\"v\":7,\"a\":[1,1,0],\"b\":[1,3,1]}"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("must be a string");
+    }
+
+    @Test
+    @DisplayName("the shapes the encoder actually produces still decode")
+    void wellFormedPayloadsStillDecode() {
+        // The validation above is worth nothing if it also refuses the format this class writes.
+        RgaDocument document = new RgaDocument(3);
+        document.insert(0, "abcdef");
+        Op.Delete delete = document.delete(1, 2);
+        Op.AddMark bold = document.addMark(0, 3, MarkTypes.BOLD, null);
+        Op.RemoveMark unbold = document.removeMark(0, 2, MarkTypes.BOLD);
+        Op.Insert appended = document.insert(document.visibleLength(), "gh");
+
+        for (Op op : new Op[] {delete, bold, unbold, appended}) {
+            assertThat(OpCodec.decode(OpCodec.encode(op)))
+                .as("the encoder's own output was refused: %s", OpCodec.encode(op))
+                .isEqualTo(op);
+        }
+        // A mark WITH a value, which the encoder only emits for the types that carry one.
+        Op.AddMark link = document.addMark(0, 2, MarkTypes.LINK, "https://example.invalid");
+        assertThat(OpCodec.decode(OpCodec.encode(link))).isEqualTo(link);
+    }
 }
