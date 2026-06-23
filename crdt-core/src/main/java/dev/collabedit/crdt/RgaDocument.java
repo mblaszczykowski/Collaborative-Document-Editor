@@ -2,12 +2,12 @@ package dev.collabedit.crdt;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.NavigableSet;
+import java.util.TreeSet;
 
 /**
  * A replica of a text document as an RGA-style CRDT.
@@ -85,6 +85,11 @@ public final class RgaDocument {
      */
     private final MarkSet marks = new MarkSet();
 
+    /**
+     * A replica backed by {@link ArrayBlockList} — the O(n) implementation, for tests and
+     * benchmarks. Every production call site passes {@link TreapBlockList} explicitly, and this
+     * constructor exists so that a test that is not about the storage does not have to say which.
+     */
     public RgaDocument(int replicaId) {
         this(replicaId, new ArrayBlockList());
     }
@@ -604,10 +609,13 @@ public final class RgaDocument {
      * @return the number of characters whose memory was reclaimed
      */
     public int gc(VersionVector stable) {
-        Set<Id> referenced = new HashSet<>();
+        // replica → the lamports of that replica's characters something still points at. A set of
+        // Id would be the obvious shape and it made the wrong question cheap: see
+        // isAnyCharReferenced for what asking it per CHARACTER cost.
+        Map<Integer, NavigableSet<Long>> referenced = new HashMap<>();
         for (Block block : blocks) {
             if (block.originLeft() != null) {
-                referenced.add(block.originLeft());
+                addReference(referenced, block.originLeft());
             }
         }
         // The THIRD condition, added in CP13: a tombstone that is a MARK ANCHOR also has to stay.
@@ -730,19 +738,19 @@ public final class RgaDocument {
     }
 
     /** Adds the characters an operation depends on to the set GC must not remove. */
-    private static void addReferences(Set<Id> referenced, Op op) {
+    private static void addReferences(Map<Integer, NavigableSet<Long>> referenced, Op op) {
         switch (op) {
             case Op.AddMark add -> {
-                referenced.add(add.start().charId());
-                referenced.add(add.end().charId());
+                addReference(referenced, add.start().charId());
+                addReference(referenced, add.end().charId());
             }
             case Op.RemoveMark remove -> {
-                referenced.add(remove.start().charId());
-                referenced.add(remove.end().charId());
+                addReference(referenced, remove.start().charId());
+                addReference(referenced, remove.end().charId());
             }
             case Op.Insert insert -> {
                 if (insert.originLeft() != null) {
-                    referenced.add(insert.originLeft());
+                    addReference(referenced, insert.originLeft());
                 }
             }
             case Op.Delete delete -> {
@@ -750,10 +758,15 @@ public final class RgaDocument {
                 // isInAwaitedRange. Its start is added here as well only because it costs nothing
                 // and keeps the two mechanisms agreeing about the one character they share.
                 for (Op.Range range : delete.targets()) {
-                    referenced.add(range.start());
+                    addReference(referenced, range.start());
                 }
             }
         }
+    }
+
+    /** One character identifier, filed under its replica so a block can be tested by interval. */
+    private static void addReference(Map<Integer, NavigableSet<Long>> referenced, Id id) {
+        referenced.computeIfAbsent(id.replicaId(), replica -> new TreeSet<>()).add(id.lamport());
     }
 
     /**
@@ -793,13 +806,38 @@ public final class RgaDocument {
         return false;
     }
 
-    private static boolean isAnyCharReferenced(Block block, Set<Id> referenced) {
-        for (int offset = 0; offset < block.length(); offset++) {
-            if (referenced.contains(block.idAt(offset))) {
-                return true;
-            }
+    /**
+     * Whether anything still points at a character of this block.
+     *
+     * <h2>Why this is an interval test and not a loop over the characters</h2>
+     * It used to walk {@code offset} from 0 to {@code block.length()}, calling {@code block.idAt} —
+     * which allocates a fresh {@link Id} — and asking a {@code Set<Id>} about each one. A block's
+     * characters are contiguous lamports from a single replica, so the whole loop answers a question
+     * about one interval, and asking it that way makes the answer O(log n) in the number of
+     * references rather than O(length) in objects.
+     *
+     * <p>The cost was not theoretical and it was not amortised. This runs under the replica lock on
+     * <b>every sweep</b>, and the pathological case is the one CP18 exists for: a deleted, causally
+     * stable block pinned for ever by a single mark anchor. {@code SnapshotCodecTest}'s 120 000-
+     * character dropped run is exactly that block — it survives every sweep, and every sweep walked
+     * all 120 000 of its offsets and allocated 120 000 identifiers to rediscover a fact that had not
+     * changed since the anchor was placed. GC could not remove it, so the work repeated for the life
+     * of the document.
+     *
+     * <p>{@link #isInAwaitedRange} in this same file already reasons about intervals rather than
+     * enumerating them, and for the same reason; this is that idiom applied to the other three
+     * conditions. The answer is IDENTICAL: {@code referenced} still holds exactly the identifiers it
+     * held before — block origins, mark anchors and buffered-operation references — only filed by
+     * replica so the interval can be asked for.
+     */
+    private static boolean isAnyCharReferenced(
+        Block block, Map<Integer, NavigableSet<Long>> referenced) {
+        NavigableSet<Long> lamports = referenced.get(block.start().replicaId());
+        if (lamports == null) {
+            return false;
         }
-        return false;
+        long start = block.start().lamport();
+        return !lamports.subSet(start, true, start + block.length(), false).isEmpty();
     }
 
     /**

@@ -1,9 +1,7 @@
 package dev.collabedit.crdt;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
@@ -267,10 +265,20 @@ public final class TreapBlockList implements BlockList {
         Node node = nodeAt(blockIndex);
         boolean wasVisible = !node.block.deleted();
         // Called even when the block is ALREADY a tombstone, unlike the previous version which
-        // returned early. Recording the deleter takes the minimum of the identifiers seen
-        // (Block.markDeleted), so a second, smaller delete arriving later still has to reach the
-        // block — otherwise the recorded deleter would depend on delivery order, and it is written
-        // into the snapshot.
+        // returned early. A deletion that partially overlaps existing tombstones has to reach the
+        // blocks that are already dead: markRangeDeleted walks a range block by block, so one
+        // operation routinely covers both live and dead blocks, and a block skipped here keeps
+        // whatever deleter it already had. Block.markDeleted takes the MINIMUM, so arriving is what
+        // lets an earlier deletion replace a later one — and GC's stability test is per block, so
+        // the block skipped is the block that stays uncollectable longer than it needs to.
+        //
+        // The rest of this comment used to justify the call differently: that the minimum makes the
+        // recorded deleter a function of the operation SET rather than of delivery order. It does
+        // not, and Block.markDeleted now retracts it in as many words — isAlreadyKnown dismisses
+        // the second of two concurrent deletions of the same range before its identifier ever gets
+        // here, and the measurement is recorded there: the same operation set in two orders
+        // produces different snapshot bytes. That asymmetry is documented rather than fixed, and it
+        // was never what this call was for.
         node.block.markDeleted(deleteId);
         if (!wasVisible) {
             // The aggregates already count this block as invisible; nothing moved.

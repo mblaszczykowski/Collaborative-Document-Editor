@@ -118,8 +118,13 @@ public final class MarkSet {
      * <p>A mark whose anchor has not yet arrived has to wait in the buffer — exactly like an
      * insertion that outran its origin. Applying it immediately would give a range pinned to
      * characters that do not exist, that is, formatting in a random place.
+     *
+     * <p>Package-private, through the same door {@code RgaDocument.blocks()} and
+     * {@link Block#markDeleted} were narrowed through. It has one caller — {@code RgaDocument} —
+     * and it is a step of the merge rather than a query about the document, so a caller outside this
+     * package asking it would be about to make a decision the algorithm has already made.
      */
-    public static boolean anchorsResolvable(Op op, BlockList blocks) {
+    static boolean anchorsResolvable(Op op, BlockList blocks) {
         return switch (op) {
             case Op.AddMark mark ->
                 blocks.locateId(mark.start().charId()) != null
