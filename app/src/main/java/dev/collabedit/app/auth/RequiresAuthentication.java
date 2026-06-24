@@ -16,7 +16,7 @@ import java.lang.annotation.Target;
  * anonymous caller). Both had the identical shape:
  *
  * <pre>{@code
- * String caller = callerId(request);
+ * String caller = requiredCallerId(request);
  * if (caller != null) {          // <-- and if it is null?
  *     permissions.setOwner(id, caller);
  * }

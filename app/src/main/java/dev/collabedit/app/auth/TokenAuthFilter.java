@@ -76,26 +76,19 @@ public class TokenAuthFilter extends OncePerRequestFilter {
             : Optional.empty();
     }
 
-    /**
-     * The caller's identifier, or {@code null} when the request is unauthenticated.
+    /*
+     * `callerId` — the nullable half of this pair — used to sit here, and its javadoc argued that
+     * naming both makes the choice deliberate at the call site: `requiredCallerId` behind an
+     * annotation the guard enforces, `callerId` for "a public endpoint, or a filter that treats
+     * 'no caller' as 'no rows'".
      *
-     * <h2>Why the two methods below exist</h2>
-     * {@code TokenAuthFilter.principalOf(request).map(p -> p.userId).orElse(…)} appeared SIX
-     * times across four controllers — and with <b>two different endings</b>: three call sites used
-     * {@code orElse(null)} and three used {@code orElseThrow}. Nothing said which was intended
-     * where, so "what happens to an anonymous caller here" was answered by whichever line happened
-     * to get copied.
-     *
-     * <p>Naming both makes the choice deliberate at the call site instead of accidental. The rule
-     * that decides between them is the endpoint's own declaration: one guarded by
-     * {@link RequiresDocumentAccess} or {@link RequiresAuthentication} has already had an anonymous
-     * caller refused by {@link DocumentAccessGuard}, so it may say {@code requiredCallerId} and mean
-     * it. One that tolerates anonymity — a public endpoint, or a filter that treats "no caller" as
-     * "no rows" — says {@code callerId} and handles the null.
+     * The argument is sound and the second case never arrived. Thirteen call sites use
+     * `requiredCallerId`; nothing has ever called `callerId`, including the one @PublicEndpoint.
+     * A pair whose halves are meant to force a decision does not force one when only ever half of
+     * it exists — it just leaves a reader wondering which endpoints chose the other. If a
+     * genuinely anonymous-tolerant endpoint appears, `principalOf` is right there and the decision
+     * gets made in the open.
      */
-    public static String callerId(HttpServletRequest request) {
-        return principalOf(request).map(TokenService.Principal::userId).orElse(null);
-    }
 
     /**
      * The caller's identifier, insisting there is one.

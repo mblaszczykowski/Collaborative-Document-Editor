@@ -72,9 +72,6 @@ public class ClusterBus implements MessageListener {
         this.instanceId = identity.id();
     }
 
-    public String instanceId() {
-        return instanceId;
-    }
 
     public void onMessage(Consumer<ClusterMessage> handler) {
         this.handler = handler;

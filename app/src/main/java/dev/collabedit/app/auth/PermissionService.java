@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -73,9 +74,23 @@ public class PermissionService {
     private final JdbcTemplate jdbc;
     private final PermissionInvalidationBus invalidations;
 
+    /**
+     * Told that a document's access changed, on <b>this</b> instance, whoever caused it.
+     *
+     * <p>Wired by the WebSocket layer ({@code BroadcastWiring}), the same way the write path's
+     * broadcast is: this service should not know that a STOMP frame exists, and the transport
+     * should not know what a role is.
+     */
+    private volatile Consumer<UUID> onAccessChanged = documentId -> { };
+
     public PermissionService(JdbcTemplate jdbc, PermissionInvalidationBus invalidations) {
         this.jdbc = jdbc;
         this.invalidations = invalidations;
+    }
+
+    /** Registers the notifier; see {@link #onAccessChanged}. */
+    public void onAccessChanged(Consumer<UUID> handler) {
+        this.onAccessChanged = handler;
     }
 
     /**
@@ -145,17 +160,13 @@ public class PermissionService {
         return rows.isEmpty() ? Optional.empty() : roleFrom(userId, rows.getFirst());
     }
 
-    public boolean canWriteText(String userId, UUID documentId) {
-        return roleOf(userId, documentId).filter(Role::canWriteText).isPresent();
-    }
-
-    public boolean canComment(String userId, UUID documentId) {
-        return roleOf(userId, documentId).filter(Role::canComment).isPresent();
-    }
-
-    public boolean canManageAccess(String userId, UUID documentId) {
-        return roleOf(userId, documentId).filter(Role::canManageAccess).isPresent();
-    }
+    // canWriteText, canComment and canManageAccess used to sit here, one predicate per capability.
+    // None had a production caller: every endpoint declares a Capability and DocumentAccessGuard
+    // resolves it through Capability.permittedFor, which is the single mapping the permission model
+    // exists to keep. Three parallel predicates are the table of exceptions that design refuses —
+    // and two of them were called from nowhere at all, the third only from a test.
+    //
+    // canRead stays, because DocumentCatalog's SQL predicate is checked against it row by row.
 
     /**
      * One query instead of four.
@@ -238,19 +249,45 @@ public class PermissionService {
     }
 
     /**
-     * Drops the cached roles for a document on this instance only.
+     * Drops the cached roles for a document on this instance only, and tells this instance's
+     * clients that they should re-ask about themselves.
      *
      * <p>The receiving half of {@link #invalidate}. Separate so that applying a message from
      * another instance does not rebroadcast it, which would be a loop the deduplication in
      * {@link PermissionInvalidationBus} only half prevents.
+     *
+     * <h2>Why the notification lives here and not at the endpoint that caused the change</h2>
+     * It used to live in {@code AccessController}, published with a local messaging template, and
+     * its javadoc called that deliberate: a client on another instance "learns of the change when
+     * its permission cache entry expires (five seconds)".
+     *
+     * <p>That reasoning is about the <b>check</b>, and it is correct about the check. It is not
+     * true of the <b>signal</b>, and the signal is load-bearing: {@code RevokedAccessFilter} exempts
+     * {@code /access} from filtering precisely so a revoked client is told, because otherwise —
+     * its own words — "the revoked tab simply went quiet: still showing the document, still letting
+     * the user type into a replica whose operations the inbound interceptor was refusing". On more
+     * than one instance that is exactly what happened, since the frame was never published on the
+     * instance the revoked client was connected to, and {@code onAccessChanged} is the client's
+     * only trigger for re-checking its role.
+     *
+     * <p>Announcing from here fixes it without adding the second channel that javadoc rightly
+     * refused: this method is already the one point every access change reaches on every instance,
+     * local or via the bus. One fact, one channel, and the notification is a consequence of the
+     * invalidation rather than a parallel mechanism that can drift from it.
      */
     void invalidateLocally(UUID documentId) {
         cache.keySet().removeIf(key -> key.documentId().equals(documentId));
         log.debug("Dropped cached permissions for document {}", documentId);
-    }
-
-    public void invalidateAll() {
-        cache.clear();
+        try {
+            onAccessChanged.accept(documentId);
+        } catch (RuntimeException e) {
+            // The change is already in the database, and the TTL is the backstop. Failing to
+            // announce costs at most the five seconds it would have taken anyway — not worth
+            // failing the caller's request over, and definitely not worth killing the Redis
+            // listener thread that delivers invalidations from the other instances.
+            log.warn("Failed to announce the access change for document {}: {}", documentId,
+                e.toString());
+        }
     }
 
     /**

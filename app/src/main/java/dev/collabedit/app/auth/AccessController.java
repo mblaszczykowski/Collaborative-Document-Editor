@@ -1,7 +1,8 @@
 package dev.collabedit.app.auth;
 
-import dev.collabedit.app.ws.Messages;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -9,7 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -53,15 +53,18 @@ public class AccessController {
 
     private static final Logger log = LoggerFactory.getLogger(AccessController.class);
 
+    /** A role or a visibility is one short word; nothing legitimate comes close. */
+    private static final int MAX_ENUM_WORD = 32;
+
+    /** 192 random bits in base64url is 32 characters; the rest is room for a format change. */
+    private static final int MAX_TOKEN_LENGTH = 200;
+
     private final PermissionService permissions;
     private final InviteService invites;
-    private final SimpMessagingTemplate messaging;
 
-    public AccessController(PermissionService permissions, InviteService invites,
-                            SimpMessagingTemplate messaging) {
+    public AccessController(PermissionService permissions, InviteService invites) {
         this.permissions = permissions;
         this.invites = invites;
-        this.messaging = messaging;
     }
 
     // ------------------------------------------------------------------
@@ -111,41 +114,56 @@ public class AccessController {
     @RequiresDocumentAccess(Capability.READ)
     public ResponseEntity<MyRole> myRole(@PathVariable("documentId") UUID documentId,
                                          HttpServletRequest request) {
+        // orElseThrow, not orElse("viewer"). Capability.READ requires a non-null role and the
+        // guard sets the attribute before it lets the request through, so the fallback could never
+        // fire — and if it ever did, this endpoint's entire job is to report the caller's role, so
+        // inventing "viewer" would be answering the one question it exists to answer with a guess.
+        // DocumentRestController.open already uses orElseThrow for the same attribute.
         return ResponseEntity.ok(new MyRole(DocumentAccessGuard.resolvedRole(request)
             .map(Role::wire)
-            .orElse("viewer")));
+            .orElseThrow(() -> new IllegalStateException(
+                "the access guard did not resolve a role for a guarded endpoint"))));
     }
 
     // ------------------------------------------------------------------
     // Changing it
     // ------------------------------------------------------------------
 
-    public record VisibilityRequest(String visibility) {
+    /**
+     * @param visibility one of two words, checked against an allow-list below. The bound is here
+     *     anyway, because {@code RequestBoundsIT}'s rule is that a value the CALLER chooses never
+     *     decides how much work the server does — and an allow-list check on a 10 MB string is
+     *     still a 10 MB string parsed, allocated and held. This controller was the only one with
+     *     no bounds on any of its bodies.
+     */
+    public record VisibilityRequest(@Size(max = MAX_ENUM_WORD) String visibility) {
     }
 
     @PutMapping("/api/documents/{documentId}/access/visibility")
     @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
     public ResponseEntity<Void> setVisibility(@PathVariable("documentId") UUID documentId,
-                                              @RequestBody VisibilityRequest body) {
+                                              @Valid @RequestBody VisibilityRequest body) {
         String visibility = body.visibility();
         if (!"private".equals(visibility) && !"link".equals(visibility)) {
             return ResponseEntity.badRequest().build();
         }
+        // Everybody is told, not one person: switching to `private` changes what every
+        // non-member may do. The telling is a consequence of the invalidation inside setVisibility
+        // — see PermissionService.invalidateLocally.
         permissions.setVisibility(documentId, visibility);
-        // Everybody, not one person: switching to `private` changes what every non-member may do.
-        announce(documentId);
         log.info("Visibility of document {} set to {}", documentId, visibility);
         return ResponseEntity.noContent().build();
     }
 
-    public record RoleRequest(String role) {
+    /** @param role a role name; {@code grantable} decides which, this decides how long. */
+    public record RoleRequest(@Size(max = MAX_ENUM_WORD) String role) {
     }
 
     @PutMapping("/api/documents/{documentId}/access/members/{userId}")
     @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
     public ResponseEntity<Void> setMemberRole(@PathVariable("documentId") UUID documentId,
                                               @PathVariable("userId") String userId,
-                                              @RequestBody RoleRequest body) {
+                                              @Valid @RequestBody RoleRequest body) {
         Role role = grantable(body.role());
         if (role == null) {
             return ResponseEntity.badRequest().build();
@@ -159,7 +177,6 @@ public class AccessController {
             return ResponseEntity.notFound().build();
         }
         permissions.grant(documentId, userId, role);
-        announce(documentId);
         log.info("User {} is now {} in document {}", userId, role.wire(), documentId);
         return ResponseEntity.noContent().build();
     }
@@ -187,7 +204,6 @@ public class AccessController {
         if (!permissions.revoke(documentId, userId)) {
             return ResponseEntity.notFound().build();
         }
-        announce(documentId);
         log.info("Access of user {} to document {} revoked", userId, documentId);
         return ResponseEntity.noContent().build();
     }
@@ -196,7 +212,8 @@ public class AccessController {
     // Invitations
     // ------------------------------------------------------------------
 
-    public record CreateInviteRequest(String role, Integer days) {
+    /** @param days clamped in {@code InviteService.create}; the role is a word, not a document. */
+    public record CreateInviteRequest(@Size(max = MAX_ENUM_WORD) String role, Integer days) {
     }
 
     public record CreatedInvite(String token, String id, String role, String expiresAt) {
@@ -205,7 +222,7 @@ public class AccessController {
     @PostMapping("/api/documents/{documentId}/access/invites")
     @RequiresDocumentAccess(Capability.MANAGE_ACCESS)
     public ResponseEntity<CreatedInvite> createInvite(@PathVariable("documentId") UUID documentId,
-                                                      @RequestBody CreateInviteRequest body,
+                                                      @Valid @RequestBody CreateInviteRequest body,
                                                       HttpServletRequest request) {
         Role role = grantable(body.role());
         if (role == null) {
@@ -229,7 +246,13 @@ public class AccessController {
             : ResponseEntity.notFound().build();
     }
 
-    public record RedeemRequest(String token) {
+    /**
+     * @param token 192 bits of {@code SecureRandom}, base64url — so it has a known length, and the
+     *     bound is generous rather than exact. This is the one unbounded string in this file that
+     *     any logged-in user could send: {@code POST /api/invites/redeem} needs no role at all,
+     *     which is the whole point of an invitation.
+     */
+    public record RedeemRequest(@Size(max = MAX_TOKEN_LENGTH) String token) {
     }
 
     public record RedeemResult(String documentId, String role) {
@@ -253,7 +276,7 @@ public class AccessController {
     @RequiresAuthentication("Redeems an invitation for the caller. The caller has no role in the "
         + "document yet — that is what an invitation is for — so the token is the authority and "
         + "the document comes from inside it, never from the request.")
-    public ResponseEntity<RedeemResult> redeem(@RequestBody RedeemRequest body,
+    public ResponseEntity<RedeemResult> redeem(@Valid @RequestBody RedeemRequest body,
                                                HttpServletRequest request) {
         String caller = TokenAuthFilter.requiredCallerId(request);
 
@@ -262,42 +285,28 @@ public class AccessController {
         if (documentId.isEmpty() || role.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
-        announce(documentId.get());
         return ResponseEntity.ok(new RedeemResult(documentId.get().toString(), role.get().wire()));
     }
 
     // ------------------------------------------------------------------
 
-    /**
-     * Tells the connected clients that access changed — <b>without saying whose, or to what</b>.
+    /*
+     * `announce` used to live here: a private method publishing an empty AccessChanged frame with a
+     * local messaging template, called from the four endpoints above.
      *
-     * <p>The README lists under <i>open, unresolved</i>: the role arrives once, with the initial
-     * state, so raising somebody's permissions does nothing until they reload. Revocation was
-     * never a hole — the server rejects the operation regardless — but a grant that visibly does
-     * nothing is how a working feature reads as broken.
+     * It moved to PermissionService.invalidateLocally, and the reason is not tidiness. Every one of
+     * those four call sites had already changed a role through PermissionService, and every such
+     * change invalidates — locally and, over the bus, on every other instance. Announcing HERE told
+     * only the clients connected to the instance that happened to serve the request; the revoked
+     * tab on any other instance was left in the state RevokedAccessFilter exempts /access from
+     * filtering specifically to prevent, "still showing the document, still letting the user type
+     * into a replica whose operations the inbound interceptor was refusing".
      *
-     * <p><b>The frame is empty on purpose.</b> It used to carry the affected user and their new
-     * role, which handed every subscriber the answer to a question this very class refuses to
-     * answer without {@code MANAGE_ACCESS}: who has access to this document. Each client now
-     * re-asks about itself, which costs one small request per connected client on a rare event.
-     *
-     * <p><b>Instance-local, deliberately.</b> A client connected to another instance learns of the
-     * change when its permission cache entry expires (five seconds), which is the same bound that
-     * already governs revocation. Publishing this on the cluster channel would mean a second
-     * mechanism carrying the same fact as the permission invalidation broadcast, and two channels
-     * for one fact is how they drift apart.
+     * Announcing from the invalidation instead covers every instance without adding a second
+     * cluster channel for the same fact — which the old javadoc rightly refused to do. It also
+     * covers the two paths that were never announcing at all: soft delete and restore both change
+     * the answer to "what is your role here" and now invalidate like the rest.
      */
-    private void announce(UUID documentId) {
-        try {
-            messaging.convertAndSend("/topic/doc/" + documentId + "/access",
-                new Messages.AccessChanged());
-        } catch (RuntimeException e) {
-            // The change is already in the database; failing to announce it costs at most the
-            // five seconds it would have taken anyway. Not worth failing the request over.
-            log.warn("Failed to announce the access change for document {}: {}", documentId,
-                e.toString());
-        }
-    }
 
     /**
      * The roles this API is allowed to hand out, by name.

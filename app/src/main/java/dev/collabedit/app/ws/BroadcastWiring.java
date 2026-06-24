@@ -1,6 +1,7 @@
 package dev.collabedit.app.ws;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.collabedit.app.auth.PermissionService;
 import dev.collabedit.app.config.CollabEditProperties;
 import dev.collabedit.app.domain.DocumentService;
 import dev.collabedit.crdt.OpCodec;
@@ -21,6 +22,7 @@ import org.springframework.stereotype.Component;
 public class BroadcastWiring {
 
     private final DocumentService documents;
+    private final PermissionService permissions;
     private final SimpMessagingTemplate messaging;
 
     /**
@@ -34,9 +36,10 @@ public class BroadcastWiring {
      */
     private final CollabEditProperties properties;
 
-    public BroadcastWiring(DocumentService documents, SimpMessagingTemplate messaging,
-                           CollabEditProperties properties) {
+    public BroadcastWiring(DocumentService documents, PermissionService permissions,
+                           SimpMessagingTemplate messaging, CollabEditProperties properties) {
         this.documents = documents;
+        this.permissions = permissions;
         this.messaging = messaging;
         this.properties = properties;
     }
@@ -82,5 +85,18 @@ public class BroadcastWiring {
                 .toList();
             messaging.convertAndSend("/topic/doc/" + documentId + "/acks", payload);
         });
+
+        // "Your role here may have changed — ask again." Empty on purpose: carrying who changed and
+        // to what would hand every subscriber the answer to a question AccessController refuses
+        // without MANAGE_ACCESS.
+        //
+        // Wired to the invalidation rather than to the endpoint, so it fires on EVERY instance that
+        // learns of the change and not only on the one that served the request. See
+        // PermissionService.invalidateLocally for the revoked-tab-goes-quiet failure that the
+        // instance-local version left open on a cluster, and RevokedAccessFilter for why this one
+        // frame is exempt from outbound filtering.
+        permissions.onAccessChanged(documentId ->
+            messaging.convertAndSend("/topic/doc/" + documentId + "/access",
+                new Messages.AccessChanged()));
     }
 }

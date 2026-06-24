@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 
 /**
- * One place that turns an exception into a status, for all five REST controllers.
+ * One place that turns an exception into a status, for every REST controller.
  *
  * <h2>Why this had to exist before the conventions could be one convention</h2>
  * There was no {@code @ControllerAdvice} anywhere, so every controller was its own set of rules and
@@ -84,10 +84,32 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(detail));
     }
 
-    /** The same, for constraints declared on method parameters rather than on a body. */
+    /**
+     * The same, for constraints declared on method parameters rather than on a body.
+     *
+     * <p>It used to ignore its argument and answer a fixed "a request parameter is not valid",
+     * which threw away the one thing {@link #onInvalidBody} is careful to keep: <b>which</b>
+     * parameter. The two handlers answer the same question about the same kind of mistake, so
+     * answering it differently was a difference nobody had chosen — and {@code RequestBoundsIT}
+     * asserts on the name for the body half, i.e. the project had already decided the name matters.
+     *
+     * <p>One honest imprecision: this reports the <b>Java</b> parameter's name, which is not always
+     * the name the caller sent. {@code GET /api/documents?q=…} binds to a parameter called
+     * {@code query}, so the message says "query", and the caller has to make the connection. Reading
+     * the {@code @RequestParam} annotation to recover "q" is possible and is not done, because the
+     * two names differ in exactly one place in this codebase and a mapping layer for that would be
+     * more machinery than the confusion it removes. Named here so the next person meets a decision
+     * rather than a bug.
+     */
     @ExceptionHandler(HandlerMethodValidationException.class)
     public ResponseEntity<ApiError> onInvalidParameter(HandlerMethodValidationException e) {
-        return ResponseEntity.badRequest().body(new ApiError("a request parameter is not valid"));
+        String detail = e.getParameterValidationResults().stream()
+            .flatMap(result -> result.getResolvableErrors().stream()
+                .map(error -> result.getMethodParameter().getParameterName()
+                    + " " + error.getDefaultMessage()))
+            .findFirst()
+            .orElse("a request parameter is not valid");
+        return ResponseEntity.badRequest().body(new ApiError(detail));
     }
 
     /**

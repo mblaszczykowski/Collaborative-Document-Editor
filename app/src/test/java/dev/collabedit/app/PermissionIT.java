@@ -240,7 +240,8 @@ class PermissionIT extends IntegrationTestBase {
         UUID document = privateDocument(anna, "Temporarily shared");
         permissions.grant(document, marek.id(), Role.EDITOR);
 
-        assertThat(permissions.canWriteText(marek.id(), document)).isTrue();
+        assertThat(permissions.roleOf(marek.id(), document)).get()
+            .matches(Role::canWriteText);
 
         permissions.revoke(document, marek.id());
 
@@ -472,7 +473,8 @@ class PermissionIT extends IntegrationTestBase {
         assertThat(permissions.roleOf(teamMember.id(), document))
             .as("the per-document role did not override the inherited one — restricting access does not work")
             .contains(Role.VIEWER);
-        assertThat(permissions.canWriteText(teamMember.id(), document)).isFalse();
+        assertThat(permissions.roleOf(teamMember.id(), document)).get()
+            .matches(role -> !role.canWriteText());
     }
 
     @Test

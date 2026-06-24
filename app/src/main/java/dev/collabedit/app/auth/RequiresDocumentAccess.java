@@ -58,7 +58,7 @@ public @interface RequiresDocumentAccess {
      * Whether a soft-deleted document still counts.
      *
      * <p>Default {@code false}, because for opening and editing a document in the trash must
-     * behave as if it did not exist. Trash listing and restore are the deliberate exceptions —
+     * behave as if it did not exist. Restoring from the trash is the one deliberate exception —
      * they operate on deleted documents by definition, and must not skip the permission check
      * while doing so, or the trash becomes a list of other people's titles.
      */
