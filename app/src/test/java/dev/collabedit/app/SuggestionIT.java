@@ -354,10 +354,15 @@ class SuggestionIT extends IntegrationTestBase {
             // not caught up would be describing a range of a document it has not got.
             anna2.requestSync(0);
             anna2.awaitCondition(() -> anna2.text().equals("The cat sat"), PATIENCE, "caught up");
+
+            // Captured BEFORE the delete, and compared against. `> 1` was already true when it was
+            // asked: the sync above raises lastAckSeq to the head, which is 2 by this point (the
+            // seed and the suggest-delete mark). So the await returned on its first poll, proved
+            // nothing about the deletion, and the sleep below was doing the actual waiting.
+            long beforeDelete = anna2.lastAckSeq();
             anna2.delete(7, 4);
-            anna2.awaitCondition(() -> anna2.lastAckSeq() > 1, PATIENCE, "deletion");
+            anna2.awaitCondition(() -> anna2.lastAckSeq() > beforeDelete, PATIENCE, "deletion");
         }
-        Thread.sleep(200);
 
         var open = suggestions.openFor(document);
         assertThat(open).hasSize(1);

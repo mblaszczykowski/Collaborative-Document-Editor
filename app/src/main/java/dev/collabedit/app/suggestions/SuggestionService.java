@@ -234,22 +234,43 @@ public class SuggestionService {
 
         // Generated and enqueued together — see DocumentService.generateAndSubmit for the eviction
         // window that splitting them leaves open.
-        documents.generateAndSubmit(documentId, document -> {
-            Range range = rangeOf(document, markType, suggestionId.toString());
-            if (range == null) {
-                return List.<Op>of();
-            }
-            List<Op> ops = new ArrayList<>();
-            if (textStays) {
-                ops.add(document.removeMark(range.from(), range.to(), markType));
-            } else {
-                // The mark is left where it is: it now covers deleted characters, so it resolves
-                // to no span and shows nowhere. Removing it first would be a second operation
-                // doing nothing visible, and its anchors are tombstones either way.
-                ops.add(document.delete(range.from(), range.to() - range.from()));
-            }
-            return ops;
-        }, null);
+        //
+        // UNDONE IF THE DOCUMENT REFUSES. Settling the row first is right — it is what makes the
+        // row rather than the replica lock the arbiter of the race — but it left the two steps able
+        // to disagree in the other direction. generateAndSubmit can throw: StaleReplicaException
+        // when the replica is evicted twice in one request (503), ResyncRequiredException when the
+        // anchor is gone (409). Both are handled elsewhere, so both are reachable.
+        //
+        // What that left behind was worse than an error: the row says accepted, so `openFor`
+        // filters the proposal out of the panel — while the suggest-insert/suggest-delete mark is
+        // still in the document, and the editor still renders that range as a pending suggestion.
+        // The proposal disappears from the one screen that could resolve it, and nothing left in
+        // the system can ever clear the mark.
+        //
+        // Reopening the row is the honest failure: the suggestion comes back, the caller gets their
+        // 503 or 409, and retrying does what they asked. It is the same reasoning the comment above
+        // uses about the previous order — prefer the state the user can act on.
+        try {
+            documents.generateAndSubmit(documentId, document -> {
+                Range range = rangeOf(document, markType, suggestionId.toString());
+                if (range == null) {
+                    return List.<Op>of();
+                }
+                List<Op> ops = new ArrayList<>();
+                if (textStays) {
+                    ops.add(document.removeMark(range.from(), range.to(), markType));
+                } else {
+                    // The mark is left where it is: it now covers deleted characters, so it resolves
+                    // to no span and shows nowhere. Removing it first would be a second operation
+                    // doing nothing visible, and its anchors are tombstones either way.
+                    ops.add(document.delete(range.from(), range.to() - range.from()));
+                }
+                return ops;
+            }, null);
+        } catch (RuntimeException e) {
+            reopen(suggestionId, documentId);
+            throw e;
+        }
 
         log.info("Suggestion {} {} by {}", suggestionId, accept ? "accepted" : "rejected", userId);
         return Outcome.RESOLVED;
@@ -265,6 +286,31 @@ public class SuggestionService {
      */
     public enum Outcome {
         RESOLVED, ALREADY_RESOLVED, UNKNOWN
+    }
+
+    /**
+     * Puts a settled suggestion back, because applying it to the document failed.
+     *
+     * <p>Guarded on the row still being resolved so this cannot reopen a proposal that somebody
+     * else decided in the meantime — the whole point of settling the row first is that exactly one
+     * caller owns the decision, and undoing it must not take that ownership from a later one.
+     *
+     * <p>If this fails too there is nothing further to try: the caller is already receiving an
+     * error, and turning a 503 into a 500 would tell them less. Logged loudly instead, because the
+     * state it leaves is the one described above and somebody will need to find it.
+     */
+    private void reopen(UUID suggestionId, UUID documentId) {
+        try {
+            jdbc.update("""
+                UPDATE suggestions
+                   SET resolved_at = NULL, resolved_by = NULL, resolution = NULL
+                 WHERE id = ? AND doc_id = ? AND resolved_at IS NOT NULL
+                """, suggestionId, documentId);
+        } catch (RuntimeException e) {
+            log.error("Suggestion {} was settled but could not be applied OR reopened; its mark is "
+                + "still in document {} and the proposal is hidden from the panel",
+                suggestionId, documentId, e);
+        }
     }
 
     /** Whether the suggestion exists at all, resolved or not — only asked on the failure path. */
