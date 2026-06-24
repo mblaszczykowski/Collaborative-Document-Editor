@@ -166,6 +166,86 @@ class EndpointAuthorizationArchitectureTest {
             .isEmpty();
     }
 
+    /**
+     * The assertion that makes the other three mean what {@code WebMvcConfig} says they mean.
+     *
+     * <h2>The gap this closes</h2>
+     * {@code WebMvcConfig} registers {@code DocumentAccessGuard} for {@code /api/**} only, and its
+     * javadoc claims that "the guard covers our endpoints, and the test proves the set of 'our
+     * endpoints' and the set of 'endpoints the guard can see' are the same set."
+     *
+     * <p>It did not prove that. This class scans by PACKAGE and by stereotype; the three assertions
+     * above check that an annotation is present, that it is not silently public, and that its
+     * declared parameter exists. None of them looked at the path — although {@code mappingOf} was
+     * already computing it for the third.
+     *
+     * <p>So a controller mapped at, say, {@code /export/{documentId}} with a perfectly correct
+     * {@code @RequiresDocumentAccess(READ)} compiled, passed every assertion here, and was served
+     * with <b>no check at all</b>, because the interceptor never fires outside {@code /api}. That
+     * is the CP16 failure mode exactly: not a missing declaration, but a declaration that looks
+     * enforced and is not. Every endpoint is under {@code /api} today, so this pins a property
+     * rather than fixing a hole — which is the point, since the hole would be invisible.
+     *
+     * <p>Adding an endpoint outside {@code /api} is still allowed. It requires widening the
+     * interceptor's patterns, and this test failing is how that requirement gets stated.
+     */
+    @Test
+    @DisplayName("every endpoint is inside the path scope the guard is registered for")
+    void everyEndpointIsWithinTheGuardsScope() {
+        List<String> outside = new ArrayList<>();
+
+        for (Method method : requestMappedMethods()) {
+            for (String path : fullPathsOf(method)) {
+                if (!path.startsWith(GUARDED_PREFIX)) {
+                    outside.add(describe(method) + " is mapped at " + path);
+                }
+            }
+        }
+
+        assertThat(outside)
+            .as("""
+                An endpoint is served from outside the path DocumentAccessGuard is registered for \
+                (%s in WebMvcConfig), so its access annotation is decoration: the interceptor never \
+                runs for it and nothing refuses the request. Either move it under that prefix, or \
+                widen the interceptor's patterns — deliberately, and in the same commit.""",
+                GUARDED_PREFIX + "**")
+            .isEmpty();
+    }
+
+    /** The prefix {@code WebMvcConfig} registers the guard for. */
+    private static final String GUARDED_PREFIX = "/api";
+
+    /**
+     * Every concrete path this method answers on — the class-level prefixes joined with the
+     * method-level ones, which is what Spring actually maps.
+     *
+     * <p>Separate from {@link #mappingOf}, which flattens everything into one string for a
+     * {@code contains} check. A prefix test needs the individual paths: a class mapped at
+     * {@code /api/x} with a method at {@code /y} answers on {@code /api/x/y}, and the flattened
+     * form would have the method's fragment looking like a path of its own.
+     */
+    private static List<String> fullPathsOf(Method method) {
+        String[] classPaths = pathsOf(method.getDeclaringClass());
+        String[] methodPaths = pathsOf(method);
+        List<String> full = new ArrayList<>();
+        if (classPaths.length == 0) {
+            // No class-level @RequestMapping: the method's own paths are absolute.
+            full.addAll(List.of(methodPaths));
+        } else {
+            for (String classPath : classPaths) {
+                if (methodPaths.length == 0) {
+                    full.add(classPath);
+                    continue;
+                }
+                for (String methodPath : methodPaths) {
+                    full.add(classPath + methodPath);
+                }
+            }
+        }
+        // A mapping with no path at all answers on its class prefix; nothing here maps to "".
+        return full.isEmpty() ? List.of("") : full;
+    }
+
     /** The class-level and method-level mappings joined, which is the path the guard sees. */
     private static String mappingOf(Method method) {
         return String.join(" ", pathsOf(method.getDeclaringClass()))

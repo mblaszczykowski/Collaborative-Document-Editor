@@ -136,5 +136,14 @@ class DocumentRegistryMemoryIT {
         assertThat(registry.isLoaded(refreshed))
             .as("the most recently used document was evicted — the LRU ordering does not work")
             .isTrue();
+
+        // And the one that SHOULD have gone, did. Without this the test asserts only that a
+        // particular document survived, which an arbitrary eviction policy satisfies two times out
+        // of three at this limit — so it would go on passing if the ordering were dropped entirely.
+        assertThat(registry.isLoaded(documents.get(1)))
+            .as("the victim was not the least recently used document: every other document here "
+                + "has been touched more recently, so a policy that evicts by activity has exactly "
+                + "one candidate, and any other choice means it is not choosing by activity")
+            .isFalse();
     }
 }

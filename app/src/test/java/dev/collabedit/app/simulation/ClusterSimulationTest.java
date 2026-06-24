@@ -247,6 +247,39 @@ class ClusterSimulationTest {
     }
 
     /**
+     * The assertion above, proved to be able to fail.
+     *
+     * <h2>Why this test exists</h2>
+     * {@code acknowledgedButNotLogged} could not return anything but an empty list. Its only
+     * writer, {@code SimulatedCluster.persist}, adds to {@code acknowledged} two lines after
+     * appending to {@code logged}, and {@code logged} is never emptied — not even by a crash. So
+     * the durability invariant was asserted 200 times per run against a detector that was empty by
+     * construction, and would have gone on passing if the ordering it protects were reversed.
+     *
+     * <p>This runs the same scenario with the acknowledgement moved to the broadcast — the
+     * arrangement the operation-log decision forbids, and the one a reasonable person would
+     * otherwise implement — and asserts the detector NOTICES. Together the two tests say something
+     * the first could not say alone: the empty result means the ordering is right, rather than
+     * meaning nobody is looking.
+     *
+     * <p>One seed, not the full sweep: this pins a property of the test rig, and repeating it
+     * across twenty seeds would spend twenty times the time re-establishing the same fact.
+     */
+    @Test
+    @DisplayName("acknowledging on broadcast instead of on the write IS caught")
+    void theDurabilityDetectorCanFail() {
+        Run run = runDurabilityScenario(
+            1, SimulatedCluster.Durability.ACKNOWLEDGE_ON_BROADCAST);
+
+        assertThat(run.cluster().acknowledgedButNotLogged())
+            .as("""
+                An acknowledgement was sent before the write, an instance crashed inside that \
+                window, and acknowledgedButNotLogged still found nothing — so it cannot detect the \
+                failure it exists for, and the invariant next to it proves nothing.""")
+            .isNotEmpty();
+    }
+
+    /**
      * Work that was never acknowledged still arrives, because the client resends it.
      *
      * <p>The complement of the invariant above, and the reason a client is in the model at all.
@@ -312,9 +345,12 @@ class ClusterSimulationTest {
      * rare crash would find it rarely.
      */
     private static Run runDurabilityScenario(long seed) {
+        return runDurabilityScenario(seed, SimulatedCluster.Durability.DEFERRED);
+    }
+
+    private static Run runDurabilityScenario(long seed, SimulatedCluster.Durability durability) {
         DeterministicSimulation sim = new DeterministicSimulation(seed);
-        SimulatedCluster cluster = new SimulatedCluster(sim, 3, 0.2,
-            SimulatedCluster.Durability.DEFERRED);
+        SimulatedCluster cluster = new SimulatedCluster(sim, 3, 0.2, durability);
         sim.checkAfterEachStep(cluster::violatedInvariant);
 
         scheduleTyping(sim, cluster, 3, 60);

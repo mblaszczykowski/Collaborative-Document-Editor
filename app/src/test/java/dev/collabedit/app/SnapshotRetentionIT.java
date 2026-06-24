@@ -133,14 +133,32 @@ class SnapshotRetentionIT extends IntegrationTestBase {
         List<Long> remaining = jdbc.queryForList(
             "SELECT up_to_server_seq FROM snapshots WHERE doc_id = ? ORDER BY up_to_server_seq DESC",
             Long.class, document);
-        long olderThanHead = remaining.getLast();
+        long head = remaining.getFirst();
 
-        assertThat(snapshots.findLatestUpTo(document, olderThanHead))
+        // JUST BELOW THE HEAD, and the choice is the whole test. This used to ask for
+        // `remaining.getLast()` — the OLDEST surviving snapshot — which with a retention of one is
+        // the head itself, so findLatestUpTo found it and the assertion passed in exactly the case
+        // the javadoc says it exists to fail: "someone later simplifies the policy to keeping only
+        // the head".
+        //
+        // Asking below the head instead makes the head useless as an answer, so only a SECOND
+        // surviving snapshot can satisfy it — which is the property retention above one buys, and
+        // the only one worth asserting here. (Halfway back does not work and it is worth saying
+        // why: retention keeps the NEWEST n, so with n=3 out of 8 snapshots nothing survives near
+        // the start of the document. That is the policy behaving correctly, not a gap.)
+        long justBelowHead = head - 1;
+
+        assertThat(snapshots.findLatestUpTo(document, justBelowHead))
             .as("""
                 No snapshot survives below the head, so every history lookup would replay the \
                 whole log. Retention of one bounds the table and moves the cost somewhere else \
                 rather than removing it — see the class javadoc.""")
-            .isPresent();
+            .isPresent()
+            .get()
+            .satisfies(found -> assertThat(found.upToServerSeq())
+                .as("the snapshot serving a point below the head IS the head, so retention kept "
+                    + "only one and every history lookup before it replays the whole log")
+                .isLessThan(head));
     }
 
     /**

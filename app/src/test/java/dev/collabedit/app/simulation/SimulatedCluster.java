@@ -72,7 +72,23 @@ final class SimulatedCluster {
          * exists so that a crash can land between the broadcast and the append, which is the one
          * window in which the server loses an operation others have already seen.
          */
-        DEFERRED
+        DEFERRED,
+        /**
+         * The mistake the operation-log decision exists to forbid: acknowledge on BROADCAST, write
+         * later.
+         *
+         * <p>Not a mode the product has ever had, and it is here for one reason —
+         * {@code acknowledgedButNotLogged} could not fail without it. Under both modes above the
+         * only writer of {@code acknowledged} is {@code persist}, two lines after {@code append},
+         * and {@code logged} is never emptied — so the detector returned empty by construction on
+         * every schedule, and the assertion carrying the durability promise was unfalsifiable.
+         *
+         * <p>Under this mode a crash between the broadcast and the write leaves an operation the
+         * client has been told is safe and the log has never seen, which is exactly the state the
+         * detector describes. A test asserts that it IS detected, so the empty result under
+         * DEFERRED means the ordering is right rather than meaning nobody is looking.
+         */
+        ACKNOWLEDGE_ON_BROADCAST
     }
 
     /**
@@ -307,6 +323,13 @@ final class SimulatedCluster {
         }
         instance.unacknowledged.put(op.id(), op);
         broadcast(instance, op);
+
+        if (durability == Durability.ACKNOWLEDGE_ON_BROADCAST) {
+            // Told "safe" before anything was written. See the enum.
+            instance.unacknowledged.remove(op.id());
+            instance.acknowledged.add(op.id());
+            sim.record("  ack-on-broadcast i" + instance.id + " " + describe(op));
+        }
 
         int instanceId = instance.id;
         sim.schedule(PERSIST_DELAY_MS, "persist", () -> persist(instanceId, op));
