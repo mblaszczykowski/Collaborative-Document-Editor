@@ -65,14 +65,20 @@ class GarbageCollectionIT extends IntegrationTestBase {
 
         // Replica 301 reports progress — without it causal stability has nothing to be computed
         // from and GC never happens.
+        //
+        // Through DocumentService rather than straight at the replica, because that is where a
+        // report now goes: the version vector is written to `replica_progress`, which is what makes
+        // the boundary durable and cluster-wide. Reporting only into the in-memory replica would
+        // leave `liveFor` returning nothing and GC would never run — the test would then fail for a
+        // reason that has nothing to do with what it is about.
         var replica = registry.get(document);
-        replica.reportProgress(301, active.version(), System.currentTimeMillis());
+        documents.recordProgress(document, 301, active.version());
 
         // Enough operations to cross the snapshot threshold (20 in tests) — GC happens at
         // snapshot time, because that rewrites the whole structure anyway.
         for (int i = 0; i < 25; i++) {
             documents.submit(document, active.insert(active.visibleLength(), "z"), "u1");
-            replica.reportProgress(301, active.version(), System.currentTimeMillis());
+            documents.recordProgress(document, 301, active.version());
         }
         awaitGc(document);
 

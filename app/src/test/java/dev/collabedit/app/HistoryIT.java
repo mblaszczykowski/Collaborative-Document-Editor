@@ -257,12 +257,12 @@ class HistoryIT extends IntegrationTestBase {
         Integer operationsBefore = jdbc.queryForObject(
             "SELECT COUNT(*) FROM operations WHERE doc_id = ?", Integer.class, document);
 
+        // Through generateAndSubmit, which is what HistoryController calls. Generating under
+        // withLock and then submitting in a loop — which this did — is the shape that call exists
+        // to replace, so the test was pinning a path the product had stopped taking.
         var target = history.stateAt(document, afterFirst);
-        var replica = registry.get(document);
-        var generated = replica.withLock(model -> history.restoreOperations(model, target));
-        for (var op : generated) {
-            documents.submitAlreadyMerged(document, op, null);
-        }
+        documents.generateAndSubmit(document, model -> history.restoreOperations(model, target),
+            null);
         Thread.sleep(300);
 
         assertThat(documents.textOf(document))

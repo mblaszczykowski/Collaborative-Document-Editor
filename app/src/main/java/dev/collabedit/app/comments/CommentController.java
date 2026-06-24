@@ -100,8 +100,21 @@ public class CommentController {
         @PathVariable UUID documentId,
         @RequestParam(value = "resolved", defaultValue = "false") boolean includeResolved) {
 
+        // The database FIRST, the replica only if there is something to anchor. The other order —
+        // which this had — took the document lock unconditionally, and `registry.get` is
+        // get-or-load, so opening the comments panel on a document with no comments still cost a
+        // load plus a lock acquisition contending with the 10 ms broadcast pass. The panel reloads
+        // on every settled keystroke, so that was one lock per typing pause, forever, to compute a
+        // set that was then intersected with nothing.
+        //
+        // SuggestionService.openFor already does it this way, with a comment about "the same lock
+        // every keystroke also needs". Same problem, same answer.
+        List<CommentService.Thread> threads = comments.threadsOf(documentId, includeResolved);
+        if (threads.isEmpty()) {
+            return ResponseEntity.ok(List.of());
+        }
         Set<String> anchored = anchoredThreadIds(documentId);
-        List<CommentService.Thread> found = comments.threadsOf(documentId, includeResolved).stream()
+        List<CommentService.Thread> found = threads.stream()
             .map(thread -> new CommentService.Thread(
                 thread.id(), thread.documentId(), thread.createdBy(), thread.createdAt(),
                 thread.resolvedAt(), thread.quotedText(),
@@ -150,9 +163,15 @@ public class CommentController {
             body.body().trim(),
             body.clientId());
 
-        return comments.threadsOf(documentId, true).stream()
-            .filter(thread -> thread.id().equals(threadId))
-            .findFirst()
+        // Read back by identifier. This used to call threadsOf(documentId, true) and filter for
+        // the one thread it had just created — so posting a comment cost a full read of every
+        // thread and every message in the document, to return a row the caller already half knows.
+        // The client reads only `id` off this response (CommentsPanel: onAnchor(created.id)).
+        //
+        // `anchored` is true here because the anchor is applied by the CLIENT, as a mark, after
+        // this call returns — there is nothing to look up yet, and threadsOf reported the same
+        // value for the same reason.
+        return comments.findThread(threadId)
             .map(ResponseEntity::ok)
             .orElseGet(() -> ResponseEntity.internalServerError().build());
     }

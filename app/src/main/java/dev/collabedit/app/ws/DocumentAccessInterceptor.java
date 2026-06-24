@@ -1,9 +1,10 @@
 package dev.collabedit.app.ws;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.collabedit.app.auth.CommentAnchorAuthority;
 import dev.collabedit.app.auth.PermissionService;
-import dev.collabedit.app.observability.DocumentMetrics;
 import dev.collabedit.app.auth.Role;
+import dev.collabedit.app.observability.DocumentMetrics;
 import dev.collabedit.crdt.MarkTypes;
 import dev.collabedit.crdt.OpCodec;
 import java.io.IOException;
@@ -12,13 +13,13 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.simp.stomp.StompCommand;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.ChannelInterceptor;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.stereotype.Component;
 
@@ -81,8 +82,8 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      * Why a frame was refused — a CLOSED set, because it becomes a metric tag.
      *
      * <p>An open set of reasons taken from the frame would let a client mint metric series at
-     * will, which is the cardinality hazard {@code SessionCloseListener} already guards against by
-     * collapsing unknown close codes.
+     * will, which is the cardinality hazard {@code SessionLifecycle.reasonOf} already guards
+     * against by collapsing unknown close codes into one bucket.
      */
     enum Refusal {
         WILDCARD_DESTINATION("wildcard destination"),
@@ -118,13 +119,21 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      */
     private final ObjectProvider<SimpMessagingTemplate> messaging;
 
+    /**
+     * Answers the one question a comment frame raises beyond its type — see
+     * {@link CommentAnchorAuthority}.
+     */
+    private final CommentAnchorAuthority anchors;
+
     public DocumentAccessInterceptor(PermissionService permissions, DocumentMetrics metrics,
                                      RateLimiter rateLimiter,
-                                     ObjectProvider<SimpMessagingTemplate> messaging) {
+                                     ObjectProvider<SimpMessagingTemplate> messaging,
+                                     CommentAnchorAuthority anchors) {
         this.permissions = permissions;
         this.metrics = metrics;
         this.rateLimiter = rateLimiter;
         this.messaging = messaging;
+        this.anchors = anchors;
     }
 
     // rateLimiter used to sit here as a public accessor "for diagnostics and tests", with no
@@ -221,7 +230,8 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
         if (role == null) {
             return deny(command, destination, userId, Refusal.NO_ACCESS);
         }
-        if (command == StompCommand.SEND && !allowedToSend(role, destination, message)) {
+        if (command == StompCommand.SEND
+            && !allowedToSend(role, destination, message, userId, documentId)) {
             return deny(command, destination, userId, Refusal.ROLE);
         }
         RateLimiter.Decision pace = command == StompCommand.SEND
@@ -276,18 +286,25 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
      * Adding the head of the destination to each rule would work too and would have to be
      * remembered for every future one; a single check at the door cannot be forgotten per rule.
      */
-    private static boolean allowedToSend(Role role, String destination, Message<?> message) {
+    private boolean allowedToSend(Role role, String destination, Message<?> message,
+                                  String userId, UUID documentId) {
         if (destination.endsWith("/op")) {
             // An editor may do anything — and we check that FIRST, so as not to pay for parsing
             // the operation body on the path most of the traffic takes.
             if (role.canWriteText()) {
                 return true;
             }
-            // A commenter may send ONLY a comment mark. This is the point where authorization has
-            // to descend to the OPERATION TYPE: comments travel the same channel as editing, so
-            // they cannot be distinguished at the destination level. Without this the
-            // "commenter" role would mean "editor".
-            return role.canComment() && isCommentMark(message);
+            // A commenter may send ONLY a comment mark, and only one anchoring a thread of their
+            // own. This is the point where authorization has to descend into the OPERATION: comments
+            // travel the same channel as editing, so they cannot be distinguished at the destination
+            // level. Without the first half the "commenter" role would mean "editor"; without the
+            // second it would mean "editor of everybody's anchors", because the mark's VALUE is a
+            // thread identifier and every commenter can read all of them.
+            if (!role.canComment()) {
+                return false;
+            }
+            UUID thread = commentThreadOf(message);
+            return thread != null && anchors.mayAnchorThread(userId, documentId, thread);
         }
         if (destination.endsWith("/presence")
             || destination.endsWith("/sync")
@@ -305,30 +322,45 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
     }
 
     /**
-     * Whether the frame's payload is the application of a mark of type {@code comment}.
+     * The thread a frame's payload anchors, or {@code null} when the frame is not the application
+     * of a {@code comment} mark at all.
      *
      * <p>Parsing the operation body inside the interceptor is a cost, so it happens ONLY for the
-     * commenter role — an editor never comes through here. We check exactly two fields, without
-     * full deserialisation: the operation type and the mark type.
+     * commenter role — an editor never comes through here. Three fields, without full
+     * deserialisation: the operation type, the mark type, and the mark's value.
+     *
+     * <p><b>The value used not to be read</b>, and returning a boolean was how that stayed
+     * invisible. {@code MarkSet.placementsOf} merges every placement sharing a value with
+     * {@code min(from)}/{@code max(to)}, so a mark carrying somebody else's thread identifier over
+     * the whole document stretches their highlight across all of it. The caller now has to say
+     * WHICH thread it is anchoring, which is what makes the question answerable.
      *
      * <p>Removing a comment mark is deliberately NOT permitted here: removing somebody else's
      * anchor removes their conversation from the document, and that is an editor's privilege. A
      * commenter resolves a thread instead, which is reversible and leaves a trace.
      */
-    private static boolean isCommentMark(Message<?> message) {
+    private static UUID commentThreadOf(Message<?> message) {
         Object payload = message.getPayload();
         if (!(payload instanceof byte[] bytes)) {
-            return false;
+            return null;
         }
         try {
             JsonNode root = OpCodec.mapper().readTree(bytes);
             JsonNode op = root.path("op");
-            return "m".equals(op.path("t").asText())
-                && MarkTypes.COMMENT.equals(op.path("k").asText());
-        } catch (IOException e) {
-            // An unreadable payload is not a comment mark. A refusal rather than an exception: the
-            // interceptor must not bring down the channel over one bad frame.
-            return false;
+            if (!"m".equals(op.path("t").asText())
+                || !MarkTypes.COMMENT.equals(op.path("k").asText())) {
+                return null;
+            }
+            JsonNode value = op.path("v");
+            // asText() on a missing or non-textual node yields "" and an object yields its type
+            // name, so the type is checked rather than the parsed result — the same coercion trap
+            // OpCodec's readers had to be closed against.
+            return value.isTextual() ? UUID.fromString(value.asText()) : null;
+        } catch (IOException | IllegalArgumentException e) {
+            // An unreadable payload, or a value that is not a UUID, is not an anchor we can
+            // authorize. A refusal rather than an exception: the interceptor must not bring down
+            // the channel over one bad frame.
+            return null;
         }
     }
 

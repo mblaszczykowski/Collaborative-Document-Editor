@@ -1,5 +1,6 @@
 package dev.collabedit.app.history;
 
+import dev.collabedit.app.domain.DocumentService;
 import dev.collabedit.app.persist.OperationStore;
 import dev.collabedit.app.persist.SnapshotStore;
 import dev.collabedit.app.persist.StoredOperation;
@@ -33,7 +34,10 @@ import org.springframework.stereotype.Service;
  *
  * <p>The price is on the read side: "the state at moment T" needs a snapshot plus a replay of the
  * operation tail. Stepping through the timeline one entry at a time multiplies that cost by the
- * number of steps — to be measured in CP8.
+ * number of steps. (This used to say "to be measured in CP8". CP8 closed in plan v1 and the
+ * measurement was never taken, so the sentence promised something that had already not happened.
+ * What the cost actually depends on is written on {@link #documentAt}, which is the method that
+ * pays it.)
  */
 @Service
 public class HistoryService {
@@ -162,9 +166,30 @@ public class HistoryService {
     /**
      * Rebuilds the document as of a sequence number.
      *
-     * <p>The snapshot is purely a shortcut: without it, replaying the whole log would give the same
-     * result. That equivalence is tested explicitly, because without a test the cache would quietly
-     * become the source of truth.
+     * <h2>What this costs, and why there is no cap on it</h2>
+     * The replay is bounded by the nearest snapshot at or below the requested point — normally the
+     * last 500 operations, which is the threshold the operation-log design chose. <b>When retention
+     * has pruned that snapshot, it is bounded by nothing</b>: {@code findLatestUpTo} finds none,
+     * {@code from} is 0, and this replays the document's entire log. Snapshots are kept
+     * {@code snapshots-kept-per-document} deep (3), so any point older than roughly the last 1500
+     * operations lands in that case.
+     *
+     * <p>That is reachable from the product — the timeline offers 200 entries — and more so from a
+     * crafted request, since {@code throughServerSeq} is a caller-supplied number.
+     *
+     * <p><b>It is deliberately not capped, and the reason is that the obvious cap is worse than the
+     * cost.</b> Refusing above {@code max-sync-operations}, which is what the WebSocket sync path
+     * does, would make previewing or restoring any older version of an actively edited document
+     * fail — and the WebSocket path can only refuse because it has somewhere better to send the
+     * client (the snapshot endpoint). There is no equivalent here: rebuilding an arbitrary past
+     * state IS replaying to it, by the operation-log design's own construction.
+     *
+     * <p>So the honest options are a product limit ("you cannot look back further than N") or this
+     * cost, and the cost is the smaller of the two for a document nobody has edited a million times.
+     * Written down rather than left to be discovered, because an unbounded read driven by a
+     * caller's number is exactly what {@code RequestBoundsIT} exists to refuse, and this is the one
+     * place the project accepts it on purpose. Raising the retention depth is the lever that
+     * shrinks it without changing what the feature does.
      */
     private RgaDocument documentAt(UUID documentId, long throughServerSeq) {
         var snapshot = snapshots.findLatestUpTo(documentId, throughServerSeq);
@@ -339,6 +364,17 @@ public class HistoryService {
         while (prefix < maxPrefix && current.charAt(prefix) == targetText.charAt(prefix)) {
             prefix++;
         }
+        // The scan compares CODE UNITS, so it can stop between the halves of a surrogate pair —
+        // "a😀" against "a😃" share the high surrogate and differ on the low one, giving prefix = 2.
+        // The delete and insert built below would then each carry half a character, putting lone
+        // surrogates into the operation log: `String.getBytes(UTF_8)` turns one into '?', so the
+        // snapshot stops agreeing with the log, which the operation-log design says cannot happen.
+        //
+        // Backing off one unit widens the common region's boundary by one character, which only
+        // makes the generated operations very slightly larger and is always correct.
+        if (prefix > 0 && Character.isHighSurrogate(current.charAt(prefix - 1))) {
+            prefix--;
+        }
 
         int suffix = 0;
         int maxSuffix = Math.min(current.length() - prefix, targetText.length() - prefix);
@@ -346,6 +382,11 @@ public class HistoryService {
             && current.charAt(current.length() - 1 - suffix)
             == targetText.charAt(targetText.length() - 1 - suffix)) {
             suffix++;
+        }
+        // The same at the other end: if the suffix begins on a low surrogate, its high half is
+        // outside the common region and the pair is split.
+        if (suffix > 0 && Character.isLowSurrogate(current.charAt(current.length() - suffix))) {
+            suffix--;
         }
 
         // A common prefix and suffix instead of a full diff: a restore usually rolls back one
@@ -358,9 +399,21 @@ public class HistoryService {
         if (removeTo > removeFrom) {
             generated.add(replica.delete(removeFrom, removeTo - removeFrom));
         }
+        // CHUNKED, and this is the path where it matters most. A restore expresses its change as
+        // the difference from the current text, so restoring a version of a document that was
+        // emptied since gives prefix = suffix = 0 and re-inserts the WHOLE document — as one
+        // operation, which nothing downstream can split and no frame can carry. It would be written
+        // to the log, replayed on every load, and delivered to nobody including the person who
+        // clicked restore, while the response reported success.
+        //
+        // DocumentRestController's javadoc enumerated the endpoints that generate operations
+        // server-side and named two of them; this was the third, and the only one whose operation
+        // size is bounded by the size of the document rather than by what a caller typed.
         String insert = targetText.substring(prefix, targetText.length() - suffix);
-        if (!insert.isEmpty()) {
-            generated.add(replica.insert(prefix, insert));
+        int at = prefix;
+        for (String piece : DocumentService.splitForInsert(insert)) {
+            generated.add(replica.insert(at, piece));
+            at += piece.length();
         }
         return generated;
     }

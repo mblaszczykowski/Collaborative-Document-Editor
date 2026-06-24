@@ -37,6 +37,12 @@ spring:
     redis:
       host: localhost
       port: 56379
+      # How long a Redis call may block, and it bounds more than it appears to: the presence
+      # announcement and the operation publish are both synchronous, on the maintenance and flow
+      # pools. With Redis blackholed — a partition drops SYNs rather than refusing them — this is
+      # what each blocked document adds to the pool it runs on. Shorter gives up on a slow but
+      # living Redis; longer lets an unreachable one hold the maintenance pool, which is also where
+      # anti-entropy runs, i.e. the mechanism that repairs the messages Redis just lost.
       timeout: 2000ms
 
 server:
@@ -185,6 +191,12 @@ collabedit:
     # A document replica with no clients lives another 5 min before its memory is reclaimed.
     # Shorter -> constant reloading on brief disconnects.
     idle-document-eviction-ms: 300000
+    # How often we LOOK for idle replicas. Separate from the threshold above, which this used to
+    # double as: a replica going idle just after a pass waited a whole period for the next one, so
+    # the real bound was [5, 10) min while every comment about it said 5. At one minute the bound
+    # is [5, 6). Not shorter — the pass walks every loaded replica and claims each one's lock, and
+    # reclaiming memory from documents nobody has open is not urgent.
+    idle-document-sweep-ms: 60000
     # The upper bound on in-memory replicas — a CAPACITY bound, not a time one.
     #
     # The idle threshold above bounds nothing with many documents: a hundred people opening a

@@ -110,7 +110,16 @@ public final class Messages {
      * @param last whether this is the FINAL chunk of the response. The client advances its cursor
      * to {@code headServerSeq} only when it sees this — see {@code onSyncResponse}.
      * Every chunk used to carry the same head and the client moved its cursor on each
-     * one, so losing chunk 2 of 5 left it believing it held everything up to the head.
+     * one, so a response that stopped part-way left it believing it held everything up
+     * to the head.
+     * <p>What the flag does and does not close, stated exactly: chunks travel in order
+     * over one socket, so the loss this transport can actually produce is TRUNCATION —
+     * the connection drops mid-response — and a flag on the final chunk covers that
+     * completely. It would NOT catch a middle chunk vanishing while later ones arrive,
+     * which this paragraph used to claim ("losing chunk 2 of 5"); catching that needs an
+     * index and a count. The narrower mechanism is the right one because the wider
+     * failure is not reachable here — but they are not the same claim, and this file is
+     * read for its claims.
      * Nothing could ever detect that: the only gap detector fires on an acknowledgement
      * for an operation the client does not have, and operations in a lost sync chunk
      * were acknowledged long ago and are never acknowledged again. On a quiet document

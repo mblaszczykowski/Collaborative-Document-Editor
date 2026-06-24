@@ -52,7 +52,14 @@ class SnapshotConsistencyTest {
     @DisplayName("an idle replica may be snapshotted, at its current sequence number")
     void idleReplicaIsConsistent() {
         DocumentReplica replica = replica();
-        replica.advanceServerSeq(7);
+        RgaDocument client = new RgaDocument(2, new TreapBlockList());
+        // applyRemote rather than a setter for the sequence number: this is how a replica's label
+        // actually advances without leaving anything unwritten — an operation that arrived from
+        // another instance is already in the log. The setter it replaces had no production caller
+        // at all, so a test using it was pinning a path nothing takes.
+        replica.applyRemote(
+            List.of(new StoredOperation(anInsert(client), 7, "u1", Instant.EPOCH)),
+            System.currentTimeMillis());
 
         var captured = replica.withConsistentState((document, seq) -> seq);
 

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.collabedit.app.cluster.PresenceBus;
 import dev.collabedit.app.config.SchedulingConfig;
-import dev.collabedit.app.domain.DocumentRegistry;
+import dev.collabedit.app.domain.DocumentService;
 import jakarta.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -72,7 +72,15 @@ public class PresenceService {
     private final Map<UUID, Set<String>> byDocument = new ConcurrentHashMap<>();
 
     private final SimpMessagingTemplate messaging;
-    private final DocumentRegistry registry;
+
+    /**
+     * Needed for one thing: recording a departure so it keeps constraining garbage collection.
+     *
+     * <p>This used to be {@code DocumentRegistry}, and the departure was written into the in-memory
+     * replica — behind an {@code isLoaded} guard, so it was skipped precisely when the replica had
+     * been evicted, which is the case the GC window exists for. It goes to the durable store now.
+     */
+    private final DocumentService documents;
     private final PresenceBus bus;
 
     // DocumentMetrics used to be a dependency here, for exactly two calls: sessionOpened from
@@ -126,10 +134,10 @@ public class PresenceService {
                                long receivedAtMillis) {
     }
 
-    public PresenceService(SimpMessagingTemplate messaging, DocumentRegistry registry,
+    public PresenceService(SimpMessagingTemplate messaging, DocumentService documents,
                            PresenceBus bus) {
         this.messaging = messaging;
-        this.registry = registry;
+        this.documents = documents;
         this.bus = bus;
     }
 
@@ -190,14 +198,24 @@ public class PresenceService {
     void announceAndExpire() {
         long now = System.currentTimeMillis();
         boolean reachable = true;
+        boolean published = false;
 
         for (UUID documentId : Set.copyOf(byDocument.keySet())) {
             List<Messages.PresenceBroadcast> mine = localParticipants(documentId).stream()
                 .map(PresenceService::wire)
                 .toList();
             reachable &= bus.publish(documentId, mine);
+            published = true;
         }
-        clusterReachable = reachable;
+        // Only reassessed when something was actually published. With no documents open the loop
+        // does not run, and assigning `reachable` unconditionally reset the flag to true — so an
+        // instance whose Redis is unreachable told the first client to join that its participant
+        // list was COMPLETE, for up to a second. That is the one flag this class exists to keep
+        // honest, and false confidence is the direction that costs: a stale "incomplete" is a
+        // warning the user can act on, a wrong "complete" is a claim we cannot support.
+        if (published) {
+            clusterReachable = reachable;
+        }
 
         // Expire, and tell the local clients about the documents that changed. A departed
         // instance's participants must disappear from the list; nothing else would remove them,
@@ -267,7 +285,19 @@ public class PresenceService {
             forgetFromDocument(previous.documentId(), sessionId);
             leftBehind = previous.documentId;
         }
-        byDocument.computeIfAbsent(documentId, id -> ConcurrentHashMap.newKeySet()).add(sessionId);
+        // compute, not computeIfAbsent-then-add. The add has to happen INSIDE the mapping function,
+        // because `forgetFromDocument` removes the key once the set empties: with the add outside,
+        // this thread can be handed a set that the last leaver empties and unlinks before the add
+        // lands, and the session id then goes into a set no longer reachable from the map. The
+        // participant is in `bySession`, in no document index, and therefore invisible to everyone
+        // in the room until they rejoin — which the `byDocument` javadoc's "the next join or leave
+        // sends a full list that corrects it" does NOT cover, because every later broadcast reads
+        // the same map. The `remote` map three methods down already uses compute for this reason.
+        byDocument.compute(documentId, (id, sessions) -> {
+            Set<String> members = sessions == null ? ConcurrentHashMap.newKeySet() : sessions;
+            members.add(sessionId);
+            return members;
+        });
         return leftBehind;
     }
 
@@ -295,30 +325,62 @@ public class PresenceService {
      * replying with every participant to everyone gives traffic growing with the square of the
      * number of people, almost none of which changed. The distinction is justified at
      * {@link Messages.PresenceUpdate}.
+     *
+     * <h2>Why the document is a parameter and not read off the session</h2>
+     * {@code documentId} is the one the frame named and therefore the one
+     * {@link DocumentAccessInterceptor} checked a role against. This method used to ignore it and
+     * take the target from the session's JOINED document instead, which made the frame that was
+     * authorized and the document that was written two different things.
+     *
+     * <p>What that allowed: hold any role on document B, join document A, be revoked from A, then
+     * send to {@code /app/doc/B/presence}. The interceptor resolves B, finds the role, and lets it
+     * through; the update lands in A and is broadcast to everyone still there. No text leaks —
+     * {@code RevokedAccessFilter} holds the outbound side — but a removed participant keeps a live
+     * cursor, name and typing indicator inside a document they were thrown out of.
+     *
+     * <p>A frame naming a document this session is not in is dropped rather than refused. The
+     * interceptor is where a frame is refused, and it has already said yes; this is the second
+     * question — whether the session is in the room it is describing — and the only client that can
+     * ask it wrongly is one that is misbehaving.
      */
-    public void updateCursor(String sessionId, Messages.ClientPresence update) {
-        Participant current = bySession.get(sessionId);
-        if (current == null) {
+    public void updateCursor(String sessionId, UUID documentId, Messages.ClientPresence update) {
+        // computeIfPresent rather than get-then-put. `SessionLifecycle.end` removes this entry, and
+        // the inbound channel has no `preserveReceiveOrder`, so a presence frame and the teardown of
+        // the same session run on different threads with no ordering between them. A get-then-put
+        // loses that race by writing the entry back after the removal, leaving a Participant keyed
+        // by a dead session that nothing will ever clean up.
+        Participant[] moved = new Participant[1];
+        bySession.computeIfPresent(sessionId, (id, current) -> {
+            if (!current.documentId().equals(documentId)) {
+                return current;
+            }
+            moved[0] = new Participant(
+                current.sessionId(), current.documentId(), current.replicaId(),
+                current.userId(), current.displayName(), current.color(),
+                update.cursorReplicaId(), update.cursorLamport(),
+                update.anchorReplicaId(), update.anchorLamport(),
+                update.typing());
+            return moved[0];
+        });
+        if (moved[0] == null) {
             return;
         }
-        Participant moved = new Participant(
-            current.sessionId(), current.documentId(), current.replicaId(),
-            current.userId(), current.displayName(), current.color(),
-            update.cursorReplicaId(), update.cursorLamport(),
-            update.anchorReplicaId(), update.anchorLamport(),
-            update.typing());
-        bySession.put(sessionId, moved);
 
-        send(moved.documentId(), new Messages.PresenceUpdate(false, List.of(wire(moved)),
+        send(moved[0].documentId(), new Messages.PresenceUpdate(false, List.of(wire(moved[0])),
             clusterReachable));
     }
 
     /**
      * Records a departure. <b>Map mutations only</b> — see {@link #recordJoin}.
      *
-     * @return the document to re-announce, or {@code null} when this session was in none
+     * <p>Returns the participant rather than just their document, because the caller needs the
+     * replica identifier too: recording the departure DURABLY is a database write, and it must
+     * happen outside the {@code computeIfPresent} this runs inside. See
+     * {@link #recordDeparture(Participant)}.
+     *
+     * @return the participant that left, or {@code null} when this session was in no document
      */
-    UUID recordLeave(String sessionId) {
+    Participant recordLeave(String sessionId) {
         Participant gone = bySession.remove(sessionId);
         if (gone == null) {
             return null;
@@ -333,10 +395,40 @@ public class PresenceService {
         // collectable as soon as everyone still present moved past them. The comment here said
         // that was to stop one closed tab stalling compaction forever, which is a real concern
         // and is now handled by the window expiring rather than by forgetting immediately.
-        if (registry.isLoaded(gone.documentId())) {
-            registry.get(gone.documentId()).markDeparted(gone.replicaId(), System.currentTimeMillis());
-        }
-        return gone.documentId;
+        // No isLoaded guard any more, and that guard was the bug rather than an optimisation: the
+        // departure is now recorded in `replica_progress`, which is exactly the state that has to
+        // outlive the in-memory replica. Skipping it because the replica happens not to be loaded
+        // would forget the one thing the GC window exists to remember.
+        //
+        // The write itself is NOT here — see recordDeparture.
+        return gone;
+    }
+
+    /**
+     * Writes the departure where it survives this instance.
+     *
+     * <p>Split from {@link #recordLeave} because that method runs inside a
+     * {@code ConcurrentHashMap.computeIfPresent} in {@link SessionLifecycle#end}, and this is a
+     * database round trip. Two reasons it must not be in there, and the second is the serious one:
+     *
+     * <ul>
+     *   <li>the mapping function holds the map's bin lock, so a slow write — an exhausted
+     *       connection pool waits {@code connection-timeout} — blocks every other session teardown
+     *       and join that hashes to the same bin. {@code recordJoin}'s javadoc already states this
+     *       rule for message dispatch, and a blocking write is strictly worse than a dispatch;</li>
+     *   <li><b>a throw inside the mapping function leaves the mapping unchanged.</b> The session
+     *       would stay in {@code userBySession} — so {@code ws.sessions.active} never comes back
+     *       down, which is the exact drift {@code SessionLifecycle} exists to prevent — while the
+     *       rate-limiter buckets, the replica index and this map had already been cleared. And the
+     *       retry, from the second teardown trigger, would find {@code bySession} empty, return
+     *       {@code null} here, and never record the departure at all: the row keeps
+     *       {@code departed_at IS NULL}, drops out of {@code liveFor} after the unresponsive
+     *       timeout, and the user's unsynchronised work stops being protected — reintroducing the
+     *       bug the durable table exists to fix, through one transient database error.</li>
+     * </ul>
+     */
+    void recordDeparture(Participant gone) {
+        documents.markReplicaDeparted(gone.documentId(), gone.replicaId());
     }
 
     // A public participants used to sit here, delegating to localParticipants and promising in

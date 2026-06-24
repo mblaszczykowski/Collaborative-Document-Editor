@@ -133,7 +133,7 @@ class DocumentReplicaTest {
         DocumentReplica replica = new DocumentReplica(
             UUID.randomUUID(), new RgaDocument(-1), 0, 0);
 
-        replica.reportProgress(7, VersionVector.empty(), 10_000);
+        replica.reportProgress(10_000);
 
         assertThat(replica.lastActivityMillis())
             .as("a connected client reporting progress must postpone eviction")

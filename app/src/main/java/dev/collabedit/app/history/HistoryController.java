@@ -5,6 +5,8 @@ import dev.collabedit.app.auth.RequiresDocumentAccess;
 import dev.collabedit.app.domain.DocumentService;
 import dev.collabedit.crdt.MarkSet;
 import dev.collabedit.crdt.Op;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -112,7 +114,19 @@ public class HistoryController {
             history.diff(documentId, fromServerSeq, toServerSeq)));
     }
 
-    public record RestoreRequest(long throughServerSeq) {
+    /**
+     * @param throughServerSeq the point to restore to. {@code @Min(1)} because a
+     *     {@code server_seq} is 1-based and 0 is the value a MISSING field produces: the record
+     *     component is a primitive, Jackson's {@code FAIL_ON_NULL_FOR_PRIMITIVES} is off by
+     *     default, and this project sets no Jackson configuration. So {@code {}} — or a body with
+     *     the field name misspelled — deserialised to 0, {@code stateAt(doc, 0)} rebuilt an empty
+     *     document, and the restore generated a delete of the entire text. The caller got
+     *     {@code 200 {"operationsGenerated":1,"text":""}} for a request that said nothing.
+     *     <p>Recoverable, because the log is append-only and the previous state can be restored in
+     *     turn — but the user watches their document empty itself, which is not a thing a malformed
+     *     request should be able to do.
+     */
+    public record RestoreRequest(@Min(1) long throughServerSeq) {
     }
 
     public record RestoreResult(int operationsGenerated, String text) {
@@ -137,7 +151,7 @@ public class HistoryController {
     @PostMapping("/restore")
     @RequiresDocumentAccess(Capability.WRITE_TEXT)
     public ResponseEntity<RestoreResult> restore(@PathVariable("documentId") UUID documentId,
-                                                 @RequestBody RestoreRequest body) {
+                                                 @Valid @RequestBody RestoreRequest body) {
         var target = history.stateAt(documentId, body.throughServerSeq());
 
         // Generated AND enqueued under ONE lock acquisition, and here that matters more than

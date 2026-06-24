@@ -36,6 +36,22 @@ public record CollabEditProperties(
      * <p>The fix is not a comment saying "the annotation wins". It is making them <b>unable to
      * disagree</b>: the annotation and {@code defaults} now read the same constant.
      *
+     * <h2>Why the accessors still have no callers, and why that is not dead code</h2>
+     * {@code broadcastWindowMs()}, {@code opBatchWindowMs()}, {@code snapshotSweepIntervalMs()} and
+     * {@code antiEntropyIntervalMs()} are called from nowhere, and a search for unused API finds
+     * them. They stay, deliberately, and the reason is the one thing a record component can do that
+     * a constant cannot: <b>be the place a reader finds the setting</b>. Spring resolves these four
+     * from the property placeholder inside the annotation, so nothing will ever call the accessor —
+     * but a configuration surface documented in two halves, some of it modelled here and some of it
+     * only in string literals scattered across {@code @Scheduled} methods, is worse than four
+     * accessors nobody calls.
+     *
+     * <p>Which is a different judgement from the one made about {@code heartbeatTimeoutMs} and about
+     * the getters removed from {@code DocumentRegistry} and {@code DocumentReplica}, and the
+     * difference is worth naming: those described state, and state nobody reads is state nobody
+     * maintains. These describe configuration, and the configuration is real whether or not this
+     * type is how it is read.
+     *
      * <h2>Why they are strings</h2>
      * An annotation attribute must be a compile-time constant expression, and
      * {@code fixedDelayString} takes a {@code String} — so the shared constant has to be one, and
@@ -61,6 +77,20 @@ public record CollabEditProperties(
 
         /** the cluster design — how long a replica with no clients stays in memory. */
         public static final String IDLE_DOCUMENT_EVICTION_MS = "300000";
+
+        /**
+         * How often the maintenance pool LOOKS for idle replicas.
+         *
+         * <p>Separate from the threshold above, because the sweep used to run at exactly the
+         * threshold and use it as both period and TTL. A replica going idle just after a pass waits
+         * a full period for the next one, so the real bound was [5, 10) minutes while the setting,
+         * its comment in {@code application.yml} and the cluster design all say five.
+         *
+         * <p>One minute, so the bound is [5, 6) minutes and the stated number is true to within the
+         * sweep. Not shorter: the pass walks every loaded replica and takes each one's lock to claim
+         * it, and nothing here is urgent — this reclaims memory from documents nobody has open.
+         */
+        public static final String IDLE_DOCUMENT_SWEEP_MS = "60000";
     }
 
     public CollabEditProperties {
@@ -154,12 +184,14 @@ public record CollabEditProperties(
     public record Cluster(
         long antiEntropyIntervalMs,
         long idleDocumentEvictionMs,
+        long idleDocumentSweepMs,
         int maxLoadedDocuments
     ) {
         static Cluster defaults() {
             return new Cluster(
                 Long.parseLong(Defaults.ANTI_ENTROPY_INTERVAL_MS),
                 Long.parseLong(Defaults.IDLE_DOCUMENT_EVICTION_MS),
+                Long.parseLong(Defaults.IDLE_DOCUMENT_SWEEP_MS),
                 200);
         }
     }

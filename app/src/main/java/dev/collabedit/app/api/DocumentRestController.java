@@ -111,7 +111,8 @@ public class DocumentRestController {
     @RequiresAuthentication("Returns only what the caller may read; the filter is per row, "
         + "below, because the answer is a list rather than one document.")
     public ResponseEntity<List<DocumentCatalog.DocumentSummary>> list(
-        @RequestParam(value = "q", required = false) String query,
+        @RequestParam(value = "q", required = false)
+        @Size(max = MAX_SEARCH_QUERY) String query,
         @RequestParam(value = "workspace", required = false) UUID workspaceId,
         HttpServletRequest request) {
 
@@ -220,30 +221,34 @@ public class DocumentRestController {
                                    @Size(max = MAX_RECOVERED_CHARACTERS) String text) {
     }
 
+    /**
+     * How long a search phrase may be.
+     *
+     * <p>Every other caller-supplied string in this project carries a bound — title 256, comment
+     * body 4000, quoted text 8192, suggestion text 8192 — and this one did not. Tomcat's 8 KB
+     * request line caps it in practice, which is why this is a consistency gap rather than a hole;
+     * but {@code RequestBoundsIT}'s thesis is that a value the CALLER chooses must not decide how
+     * much work the server does, and {@code websearch_to_tsquery} parses whatever arrives.
+     *
+     * <p>This is the project's first constraint on a method PARAMETER rather than on a body field,
+     * and the mechanism differs: Spring resolves it through built-in method validation and reports
+     * it as {@code HandlerMethodValidationException}, not {@code MethodArgumentNotValidException}.
+     * A bound that looks enforced and is not would be worse than no bound, so
+     * {@code RequestBoundsIT.aSearchPhrasePastTheBoundIsRefused} exists to prove this one fires.
+     */
+    private static final int MAX_SEARCH_QUERY = 256;
+
     /** See {@link RecoveredRequest#text}. */
     private static final int MAX_RECOVERED_CHARACTERS = 1_000_000;
 
     /**
      * How much text goes into a single generated {@code Insert}.
      *
-     * <h2>Why the content is chunked at all</h2>
-     * This endpoint used to call {@code model.insert(0, text)} — <b>one operation of arbitrary
-     * size</b>. An operation is the unit the whole protocol is built on and nothing can split one,
-     * because its identity is what the merge algorithm uses; so a 900 KB draft became a single
-     * operation that no 64 KiB frame can ever carry. It would sit in the log, be replayed on every
-     * load, and be undeliverable to every client including its own author, silently — which is the
-     * CP8 failure with the additional insult that the document is the one the user was told had
-     * been rescued.
-     *
-     * <p>{@code DocumentStompController.chunkByBytes}'s javadoc named this exact limit and put the
-     * mitigation on the client ("see the paste path in bridge.ts", which caps at 8192 characters).
-     * A limit enforced only on our own client is not enforced: this endpoint and
-     * {@code SuggestionService} both created operations the client is forbidden to create.
-     *
-     * <p>8192 characters is the client's paste cap, chosen so the server and the browser produce
-     * operations of the same shape rather than two shapes that happen to both work today.
+     * <p>The rule and its reasoning live on {@link DocumentService#MAX_INSERT_CHARACTERS}, because
+     * this endpoint turned out not to be the only place that breaks it. Kept as an alias so the
+     * call sites below read the same as they did.
      */
-    static final int MAX_INSERT_CHARACTERS = 8192;
+    static final int MAX_INSERT_CHARACTERS = DocumentService.MAX_INSERT_CHARACTERS;
 
     /**
      * Creates a document from recovered content.
@@ -282,9 +287,15 @@ public class DocumentRestController {
             // StaleReplicaException to say so. See DocumentService.generateAndSubmit.
             documents.generateAndSubmit(created.id(), model -> {
                 List<Op> inserts = new ArrayList<>();
-                for (int from = 0; from < text.length(); from += MAX_INSERT_CHARACTERS) {
-                    int to = Math.min(text.length(), from + MAX_INSERT_CHARACTERS);
-                    inserts.add(model.insert(from, text.substring(from, to)));
+                int at = 0;
+                // splitForInsert rather than a fixed stride, which is what this loop used to do.
+                // The stride cut on a raw code-unit boundary, so a recovered draft with an emoji
+                // straddling character 8192 produced two operations each carrying half of it —
+                // a lone surrogate in the operation log. Same limit, same shape, one fewer way to
+                // corrupt a document the user was told had been rescued.
+                for (String piece : DocumentService.splitForInsert(text)) {
+                    inserts.add(model.insert(at, piece));
+                    at += piece.length();
                 }
                 return inserts;
             }, null);
@@ -325,9 +336,21 @@ public class DocumentRestController {
     @DeleteMapping("/documents/{documentId}")
     @RequiresDocumentAccess(Capability.WRITE_TEXT)
     public ResponseEntity<Void> delete(@PathVariable UUID documentId) {
-        return catalog.softDelete(documentId)
-            ? ResponseEntity.noContent().build()
-            : ResponseEntity.notFound().build();
+        if (!catalog.softDelete(documentId)) {
+            return ResponseEntity.notFound().build();
+        }
+        // Deleting CHANGES THE ANSWER to "what is your role here", because PermissionService.resolve
+        // filters `AND d.deleted_at IS NULL` — so a soft delete is a permission change and has to
+        // invalidate like one. It did not, and roleOf caches for five seconds on every instance, so
+        // for that window a deleted document could still be read through /snapshot (which has no
+        // deleted-check of its own) and still be written through /history/restore.
+        //
+        // Every other mutation that moves this answer — grant, revoke, setVisibility, setOwner —
+        // goes through PermissionService and invalidates. These two went through the catalog and
+        // bypassed it. PermissionIT.deletedDocumentIsInvisibleEvenToOwner did not catch it because
+        // the test performed this invalidation BY HAND, so it proved the query and not the endpoint.
+        permissions.invalidate(documentId);
+        return ResponseEntity.noContent().build();
     }
 
     // includeDeleted, because restoring a document from the trash is by definition an
@@ -336,9 +359,14 @@ public class DocumentRestController {
     @PostMapping("/documents/{documentId}/restore")
     @RequiresDocumentAccess(value = Capability.WRITE_TEXT, includeDeleted = true)
     public ResponseEntity<Void> restore(@PathVariable UUID documentId) {
-        return catalog.restore(documentId)
-            ? ResponseEntity.noContent().build()
-            : ResponseEntity.notFound().build();
+        if (!catalog.restore(documentId)) {
+            return ResponseEntity.notFound().build();
+        }
+        // The same in the other direction, and the direction that annoys a user rather than
+        // exposing one: without this, everybody who was refused while the document sat in the bin
+        // keeps their cached "no access" and gets a 404 for five more seconds after it comes back.
+        permissions.invalidate(documentId);
+        return ResponseEntity.noContent().build();
     }
 
     /**

@@ -3,9 +3,12 @@ package dev.collabedit.app.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.collabedit.app.persist.StoredOperation;
 import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.RgaDocument;
 import dev.collabedit.crdt.TreapBlockList;
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -73,8 +76,12 @@ class ReplicaEvictionTest {
         DocumentReplica replica = replica();
         RgaDocument client = new RgaDocument(2, new TreapBlockList());
         // Arrived from the cluster: already durable, so nothing to write — but the clients
-        // connected here have not seen it yet.
-        replica.enqueueForBroadcast(anInsert(client), System.currentTimeMillis());
+        // connected here have not seen it yet. Through applyRemote, which is the path that actually
+        // produces this state; the single-operation enqueue it used to call had no production
+        // caller, so the test was reaching for a door nothing else opens.
+        replica.applyRemote(
+            List.of(new StoredOperation(anInsert(client), 1, "u1", Instant.EPOCH)),
+            System.currentTimeMillis());
 
         assertThat(replica.tryEvict())
             .as("""
@@ -123,8 +130,9 @@ class ReplicaEvictionTest {
 
         DocumentReplica forBroadcast = replica();
         assertThat(forBroadcast.tryEvict()).isTrue();
-        assertThatThrownBy(
-            () -> forBroadcast.enqueueForBroadcast(second, System.currentTimeMillis()))
+        assertThatThrownBy(() -> forBroadcast.applyRemote(
+            List.of(new StoredOperation(second, 1, "u1", Instant.EPOCH)),
+            System.currentTimeMillis()))
             .isInstanceOf(DocumentReplica.StaleReplicaException.class);
     }
 

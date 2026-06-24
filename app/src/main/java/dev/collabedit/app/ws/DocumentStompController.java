@@ -184,9 +184,8 @@ public class DocumentStompController {
         // the snapshot endpoint has still told us what it has seen, and discarding that would stall
         // GC for the whole document on exactly the clients that are furthest behind.
         if (request.version() != null && !request.version().isEmpty()) {
-            int replicaId = SessionAttributes.replicaId(headers);
-            registry.get(documentId).reportProgress(
-                replicaId, VersionVector.of(request.version()), System.currentTimeMillis());
+            documents.recordProgress(documentId, SessionAttributes.replicaId(headers),
+                VersionVector.of(request.version()));
         }
 
         if (missing.size() > cap) {
@@ -273,10 +272,8 @@ public class DocumentStompController {
         if (report.version() == null || report.version().isEmpty()) {
             return;
         }
-        registry.get(documentId).reportProgress(
-            SessionAttributes.replicaId(headers),
-            VersionVector.of(report.version()),
-            System.currentTimeMillis());
+        documents.recordProgress(documentId, SessionAttributes.replicaId(headers),
+            VersionVector.of(report.version()));
 
         // NOTE: we deliberately do NOT push operations here based on the reported cursor.
         //
@@ -313,7 +310,7 @@ public class DocumentStompController {
      * mechanism as the original gap". It would not have been. The only gap detector on the client
      * fires when an ACKNOWLEDGEMENT arrives for an operation it does not hold, and operations in a
      * sync response were acknowledged long ago and are never acknowledged again. Every chunk
-     * carried the same head and the client advanced on each one, so losing chunk 2 of 5 left it
+     * carried the same head and the client advanced on each one, so a response truncated part-way left it
      * believing it was up to date — permanently, on a document that then went quiet. That is the
      * CP8 failure ("the client that needed the data most could not get it, with no error anywhere")
      * reintroduced at chunk granularity by the CP8 fix itself.
@@ -341,11 +338,20 @@ public class DocumentStompController {
         }
     }
 
+    /**
+     * A cursor moved.
+     *
+     * <p>{@code documentId} is passed through rather than dropped: it is the document the frame
+     * named and therefore the one the interceptor checked a role against, and
+     * {@link PresenceService#updateCursor} refuses to apply the update to any other. It used to be
+     * declared here and never read — see that method for what the gap between the authorized
+     * document and the written one allowed.
+     */
     @MessageMapping("/doc/{documentId}/presence")
     public void onPresence(@DestinationVariable("documentId") UUID documentId,
                            Messages.ClientPresence update,
                            SimpMessageHeaderAccessor headers) {
-        presence.updateCursor(headers.getSessionId(), update);
+        presence.updateCursor(headers.getSessionId(), documentId, update);
     }
 
     private void sendError(SimpMessageHeaderAccessor headers, String code, String message) {

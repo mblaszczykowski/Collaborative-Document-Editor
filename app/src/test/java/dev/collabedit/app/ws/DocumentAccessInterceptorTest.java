@@ -4,10 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import dev.collabedit.app.auth.CommentAnchorAuthority;
 import dev.collabedit.app.auth.PermissionService;
 import dev.collabedit.app.auth.Role;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
@@ -48,19 +52,39 @@ class DocumentAccessInterceptorTest {
     private static final String USER = "user-1";
 
     private final PermissionService permissions = mock(PermissionService.class);
+
+    /**
+     * Which comment anchors the caller may attach — see {@link CommentAnchorAuthority}.
+     *
+     * <p>A field rather than a lambda so a test can say "and this thread is not yours", which is
+     * the case the interceptor did not used to ask about at all.
+     */
+    private final Set<UUID> ownThreads = new HashSet<>();
+
+    /**
+     * Readable, so a test can assert WHICH rule refused a frame and not merely that something did.
+     *
+     * <p>{@code deny} tags {@code ws.frames.refused.total} with the {@code Refusal} that decided,
+     * which is the only externally visible difference between "refused as a wildcard" and "refused
+     * as an unrecognised destination". Without reading it, a test for one of those rules passes
+     * when the other one does the work.
+     */
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+
     private final DocumentAccessInterceptor interceptor = new DocumentAccessInterceptor(
         permissions,
-        new dev.collabedit.app.observability.DocumentMetrics(
-            new io.micrometer.core.instrument.simple.SimpleMeterRegistry(), null),
+        new dev.collabedit.app.observability.DocumentMetrics(meters, null),
         new RateLimiter(),
-        emptyProvider());
+        emptyProvider(),
+        (userId, documentId, threadId) ->
+            USER.equals(userId) && DOCUMENT.equals(documentId) && ownThreads.contains(threadId));
 
     // ------------------------------------------------------------------
     // The hole
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("a wildcard subscription is refused — this is the CP12 bypass")
+    @DisplayName("a wildcard subscription is refused AS a wildcard — this is the CP12 bypass")
     void wildcardSubscriptionsAreRefused() {
         for (String destination : new String[] {
             "/topic/**",
@@ -70,11 +94,30 @@ class DocumentAccessInterceptorTest {
             "/**",
             "/user/queue/*",
         }) {
+            long before = refusals("wildcard_destination");
+
             assertThat(subscribe(destination))
                 .as("SUBSCRIBE %s was allowed — the simple broker matches this as a pattern, so the "
                     + "session now receives every document's broadcasts", destination)
                 .isNull();
+
+            // The REASON, not just the refusal. Every destination above also fails documentIdOf and
+            // would therefore be refused by the unknown-destination rule anyway — so asserting only
+            // isNull() passes with the wildcard guard deleted, and this test would go on claiming to
+            // pin the CP12 fix while pinning something else. The tag is the one thing that tells the
+            // two rules apart.
+            assertThat(refusals("wildcard_destination"))
+                .as("SUBSCRIBE %s was refused, but as an unrecognised destination rather than as a "
+                    + "wildcard — so the wildcard rule is not what this test is exercising",
+                    destination)
+                .isEqualTo(before + 1);
         }
+    }
+
+    /** How many frames have been refused for a given reason, as {@code deny} tags them. */
+    private long refusals(String reason) {
+        var counter = meters.find("ws.frames.refused.total").tag("reason", reason).counter();
+        return counter == null ? 0L : (long) counter.count();
     }
 
     @Test

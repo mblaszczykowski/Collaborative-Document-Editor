@@ -71,14 +71,19 @@ class VersionComparisonIT extends IntegrationTestBase {
             new TokenService.Principal(UUID.randomUUID().toString(), name, "#4C5FD5"));
     }
 
-    /** Applies a restore the way {@code HistoryController} does. */
+    /**
+     * Applies a restore the way {@code HistoryController} does — and now it really does.
+     *
+     * <p>This used to take the replica, generate under {@code withLock}, then submit each operation
+     * in a loop. That is the shape {@code generateAndSubmit} was written to REPLACE, because the
+     * two registry lookups have an eviction window between them. So the helper's javadoc had become
+     * false: it exercised a path the product no longer takes, and a regression in the real restore
+     * would not have failed here.
+     */
     private int restoreTo(UUID document, long throughServerSeq) throws Exception {
         var target = history.stateAt(document, throughServerSeq);
-        var replica = registry.get(document);
-        var generated = replica.withLock(model -> history.restoreOperations(model, target));
-        for (var op : generated) {
-            documents.submitAlreadyMerged(document, op, null);
-        }
+        var generated = documents.generateAndSubmit(
+            document, model -> history.restoreOperations(model, target), null);
         Thread.sleep(300);
         return generated.size();
     }

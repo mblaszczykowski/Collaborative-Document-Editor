@@ -113,6 +113,17 @@ class RequestBoundsIT extends IntegrationTestBase {
         return id;
     }
 
+    private HttpResponse<String> get(String path, String token) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + path))
+            .timeout(Duration.ofSeconds(10))
+            .GET();
+        if (token != null) {
+            builder.header("Authorization", "Bearer " + token);
+        }
+        return HttpClient.newHttpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
     private HttpResponse<String> post(String path, String token, String body) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
             .uri(URI.create("http://localhost:" + port + path))
@@ -189,6 +200,35 @@ class RequestBoundsIT extends IntegrationTestBase {
         assertThat(refused.body())
             .as("and it should say which field, so the client can say something true to the user")
             .contains("title");
+    }
+
+    /**
+     * The first bound in this project on a request PARAMETER rather than on a body field.
+     *
+     * <p>It is asserted rather than assumed because the mechanism is different, and differently
+     * silent. A {@code @Size} on a record component is enforced by {@code @Valid} on the parameter,
+     * which this project uses everywhere and {@code aValidationFailureIsA400} above already pins.
+     * A {@code @Size} on a {@code @RequestParam} is enforced by Spring's built-in method validation
+     * — no {@code @Valid} anywhere, nothing at the call site to notice if it stops working — and it
+     * surfaces as a different exception type ({@code HandlerMethodValidationException}, which is why
+     * {@code ApiExceptionHandler} maps that one too).
+     *
+     * <p>A bound that reads as enforced and is not is worse than no bound, because it stops anybody
+     * looking. So this test exists to say the annotation actually fires.
+     */
+    @Test
+    @DisplayName("a search phrase past the bound is refused")
+    void aSearchPhrasePastTheBoundIsRefused() throws Exception {
+        User anna = newUser("Anna");
+
+        HttpResponse<String> refused = get("/api/documents?q=" + "z".repeat(1_000), anna.token());
+
+        assertThat(refused.statusCode())
+            .as("""
+                An unbounded search phrase reaches websearch_to_tsquery, so a value the caller \
+                chooses decides how much work the server does — which is the one rule this whole \
+                test class exists to enforce.""")
+            .isEqualTo(400);
     }
 
     // ------------------------------------------------------------------

@@ -9,8 +9,8 @@ import dev.collabedit.crdt.RgaDocument;
 import dev.collabedit.crdt.TreapBlockList;
 import dev.collabedit.crdt.VersionVector;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -88,7 +88,7 @@ public class DocumentReplica {
      * <p><b>Read and written under {@link #lock} only</b>, and that is a correction rather than a
      * detail. This was a plain {@code int} incremented under the lock by {@link #merge} and the
      * enqueue paths, and read AND RESET without it from the maintenance thread — the same
-     * read-modify-write hazard {@link #advanceServerSeq} carries five paragraphs about. Two
+     * read-modify-write hazard that cost `advanceServerSeq` five paragraphs before it was removed. Two
      * snapshot sweeps and an edit interleaving could lose an increment or, worse, reset a count
      * that had just been raised.
      *
@@ -130,26 +130,11 @@ public class DocumentReplica {
     // reload — and a replica is reloaded after five minutes of quiet, while the window the boundary
     // is compared against is seven days. See DocumentSnapshot.gcWatermark.
 
-    /**
-     * The version vectors of connected clients — the basis for computing causal stability for GC
-     *. The key is the client replica's identifier.
-     */
-    private final Map<Integer, ReplicaProgress> replicaProgress = new ConcurrentHashMap<>();
-
-    /**
-     * What one replica last told us, and whether it is still here.
-     *
-     * @param departedAtMillis when the replica disconnected, or 0 while it is still connected.
-     *                         Kept rather than deleted on disconnect — see
-     *                         {@link #markDeparted(int, long)}.
-     */
-    public record ReplicaProgress(VersionVector version, long reportedAtMillis,
-                                  long departedAtMillis) {
-
-        boolean stillConnected() {
-            return departedAtMillis == 0;
-        }
-    }
+    // The version vectors of connected clients used to live here too, in a ConcurrentHashMap keyed
+    // by replica identifier, and they had the same defect for the same reason — one instance's
+    // memory holding a fact the whole cluster depends on, reset by every eviction. They now live in
+    // `replica_progress` (V11). See stableVersion below for what that cost, and
+    // ReplicaProgressStore for why a table rather than the snapshot this note is next to.
 
     public DocumentReplica(UUID documentId, RgaDocument document, long appliedServerSeq, long nowMillis) {
         this.documentId = documentId;
@@ -320,24 +305,12 @@ public class DocumentReplica {
         }
     }
 
-    /**
-     * Adds to the broadcast an operation we do NOT write — because it is already in the log.
-     *
-     * <p>The path for operations received from the cluster and pulled during gap repair.
-     * They reached the database on another instance, so writing them again would be a duplicate,
-     * but the clients connected here have to see them.
-     */
-    public void enqueueForBroadcast(Op op, long nowMillis) {
-        lock.lock();
-        try {
-            refuseIfEvicted();
-            pendingBroadcast.add(new PendingOperation(op, null, null));
-            lastActivityMillis = nowMillis;
-            lastEditMillis = nowMillis;
-        } finally {
-            lock.unlock();
-        }
-    }
+    // enqueueForBroadcast used to sit here: "adds to the broadcast an operation we do NOT write —
+    // because it is already in the log", described as the path for operations from the cluster and
+    // from gap repair. It had no production caller. applyRemote does that work now, and does it
+    // under ONE acquisition of the lock together with advancing the label, which is what stops the
+    // state and the sequence number disagreeing. Two tests kept it compiling; they use applyRemote.
+
 
     /**
      * Applies a whole batch of operations that are ALREADY IN THE LOG, and moves this replica's
@@ -391,6 +364,33 @@ public class DocumentReplica {
                 // a replica that nobody is connected to alive.
                 lastActivityMillis = nowMillis;
                 lastEditMillis = nowMillis;
+
+                // Counted toward the snapshot threshold, which it was not. `isSnapshotDue` returns
+                // false the moment this counter is zero, and only the LOCAL write paths — merge,
+                // enqueueForWrite, generateAndEnqueue — were touching it. So an instance holding
+                // readers of a document edited elsewhere never reached a snapshot, and a snapshot is
+                // the only thing that calls RgaDocument.gc: it accumulated every tombstone the
+                // cluster produced and collected none of them, never pruned replicaProgress (whose
+                // only pruner is stableVersion, called from the same place), and never refreshed the
+                // list preview or the search vector.
+                //
+                // That is the ordinary steady state wherever readers outnumber writers, which is
+                // what the cluster's round-robin routing produces. The operation-log design states the
+                // snapshot triggers unconditionally; this is what made them conditional on an edit
+                // happening to arrive locally.
+                //
+                // What this costs, stated in full rather than by the one reassuring half. The
+                // snapshot ROW is idempotent — ON CONFLICT (doc_id, up_to_server_seq) DO NOTHING —
+                // so two instances reaching the threshold together write it once. The work leading
+                // up to it is not shared: each instance runs its own gc() and its own structure
+                // copy under its own document lock, and its own catalog.updatePreview, which is an
+                // UPDATE running to_tsvector over the whole text. On a three-instance cluster with
+                // remote traffic that is three times the tsvector load.
+                //
+                // Paid deliberately. GC is per replica — an instance that never snapshots never
+                // collects, which is the leak this line exists to close — and the preview is the
+                // cost of not building a second mechanism to decide which instance owns it.
+                operationsSinceSnapshot += news.size();
             }
             return news;
         } finally {
@@ -505,6 +505,41 @@ public class DocumentReplica {
         try {
             refuseIfEvicted();
             unwritten.addAll(0, batch);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Puts a drained broadcast batch back, because sending it failed.
+     *
+     * <p>At the FRONT, like {@link #requeueUnwritten}, so the operations keep their order relative
+     * to anything merged while the send was in flight. Order matters less here than on the write
+     * path — a client applies operations in any order by the CRDT's own guarantee — but a batch that
+     * arrives shuffled relative to the log is harder to reason about in a trace for no gain.
+     *
+     * <p>Dropped if the replica has since been evicted — reachable only in the window between
+     * {@link #drainBroadcast} emptying the buffer and this putting it back, because {@code tryEvict}
+     * refuses while the buffer is non-empty.
+     *
+     * <p>Dropping is right for the operations this instance WROTE: they are still in
+     * {@code unwritten}, which eviction refuses to leave behind. It is <b>not</b> a recovery for the
+     * ones that arrived from the cluster — they are in the log, so the reloaded replica's
+     * {@code appliedServerSeq} covers them and no gap is ever detected, and this instance's
+     * still-connected clients do not see them until they reconnect. That is accepted rather than
+     * solved: the alternative is holding operations for a replica that no longer exists, and the
+     * window is one that requires an eviction to land between two statements on the flow thread.
+     */
+    public void requeueBroadcast(List<PendingOperation> batch) {
+        if (batch.isEmpty()) {
+            return;
+        }
+        lock.lock();
+        try {
+            if (evicted) {
+                return;
+            }
+            pendingBroadcast.addAll(0, batch);
         } finally {
             lock.unlock();
         }
@@ -668,32 +703,14 @@ public class DocumentReplica {
         }
     }
 
-    /**
-     * Records that the log has reached {@code serverSeq} for this replica.
-     *
-     * <p><b>Under the lock, like {@link #flushCompleted}.</b> This is a read-modify-write, and
-     * {@code volatile} gives visibility rather than atomicity — so while it ran unguarded, three
-     * threads wrote this field: the Redis listener here, the maintenance pool through gap repair,
-     * and the flow pool through {@code flushCompleted}, which was already taking the lock. The
-     * classic interleaving (read 5, another thread writes 12, write 10) makes the number go
-     * BACKWARDS.
-     *
-     * <p>That matters beyond a spurious anti-entropy repair: {@link #withConsistentState} reads
-     * this value under the lock and labels a snapshot with it, so a lost update produces a snapshot
-     * carrying a number lower than the state it holds — precisely the mislabelling that
-     * {@code flushesInFlight} and {@code withConsistentState} exist to prevent, arriving through a
-     * different door.
-     */
-    public void advanceServerSeq(long serverSeq) {
-        lock.lock();
-        try {
-            if (serverSeq > appliedServerSeq) {
-                appliedServerSeq = serverSeq;
-            }
-        } finally {
-            lock.unlock();
-        }
-    }
+    // advanceServerSeq used to sit here, with a javadoc naming three concurrent writers of this
+    // label — "the Redis listener here, the maintenance pool through gap repair, and the flow pool
+    // through flushCompleted" — and explaining the read-modify-write hazard between them. By the
+    // time it was removed there were ZERO: applyRemote took over the first two under the same lock
+    // that applies the operations, and flushCompleted sets the field itself. A setter with a
+    // documented concurrency contract and no callers is worse than no setter, because the contract
+    // reads as something the code still has to honour.
+
 
     public boolean snapshotDue(int threshold) {
         lock.lock();
@@ -817,10 +834,14 @@ public class DocumentReplica {
     // Causal stability for GC
     // ------------------------------------------------------------------
 
-    public void reportProgress(int replicaId, VersionVector version, long nowMillis) {
-        // A reconnecting replica is connected again, so the departure is cleared.
-        replicaProgress.put(replicaId, new ReplicaProgress(version, nowMillis, 0));
-
+    /**
+     * Notes that a replica reported progress.
+     *
+     * <p>What it has SEEN is no longer recorded here — see {@code ReplicaProgressStore}, which
+     * keeps it durably and for the whole cluster. What remains is the part that is genuinely about
+     * this in-memory replica: a report is a sign of life.
+     */
+    public void reportProgress(long nowMillis) {
         // A progress report IS activity, and this line is what makes idle eviction mean what
         // the cluster design and application.yml both say it means: "a replica with NO CONNECTED CLIENTS
         // lives another five minutes". lastActivityMillis used to be refreshed only by merge and
@@ -844,79 +865,39 @@ public class DocumentReplica {
     }
 
     /**
-     * Records that a replica disconnected — <b>keeping</b> what it had seen.
-     *
-     * <h2>This used to delete the entry, and the design said otherwise</h2>
-     * The tombstone-collection design defines the replicas that
-     * constrain GC as those <i>"connected now, <b>or disconnected for less than the GC window</b>"</i>,
-     * with the window set to seven days and a whole section on what happens to a client that
-     * returns after it. The code implemented the first half and dropped the entry outright on
-     * disconnect, so a departed replica constrained nothing at all.
-     *
-     * <p>The gap between the document and the code was five orders of magnitude. README describes
-     * {@code RESYNC_REQUIRED} as what happens to "a client offline longer than the GC window
-     * (7 days)"; what actually happened is that closing a laptop removed that client from the
-     * calculation immediately, so the tombstones its pending operations were anchored to became
-     * collectable as soon as everyone still present moved past them and a snapshot ran. Minutes,
-     * not days — on the one path in this system that refuses a user's work by design.
-     *
-     * <p>Keeping the last known vector is also the semantically correct thing rather than merely
-     * the documented one: what may be collected is what <b>everyone who might come back has
-     * already seen</b>. Forgetting a replica collects things it never saw, which is exactly the
-     * state that makes its return unmergeable.
-     */
-    public void markDeparted(int replicaId, long nowMillis) {
-        replicaProgress.computeIfPresent(replicaId, (id, progress) ->
-            new ReplicaProgress(progress.version(), progress.reportedAtMillis(), nowMillis));
-    }
-
-    public Map<Integer, ReplicaProgress> replicaProgress() {
-        return Map.copyOf(replicaProgress);
-    }
-
-    /**
      * The boundary below which tombstones may be physically removed.
      *
-     * <p>It is the meet of the version vectors of every replica that still counts, and two
-     * different rules decide that, because two different failure modes are involved:
+     * <p>The meet of every version vector that still counts, plus this replica's own — the durable
+     * state is a replica too, and a tombstone the database write has not yet seen must not be
+     * removed.
+     *
+     * <h2>Why the vectors are a parameter now</h2>
+     * They used to come from a {@code Map} on this object, filled by {@code reportProgress} from
+     * this instance's own STOMP sessions. Two things were wrong with that, and neither was visible
+     * from here:
      *
      * <ul>
-     *   <li><b>Connected but silent</b> — excluded after {@code unresponsiveTimeoutMs}. Otherwise
-     *       one hung client blocks GC for the whole document (negative consequences).</li>
-     *   <li><b>Disconnected</b> — kept for {@code offlineGraceMillis}, the GC window. This is the
-     *       half the tombstone-collection design specifies and the code did not implement; see
-     *       {@link #markDeparted(int, long)}.</li>
+     *   <li><b>It saw one instance.</b> Nothing carried version vectors between instances, so this
+     *       returned a boundary computed from a fraction of the replicas that could still send an
+     *       operation — on the multi-instance deployment the cluster design is written for. Collecting past
+     *       another instance's client leaves that client's next operation permanently unmergeable.</li>
+     *   <li><b>It did not survive eviction.</b> A reloaded replica started with an empty map, so a
+     *       client that departed with unsynchronised work stopped constraining anything as soon as
+     *       the document went quiet for five minutes — against a stated window of seven days.</li>
      * </ul>
      *
-     * <p>The distinction matters: silence from a client that is still connected is evidence
-     * something is wrong with it, while silence from one that has closed its laptop is exactly
-     * what is expected and is the case the window exists for.
+     * <p>Both are properties of where the set comes from, not of how the meet is computed, so the
+     * sourcing moved out to {@code ReplicaProgressStore} and this method kept the arithmetic. The
+     * two timeout rules moved with it, into the query that applies them.
      *
-     * @param offlineGraceMillis how long a departed replica keeps constraining GC — the GC window
+     * @param live the vectors of the replicas that still count, cluster-wide; empty means nothing
+     *     is known, and the caller must then collect NOTHING rather than everything
      */
-    public VersionVector stableVersion(long nowMillis, long unresponsiveTimeoutMs,
-                                       long offlineGraceMillis) {
-        // Entries past the window are pruned here rather than on a timer: this is the only reader,
-        // it runs at every snapshot, and a map that is only ever added to is the kind of unbounded
-        // growth this class is otherwise careful about.
-        replicaProgress.values().removeIf(progress ->
-            !progress.stillConnected()
-                && nowMillis - progress.departedAtMillis() > offlineGraceMillis);
-
-        List<VersionVector> responsive = new ArrayList<>();
-        for (ReplicaProgress progress : replicaProgress.values()) {
-            boolean counts = progress.stillConnected()
-                ? nowMillis - progress.reportedAtMillis() <= unresponsiveTimeoutMs
-                : nowMillis - progress.departedAtMillis() <= offlineGraceMillis;
-            if (counts) {
-                responsive.add(progress.version());
-            }
-        }
-        if (responsive.isEmpty()) {
+    public VersionVector stableVersion(Collection<VersionVector> live) {
+        if (live.isEmpty()) {
             return VersionVector.empty();
         }
-        // The durable state is a replica too: a tombstone the database write has not yet seen must
-        // not be removed.
+        List<VersionVector> responsive = new ArrayList<>(live);
         responsive.add(withLock(RgaDocument::version));
         return VersionVector.meet(responsive);
     }

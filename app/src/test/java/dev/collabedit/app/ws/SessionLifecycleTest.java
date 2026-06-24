@@ -107,12 +107,42 @@ class SessionLifecycleTest {
     void endingTwiceTearsDownOnce() {
         SessionLifecycle lifecycle = lifecycle();
         lifecycle.begin(SESSION, USER);
-        when(presence.recordLeave(SESSION)).thenReturn(DOCUMENT);
+        when(presence.recordLeave(SESSION)).thenReturn(departedParticipant());
 
         lifecycle.end(SESSION);
         lifecycle.end(SESSION);
 
         verify(presence, org.mockito.Mockito.times(1)).recordLeave(SESSION);
+        // The durable half exactly once too. It is a database write and it sits outside the
+        // teardown's computeIfPresent, so it is the one step whose idempotence does not follow
+        // from the map removal — see PresenceService.recordDeparture.
+        verify(presence, org.mockito.Mockito.times(1))
+            .recordDeparture(org.mockito.ArgumentMatchers.any());
+    }
+
+    /** What {@code recordLeave} hands back: enough to record the departure outside the lock. */
+    private static PresenceService.Participant departedParticipant() {
+        return new PresenceService.Participant(
+            SESSION, DOCUMENT, 7, USER, "Anna", "#4C5FD5", null, null, null, null, false);
+    }
+
+    @Test
+    @DisplayName("a departure that cannot be recorded durably still tears the session down")
+    void aFailedDurableDepartureDoesNotStrandTheSession() {
+        SessionLifecycle lifecycle = lifecycle();
+        lifecycle.begin(SESSION, USER);
+        when(presence.recordLeave(SESSION)).thenReturn(departedParticipant());
+        org.mockito.Mockito.doThrow(new RuntimeException("pool exhausted"))
+            .when(presence).recordDeparture(org.mockito.ArgumentMatchers.any());
+
+        lifecycle.end(SESSION);
+
+        // The write is allowed to fail; the teardown is not allowed to half-happen because of it.
+        // Before it moved out of the computeIfPresent, a throw here left the session in
+        // userBySession — so ws.sessions.active never came down — while its rate-limiter buckets
+        // and replica registration had already been cleared, and the room was never told.
+        assertThat(lifecycle.userOfReplica(7)).isNull();
+        verify(presence).announce(DOCUMENT);
     }
 
     @Test

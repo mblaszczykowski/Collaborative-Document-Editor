@@ -1,8 +1,13 @@
 package dev.collabedit.app.comments;
 
+import dev.collabedit.app.auth.CommentAnchorAuthority;
 import dev.collabedit.app.auth.ThreadDocumentResolver;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -31,7 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
  * where we deliberately do not give in to it.
  */
 @Service
-public class CommentService implements ThreadDocumentResolver {
+public class CommentService implements ThreadDocumentResolver, CommentAnchorAuthority {
 
     private final JdbcTemplate jdbc;
 
@@ -39,8 +44,21 @@ public class CommentService implements ThreadDocumentResolver {
         this.jdbc = jdbc;
     }
 
+    /**
+     * One message in a thread.
+     *
+     * <p>{@code editedAt} used to be here, read from the column {@code V4} created for it and
+     * published all the way to the client's type. Nothing has ever written it — there is no
+     * edit-a-comment endpoint — so it was {@code null} in every response the system has ever sent,
+     * which is a field that promises something the product does not do.
+     *
+     * <p>The COLUMN stays. Dropping it means either editing an applied migration, which breaks the
+     * checksum of every database that has run it, or adding one whose whole content is removing an
+     * unused column. Both cost more than the column does, and if editing ever arrives it is the one
+     * piece already in place.
+     */
     public record Message(UUID id, String authorId, String authorName, String authorColor,
-                          String body, Instant createdAt, Instant editedAt) {
+                          String body, Instant createdAt) {
     }
 
     /**
@@ -197,6 +215,53 @@ public class CommentService implements ThreadDocumentResolver {
     }
 
     /**
+     * Whether this caller may anchor this thread in this document.
+     *
+     * <p>The implementation of {@link CommentAnchorAuthority}; see there for what an unchecked mark
+     * value allowed.
+     *
+     * <h2>Why the thread's document, and NOT "you created it"</h2>
+     * The first version of this asked for {@code created_by = ?}, which is the tightest rule and
+     * matches the only moment the product legitimately anchors a thread — immediately after
+     * creating it. It is the wrong rule <b>in this system</b>, because identity here does not
+     * outlive a tab: login is passwordless, {@code UserDirectory} mints a fresh {@code UUID} on
+     * every login, and {@code session.ts} keeps it in {@code sessionStorage} precisely so it is
+     * per-tab.
+     *
+     * <p>The client's unacknowledged-operation buffer, by contrast, is in IndexedDB — origin-scoped
+     * and replayed on every reconnect, for every operation type including this one. So: post a
+     * comment, close the tab before the {@code AddMark} is acknowledged, open a new one. The buffer
+     * replays the mark under a new user id, {@code created_by} no longer matches, and the frame is
+     * refused — silently, because a refusal deliberately sends nothing back — and resent on every
+     * reconnect for ever. That is the same shape of permanent silent refusal
+     * {@code SessionLifecycle.userOfReplica} documents having already been caught once, and it
+     * would hit ordinary users doing nothing wrong.
+     *
+     * <p>So the rule is the strongest one that identity in this system can actually carry: the
+     * thread must exist and belong to <b>this</b> document. That stops a mark carrying a thread from
+     * another document, and it stops one carrying an identifier that is not a thread at all.
+     *
+     * <p><b>What it does not stop</b>, stated rather than left to be found: a commenter can still
+     * widen or re-anchor another thread <i>in the same document</i>, because they can read every
+     * thread identifier in it. The cost is a highlight in the wrong place — no content escapes, and
+     * an editor can remove the mark — and closing it properly needs the operation's authorship to be
+     * something the frame proves rather than something the body claims. That is the debt
+     * {@code limitations.md} records under "authorization looks inside the frame body", and it is
+     * the same debt, not a new one.
+     *
+     * <p>An editor never reaches this check at all: {@code DocumentAccessInterceptor} allows their
+     * frames on the strength of the role. Consistent rather than an oversight — an editor can
+     * already delete the text a thread is attached to.
+     */
+    @Override
+    public boolean mayAnchorThread(String userId, UUID documentId, UUID threadId) {
+        if (userId == null || documentId == null || threadId == null) {
+            return false;
+        }
+        return documentId.equals(documentOf(threadId));
+    }
+
+    /**
      * A document's threads together with their messages.
      *
      * <p>Two queries instead of N+1: one for the threads, one for all of their messages. Otherwise
@@ -222,15 +287,21 @@ public class CommentService implements ThreadDocumentResolver {
             return List.of();
         }
 
-        List<MessageRow> messages = jdbc.query("""
-            SELECT m.id, m.thread_id, m.author_id, m.body, m.created_at, m.edited_at,
-                   u.display_name, u.color
-              FROM comment_messages m
-              JOIN comment_threads t ON t.id = m.thread_id
-              JOIN users u           ON u.id = m.author_id
-             WHERE t.doc_id = ?
-             ORDER BY m.created_at
-            """,
+        // The message query filters on the SAME condition as the thread query, not just on the
+        // document. It used to select every message of every thread in the document and then throw
+        // away the ones belonging to threads the caller had already excluded — so asking for the
+        // three open threads on a document with two hundred resolved ones transferred all two
+        // hundred conversations to discard them in Java. The javadoc above reasoned about the query
+        // COUNT and not at all about the row count.
+        List<MessageRow> messages = jdbc.query(
+            "SELECT m.id, m.thread_id, m.author_id, m.body, m.created_at, "
+                + "       u.display_name, u.color "
+                + "  FROM comment_messages m "
+                + "  JOIN comment_threads t ON t.id = m.thread_id "
+                + "  JOIN users u           ON u.id = m.author_id "
+                + " WHERE t.doc_id = ? "
+                + (includeResolved ? "" : "AND t.resolved_at IS NULL ")
+                + " ORDER BY m.created_at",
             (rs, rowNum) -> new MessageRow(
                 UUID.fromString(rs.getString("thread_id")),
                 new Message(
@@ -239,10 +310,67 @@ public class CommentService implements ThreadDocumentResolver {
                     rs.getString("display_name"),
                     rs.getString("color"),
                     rs.getString("body"),
-                    rs.getTimestamp("created_at").toInstant(),
-                    rs.getTimestamp("edited_at") == null ? null : rs.getTimestamp("edited_at").toInstant())),
+                    rs.getTimestamp("created_at").toInstant())),
             documentId);
 
+        return assemble(threads, messages);
+    }
+
+    /**
+     * One thread with its messages, by identifier.
+     *
+     * <p>Exists because {@code CommentController.open} used to read back the thread it had just
+     * created by listing EVERY thread and message in the document and filtering for one row. The
+     * cost of posting a comment grew with the size of the conversation around it.
+     */
+    public Optional<Thread> findThread(UUID threadId) {
+        List<ThreadRow> threads = jdbc.query(
+            "SELECT id, doc_id, created_by, created_at, resolved_at, quoted_text "
+                + "FROM comment_threads WHERE id = ?",
+            (rs, rowNum) -> new ThreadRow(
+                UUID.fromString(rs.getString("id")),
+                UUID.fromString(rs.getString("doc_id")),
+                rs.getString("created_by"),
+                rs.getTimestamp("created_at").toInstant(),
+                rs.getTimestamp("resolved_at") == null ? null : rs.getTimestamp("resolved_at").toInstant(),
+                rs.getString("quoted_text")),
+            threadId);
+        if (threads.isEmpty()) {
+            return Optional.empty();
+        }
+
+        List<MessageRow> messages = jdbc.query(
+            "SELECT m.id, m.thread_id, m.author_id, m.body, m.created_at, "
+                + "       u.display_name, u.color "
+                + "  FROM comment_messages m "
+                + "  JOIN users u ON u.id = m.author_id "
+                + " WHERE m.thread_id = ? "
+                + " ORDER BY m.created_at",
+            (rs, rowNum) -> new MessageRow(
+                UUID.fromString(rs.getString("thread_id")),
+                new Message(
+                    UUID.fromString(rs.getString("id")),
+                    rs.getString("author_id"),
+                    rs.getString("display_name"),
+                    rs.getString("color"),
+                    rs.getString("body"),
+                    rs.getTimestamp("created_at").toInstant())),
+            threadId);
+
+        return Optional.of(assemble(threads, messages).getFirst());
+    }
+
+    /**
+     * Puts the messages back with their threads.
+     *
+     * <p>Grouped once rather than re-filtered per thread: the shape this replaces was a nested
+     * stream, i.e. one pass over every message for every thread.
+     */
+    private static List<Thread> assemble(List<ThreadRow> threads, List<MessageRow> messages) {
+        Map<UUID, List<Message>> byThread = new HashMap<>();
+        for (MessageRow row : messages) {
+            byThread.computeIfAbsent(row.threadId(), id -> new ArrayList<>()).add(row.message());
+        }
         return threads.stream()
             .map(thread -> new Thread(
                 thread.id(), thread.documentId(), thread.createdBy(), thread.createdAt(),
@@ -250,10 +378,7 @@ public class CommentService implements ThreadDocumentResolver {
                 // Anchoring is computed a layer up — true by default here, because the database
                 // knows nothing about the document's state.
                 true,
-                messages.stream()
-                    .filter(row -> row.threadId().equals(thread.id()))
-                    .map(MessageRow::message)
-                    .toList()))
+                byThread.getOrDefault(thread.id(), List.of())))
             .toList();
     }
 

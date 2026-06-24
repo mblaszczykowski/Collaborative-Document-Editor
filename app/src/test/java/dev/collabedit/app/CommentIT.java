@@ -141,6 +141,52 @@ class CommentIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("a commenter CANNOT anchor a thread from another document")
+    void commenterCannotAnchorAThreadFromAnotherDocument() throws Exception {
+        User ania = newUser("Ania");
+        User critic = newUser("Critic");
+        UUID document = privateDocument(ania);
+        permissions.grant(document, critic.id(), Role.COMMENTER);
+
+        try (TestStompClient owner = new TestStompClient(port, ania.token(), document, 813)) {
+            owner.insert(0, "a sentence to discuss");
+            owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "write acknowledged");
+        }
+
+        // A thread belonging to a DIFFERENT document, which the critic has no role in at all. The
+        // identifier is the whole payload of a comment mark, and nothing about the frame ties it to
+        // the document the frame names — that is what makes this checkable only by asking.
+        //
+        // (The rule used to be "you created this thread", which also refused a same-document
+        // widening. It was relaxed because identity here does not outlive a tab — see
+        // CommentService.mayAnchorThread — and a rule the product breaks by itself is not a rule.)
+        UUID elsewhere = privateDocument(ania);
+        UUID foreignThread = comments.openThread(elsewhere, ania.id(), "sentence", "Elsewhere.");
+
+        try (TestStompClient commenter = new TestStompClient(port, critic.token(), document, 814)) {
+            commenter.requestSync(0);
+            commenter.awaitCondition(() -> commenter.text().length() == 21, PATIENCE, "sees the text");
+
+            // A legal `comment` AddMark in every respect the interceptor used to check: right
+            // operation type, right mark type, sent by a role that may comment. Only the VALUE is
+            // wrong, and the value was the part nothing looked at.
+            commenter.markReturningOp(0, 21, "comment", foreignThread.toString());
+
+            // A refusal is silent by design (DocumentAccessInterceptor.deny sends nothing), so the
+            // assertion is on the effect. A round trip the server DOES answer proves the frame had
+            // time to be processed, rather than a sleep proving nothing.
+            commenter.requestSync(0);
+            commenter.awaitCondition(() -> commenter.text().length() == 21, PATIENCE, "round trip");
+
+            assertThat(documents.markCountOf(document))
+                .as("a comment anchor naming a thread from another document was accepted, so a "
+                    + "mark's value is trusted without being checked against the document the "
+                    + "frame was authorized for")
+                .isZero();
+        }
+    }
+
+    @Test
     @DisplayName("the same comment sent twice is posted once")
     void retryingAnUncertainCommentDoesNotDuplicateIt() {
         User ania = newUser("Ania");
@@ -207,7 +253,13 @@ class CommentIT extends IntegrationTestBase {
             owner.awaitCondition(() -> owner.lastAckSeq() > 0, PATIENCE, "write acknowledged");
 
             UUID threadId = comments.openThread(document, ania.id(), "fragment", "Does this stay?");
-            assertThat(threadId).isNotNull();
+            // The thread and its first message, which openThread writes in one transaction. The
+            // line this replaces asserted the returned id was non-null — openThread has four
+            // returns and no null path, so it could not have failed. What is worth pinning here is
+            // that the conversation EXISTS before the text is deleted, because the rest of the test
+            // is about it surviving that.
+            assertThat(comments.findThread(threadId)).get()
+                .satisfies(thread -> assertThat(thread.messages()).hasSize(1));
 
             owner.delete(0, 8);
             owner.awaitCondition(() -> owner.text().startsWith(" to"), PATIENCE, "text deleted");
@@ -265,18 +317,19 @@ class CommentIT extends IntegrationTestBase {
             // The comment is created AFTER the point we are about to rewind the document to.
             UUID threadId = comments.openThread(document, ania.id(), "addendum",
                 "A remark on the addendum");
-            assertThat(threadId).isNotNull();
+            assertThat(comments.findThread(threadId))
+                .as("the conversation the restore below must not remove was never created")
+                .isPresent();
 
             // A restore is a NEW change, not an undo of the log — so there is no reason
             // for anything to delete threads. This test keeps it that way: if restoring ever began
             // clearing state "outside the restored version", conversations would disappear along
             // with the text they were about.
+            // The real restore path — see HistoryController. Generating under withLock and then
+            // submitting in a loop is the shape generateAndSubmit replaced.
             var restored = history.stateAt(document, checkpoint);
-            var replica = registry.get(document);
-            var generated = replica.withLock(model -> history.restoreOperations(model, restored));
-            for (var op : generated) {
-                documents.submitAlreadyMerged(document, op, null);
-            }
+            documents.generateAndSubmit(document,
+                model -> history.restoreOperations(model, restored), null);
             Thread.sleep(300);
         }
 

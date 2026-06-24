@@ -54,6 +54,29 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  * <p>That is the same shape of guarantee {@link dev.collabedit.app.auth.DocumentAccessGuard} gives
  * for authorization, with one difference worth naming: the guard also refuses at RUNTIME, so
  * forgetting is caught twice. Here there is one net, and it is the build.
+ *
+ * <h2>What is still on the flow thread, and is not accounted for above</h2>
+ * This class argues carefully for pool size 1 and for moving snapshots off this pool, and then says
+ * nothing about the fact that <b>the flow thread also does blocking I/O</b>. It should, because that
+ * is the same shape of invisible chain the class congratulates itself on removing.
+ *
+ * <p>{@code DocumentService.flush} runs here, and on this one thread it performs
+ * {@code SELECT next_server_seq … FOR UPDATE} — a row lock contended <i>across instances</i>, inside
+ * a transaction that waits up to {@code spring.datasource.hikari.connection-timeout} for a pool slot
+ * — and then a synchronous {@code redis.convertAndSend} bounded by {@code spring.data.redis.timeout}.
+ * With {@code fixedDelay}, a pass that takes 500 ms delays the next {@code broadcastAll} by 500 ms
+ * for <b>every</b> document on the instance, not only the one that blocked. Redis unreachable is the
+ * clearest case: the cluster design calls publishing best-effort, and best-effort on the
+ * latency-critical thread is not best-effort.
+ *
+ * <p><b>Left as it is, deliberately, and the reason is that the fix is not free.</b> The obvious one
+ * — hand the write batch to another executor — has to preserve per-document ordering, because the
+ * whole guarantee above is that an acknowledgement cannot overtake the broadcast of its own
+ * operation. That means a per-document lane rather than a pool, which is a real mechanism to build
+ * and to get wrong, against a cost nothing has yet measured: the load harness ran one document
+ * (application.yml says so), so the case this describes has never been observed, only reasoned
+ * about. Measuring it at {@code max-loaded-documents} is the next step, and the paragraph is here so
+ * that the next person finds the question rather than the silence.
  */
 @Configuration
 public class SchedulingConfig {

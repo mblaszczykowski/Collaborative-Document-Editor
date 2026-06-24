@@ -6,6 +6,7 @@ import dev.collabedit.app.config.SchedulingConfig;
 import dev.collabedit.app.persist.DocumentCatalog;
 import dev.collabedit.app.persist.OperationStore;
 import dev.collabedit.app.persist.PendingOperation;
+import dev.collabedit.app.persist.ReplicaProgressStore;
 import dev.collabedit.app.persist.SnapshotStore;
 import dev.collabedit.app.observability.DocumentMetrics;
 import dev.collabedit.app.observability.EditTracer;
@@ -58,9 +59,73 @@ public class DocumentService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentService.class);
 
+    /**
+     * How much text may go into a single {@code Insert} this server generates.
+     *
+     * <h2>Why generated content has to be chunked at all</h2>
+     * An operation is the unit the whole protocol is built on and <b>nothing downstream can split
+     * one</b>, because its identity is what the merge algorithm uses. So an insert of arbitrary size
+     * becomes an operation no 64 KiB frame can carry: it sits in the log, is replayed on every load,
+     * and is undeliverable to every client including its own author — silently. {@code FrameChunks}
+     * states the same limit from the other end ("an operation larger than the whole budget is sent
+     * alone and may still exceed the frame limit").
+     *
+     * <h2>Why it lives here rather than at an endpoint</h2>
+     * It was a constant on {@code DocumentRestController}, whose javadoc enumerated the places that
+     * had broken the rule — "this endpoint and {@code SuggestionService}" — and that enumeration was
+     * incomplete. {@code HistoryService.restoreOperations} was the third, and the worst of the
+     * three: a restore expresses its change as the DIFFERENCE from the current text, so restoring a
+     * document that was emptied re-inserts the WHOLE of it as one operation. Nobody looking at the
+     * recovered-draft endpoint would find that.
+     *
+     * <p>The rule belongs to the write path, which is what this class is, so that the next generator
+     * of server-side operations finds it where operations are submitted rather than in whichever
+     * controller happened to need it first.
+     *
+     * <p>8192 characters is the client's paste cap ({@code bridge.ts}), chosen so the server and the
+     * browser produce operations of the same shape rather than two shapes that both happen to work
+     * today.
+     *
+     * <p><b>Deletes are deliberately not chunked</b>, here or on the client. A delete carries ranges
+     * rather than content, so its size follows the block structure and not the amount of text — and
+     * the client's own delete path has never split one. Splitting on the server only would make the
+     * two implementations disagree about what an operation is, which is the thing this constant
+     * exists to prevent.
+     */
+    public static final int MAX_INSERT_CHARACTERS = 8192;
+
+    /**
+     * Splits text into pieces small enough to each be one operation.
+     *
+     * <p>Cuts on a UTF-16 code unit boundary that is not inside a surrogate pair. Splitting an
+     * emoji in half would put a lone surrogate into the operation log, and {@code SnapshotCodec}
+     * documents what that costs downstream: {@code String.getBytes(UTF_8)} replaces it with
+     * {@code '?'}, so a snapshot would disagree with the log — the one thing the operation-log
+     * design says cannot happen.
+     *
+     * @return the pieces, in order; concatenating them gives {@code text} back exactly
+     */
+    public static List<String> splitForInsert(String text) {
+        List<String> pieces = new ArrayList<>();
+        int from = 0;
+        while (from < text.length()) {
+            int to = Math.min(text.length(), from + MAX_INSERT_CHARACTERS);
+            // Never between the halves of a surrogate pair. `to` is exclusive, so the character
+            // before it is the last one included: if that is a high surrogate, its low half would
+            // start the next piece.
+            if (to < text.length() && Character.isHighSurrogate(text.charAt(to - 1))) {
+                to--;
+            }
+            pieces.add(text.substring(from, to));
+            from = to;
+        }
+        return pieces;
+    }
+
     private final DocumentRegistry registry;
     private final OperationStore operations;
     private final SnapshotStore snapshots;
+    private final ReplicaProgressStore progress;
     private final DocumentCatalog catalog;
     private final ClusterBus cluster;
     private final CollabEditProperties properties;
@@ -72,12 +137,14 @@ public class DocumentService {
     private volatile BiConsumer<UUID, List<Op>> onFastPath = (id, ops) -> { };
 
     public DocumentService(DocumentRegistry registry, OperationStore operations,
-                           SnapshotStore snapshots, DocumentCatalog catalog, ClusterBus cluster,
+                           SnapshotStore snapshots, ReplicaProgressStore progress,
+                           DocumentCatalog catalog, ClusterBus cluster,
                            CollabEditProperties properties, DocumentMetrics metrics,
                            EditTracer tracer) {
         this.registry = registry;
         this.operations = operations;
         this.snapshots = snapshots;
+        this.progress = progress;
         this.catalog = catalog;
         this.cluster = cluster;
         this.properties = properties;
@@ -108,28 +175,24 @@ public class DocumentService {
     // Steps 1-2: accepting an operation from a client
     // ------------------------------------------------------------------
 
-    /**
-     * Accepts an operation that has already been merged into the server's replica.
-     *
-     * <p>Used when restoring a version from history (point 6): the operations are created
-     * on the server's replica, so they are already part of its state and only need writing and
-     * broadcasting. Merging them again would be harmless but misleading — the code should make
-     * clear this is not the same path as an operation from a client.
-     */
-    public void submitAlreadyMerged(UUID documentId, Op op, String userId) {
-        // Queues for the write AND for the broadcast — both paths go out in batches.
-        onActiveReplica(documentId,
-            replica -> replica.enqueueForWrite(op, userId, System.currentTimeMillis()));
-    }
+    // submitAlreadyMerged used to sit here: "accepts an operation that has already been merged
+    // into the server's replica", for the version-restore path. Every caller migrated to
+    // generateAndSubmit — which exists precisely because taking the replica, generating against it
+    // and then asking the registry for it AGAIN has an eviction window in the middle — and the
+    // method stayed, kept alive only by three integration tests that therefore went on exercising
+    // the shape the product had abandoned. Its javadoc still named the restore path as its user.
+    //
+    // The tests now go through generateAndSubmit, so they pin the path HistoryController takes.
 
     /**
      * Generates operations against the document's current state and submits them — <b>as one
      * step</b>.
      *
-     * <h2>Why this exists rather than "generate, then call submitAlreadyMerged"</h2>
-     * That is what version restore, suggestions and recovered drafts used to do, and it has a
-     * window in it: generating takes the replica from the registry and {@code submitAlreadyMerged}
-     * asks the registry for it AGAIN. In between, the replica can be evicted — both buffers are
+     * <h2>Why this exists rather than "generate, then submit what you generated"</h2>
+     * That is what version restore, suggestions and recovered drafts used to do, through a
+     * {@code submitAlreadyMerged} method that has since been removed for having no caller left. It
+     * has a window in it: generating takes the replica from the registry and submitting asks the
+     * registry for it AGAIN. In between, the replica can be evicted — both buffers are
      * empty at exactly that moment, so it is a legal candidate — and a FRESH replica is loaded that
      * never saw the generated operations. {@code enqueueForWrite} then succeeds on it without a
      * {@link DocumentReplica.StaleReplicaException}, because the fresh replica is not evicted, and
@@ -320,6 +383,7 @@ public class DocumentService {
         scheduler = SchedulingConfig.FLOW)
     public void broadcastAll() {
         for (DocumentReplica replica : registry.loaded()) {
+            List<PendingOperation> batch = List.of();
             try {
                 // A lock-free check before taking the lock — for the same reason as in flushAll,
                 // only stronger: this loop runs every 10 ms, so with many open documents it, rather
@@ -327,9 +391,29 @@ public class DocumentService {
                 if (!replica.hasPendingBroadcast()) {
                     continue;
                 }
-                broadcast(replica.documentId(), replica.drainBroadcast());
+                batch = replica.drainBroadcast();
+                broadcast(replica.documentId(), batch);
             } catch (RuntimeException e) {
-                log.error("Failed to broadcast operations for document {}", replica.documentId(), e);
+                // The batch goes BACK. It was drained before the send, so a throw here used to
+                // discard it, and the comment in flush() claiming the broadcast case repairs itself
+                // covers only half of what is in this buffer: operations this instance WROTE do get
+                // a second chance, because the acknowledgement that follows lets a client notice the
+                // gap. Operations that arrived from the cluster produce no acknowledgement — they
+                // are already in the log, so `appliedServerSeq` covers them and anti-entropy sees
+                // nothing wrong either. Those were invisible to this instance's clients until they
+                // reconnected, with nothing anywhere able to detect it.
+                //
+                // Requeueing makes the next pass, 10 ms later, try again — and there is no attempt
+                // ceiling, deliberately. A batch that fails permanently would therefore retry a
+                // hundred times a second and log as often, which is loud; the alternative, which is
+                // what this replaces, is dropping operations that nothing can detect the loss of.
+                // Loud beats silent here, and the failures this path actually produces
+                // (MessageDeliveryException from a full outbound queue) are transient by nature.
+                // If a deterministic one is ever found, a bound belongs here rather than a return
+                // to dropping.
+                replica.requeueBroadcast(batch);
+                log.error("Failed to broadcast operations for document {}; the batch was returned "
+                    + "to the buffer and will go out on the next pass", replica.documentId(), e);
             }
         }
     }
@@ -442,6 +526,23 @@ public class DocumentService {
         if (replica.operationsSinceSnapshot() == 0) {
             return false;
         }
+        // Not while the replica is holding operations whose cause it has not seen. A BUFFERED
+        // operation counts as news — RgaDocument.ApplyResult.isNews() is "not a duplicate" — so it
+        // advances appliedServerSeq past its own server_seq without being in the document. A
+        // snapshot taken now would be labelled with a number that covers an operation it does not
+        // contain, and loading from it replays only ABOVE the label: the operation is gone for good.
+        //
+        // This was reachable before on any instance that wrote (flushCompleted advances the label
+        // the same way), and counting remote operations toward the threshold made every follower a
+        // snapshot producer too — including precisely the followers where V11's own migration note
+        // says operations buffer. SnapshotStore.save is ON CONFLICT DO NOTHING, so a bad snapshot
+        // can also win the race against a correct one from an instance that did apply the operation.
+        //
+        // Skipping costs a sweep: the buffer drains as soon as the cause arrives, and the sweep
+        // runs every second.
+        if (replica.pendingCount() > 0) {
+            return false;
+        }
         // Unwritten operations take priority: a snapshot over state that is not yet in the log
         // would be stored with a server_seq from before those operations, and on restore they would
         // be applied a second time. That would be harmless (idempotence), but the snapshot would
@@ -478,7 +579,17 @@ public class DocumentService {
         if (batch.isEmpty()) {
             // Nothing was drained for writing, so drainForFlush counted no flush in flight and
             // there is nothing to close.
-            broadcast(replica.documentId(), outbound.broadcast());
+            //
+            // The broadcast batch still goes back if the send fails — see the catch below for why
+            // "it repairs itself" is only true of half of what is in that buffer. This path is the
+            // half where it is NEVER true: nothing was drained for writing, so there is no
+            // acknowledgement coming to make a client notice.
+            try {
+                broadcast(replica.documentId(), outbound.broadcast());
+            } catch (RuntimeException e) {
+                replica.requeueBroadcast(outbound.broadcast());
+                throw e;
+            }
             return;
         }
 
@@ -509,14 +620,22 @@ public class DocumentService {
             // ahead of appliedServerSeq, so no gap is detected, and the next eviction or restart
             // silently rolls the text back.
             //
+            // When it is the BROADCAST that threw, the drained broadcast batch is gone too, and
+            // it goes back as well. The comment here used to say that case repaired itself — the
+            // operations are written on the retry, the acknowledgement goes out, and a client
+            // acknowledged an operation it does not hold sets `gapDetected` and resynchronises.
+            //
+            // That is true of the operations THIS instance wrote, and it is the whole of the story
+            // only if the broadcast buffer holds nothing else. It does: applyRemote puts
+            // cluster-origin operations into pendingBroadcast and never into unwritten, because
+            // they are already in the log. Those produce no acknowledgement, so no client ever
+            // notices, and anti-entropy cannot see it either — appliedServerSeq already covers
+            // them, so the log's head is not ahead of the replica. They were invisible to this
+            // instance's clients until they happened to reconnect.
+            replica.requeueBroadcast(outbound.broadcast());
+
             // Only when nothing was written: append is transactional, so a throw means no row
             // landed, and requeueing after a partial success would write the batch twice.
-            //
-            // When it is the BROADCAST that threw, the drained broadcast batch is gone and this
-            // instance's clients do not see those operations. That case repairs itself through the
-            // mechanism already built for it: the operations are written on the retry, the
-            // acknowledgement goes out, and a client acknowledged an operation it does not hold
-            // sets `gapDetected` and asks for a resynchronisation (connection.ts).
             if (appended.isEmpty()) {
                 returnToBuffer(replica, batch);
             }
@@ -581,15 +700,24 @@ public class DocumentService {
     }
 
     private void takeSnapshot(DocumentReplica replica) {
+        // The GC window. The tombstone-collection design defines the replicas that constrain GC as
+        // "connected now, OR disconnected for less than the GC window".
+        long gcWindowMillis = Duration.ofDays(properties.gc().windowDays()).toMillis();
+
+        // Read from `replica_progress`, which is DURABLE and CLUSTER-WIDE. It used to come from a
+        // map on the replica object, filled only by this instance's own sessions and emptied by
+        // every eviction — so this boundary was computed from a fraction of the replicas that could
+        // still send an operation, and stopped counting a departed client after five minutes of
+        // quiet rather than after the seven days the window promises. See ReplicaProgressStore.
+        //
+        // Outside withConsistentState on purpose: this is a database round trip, and the document
+        // lock is the one every keystroke needs.
+        List<VersionVector> live = progress.liveFor(replica.documentId(),
+            properties.gc().unresponsiveReplicaTimeoutMs(), gcWindowMillis);
+
         // Tombstone GC happens DURING snapshotting rather than as a separate process:
         // a snapshot rewrites the whole structure anyway, so compaction is free at this point.
-        VersionVector stable = replica.stableVersion(
-            System.currentTimeMillis(),
-            properties.gc().unresponsiveReplicaTimeoutMs(),
-            // The GC window. Configured since CP5 and read by nothing until now: the tombstone-collection design defines
-            // the replicas that constrain GC as "connected now, OR disconnected for less than the
-            // GC window", and only the first half was implemented.
-            Duration.ofDays(properties.gc().windowDays()).toMillis());
+        VersionVector stable = replica.stableVersion(live);
 
         // The sequence number is read under THE SAME lock acquisition as the snapshot, and the
         // replica refuses if the two would not match — see DocumentReplica.withConsistentState.
@@ -667,6 +795,49 @@ public class DocumentService {
             log.warn("The preview and search vector for document {} could not be updated; the "
                 + "snapshot itself is stored", replica.documentId(), e);
         }
+
+    }
+
+    /**
+     * Records how far a client replica has caught up.
+     *
+     * <p>Durable and cluster-wide, which is what makes causal stability mean what the
+     * tombstone-collection design says it means — see {@code ReplicaProgressStore}.
+     *
+     * <p>The in-memory replica is still told, because a report is also a sign of life and that is
+     * what keeps a document with readers but no typists from being evicted.
+     */
+    public void recordProgress(UUID documentId, int replicaId, VersionVector version) {
+        registry.get(documentId).reportProgress(System.currentTimeMillis());
+        try {
+            progress.record(documentId, replicaId, version);
+        } catch (RuntimeException e) {
+            // Swallowed, and this is the one place in the write path where that is right.
+            //
+            // The callers are `/sync` and the 15-second `/progress` heartbeat. A progress report is
+            // an INPUT to garbage collection, not a step the client is waiting on — but it now
+            // performs a database write, and letting that escape would mean an exhausted connection
+            // pool takes down the resynchronisation the client actually asked for. It would get
+            // neither a SyncResponse nor a SNAPSHOT_REQUIRED, and simply hang on the request it
+            // needed most.
+            //
+            // The cost of dropping one is exactly what ReplicaProgressStore's javadoc claims for
+            // this direction: the previous row stays, which is an older vector, which constrains GC
+            // MORE. Failing here delays collection; it never collects something somebody needs.
+            log.warn("Progress for replica {} of document {} was not recorded; garbage collection "
+                + "will use the previous vector", replicaId, documentId, e);
+        }
+    }
+
+    /**
+     * Records that a client replica disconnected, <b>keeping</b> what it had seen.
+     *
+     * <p>It goes on constraining collection until the GC window expires, because that window exists
+     * exactly so somebody who closed their laptop can come back and still merge. Deleting the row
+     * instead is a mistake this project has already made once.
+     */
+    public void markReplicaDeparted(UUID documentId, int replicaId) {
+        progress.markDeparted(documentId, replicaId);
     }
 
     // ------------------------------------------------------------------
@@ -788,12 +959,44 @@ public class DocumentService {
         }
     }
 
+    /**
+     * Releases replicas nobody has open.
+     *
+     * <p>The period is its OWN setting rather than the idle threshold, which is what it used to be.
+     * Sharing them made the threshold mean something other than what it says: a replica going idle
+     * just after a pass waits a whole period for the next one, so "lives another 5 minutes"
+     * (application.yml, and the cluster design) was really [5, 10). Two numbers, because they answer two
+     * questions — how long a replica may sit unused, and how often we look.
+     */
     @Scheduled(
-        fixedDelayString = "${collabedit.cluster.idle-document-eviction-ms:"
-            + CollabEditProperties.Defaults.IDLE_DOCUMENT_EVICTION_MS + "}",
+        fixedDelayString = "${collabedit.cluster.idle-document-sweep-ms:"
+            + CollabEditProperties.Defaults.IDLE_DOCUMENT_SWEEP_MS + "}",
         scheduler = SchedulingConfig.MAINTENANCE)
     public void evictIdleDocuments() {
         registry.evictIdle(System.currentTimeMillis());
+
+        // Expired replica-progress rows go here too, and the pairing is not arbitrary: both jobs
+        // reclaim what nobody needs any more, both are unhurried, and neither has a latency anybody
+        // sees. Sharing the sweep also avoids a third interval to justify.
+        //
+        // It must NOT hang off the snapshot path, which is where it started. That path runs only
+        // for documents somebody is editing — exactly the ones whose rows are being refreshed
+        // anyway — so a document edited once and abandoned took its final snapshot and was never
+        // swept again. The in-memory map this replaced survived that trigger because it died with
+        // the replica after five minutes of quiet; the table has no such backstop, and a bound that
+        // depends on activity is not a bound.
+        //
+        // Global rather than per document, for the same reason: the documents that need sweeping
+        // are precisely the ones not in `registry.loaded()`.
+        try {
+            int removed = progress.pruneExpired(
+                Duration.ofDays(properties.gc().windowDays()).toMillis());
+            if (removed > 0) {
+                log.debug("Pruned {} replica progress rows past the GC window", removed);
+            }
+        } catch (RuntimeException e) {
+            log.warn("Expired replica progress could not be pruned", e);
+        }
     }
 
     // ------------------------------------------------------------------

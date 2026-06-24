@@ -211,7 +211,7 @@ public class SessionLifecycle {
             return;
         }
         boolean[] ended = new boolean[1];
-        UUID[] document = new UUID[1];
+        PresenceService.Participant[] gone = new PresenceService.Participant[1];
         userBySession.computeIfPresent(sessionId, (id, user) -> {
             ended[0] = true;
             // Without this the bucket maps grow with every session since process start.
@@ -223,7 +223,11 @@ public class SessionLifecycle {
             if (replicaId != null) {
                 userByReplica.remove(replicaId, user);
             }
-            document[0] = presence.getObject().recordLeave(sessionId);
+            // MAP MUTATIONS ONLY in here, which is this class's own rule and the reason the
+            // durable half of the departure is two lines further down instead. Everything in this
+            // block is an in-memory removal that cannot fail; anything that can fail would leave
+            // the mapping unchanged and the teardown half-done. See PresenceService.recordDeparture.
+            gone[0] = presence.getObject().recordLeave(sessionId);
             // Returning null REMOVES the key, and the removal is what makes a second call a no-op
             // and a concurrent joined find nothing.
             return null;
@@ -233,8 +237,21 @@ public class SessionLifecycle {
             return;
         }
         metrics.sessionClosed();
-        if (document[0] != null) {
-            presence.getObject().announce(document[0]);
+        if (gone[0] != null) {
+            // OUTSIDE the compute: a database write, so it must not hold a bin lock, and its
+            // failure must not undo a teardown that has already happened. Caught rather than
+            // propagated for the same reason — the caller is an event listener, and letting this
+            // escape would skip the announcement below and leave the room showing somebody who
+            // has left. The cost of the failure is bounded and stated: the replica's row keeps
+            // departed_at NULL, so it stops constraining garbage collection one unresponsive
+            // timeout from now rather than one GC window from now.
+            try {
+                presence.getObject().recordDeparture(gone[0]);
+            } catch (RuntimeException e) {
+                log.warn("Session {} ended but its departure could not be recorded durably; "
+                    + "replica {} will stop constraining GC early", sessionId, gone[0].replicaId(), e);
+            }
+            presence.getObject().announce(gone[0].documentId());
         }
     }
 

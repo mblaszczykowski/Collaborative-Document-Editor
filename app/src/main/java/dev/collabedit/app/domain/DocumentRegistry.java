@@ -36,9 +36,12 @@ public class DocumentRegistry {
      * This backend instance's replica identifier.
      *
      * <p>Negative deliberately: clients get positive identifiers (the counter in Redis), so the two
-     * spaces cannot intersect even if allocation goes wrong. A server instance almost never
-     * generates operations of its own — the exception is restoring a version from history (CP5),
-     * which per the operation-log decision we record as new operations.
+     * spaces cannot intersect even if allocation goes wrong. A server instance generates
+     * operations of its own on the paths where the CLIENT must not: restoring a version from
+     * history, accepting or rejecting a suggestion, and creating a recovered draft. All three go
+     * through {@code DocumentService.generateAndSubmit} and are recorded as new operations, which
+     * is what the operation-log decision requires. (This note used to name the restore alone, and
+     * the other two arrived without it being updated.)
      */
     private final int serverReplicaId = -Math.abs(UUID.randomUUID().hashCode() % 1_000_000) - 1;
 
