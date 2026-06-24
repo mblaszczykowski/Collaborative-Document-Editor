@@ -109,6 +109,71 @@ describe('pasting something large', () => {
     expect(document.text).toBe(pasted)
   })
 
+  /**
+   * The chunking test above is ASCII, and ASCII is exactly the alphabet in which this bug does not
+   * exist.
+   *
+   * `slice` cuts at UTF-16 code units. An emoji is two of them, so a paste with one straddling
+   * index 8192 gave one operation ending in a lone HIGH surrogate and the next beginning with a
+   * lone LOW surrogate — half a character each, in two separately-identified operations that the
+   * merge algorithm may deliver in either order or interleave with somebody else's text. The
+   * snapshot format has an escape hatch for lone surrogates (v4, for block splits); the operation
+   * log has none, which is why this has to be prevented rather than encoded.
+   */
+  const surrogatePairAtTheBoundary = 'x'.repeat(8191) + '😀'.repeat(500)
+
+  function endsMidCharacter(piece: string): boolean {
+    const last = piece.charCodeAt(piece.length - 1)
+    return last >= 0xd800 && last <= 0xdbff
+  }
+
+  function beginsMidCharacter(piece: string): boolean {
+    const first = piece.charCodeAt(0)
+    return first >= 0xdc00 && first <= 0xdfff
+  }
+
+  it('never cuts a surrogate pair across two operations', () => {
+    const document = new RgaDocument(1)
+
+    const ops = changesToOps(
+      document,
+      ChangeSet.of([{ from: 0, insert: surrogatePairAtTheBoundary }], 0),
+    )
+
+    let reassembled = ''
+    for (const op of ops) {
+      expect(op.kind).toBe('insert')
+      if (op.kind !== 'insert') continue
+      // The whole assertion, in both directions: no piece may end on an unpaired high surrogate
+      // and none may begin on an unpaired low one.
+      expect(endsMidCharacter(op.text)).toBe(false)
+      expect(beginsMidCharacter(op.text)).toBe(false)
+      expect(op.text.length).toBeLessThanOrEqual(8192)
+      reassembled += op.text
+    }
+    // Walking the boundary back must not lose or duplicate the character at the seam.
+    expect(reassembled).toBe(surrogatePairAtTheBoundary)
+    expect(document.text).toBe(surrogatePairAtTheBoundary)
+  })
+
+  it('still undoes an emoji paste in one step', () => {
+    // The coalescing condition is `previous.first.lamport + previous.length === first.lamport`, so
+    // it depends on `recordInsert` being given the piece's REAL length rather than the nominal
+    // limit. A piece walked back off a surrogate pair is 8191 units, and passing 8192 would break
+    // the chain silently — a paste with an emoji in it would need several presses of Ctrl+Z.
+    const document = new RgaDocument(1)
+    const undo = new UndoManager(document)
+    changesToOps(
+      document,
+      ChangeSet.of([{ from: 0, insert: surrogatePairAtTheBoundary }], 0),
+      undo,
+    )
+
+    undo.undo()
+
+    expect(document.text).toBe('')
+  })
+
   it('undoes a paste in one step, not three', () => {
     const document = new RgaDocument(1)
     const undo = new UndoManager(document)

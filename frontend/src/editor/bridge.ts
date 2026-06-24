@@ -32,6 +32,35 @@ import type { Op } from '../crdt/types'
  */
 const MAX_INSERT_CHARACTERS = 8192
 
+/**
+ * Where the next piece has to end so that it does not cut a character in half.
+ *
+ * `slice` counts UTF-16 code units, and an emoji is two of them. A paste with one straddling
+ * index 8192 therefore produced an operation ending in a lone HIGH surrogate and a second
+ * beginning with a lone LOW surrogate — two halves of one character, in two operations, with
+ * nothing downstream able to put them back together: an operation's identity is what the merge
+ * algorithm is built on, so the pieces can arrive in either order, interleaved with somebody
+ * else's text, or one without the other.
+ *
+ * This is the SECOND independent source of lone surrogates in this codebase. Snapshot format v4
+ * exists solely to survive the ones block splitting produces, and it survives them because the
+ * snapshot format has an escape hatch for them. The operation log has none, so the fix here has
+ * to be not producing them rather than encoding them.
+ *
+ * `end - 1 > offset` is the degenerate case: a limit of one code unit cannot express a surrogate
+ * pair at all, and walking back would return the offset we started from and loop for ever. It is
+ * unreachable while the limit is 8192 — the guard is here so that lowering the constant fails by
+ * emitting one oversized piece rather than by hanging the tab.
+ */
+function pieceEnd(text: string, offset: number): number {
+  const end = Math.min(offset + MAX_INSERT_CHARACTERS, text.length)
+  if (end === text.length) return end
+  const before = text.charCodeAt(end - 1)
+  const at = text.charCodeAt(end)
+  const splitsAPair = before >= 0xd800 && before <= 0xdbff && at >= 0xdc00 && at <= 0xdfff
+  return splitsAPair && end - 1 > offset ? end - 1 : end
+}
+
 export function changesToOps(
   document: RgaDocument,
   changes: ChangeSet,
@@ -67,14 +96,24 @@ export function changesToOps(
       // Nothing downstream can fix this: an operation's identity is what the merge algorithm is
       // built on, so it cannot be split after the fact. The place to split is here, where the
       // text is still text.
-      for (let offset = 0; offset < change.inserted.length; offset += MAX_INSERT_CHARACTERS) {
-        const piece = change.inserted.slice(offset, offset + MAX_INSERT_CHARACTERS)
+      // Driven by the COMPUTED end rather than a fixed stride, because a piece may be one code
+      // unit short of the limit — see `pieceEnd`. Stepping by the constant while slicing to a
+      // walked-back boundary would drop or duplicate the character at the seam.
+      for (let offset = 0; offset < change.inserted.length;) {
+        const end = pieceEnd(change.inserted, offset)
+        const piece = change.inserted.slice(offset, end)
         const op = document.insert(change.fromA + offset, piece)
         ops.push(op)
         // The pieces coalesce into ONE undo step: consecutive Lamport values from the same
         // replica within the coalescing window is exactly the condition recordInsert already
         // uses for continuous typing. Undoing a paste in eight steps would be absurd.
+        //
+        // `piece.length` and not the limit: a piece walked back off a surrogate pair is 8191 code
+        // units, and the clock advances by what was actually inserted. Recording the nominal size
+        // would leave the coalescing check one short for every piece after the first, so an emoji
+        // in a paste would silently turn one undo step into several.
         undo?.recordInsert(op.id, piece.length)
+        offset = end
       }
     }
   }
