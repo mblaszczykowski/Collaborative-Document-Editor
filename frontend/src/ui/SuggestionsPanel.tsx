@@ -13,9 +13,13 @@
  * Everything the server refuses is simply not offered here. The refusal is real either way
  * (SuggestionIT), and this is only about not inviting a gesture that ends in a rejected request.
  */
-import { useCallback, useEffect, useState } from 'react'
-import { ApiError, api, type Suggestion } from '../api'
-import { useDebouncedValue } from './useDebouncedValue'
+import { useCallback, useState } from 'react'
+import { api, type Suggestion } from '../api'
+import { FailureNote } from './FailureNote'
+import { usePanelData } from './usePanelData'
+
+/** Module-level, so the initial value is not a new array on every render. */
+const NO_SUGGESTIONS: Suggestion[] = []
 
 export function SuggestionsPanel(props: {
   documentId: string
@@ -30,26 +34,20 @@ export function SuggestionsPanel(props: {
 }) {
   const { documentId, revision, canPropose, canDecide, selection } = props
 
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState<string | null>(null)
 
-  const reload = useCallback(async () => {
-    setSuggestions(await api.listSuggestions(documentId))
-  }, [documentId])
-
-  // Debounced, for the same reason as the other two panels: `revision` changes on every keystroke.
-  const settledRevision = useDebouncedValue(revision)
-  useEffect(() => {
-    // Caught, like the other panels. A 404 here is the document being deleted or access being
-    // revoked underneath an open panel, which the workspace already reports; anything else is a
-    // defect and belongs in the console rather than in an unhandled rejection.
-    reload().catch((error: unknown) => {
-      if (error instanceof ApiError && error.status === 404) return
-      console.error('could not load the suggestions', error)
-    })
-  }, [reload, settledRevision])
+  // The debounce, the stale guard and the swallowed 404 come from `usePanelData`. This panel had
+  // the first and the third and NOT the second, so a slow answer for an earlier revision could
+  // land after a newer one and leave a proposal list that does not match the document.
+  const panel = usePanelData({
+    load: useCallback(() => api.listSuggestions(documentId), [documentId]),
+    revision,
+    initial: NO_SUGGESTIONS,
+    describe: 'the suggestions',
+  })
+  const suggestions = panel.data
+  const { failure } = panel
 
   /**
    * Runs one of the panel's gestures, and says whether it worked.
@@ -59,20 +57,27 @@ export function SuggestionsPanel(props: {
    * whatever happened. So a proposal the server refused cleared the user's text AND told them it
    * had failed — the interface taking the one copy of the words it had just said it could not
    * send.
+   *
+   * The message and the console line now come from `useFailure`, which is where the rest of the
+   * interface reports a gesture that did not take effect — this panel and `CommentsPanel` each
+   * had their own `failed` state, and this one rendered it as a `<p>` the user cannot dismiss.
+   *
+   * The refresh has also moved OUT of the attempt. It used to sit inside the try, so a proposal
+   * that was accepted and then failed to re-list told the user "that text is no longer there"
+   * about a change the server had already made.
    */
   async function run(action: () => Promise<void>): Promise<boolean> {
     setBusy(true)
-    setFailed(null)
     try {
-      await action()
-      await reload()
-      return true
-    } catch {
       // The one failure worth naming: the text a proposal was about is gone, deleted by
       // somebody editing while the proposal was being written. The server answers 409 and says
       // so rather than inventing a place to put it.
-      setFailed('That text is no longer there — somebody changed it while you were writing.')
-      return false
+      const done = await failure.attempt(
+        'That text is no longer there — somebody changed it while you were writing.',
+        action,
+      )
+      if (done) await panel.refresh()
+      return done
     } finally {
       setBusy(false)
     }
@@ -82,6 +87,12 @@ export function SuggestionsPanel(props: {
     <aside className="rightpanel">
       <div className="rp-header">Suggestions</div>
       <div className="rp-body">
+        {/* Above the compose box rather than inside it: accept and reject report through the same
+            failure, and they are offered to somebody who may decide without necessarily being
+            shown the compose box. */}
+        {failure.message !== null && (
+          <FailureNote message={failure.message} onDismiss={failure.dismiss} />
+        )}
         {canPropose && (
           <div className="suggest-compose">
             <button
@@ -112,7 +123,6 @@ export function SuggestionsPanel(props: {
               Inserted after the selection, or at the start of the document when nothing is
               selected.
             </p>
-            {failed !== null && <p className="suggest-failed">{failed}</p>}
           </div>
         )}
 

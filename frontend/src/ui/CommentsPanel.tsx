@@ -3,9 +3,10 @@ import { offlineStore } from '../transport/offlineStore'
 import { ApiError, api, type CommentThread } from '../api'
 import type { Id } from '../crdt/types'
 import type { AnchorOutcome } from '../editor/useCollaborativeDocument'
+import { FailureNote } from './FailureNote'
 import { clientId } from './browser'
 import { formatTime, initials } from './format'
-import { useDebouncedValue } from './useDebouncedValue'
+import { usePanelData } from './usePanelData'
 
 /**
  * The comments panel (CP14).
@@ -54,6 +55,9 @@ function quoteOf(selection: string): string {
   return selection.length <= MAX_QUOTE_LENGTH ? selection : `${selection.slice(0, MAX_QUOTE_LENGTH - 1)}…`
 }
 
+/** Module-level, so the initial value is not a new array on every render. */
+const NO_THREADS: CommentThread[] = []
+
 export function CommentsPanel(props: {
   documentId: string
   /** The selected fragment of text; empty when nothing is selected. */
@@ -73,22 +77,12 @@ export function CommentsPanel(props: {
    */
   readOnly?: boolean
 }) {
-  const [threads, setThreads] = useState<CommentThread[]>([])
   const [showResolved, setShowResolved] = useState(false)
   const [draft, setDraft] = useState('')
   const [replyTo, setReplyTo] = useState<string | null>(null)
   const [replyDraft, setReplyDraft] = useState('')
   /** Comments written with no connection, waiting in the outbox (CP27). */
   const [queued, setQueued] = useState(0)
-  /**
-   * Why a queued comment was dropped instead of sent.
-   *
-   * A permanent refusal removes the comment from the outbox, so without this the work simply
-   * disappears between two renders — the badge goes from "1 unsent" to nothing and the user is
-   * never told which of the two happened. The queue draining and the comment being lost look
-   * identical from outside, and only one of them is good news.
-   */
-  const [failed, setFailed] = useState<string | null>(null)
   /**
    * Threads that were sent from the outbox and could not be anchored (CP27).
    *
@@ -106,40 +100,29 @@ export function CommentsPanel(props: {
    */
   const [neverAnchored, setNeverAnchored] = useState<ReadonlySet<string>>(new Set)
 
-  const reload = useCallback(async () => {
-    setThreads(await api.listComments(props.documentId, showResolved))
-  }, [props.documentId, showResolved])
-
   /**
-   * `reload`, for the places that only want the list refreshed and have already said their piece.
+   * The list, the debounce, the stale guard, the swallowed 404 and the failure message.
    *
-   * Every gesture in this panel ends with a refresh, and every one of them used to end with a bare
-   * `await reload` inside an `async function` invoked as `void open`. A refresh that failed
-   * therefore became an unhandled rejection AFTER the gesture had succeeded — the comment was
-   * posted and the browser logged an error about it. Separated from `reload` rather than folded
-   * into it, because `flush` genuinely wants the failure.
+   * This panel previously had the debounce and the 404 rule and **not** the stale guard, so a slow
+   * answer for revision N landing after the answer for N+1 showed a thread list that does not
+   * match the document — and the panel's own state (`neverAnchored`, the unsent badge) makes that
+   * look authoritative. `useDebouncedValue` says in its own documentation that debouncing does not
+   * cover this; two of the three panels had read it.
+   *
+   * `showResolved` is part of `load`, so toggling it re-fetches — that is the same effect the
+   * separate `reload` dependency used to have, expressed once.
    */
-  const refresh = useCallback(async () => {
-    await reload().catch((error: unknown) => {
-      if (error instanceof ApiError && error.status === 404) return
-      console.error('could not refresh the comments', error)
-    })
-  }, [reload])
-
-  // Debounced: `revision` moves on every keystroke, so this used to be one
-  // `GET /documents/{id}/comments` per character typed.
-  const settledRevision = useDebouncedValue(props.revision)
-  useEffect(() => {
-    // `void reload` alone left an unhandled rejection whenever the list could not be fetched —
-    // most often while the document is being deleted or access to it is revoked underneath an open
-    // panel. A 404 is that case and is expected; anything else is worth seeing. The panel keeps
-    // showing the threads it already has either way, which is better than emptying itself and
-    // implying the conversations are gone.
-    reload().catch((error: unknown) => {
-      if (error instanceof ApiError && error.status === 404) return
-      console.error('could not load the comments', error)
-    })
-  }, [reload, settledRevision])
+  const panel = usePanelData({
+    load: useCallback(
+      () => api.listComments(props.documentId, showResolved),
+      [props.documentId, showResolved],
+    ),
+    revision: props.revision,
+    initial: NO_THREADS,
+    describe: 'the comments',
+  })
+  const threads = panel.data
+  const { failure } = panel
 
   /**
    * Posts a comment, or keeps it until there is a connection (CP27).
@@ -206,10 +189,14 @@ export function CommentsPanel(props: {
       // the only copy of it left is the one the user typed.
       console.error('the comment could not be queued', error)
       setDraft(body)
-      setFailed('This browser will not let the editor keep unsent comments, so this one could '
-        + 'not be saved. It is back in the box — try again when you are connected.')
+      failure.report('This browser will not let the editor keep unsent comments, so this one '
+        + 'could not be saved. It is back in the box — try again when you are connected.')
     }
-    await refresh
+    // `panel.refresh()`, with the parentheses. This read `await refresh` — awaiting the FUNCTION,
+    // which resolves immediately to the function object and refreshes nothing. So a posted comment
+    // did not appear until the debounced revision reload happened to fire, which on a document
+    // nobody is typing in is never.
+    await panel.refresh()
   }
 
   async function reply(threadId: string) {
@@ -237,10 +224,10 @@ export function CommentsPanel(props: {
       console.error('the reply could not be queued', error)
       setReplyDraft(body)
       setReplyTo(threadId)
-      setFailed('This browser will not let the editor keep unsent comments, so this reply could '
-        + 'not be saved. It is back in the box — try again when you are connected.')
+      failure.report('This browser will not let the editor keep unsent comments, so this reply '
+        + 'could not be saved. It is back in the box — try again when you are connected.')
     }
-    await refresh
+    await panel.refresh()
   }
 
   /**
@@ -251,20 +238,22 @@ export function CommentsPanel(props: {
    * nothing and missing an opportunity to retry costs a comment.
    */
   /**
-   * The current `reload` and anchoring callbacks, reachable without depending on them.
+   * The current refresh, reporting and anchoring callbacks, reachable without depending on them.
    *
-   * `flush` used to list `reload` in its dependencies, and `reload` depends on `showResolved`. So
-   * pressing "Show resolved" rebuilt `flush`, which tore down and re-registered the `online`
-   * listener and re-read the whole IndexedDB outbox — a storage sweep triggered by a display
-   * toggle. The effect below now depends on the document alone, which is the only thing that
+   * `flush` used to list `reload` in its dependencies, and the list fetch depends on
+   * `showResolved`. So pressing "Show resolved" rebuilt `flush`, which tore down and re-registered
+   * the `online` listener and re-read the whole IndexedDB outbox — a storage sweep triggered by a
+   * display toggle. The effect below depends on the document alone, which is the only thing that
    * genuinely changes what is in the outbox.
    *
    * A ref rather than a dependency, because `flush` still has to call the CURRENT versions: it
-   * runs long after the render that created it, and calling a stale `reload` would list comments
+   * runs long after the render that created it, and calling a stale refresh would list comments
    * for whichever setting was showing when the listener was registered.
    */
-  const live = useRef({ reload, onAnchorAt: props.onAnchorAt })
-  live.current = { reload, onAnchorAt: props.onAnchorAt }
+  const live = useRef({ refresh: panel.refresh, report: failure.report,
+    onAnchorAt: props.onAnchorAt })
+  live.current = { refresh: panel.refresh, report: failure.report,
+    onAnchorAt: props.onAnchorAt }
 
   const flush = useCallback(async () => {
     const waiting = await offlineStore.pendingComments(props.documentId).catch(() => [])
@@ -322,8 +311,17 @@ export function CommentsPanel(props: {
           // as lost access, which was the wrong sentence for the one that actually happened: a
           // 400 from a length the interface never showed anybody. Telling a user their access was
           // revoked when it was not sends them to ask the wrong person about the wrong thing.
+          // Said out loud at all, because a permanent refusal removes the comment from the outbox
+          // — so without a message the work disappears between two renders. The badge goes from
+          // "1 unsent" to nothing, which is exactly what a queue that DRAINED looks like, and only
+          // one of those two is good news.
+          //
+          // Through `useFailure` rather than a `failed` state of this panel's own. That state
+          // rendered as a `<button>` whose label was the entire error message: a control whose
+          // accessible name is two sentences, and whose only affordance is that clicking the
+          // sentence dismisses it. `FailureNote` is what the rest of the interface uses.
           const status = error instanceof ApiError ? error.status : 0
-          setFailed(status === 403 || status === 404
+          live.current.report(status === 403 || status === 404
             ? 'One comment could not be posted — you no longer have access to this document.'
 : 'One comment could not be posted: the server refused it and will refuse it again, '
               + 'so it has not been kept. Nothing else in the queue is affected.')
@@ -338,7 +336,10 @@ export function CommentsPanel(props: {
       setNeverAnchored((current) => new Set([...current,...unanchored]))
     }
     setQueued(waiting.length - sent - dropped)
-    if (sent > 0) await live.current.reload
+    // With the parentheses. `await live.current.reload` awaited the FUNCTION — it resolved to the
+    // function object and refreshed nothing, so a comment that finally reached the server on a
+    // reconnect stayed invisible until something else moved the revision.
+    if (sent > 0) await live.current.refresh()
   }, [props.documentId])
 
   useEffect(() => {
@@ -367,11 +368,11 @@ export function CommentsPanel(props: {
       }
     } catch (error) {
       console.error('could not change the state of the thread', error)
-      setFailed(thread.resolvedAt === null
+      failure.report(thread.resolvedAt === null
         ? 'Could not resolve that conversation — try again.'
 : 'Could not reopen that conversation — try again.')
     }
-    await refresh
+    await panel.refresh()
   }
 
   return (
@@ -385,17 +386,18 @@ export function CommentsPanel(props: {
             {queued} unsent
           </span>
         )}
-        {failed !== null && (
-          <button className="rp-failed" title="Dismiss" onClick={() => setFailed(null)}>
-            {failed}
-          </button>
-        )}
         <button className="rp-toggle" onClick={() => setShowResolved((on) => !on)}>
           {showResolved ? 'Hide resolved' : 'Show resolved'}
         </button>
       </div>
 
       <div className="rp-body">
+        {/* `FailureNote`, like every other panel, instead of a `<button>` whose entire label was
+            the error message — a control whose accessible name was a two-sentence paragraph, and
+            whose only affordance was that clicking the message dismissed it. */}
+        {failure.message !== null && (
+          <FailureNote message={failure.message} onDismiss={failure.dismiss} />
+        )}
         <div className="comment-new">
           {props.readOnly ? (
             <div className="rp-empty">Your role lets you read comments, but not add them.</div>

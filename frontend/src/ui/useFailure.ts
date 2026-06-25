@@ -30,10 +30,24 @@ import { useCallback, useState } from 'react'
  * what the user was trying to do. Passing the exception's own words through would put a stack
  * trace's vocabulary on screen — the mistake `USER_FACING_ERRORS` documents at length.
  */
+/**
+ * Exported because it is the return type of the exported hook, and callers that hold a failure
+ * without calling the hook themselves need to name it — `usePanelData` passes one through.
+ */
 export interface Failure {
   /** The last failure worth showing, or null. */
   message: string | null
   dismiss: () => void
+  /**
+   * Says a failure happened, for the callers that are not wrapping one awaited action.
+   *
+   * `attempt` covers a gesture; this covers the cases where the failure is decided somewhere else.
+   * `CommentsPanel` has three of them and had to hand-roll its own state for all three: draining
+   * the outbox refuses ONE comment out of many inside a loop and carries on, and the storage
+   * failures it reports happen in a `catch` that also has work to do (putting the user's text back
+   * in the box). Neither is "run this and tell me if it worked".
+   */
+  report: (message: string) => void
   /**
    * Runs an action, reporting a failure rather than dropping it.
    *
@@ -47,6 +61,7 @@ export interface Failure {
 export function useFailure(): Failure {
   const [message, setMessage] = useState<string | null>(null)
   const dismiss = useCallback(() => setMessage(null), [])
+  const report = useCallback((text: string) => setMessage(text), [])
 
   const attempt = useCallback(async (text: string, action: () => Promise<unknown>) => {
     // Cleared first: leaving the previous message up while a retry is in flight means a successful
@@ -66,5 +81,5 @@ export function useFailure(): Failure {
     }
   }, [])
 
-  return { message, dismiss, attempt }
+  return { message, dismiss, report, attempt }
 }

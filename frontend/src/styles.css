@@ -642,7 +642,6 @@ button { font-family: inherit; cursor: pointer; }
 }
 .suggest-action:disabled { color: var(--text-faint); cursor: default; }
 .suggest-hint { margin: 0; font-size: 11px; line-height: 1.45; color: var(--text-faint); }
-.suggest-failed { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--bad); }
 
 .suggest-entry {
   padding: 9px 0; border-bottom: 1px solid var(--page-line);
@@ -682,14 +681,12 @@ button { font-family: inherit; cursor: pointer; }
   border: 1px solid var(--warn); color: var(--warn); white-space: nowrap;
 }
 
-/* A comment the server refused for good. Louder than the "unsent" badge and dismissible, because
-   unlike waiting for a connection this will not resolve itself — the work is gone and saying so is
-   the only honest option left. */
-.rp-failed {
-  margin-left: auto; font-size: 10.5px; padding: 1px 6px; border-radius: 8px;
-  border: 1px solid var(--bad); color: var(--bad); background: none;
-  cursor: pointer; text-align: left; max-width: 60%;
-}
+/* `.rp-failed` and `.suggest-failed` are gone with the two hand-rolled failure states they dressed.
+   Both panels now use `.failure-note`, like `SharePanel`, `HistoryPanel`, `DocumentList` and the
+   login screen — the argument the removed comment made (louder than the "unsent" badge, and
+   dismissible, because this will not resolve itself) is the argument `FailureNote` was written to
+   settle, and it settles it with a control whose accessible name is "Dismiss" rather than the
+   error message itself. */
 
 /* --- block structure (CP30) --- */
 

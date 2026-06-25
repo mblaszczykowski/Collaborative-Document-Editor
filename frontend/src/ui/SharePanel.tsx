@@ -128,8 +128,11 @@ export function SharePanel(props: {
         url.searchParams.set('invite', invite.token)
         setFreshLink(url.toString())
         setCopyByHand(false)
-        await reload
       })
+      // OUTSIDE the attempt: the link is already created and shown by this point, so a failure to
+      // re-list the invitations is not "could not create the invitation link". SuggestionsPanel
+      // makes the same move for the same reason.
+      await reload()
     } finally {
       setBusy(false)
     }
@@ -165,32 +168,40 @@ export function SharePanel(props: {
     // the worst of them: React keeps showing the value the user picked, so a refused change looks
     // exactly like a successful one — the interface asserting somebody has edit rights they were
     // never given.
-    await attempt('Could not change that person’s role.', async () => {
+    // Reloaded only on SUCCESS. `reload` is itself an `attempt`, and `attempt` opens by clearing
+    // the message — so reloading after a failed gesture wipes the sentence that gesture just wrote,
+    // and the user is left with a control that snapped back and no reason why. `attempt` returns
+    // whether it worked precisely so the caller can ask.
+    if (await attempt('Could not change that person’s role.', async () => {
       await api.setMemberRole(documentId, userId, role)
-    })
-    await reload()
+    })) {
+      await reload()
+    }
   }
 
   async function remove(userId: string) {
-    await attempt('Could not remove that person from the document.', async () => {
+    if (await attempt('Could not remove that person from the document.', async () => {
       await api.removeMember(documentId, userId)
-    })
-    await reload()
+    })) {
+      await reload()
+    }
   }
 
   async function setVisibility(visibility: 'private' | 'link') {
-    await attempt('Could not change who can open this document.', async () => {
+    if (await attempt('Could not change who can open this document.', async () => {
       await api.setVisibility(documentId, visibility)
-    })
-    await reload
+    })) {
+      await reload()
+    }
   }
 
   async function revokeInvite(inviteId: string) {
-    await attempt('Could not revoke that invitation link — it may still work.',
+    if (await attempt('Could not revoke that invitation link — it may still work.',
       async () => {
         await api.revokeInvite(documentId, inviteId)
-      })
-    await reload()
+      })) {
+      await reload()
+    }
   }
 
   return (
@@ -230,7 +241,15 @@ export function SharePanel(props: {
                 {INVITABLE.find((option) => option.value === inviteRole)?.hint}
               </p>
               <div className="share-row">
+                {/* Named out loud. All three selects in this panel rendered with no accessible
+                    name at all: the explanation sits in a sibling `<p class="share-hint">`, which
+                    a sighted user reads as a label and a screen reader announces as unrelated
+                    prose — the control itself was "combo box, Can edit" with nothing saying what
+                    it decides. `aria-labelledby` onto the hint was the alternative and is worse
+                    here: the hint changes with the selection, so the control's NAME would change
+                    every time its value did. */}
                 <select
+                  aria-label="Role for the invitation link"
                   value={inviteRole}
                   onChange={(event) => setInviteRole(event.target.value as Role)}
                 >
@@ -240,7 +259,7 @@ export function SharePanel(props: {
                     </option>
                   ))}
                 </select>
-                <button className="btn-outline" onClick={() => void createInvite} disabled={busy}>
+                <button className="btn-outline" onClick={() => void createInvite()} disabled={busy}>
                   Create link
                 </button>
               </div>
@@ -300,6 +319,10 @@ export function SharePanel(props: {
                   <li key={member.userId}>
                     <span>{member.displayName}</span>
                     <select
+                      // Names the PERSON, because the list repeats this control once per member
+                      // and "Role" three times over tells a screen-reader user nothing about
+                      // which row they are in.
+                      aria-label={`Role for ${member.displayName}`}
                       value={member.role}
                       onChange={(event) =>
                         void changeRole(member.userId, event.target.value as Role)
@@ -326,6 +349,7 @@ export function SharePanel(props: {
               <h3>General access</h3>
               <div className="share-row">
                 <select
+                  aria-label="Who can open this document"
                   value={state.visibility}
                   onChange={(event) =>
                     void setVisibility(event.target.value as 'private' | 'link')

@@ -12,12 +12,11 @@
  * 2. **a comparison with the current version**, computed from character identity rather than
  *    from the text.
  */
-import { useEffect, useRef, useState } from 'react'
-import { useDebouncedValue } from './useDebouncedValue'
-import { ApiError, api, type DiffSegment, type Version, type WireSpan } from '../api'
+import { useCallback, useRef, useState } from 'react'
+import { api, type DiffSegment, type Version, type WireSpan } from '../api'
 import { FailureNote } from './FailureNote'
 import { formatTime } from './format'
-import { useFailure } from './useFailure'
+import { usePanelData } from './usePanelData'
 
 /**
  * A preview with formatting: split the text into runs and dress each one in markup.
@@ -89,44 +88,28 @@ function Comparison({ segments }: { segments: DiffSegment[] }) {
   )
 }
 
+/** Module-level, so the initial value is not a new array on every render. */
+const NO_VERSIONS: Version[] = []
+
 export function HistoryPanel(
   { documentId, revision, readOnly }:
     { documentId: string; revision: number; readOnly?: boolean },
 ) {
-  const [versions, setVersions] = useState<Version[]>([])
   const [selected, setSelected] = useState<Version | null>(null)
   const [preview, setPreview] = useState<{ text: string; marks?: WireSpan[] } | null>(null)
   const [diff, setDiff] = useState<DiffSegment[] | null>(null)
   const [restoring, setRestoring] = useState(false)
-  const failure = useFailure()
-  // Debounced, and guarded against its own stale answers. `revision` is the character count, so
-  // before this every keystroke fired a `GET /history` — and because nothing sequenced the
-  // replies, a slow answer for an earlier revision could overwrite a newer one.
-  const settledRevision = useDebouncedValue(revision)
-  useEffect(() => {
-    let stale = false
-    api.history(documentId)
-      .then((loaded) => {
-        if (!stale) setVersions(loaded)
-      })
-      // Not routed through `useFailure`: this reload runs on its own, roughly every time typing
-      // settles, so a message about it would appear without anybody having asked for anything and
-      // would come back on the next keystroke. The console gets the detail, and the panel simply
-      // keeps showing the list it already has.
-      //
-      // A 404 is not a defect and is not logged. The panel stays mounted while the document
-      // itself is being deleted or access to it is revoked, and the server answers 404 for all
-      // three of "deleted", "never existed" and "not yours" — the workspace already says so, in
-      // its own banner, once. Logging it here would put a red line in the console for the
-      // ordinary way this panel ends its life.
-        .catch((error: unknown) => {
-        if (error instanceof ApiError && error.status === 404) return
-        console.error('could not load the version history', error)
-      })
-    return () => {
-      stale = true
-    }
-  }, [documentId, settledRevision])
+  // Debounce, stale guard, swallowed 404 and the failure state all come from `usePanelData` — the
+  // reasoning that used to be written out here is now written out there, once, for the three
+  // panels that share it. Two of them did not have the stale guard at all.
+  const panel = usePanelData({
+    load: useCallback(() => api.history(documentId), [documentId]),
+    revision,
+    initial: NO_VERSIONS,
+    describe: 'the version history',
+  })
+  const versions = panel.data
+  const failure = panel.failure
 
   /**
    * The version the panel is currently showing — checked by every async answer before it lands.
@@ -254,7 +237,7 @@ export function HistoryPanel(
                   {!readOnly && (
                     <button
                       className="history-restore"
-                      onClick={() => void restore}
+                      onClick={() => void restore()}
                       disabled={restoring}
                     >
                       {restoring ? 'Restoring…' : 'Restore this version'}
