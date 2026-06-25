@@ -100,8 +100,23 @@ function Workspace({ session }: { session: Session }) {
   const [bootstrapFailed, setBootstrapFailed] = useState(false)
 
   useEffect(() => {
+    /**
+     * Set by the cleanup, and CHECKED after every await below — which it was not.
+     *
+     * The flag existed and only the `.catch` consulted it, so the success path ran to completion
+     * on an effect that had already torn down. Under `<StrictMode>` React deliberately mounts,
+     * unmounts and remounts every effect in development, so two of these run concurrently — and
+     * if the account has no documents yet, BOTH reach `api.createDocument('Q3 Product Roadmap')`
+     * and two real documents are created on the server, on a first visit, every time. That is not
+     * a development-only artifact: it leaves the user with a duplicate they have to delete.
+     *
+     * Guarding after each await also stops the rest: `setOpenId` on a workspace that is gone,
+     * an invitation redeemed and then its token stripped from an address bar the next run has
+     * already rewritten.
+     */
     let cancelled = false
     void refresh().then(async (list) => {
+      if (cancelled) return
       const params = new URLSearchParams(window.location.search)
 
       /**
@@ -121,9 +136,11 @@ function Workspace({ session }: { session: Session }) {
         url.searchParams.delete('invite')
         try {
           const redeemed = await api.redeemInvite(invite)
+          if (cancelled) return
           url.searchParams.set('doc', redeemed.documentId)
           window.history.replaceState({ doc: redeemed.documentId }, '', url)
           await refresh()
+          if (cancelled) return
           setOpenId(redeemed.documentId)
           return
         } catch {
@@ -142,6 +159,7 @@ function Workspace({ session }: { session: Session }) {
       }
       if (list.length === 0) {
         const created = await api.createDocument('Q3 Product Roadmap')
+        if (cancelled) return
         setDocuments([created])
         setOpenId(created.id)
         return
@@ -215,7 +233,7 @@ function Workspace({ session }: { session: Session }) {
       {bootstrapFailed ? (
         <div className="loading">
           <p>The document list could not be loaded.</p>
-          <button onClick={() => window.location.reload}>Try again</button>
+          <button onClick={() => window.location.reload()}>Try again</button>
         </div>
       ): (
         <div className="loading">Loading…</div>
@@ -254,6 +272,16 @@ function DocumentWorkspace(props: {
    * product — has no clipboard API at all.
    */
   const [linkToCopy, setLinkToCopy] = useState<string | null>(null)
+  /**
+   * Stable across renders, because `SharePanel` keys two effects on it.
+   *
+   * Written inline as `onClose={() => setSharing(false)}` it was a new function on every render of
+   * this component — and this component re-renders on **every character typed**, because
+   * `doc.characters` is state here. So while the share dialog was open, every keystroke behind it
+   * tore down and re-registered the panel's Escape listener and its focus trap. It worked, and it
+   * did a window-level listener swap per character for nothing.
+   */
+  const closeSharing = useCallback(() => setSharing(false), [])
   const failure = useFailure()
   /**
    * Sharing (CP21).
@@ -340,7 +368,7 @@ function DocumentWorkspace(props: {
               Connecting…
             </span>
           )}
-          <button className="btn-outline" onClick={() => void share}>
+          <button className="btn-outline" onClick={() => void share()}>
             {shared ? 'Copied' : 'Share'}
           </button>
           {linkToCopy !== null && (
@@ -353,13 +381,13 @@ function DocumentWorkspace(props: {
               value={linkToCopy}
               aria-label="Document address — copy it manually"
               autoFocus
-              onFocus={(event) => event.target.select}
+              onFocus={(event) => event.target.select()}
             />
           )}
         </div>
       </header>
 
-      {sharing && <SharePanel documentId={documentId} onClose={() => setSharing(false)} />}
+      {sharing && <SharePanel documentId={documentId} onClose={closeSharing} />}
 
       {DEBUG && (
         <DiagnosticsBar
@@ -522,9 +550,15 @@ function DocumentWorkspace(props: {
         {panel === 'suggestions' && (
           <SuggestionsPanel
             documentId={documentId}
-            // The character count alone would not do here: accepting a proposed DELETION is the
-            // only kind of change that alters marks without altering the text, and the list has
-            // to follow it.
+            // The character count alone would not do here: accepting a proposed INSERTION is the
+            // only decision that alters marks without altering the text, and the list has to
+            // follow it.
+            //
+            // This said DELETION, which is backwards, and the expression below it was right the
+            // whole time. A proposed insertion is already IN the document carrying a suggestion
+            // mark, so accepting it only takes the mark off — the server computes exactly that,
+            // `textStays = accept == (kind == INSERT)` in `SuggestionService`. The other three
+            // combinations all move characters and would have moved `doc.characters` on their own.
             revision={doc.characters + doc.formatting.length}
             canPropose={doc.canComment}
             canDecide={doc.canWrite}
@@ -613,7 +647,12 @@ function BlockButtons(
           className="tb-icon tb-format"
           title={button.label}
           aria-label={button.label}
-          onMouseDown={(event) => event.preventDefault}
+          // Called, unlike the reference that used to stand here. Without the call the button
+          // takes focus on mousedown, CodeMirror loses the caret, and `toggleBlock` has no line to
+          // act on — so heading, quotation and list did nothing at all when clicked, which is the
+          // exact failure the comment above says this handler exists to prevent. `FormatButtons`
+          // two functions up has always called it.
+          onMouseDown={(event) => event.preventDefault()}
           onClick={() => onToggle(button.type, button.value)}
           disabled={disabled}
         >

@@ -44,6 +44,14 @@ export interface PresenceEntry {
   typing: boolean
 }
 
+/**
+ * Everything the connection calls back into.
+ *
+ * Exported although nothing imports the name — `useCollaborativeDocument` passes an object literal
+ * to the constructor and lets it be checked structurally. It stays exported because it is the
+ * fourth CONSTRUCTOR PARAMETER of the exported class, so anything building a set of handlers
+ * separately — a test double, a second consumer — needs to name it.
+ */
 export interface ConnectionHandlers {
   /** The replica identifier assigned by the server — it arrives before the first operation. */
   onSession: (replicaId: number) => void
@@ -536,15 +544,17 @@ export class DocumentConnection {
       // The window first, the structure second. The window is exact for every operation KIND —
       // it records what arrived, rather than inferring it from what the text now looks like — and
       // the structural check covers anything that has aged out of it.
-      const identity = keyOf({ replicaId: ack.r, lamport: ack.l })
-      if (!this.handled.has(identity) && !this.handlers.hasOperation(ack.r, ack.l)) {
+      //
+      // Built through keyOf rather than by hand: the format lives in one place, and if it ever
+      // changed, acknowledgements would silently stop matching the buffer and every operation
+      // would be retried for ever. Computed ONCE — the gap check and the buffer lookup ask about
+      // the same operation, and this runs per acknowledgement on the hottest inbound path there
+      // is.
+      const key = keyOf({ replicaId: ack.r, lamport: ack.l })
+      if (!this.handled.has(key) && !this.handlers.hasOperation(ack.r, ack.l)) {
         this.gapDetected = true
       }
 
-      // Built through keyOf rather than by hand: the format lives in one place, and if it ever
-      // changed, acknowledgements would silently stop matching the buffer and every operation
-      // would be retried for ever.
-      const key = keyOf({ replicaId: ack.r, lamport: ack.l })
       const acknowledged = this.unacknowledged.get(key)
       this.unacknowledged.delete(key)
       if (acknowledged !== undefined) {
@@ -685,8 +695,24 @@ export class DocumentConnection {
     })
   }
 
+  /**
+   * How many of this user's changes are not yet known to be saved.
+   *
+   * `unacknowledged.size` alone, and the `+ this.simulator.heldCount` that used to be added to it
+   * was double counting rather than a second category. `send` puts the operation in the buffer
+   * AND hands it to the simulator, which holds it while the network is cut — so during a partition
+   * every operation was in both and the count was exactly 2N.
+   *
+   * That number is on screen during **the project's headline demo**: press "Cut the network", type
+   * a sentence, watch `SaveIndicator` say how much is waiting, restore connectivity and watch it
+   * drain. Reporting twice what the user typed is the one thing that demo cannot afford to get
+   * wrong, because the whole point of it is that the indicator tells the truth about unsaved work.
+   *
+   * Nothing is lost by dropping the term: an operation the simulator is holding has by definition
+   * not been sent, so it cannot have been acknowledged, so it is still in the buffer.
+   */
   get pendingCount(): number {
-    return this.unacknowledged.size + this.simulator.heldCount
+    return this.unacknowledged.size
   }
 
   private setState(state: ConnectionState): void {

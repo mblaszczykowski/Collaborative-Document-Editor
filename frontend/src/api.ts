@@ -116,7 +116,12 @@ async function send<T>(path: string, init: RequestInit | undefined, expectBody: 
   try {
     response = await fetch(`${BASE}${path}`, {
     ...init,
-      headers: { 'Content-Type': 'application/json',...authHeaders,...(init?.headers ?? {}) },
+      // `authHeaders()`, with the parentheses. Spreading the FUNCTION contributes no enumerable
+      // own properties, so this object was `{'Content-Type': ...}` and nothing else: **every REST
+      // request in the application went out with no Authorization header**. Since CP12 the REST
+      // endpoints authenticate, so this is not a subtlety — it is the whole of the client's half
+      // of the authorization story, silently absent, in the one expression that assembles it.
+      headers: { 'Content-Type': 'application/json',...authHeaders(),...(init?.headers ?? {}) },
     })
   } catch (cause) {
     // The `status === 0` case the class above reserves — and which nothing produced until now,
@@ -185,6 +190,12 @@ export interface Version {
   charactersDeleted: number
 }
 
+/**
+ * Kept exported although nothing imports it: it is one message of an exported `CommentThread`, and
+ * this module's whole purpose is to declare the shapes the server sends. A caller that wants to
+ * write a helper taking one message has to be able to name it — the alternative is
+ * `CommentThread['messages'][number]`, which says the same thing worse.
+ */
 export interface CommentMessage {
   id: string
   authorId: string
@@ -192,7 +203,6 @@ export interface CommentMessage {
   authorColor: string
   body: string
   createdAt: string
-  editedAt: string | null
 }
 
 export interface CommentThread {
@@ -208,7 +218,13 @@ export interface CommentThread {
   messages: CommentMessage[]
 }
 
-/** A character identifier on the wire — the same shape the presence frames use. */
+/**
+ * A character identifier on the wire — the same shape the presence frames use.
+ *
+ * Exported for the same reason as `CommentMessage`, and a stronger one: it is a PARAMETER type of
+ * `proposeInsertion` and `proposeDeletion` below. A caller holding an identifier before it calls
+ * them cannot annotate the variable without this name.
+ */
 export interface WireId {
   replicaId: number
   lamport: number
