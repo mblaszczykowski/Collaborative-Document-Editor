@@ -37,7 +37,14 @@ const UNDO_STORE = 'undo'
 const COMMENT_STORE = 'comments'
 const VERSION = 3
 
-/** A comment waiting for a connection (CP27). */
+/**
+ * A comment waiting for a connection (CP27).
+ *
+ * Exported although nothing imports the name: it is the parameter of `queueComment` and the
+ * element type of what `pendingComments` returns, both of which are part of `offlineStore`'s
+ * surface. `CommentsPanel` builds one as an object literal and reads the result field by field, so
+ * it never writes the name — that is a property of the call sites, not of the contract.
+ */
 export interface QueuedComment {
   clientId: string
   documentId: string

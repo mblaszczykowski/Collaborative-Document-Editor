@@ -1,25 +1,50 @@
 /**
  * A network conditions simulator.
  *
- * It comes straight from `idea.md` ("the conflict simulator") and is one of the two things that
- * really sell this project in an interview — because it lets you **show live** that the algorithm
- * works, rather than assert it.
+ * It comes straight from `docs/brief.md` ("the conflict simulator") and is one of the two things
+ * that really sell this project in an interview — because it lets you **show live** that the
+ * algorithm works, rather than assert it.
  *
- * A deliberate design decision: this is one mechanism with two uses.
- *  - in the interface it drives the demo panel (latency, jitter and packet-loss sliders),
- *  - in the chaos tests (CP8) it drives the disconnect and delay scenarios.
- * Two separate implementations would drift apart, and then the demo would show something other
- * than the tests.
+ * ## What this file is, and what it is not — a correction
  *
- * The simulator operates ABOVE the transport layer, at the level of individual messages. It does
- * not fake TCP packet loss — it fakes the loss and delay of *operations*, which is exactly what the
- * algorithm sees. That is the right level of abstraction for what we want to demonstrate.
+ * This header used to claim the simulator was "one mechanism with two uses", driving both the demo
+ * panel and the chaos tests, and that two implementations "would drift apart, and then the demo
+ * would show something other than the tests". **That was not true when it was written and is not
+ * true now.** The chaos and cluster simulations are Java and live in
+ * `app/src/test/java/dev/collabedit/app/simulation/` — `DeterministicSimulation`, `SimulatedCluster`,
+ * `ClusterSimulationTest`. There are, and always were, two implementations.
+ *
+ * They are two on purpose, and the reason is the thing the old comment got backwards: they do not
+ * simulate the same layer. The Java one is **deterministic** — a seed, a virtual clock, a
+ * reproducible interleaving — because a chaos test that cannot be replayed is a chaos test that
+ * cannot be debugged. This one is driven by `Math.random` and by a person moving a slider, because
+ * its output is a screen somebody is watching. A shared implementation would have to be one or the
+ * other, and neither choice serves the other use.
+ *
+ * The drift they can genuinely suffer is in what they MODEL — delay, loss, reordering, partition —
+ * and both model exactly that list, which is short enough to keep in step by reading it.
+ *
+ * ## The level it operates at
+ *
+ * ABOVE the transport layer, at the level of individual messages. It does not fake TCP packet loss
+ * — it fakes the loss and delay of *operations*, which is exactly what the algorithm sees. That is
+ * the right level of abstraction for what we want to demonstrate.
  */
 
 export interface NetworkConditions {
   /** A fixed delay in milliseconds, added in both directions. */
   latencyMs: number
-  /** Random spread of the delay, ± this value. Models an unstable link. */
+  /**
+   * Random spread of the delay, ± this value. Models an unstable link.
+   *
+   * Until now **nothing set it**: it was declared, defaulted to 0 and consumed in `deliver`, and
+   * there was no slider, no test and no harness that ever moved it off zero. The header two
+   * paragraphs up claimed a jitter slider existed. The choice was between deleting the field and
+   * giving it the producer the documentation already promised, and the slider won — jitter is the
+   * only condition here that induces REORDERING, which is the property a CRDT exists to tolerate
+   * and the one this demo is least able to argue for by talking. Deleting it would have removed
+   * the ability to show the interesting half of the claim.
+   */
   jitterMs: number
   /** The fraction of messages lost, 0–1. */
   packetLoss: number
@@ -60,10 +85,6 @@ export class NetworkSimulator {
 
   get current(): NetworkConditions {
     return { ...this.conditions }
-  }
-
-  get heldCount(): number {
-    return this.held.length
   }
 
   onChange(listener: (conditions: NetworkConditions) => void): () => void {

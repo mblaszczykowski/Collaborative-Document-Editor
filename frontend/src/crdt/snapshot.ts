@@ -52,8 +52,16 @@ export interface DecodedSnapshot {
   gcWatermark: Map<number, number>
 }
 
-/** The version this decoder understands. Anything else falls back to the log. */
-export const SUPPORTED_FORMAT_VERSION = 5
+/**
+ * The version this decoder understands. Anything else falls back to the log.
+ *
+ * Not exported. Nothing outside this file has ever imported it, and nothing should: the only
+ * sensible thing to do with the number is compare it against the byte in a stream, which is what
+ * `decodeSnapshot` does. Exporting it invites a second version check somewhere that cannot see the
+ * stream — and two places deciding whether a snapshot is readable is how one of them ends up
+ * saying yes to a format the other cannot parse.
+ */
+const SUPPORTED_FORMAT_VERSION = 5
 
 /**
  * A stand-in for the text of a block whose content the server's GC dropped (CP18).
