@@ -104,6 +104,72 @@ describe('undo of formatting', () => {
   })
 })
 
+/**
+ * What comes back from IndexedDB is whatever the previously installed version of this file wrote.
+ *
+ * `restore` used to take the stacks at their word, and the only caller obtained the type by
+ * asserting it. So a row from an older format did not degrade to "no history" as the comment there
+ * promised — `step`'s ternary sends every unrecognised `kind` to `revertMark`, and
+ * `visibleIndexOf(undefined)` throws a `TypeError` out of a click handler. The undo button then
+ * stops working for the rest of the session, and only clearing the browser's storage brings it
+ * back.
+ */
+describe('undo state restored from an older format', () => {
+  it('drops an entry whose kind this version does not know', () => {
+    const document = documentWith('Ala ma kota')
+    const undo = new UndoManager(document)
+
+    undo.restore({ undo: [{ kind: 'annotate', note: 'from a future version' }], redo: [] })
+
+    expect(undo.canUndo).toBe(false)
+    // The point of the whole check: this used to throw out of `onClick`.
+    expect(() => undo.undo()).not.toThrow()
+    expect(undo.undo()).toEqual([])
+    expect(document.text).toBe('Ala ma kota')
+  })
+
+  it('drops a KNOWN kind whose anchor is missing', () => {
+    // The quieter half. `kind: 'mark'` passes any "does it have a kind" check and still throws in
+    // exactly the same place, because `visibleIndexOf` is handed undefined either way.
+    const document = documentWith('Ala ma kota')
+    const undo = new UndoManager(document)
+
+    undo.restore({ undo: [{ kind: 'mark', type: 'bold', before: undefined }], redo: [] })
+
+    expect(undo.canUndo).toBe(false)
+    expect(() => undo.undo()).not.toThrow()
+  })
+
+  it('keeps the entries it does understand alongside the ones it drops', () => {
+    // Dropping the whole stack on one bad row would be the other way to be safe and the wrong one:
+    // an entry written by a version that added a kind is not a reason to lose the work a person
+    // can still see on screen.
+    const document = documentWith('Ala ma kota')
+    const recorder = new UndoManager(document)
+    boldFirstWord(document, recorder)
+    const good = recorder.serialise().undo[0]
+
+    const undo = new UndoManager(document)
+    undo.restore({ undo: [{ kind: 'annotate' }, good, { kind: 'insert', first: null, length: 3 }],
+      redo: [] })
+
+    expect(undo.canUndo).toBe(true)
+    undo.undo()
+    expect(document.formatting()).toHaveLength(0)
+  })
+
+  it('survives storage holding something that is not a pair of stacks at all', () => {
+    const document = documentWith('Ala ma kota')
+    const undo = new UndoManager(document)
+
+    // A half-written record, a schema from before the stacks existed, a key another tab reused.
+    expect(() => undo.restore(null)).not.toThrow()
+    expect(() => undo.restore({ undo: 'not an array', redo: 7 })).not.toThrow()
+    expect(undo.canUndo).toBe(false)
+    expect(undo.canRedo).toBe(false)
+  })
+})
+
 describe('undo of text', () => {
   it('undoes an insertion by deleting exactly what was inserted', () => {
     const document = documentWith('Ala ')

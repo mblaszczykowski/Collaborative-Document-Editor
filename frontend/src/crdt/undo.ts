@@ -68,6 +68,60 @@ interface UndoableMark {
 
 type UndoEntry = UndoableInsert | UndoableDelete | UndoableMark
 
+/**
+ * Whether a row read back from storage is something `step` can actually act on.
+ *
+ * Checked per KIND rather than "has a kind field", because the two failures are different and only
+ * one of them is loud. An unrecognised kind reaches `revertMark` through `step`'s ternary and
+ * throws on `visibleIndexOf(undefined)`; a recognised kind with a missing anchor throws in the
+ * same place, from an entry that looks perfectly well-formed. Both come out of a click handler, so
+ * both show up as an undo button that has simply stopped working.
+ *
+ * A mark's `before` and `after` may be `undefined`, and that is load-bearing rather than laxity:
+ * `undefined` means the type was ABSENT over the range, `null` means present with no value. The
+ * distinction is what makes undoing a bolding restore the previous state instead of performing the
+ * opposite gesture — conflating them is the bug CP22 found in the history layer.
+ */
+function isUndoEntry(value: unknown): value is UndoEntry {
+  if (typeof value !== 'object' || value === null) return false
+  const entry = value as Record<string, unknown>
+  switch (entry['kind']) {
+    case 'insert':
+      return isId(entry['first'])
+        && typeof entry['length'] === 'number'
+        && Number.isInteger(entry['length'])
+        && entry['length'] > 0
+    case 'delete':
+      // The text has to be NON-EMPTY, symmetrically with `length > 0` above. `revertDelete` calls
+      // `document.insert(position, text)`, and an empty insert reaches block construction and
+      // throws "a block cannot be empty" — out of an onClick, which is exactly the permanently
+      // broken undo button this validation exists to prevent. `serialise()` cannot produce it
+      // today (`recordDelete` only ever gets a non-empty slice), but the rows this function reads
+      // come from a previous installation of this file, which is the whole reason it is here.
+      return (entry['after'] === null || isId(entry['after']))
+        && typeof entry['text'] === 'string'
+        && entry['text'].length > 0
+    case 'mark':
+      return typeof entry['type'] === 'string'
+        && isId(entry['from'])
+        && isId(entry['to'])
+        && isMarkValue(entry['before'])
+        && isMarkValue(entry['after'])
+    default:
+      return false
+  }
+}
+
+function isId(value: unknown): value is Id {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  return typeof candidate['replicaId'] === 'number' && typeof candidate['lamport'] === 'number'
+}
+
+function isMarkValue(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || typeof value === 'string'
+}
+
 export class UndoManager {
   private readonly undoStack: UndoEntry[] = []
   private readonly redoStack: UndoEntry[] = []
@@ -107,8 +161,22 @@ export class UndoManager {
     this.document = document
   }
 
-  observe(onChange: () => void): void {
+  /**
+   * Registers the persistence callback, and hands back the way to unregister it.
+   *
+   * The disposer is not decoration. `useCollaborativeDocument` re-runs its opening effect on the
+   * `SNAPSHOT_REQUIRED` path, which builds a NEW manager for the same document while the old one
+   * is still observed and still holds a debounced write to the same IndexedDB key. Without a way
+   * to detach, the discarded manager's callback fires after the new one has already restored, and
+   * overwrites the live stacks with the stacks of a replica that was thrown away.
+   */
+  observe(onChange: () => void): () => void {
     this.onChange = onChange
+    return () => {
+      // Only if it is still ours: a later `observe` has replaced it, and a stale disposer must not
+      // silence the manager that is actually in use.
+      if (this.onChange === onChange) this.onChange = null
+    }
   }
 
   /**
@@ -121,11 +189,36 @@ export class UndoManager {
     return { undo: [...this.undoStack], redo: [...this.redoStack] }
   }
 
-  restore(state: { undo: UndoEntry[]; redo: UndoEntry[] }): void {
+  /**
+   * Puts saved stacks back, dropping every entry this version cannot act on.
+   *
+   * **The argument is `unknown` on purpose, and that is the fix.** It used to be typed as the
+   * stacks themselves, and the only caller obtained that type by writing
+   * `loadUndo<Parameters<UndoManager['restore']>[0]>(documentId)` — an assertion over whatever
+   * IndexedDB happened to hold, not a check of it. The comment at that call site promised the
+   * degradation ("a stack from an older format means no history rather than no editor") and
+   * nothing implemented it: `restore` pushed the rows verbatim, and `step`'s two-armed ternary
+   * routes every `kind` that is not `insert` or `delete` to `revertMark`, where
+   * `visibleIndexOf(undefined)` throws a `TypeError` out of a click handler. The user's undo
+   * button stops working, permanently, until the store is cleared by hand.
+   *
+   * The rows come from a previous installation of this file — a format this version has never
+   * seen is the ordinary case after a deploy, not an attack — so the answer is to drop what is not
+   * recognised and keep the rest. A stack that has lost some entries is exactly the situation
+   * `step` already handles when an anchor has been deleted: skip it and try the next one.
+   */
+  restore(state: unknown): void {
     this.undoStack.length = 0
     this.redoStack.length = 0
-    this.undoStack.push(...state.undo.slice(-UndoManager.LIMIT))
-    this.redoStack.push(...state.redo.slice(-UndoManager.LIMIT))
+    const stacks = state as { undo?: unknown; redo?: unknown } | null | undefined
+    this.undoStack.push(...UndoManager.usable(stacks?.undo))
+    this.redoStack.push(...UndoManager.usable(stacks?.redo))
+  }
+
+  /** The entries of a saved stack this version understands, newest `LIMIT` of them. */
+  private static usable(saved: unknown): UndoEntry[] {
+    if (!Array.isArray(saved)) return []
+    return (saved as unknown[]).filter(isUndoEntry).slice(-UndoManager.LIMIT)
   }
 
   get canUndo(): boolean {

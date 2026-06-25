@@ -291,16 +291,50 @@ export function useCollaborativeDocument(
 
   useEffect(() => {
     let cancelled = false
+    /**
+     * The debounced write of the undo stacks, and the way to stop observing them.
+     *
+     * Declared out here rather than inside the IIFE so that the CLEANUP can reach them. See the
+     * return below: a manager that outlives its effect keeps a timer pointing at this document's
+     * IndexedDB key, and the next manager restores from that key.
+     */
+    let saveTimer: number | undefined
+    let stopObservingUndo: (() => void) | null = null
+
+    // Reset, and reset SYNCHRONOUSLY — before anything is awaited. The workspace is keyed by
+    // document id today, so the hook remounts and this is belt and braces for a document change;
+    // the effect also re-runs on a token change and on a re-open, and an editor that was writable
+    // a moment ago must not stay writable across a replica it has not been given an identifier
+    // for. That intent has always been written down here. The placement is what defeated it.
+    //
+    // The reset used to sit after `await api.openDocument(documentId)`, inside the async body.
+    // Bumping `reopenToken` (the `SNAPSHOT_REQUIRED` path in `onError`) re-runs this effect, and
+    // its cleanup nulls the connection immediately — but `replicaAssigned` stayed TRUE for the two
+    // REST round trips that follow. `App.tsx` computes `readOnly={!doc.canWrite ||
+    // !doc.replicaAssigned}`, so for that whole window CodeMirror accepted input,
+    // `connection.current?.send(op)` was a no-op against a null connection, and the operations
+    // landed in an `RgaDocument` that was about to be discarded. The next remote batch then erased
+    // the typed text from the screen with nothing said to anybody.
+    //
+    // React only applies a state update at the next render, so a reset that is awaited first is
+    // not a reset at all during the window it exists to close. The comment below has always
+    // described the right intent; it was one `await` too late to have it.
+    //
+    // `replicaAssigned` ONLY, and `ready` deliberately not. `ready` gates whether `<Editor>` is
+    // MOUNTED at all (`App.tsx`: `doc.ready && doc.model && …`), and unmounting it calls
+    // `editor.destroy()` — so resetting it here would tear CodeMirror down and rebuild it on every
+    // automatic re-open, losing the caret, the selection, the scroll position and any in-flight IME
+    // composition. That is the same damage `minimalChange` exists to avoid, arriving from the other
+    // side. `readOnly` reads `replicaAssigned`, so stopping the writes needs only this one.
+    setReplicaAssigned(false)
 
     void (async () => {
       const state = await api.openDocument(documentId)
       if (cancelled) return
+      // Cleared only once the open has SUCCEEDED, unlike `replicaAssigned` above: this
+      // one says "the document cannot be opened", and clearing it optimistically would blank the
+      // banner for the whole round trip before we know whether it was right.
       setUnavailable(false)
-      // Reset alongside `unavailable`, not left over from the previous document. The workspace is
-      // keyed by document id today, so the hook remounts and this is belt and braces — but the
-      // effect also re-runs on a token change, and an editor that was writable a moment ago must
-      // not stay writable across a replica it has not been given an identifier for.
-      setReplicaAssigned(false)
 
       // The document starts EMPTY and is built from the operations the server sends. Seeding it
       // with the text from REST would create new local operations the server does not know
@@ -348,8 +382,15 @@ export function useCollaborativeDocument(
        * work that was still on screen. Loading is best-effort — a browser without IndexedDB, or
        * a stack from an older format, means no history rather than no editor.
        */
+      //
+      // `loadUndo<unknown>`, not `loadUndo<Parameters<UndoManager['restore']>[0]>`. That second
+      // form looks like a type derived from the API and is an ASSERTION over whatever IndexedDB
+      // returns: it told the compiler the rows were well-formed and checked nothing. `restore`
+      // now takes `unknown` and validates each entry itself, which is what makes the sentence
+      // above true rather than merely intended — see its own comment for the `TypeError` out of a
+      // click handler that this promise used to hide.
       void offlineStore
-        .loadUndo<Parameters<UndoManager['restore']>[0]>(documentId)
+        .loadUndo<unknown>(documentId)
         .then((saved) => {
           if (!cancelled && saved !== null) undoManager.restore(saved)
         })
@@ -359,8 +400,14 @@ export function useCollaborativeDocument(
       // Undoing the last second of typing after a reload is a convenience; paying a second
       // IndexedDB write per keystroke for it, on the same thread as the offline buffer's write,
       // is not.
-      let saveTimer: number | undefined
-      undoManager.observe(() => {
+      //
+      // Both the timer and the subscription are held for the cleanup. Neither used to be, and the
+      // cost is on the re-open path this effect can take on its own (`SNAPSHOT_REQUIRED`): the
+      // OLD manager's pending write fires up to a second after the NEW one has already restored
+      // from the same key, and overwrites the live stacks with the stacks of a replica that was
+      // thrown away. The user's undo history silently becomes that of a document state nobody is
+      // looking at any more.
+      stopObservingUndo = undoManager.observe(() => {
         window.clearTimeout(saveTimer)
         saveTimer = window.setTimeout(() => {
           void offlineStore.saveUndo(documentId, undoManager.serialise()).catch(() => {})
@@ -533,6 +580,11 @@ export function useCollaborativeDocument(
 
     return () => {
       cancelled = true
+      // The undo persistence is torn down FIRST, and it is torn down at all because it outlives
+      // its manager otherwise. `cancelled` does not reach either of these: the timer is scheduled
+      // by a callback the manager holds, and the manager is not this closure's to check.
+      window.clearTimeout(saveTimer)
+      stopObservingUndo?.()
       connection.current?.disconnect()
       connection.current = null
     }
