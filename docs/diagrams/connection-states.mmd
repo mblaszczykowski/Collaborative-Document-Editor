@@ -1,0 +1,10 @@
+stateDiagram-v2
+    direction LR
+    [*] --> Connecting
+    Connecting --> Live: socket open
+    Connecting --> Refused: RESYNC_REQUIRED
+    Live --> Offline: offline / socket error
+    Offline --> Connecting: online, backoff
+    Live --> Resynchronising: ack for an unseen op
+    Resynchronising --> Live: state replaced
+    Refused --> [*]: kept as a Recovered draft

@@ -1,0 +1,9 @@
+flowchart TD
+    Req["HTTP request"] --> Q{"access requirement<br/>declared?"}
+    Q -->|nothing| Bug["500, and the handler<br/>never runs"]
+    Q -->|"@RequiresAuthentication"| Tok{"valid token?"}
+    Q -->|"@RequiresDocumentAccess"| Perm{"role<br/>sufficient?"}
+    Tok -->|no| U["401"]
+    Perm -->|no| NF["404, as for a document<br/>that does not exist"]
+    Tok -->|yes| H["handler"]
+    Perm -->|yes| H

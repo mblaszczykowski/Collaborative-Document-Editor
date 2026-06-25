@@ -74,26 +74,13 @@ role and are stored only as a hash, and revocation that takes effect mid-session
 
 ## Architecture
 
-```mermaid
-graph TB
-    C1["Browser<br/>RGA replica (TypeScript)"]
-    C2["Browser<br/>RGA replica (TypeScript)"]
-    S1["Instance 1<br/>RGA replica (Java)"]
-    S2["Instance 2<br/>RGA replica (Java)"]
-    R{{"Redis pub/sub<br/>fast path, allowed to drop"}}
-    DB[("Postgres operation log<br/>source of truth")]
+![Two browsers and two backend instances, each holding an RGA replica, all appending to and replaying from one Postgres operation log](docs/diagrams/architecture.svg)
 
-    C1 <-->|STOMP over WebSocket| S1
-    C2 <-->|STOMP over WebSocket| S2
-    S1 <--> R
-    S2 <--> R
-    S1 -->|append, replay| DB
-    S2 -->|append, replay| DB
-```
-
-All four replicas are peers. A browser is not a thin client of an instance, and an instance is not
-an authority over a browser — they run the same algorithm and merge each other's operations by the
-same rule.
+All four replicas are peers. A browser is not a thin client of an instance, and an instance is not an
+authority over a browser — they run the same algorithm and merge each other's operations by the same
+rule. Instances also gossip over Redis, which the [edit path](#the-path-of-a-single-edit) below shows
+and [the cluster](#the-cluster) explains; it is left out here because it is a fast path rather than
+part of the structure.
 
 ```
 crdt-core/     the algorithm. A separate Maven module with ZERO Spring dependencies,
@@ -124,26 +111,7 @@ ops/           Prometheus / Tempo / Grafana / OTel Collector configuration
 
 ### The path of a single edit
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant E as Editor
-    participant L as Replica (browser)
-    participant S as Instance 1
-    participant DB as Postgres log
-    participant O as Instance 2
-
-    E->>L: keystroke
-    L->>L: insert, assign id 7@41
-    L-->>E: painted, no round trip
-    L->>S: SEND 7@41 (a copy stays in the outbox)
-    S->>S: merge, then broadcast to its own clients
-    S->>O: publish over Redis (best effort)
-    S->>DB: append
-    DB-->>S: server_seq 918
-    S-->>L: ack 7@41 at 918
-    Note over L: the outbox releases here, never on the broadcast
-```
+![A keystroke painted locally, sent to an instance, merged, broadcast, published over Redis, appended to the log, and acknowledged by identity — with the outbox releasing on the write, not the broadcast](docs/diagrams/edit-path.svg)
 
 ### Two implementations, one corpus
 
@@ -541,21 +509,10 @@ character. So one backspace by anybody set the gap flag and the client resynchro
 15 seconds for ever, making the repair mechanism its own permanent load. It is now a bounded window
 of handled identities, with the structural check kept as a second line.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Connecting
-    Connecting --> Live: socket open, state loaded
-    Connecting --> Refused: RESYNC_REQUIRED, offline past the GC window
-    Live --> Offline: offline event or socket error
-    Offline --> Connecting: online event, with backoff
-    Live --> Resynchronising: an ack names an operation I never handled
-    Resynchronising --> Live: state replaced from the log
-    Refused --> [*]: local version kept as a Recovered draft
-    note right of Offline
-        edits continue into IndexedDB
-        and survive the tab closing
-    end note
-```
+![Client connection states, with the two exits: resynchronising on a detected gap, and a refusal past the collection window](docs/diagrams/connection-states.svg)
+
+`Offline` is not a dead end — edits continue into IndexedDB and survive the tab closing. `Refused` is
+the only state the client cannot recover from on its own.
 
 The heartbeat is not what the user experiences. The client listens for the browser's
 `online`/`offline` events and for socket errors, which fire immediately. The broker's timeout is
@@ -588,17 +545,7 @@ instances lives in three copies.
 Two doors — HTTP and WebSocket — and one `PermissionService` behind both. The interesting part is
 the HTTP side, where the rule is **declare what you need, or you are not served**.
 
-```mermaid
-flowchart TD
-    Req["HTTP request"] --> Q{"access requirement<br/>declared?"}
-    Q -->|nothing| Bug["500, and the handler never runs.<br/>Our bug, not the caller's."]
-    Q -->|"@RequiresAuthentication"| Tok{"valid token?"}
-    Q -->|"@RequiresDocumentAccess(role)"| Perm{"role<br/>sufficient?"}
-    Tok -->|no| U["401"]
-    Perm -->|no| NF["404, the same answer as for<br/>a document that does not exist"]
-    Tok -->|yes| H["handler"]
-    Perm -->|yes| H
-```
+![Every request passes one interceptor: a handler declaring no access requirement is answered with 500 and never runs](docs/diagrams/authorization.svg)
 
 Three things in that picture are the whole of it, and each answers a hole that actually shipped
 here:
@@ -673,9 +620,12 @@ with nginx proxying `/api` and `/ws`. That is the only arrangement that works ov
 page served over `https:` may not open a `ws:` socket. For separate origins, set `VITE_API_BASE` at
 build time and `COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS` on the backend.
 
-Re-recording the demo GIFs at the top of this file:
+Regenerating the pictures in this file — the diagrams come from mermaid sources in
+[`docs/diagrams/`](docs/diagrams), the GIFs from a Playwright script:
 
 ```bash
+./tools/render-diagrams.sh                 # docs/diagrams/*.mmd -> *.svg
+
 ./tools/reset-demo-data.sh
 cd frontend && npm run demo
 cd .. && ./tools/make-gif.sh core docs/demo.gif && ./tools/make-gif.sh product docs/demo-v2.gif

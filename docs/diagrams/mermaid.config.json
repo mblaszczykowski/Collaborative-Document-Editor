@@ -1,0 +1,8 @@
+{
+  "theme": "neutral",
+  "htmlLabels": false,
+  "flowchart":      { "htmlLabels": false, "useMaxWidth": true },
+  "sequence":       { "useMaxWidth": true },
+  "state":          { "htmlLabels": false },
+  "themeVariables": { "fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif", "fontSize": "15px" }
+}

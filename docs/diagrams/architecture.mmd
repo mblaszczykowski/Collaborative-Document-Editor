@@ -1,0 +1,11 @@
+graph TB
+    C1["Browser<br/>RGA replica (TypeScript)"]
+    C2["Browser<br/>RGA replica (TypeScript)"]
+    S1["Instance 1<br/>RGA replica (Java)"]
+    S2["Instance 2<br/>RGA replica (Java)"]
+    DB[("Postgres operation log<br/>source of truth")]
+
+    C1 <-->|STOMP over WebSocket| S1
+    C2 <-->|STOMP over WebSocket| S2
+    S1 -->|append, replay| DB
+    S2 -->|append, replay| DB
