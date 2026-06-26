@@ -540,6 +540,55 @@ instances lives in three copies.
 
 ---
 
+## Who you are
+
+Authorization is only as good as the identity under it, and for most of this project's life there
+was none: `POST /api/login` took a name, minted a fresh `UUID`, and handed back a token. Nothing
+checked anything. Two consequences, and the second is the one that matters.
+
+**"Anna" today and "Anna" tomorrow were different people.** Every login produced a new identifier,
+so documents, memberships and comments belonged to an identity that ceased to exist when the tab
+closed. Sharing works by invitation *link* rather than by naming a person partly because there was
+nobody stable to name.
+
+**Every rule above it rested on an unverified claim.** `link` visibility grants EDITOR to "anyone
+signed in" — and signing in cost nothing, so it granted edit to anyone at all. The role model
+underneath was fine; it was resting on air.
+
+So identity is **federated**. An OpenID Connect provider vouches for the person, and this
+application never sees a password.
+
+```
+browser ──1── /oauth2/authorization/google ──▶ server ──2──▶ Google
+                                                              │
+                    ┌──── 4. redirect ?code=… ◀── server ◀──3─┘  (code exchanged,
+                    │                                              identity established)
+                    ▼
+       app ──5── POST /api/session {code} ──▶ server ──▶ session token
+```
+
+Two decisions in that picture are worth the words:
+
+**The identity is `(provider, subject)`, never the email.** `subject` is the provider's own
+identifier for the account and the only field OpenID Connect promises never changes. An email can
+be changed by its owner and, at some providers, released and reassigned to somebody else — so
+keying on it would eventually hand one person another person's documents. The email is stored and
+shown; it identifies nobody.
+
+**Step 5 exists so the token never travels in a URL.** The provider redirects to the *server*, and
+the token is needed by the *application* on another origin — so something must cross in a redirect,
+and a redirect target lands in browser history and in the `Referer` of whatever the page loads
+next. What crosses is a single-use code: 192 random bits, stored hashed, dead on first use, expired
+after a minute. That is the third option in `V13__federated_identity.sql`, which writes out why the
+other two — the token in a fragment, or a cookie — are worse here.
+
+**What is deliberately still simple.** There is no account page, no way to merge a Google account
+with a GitHub one, and no revocation beyond the token's twelve-hour life. The development login
+survives too — `COLLABEDIT_DEV_LOGIN=true`, off by default and answered with 404 when off — because
+a contributor without an OAuth client of their own still has to be able to run the thing.
+
+---
+
 ## Authorization
 
 Two doors — HTTP and WebSocket — and one `PermissionService` behind both. The interesting part is
@@ -580,7 +629,7 @@ passed unchecked as if it were a private queue, and then matched every document'
 Requirements: JDK 21, Node 22.12+, Docker.
 
 ```bash
-docker compose --profile app up -d      # everything, on http://localhost:3000
+docker compose --profile app up -d      # everything, on http://localhost:5173
 ```
 
 The first run takes a few minutes to build the images. To work on the code instead:
@@ -592,9 +641,37 @@ docker compose up -d postgres redis
 # repository would let any reader mint a token for any user. Compose and CI set their own.
 export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)
 
-./mvnw -pl app spring-boot:run              # backend on :8080
+# How you sign in. Pick ONE of the two blocks below — with neither, the application starts and
+# says on its own login screen that there is no way in, which is the intended default rather
+# than a failure.
+
+# (a) The quick one, for working on the code. "Type a name, become somebody" — the mechanism
+#     federated identity replaced. Off unless asked for, per process, so no deployment is
+#     signed into by a stranger because somebody forgot a setting.
+export COLLABEDIT_DEV_LOGIN=true
+
+# (b) The real one. Create an OAuth client and register the redirect URI EXACTLY, port included:
+#       Google — console.cloud.google.com   ->  http://localhost:8090/login/oauth2/code/google
+#       GitHub — github.com/settings/developers -> http://localhost:8090/login/oauth2/code/github
+export GOOGLE_CLIENT_ID=…  GOOGLE_CLIENT_SECRET=…
+export GITHUB_CLIENT_ID=…  GITHUB_CLIENT_SECRET=…
+
+./mvnw -pl app spring-boot:run              # backend on :8090
 cd frontend && npm install && npm run dev   # frontend on :5173
 ```
+
+The login screen is built from what the server reports at `GET /api/auth/options`, so it shows a
+button per configured provider and nothing for the ones you have not set up — a screen cannot
+advertise a door that does not open.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `COLLABEDIT_AUTH_SECRET` | *none — refuses to start* | Signs session tokens |
+| `COLLABEDIT_DEV_LOGIN` | `false` | Serves `POST /api/login`, the name-only login |
+| `GOOGLE_CLIENT_ID` / `_SECRET` | unset | Enables the Google button |
+| `GITHUB_CLIENT_ID` / `_SECRET` | unset | Enables the GitHub button |
+| `COLLABEDIT_APP_URL` | `http://localhost:5173` | Where a finished sign-in returns to |
+| `COLLABEDIT_PORT` | `8090` | The API port — must match the registered redirect URI |
 
 <details>
 <summary>If you use colima rather than Docker Desktop</summary>
@@ -745,11 +822,23 @@ Deliberate simplifications, and the ones that turned out worse than I assumed.
   document owner. Per-replica memory has never been measured, so `max-loaded-documents: 200` is an
   order-of-magnitude guess rather than a capacity plan. At real scale this wants document-affinity
   routing or a measured eviction policy, and I would want the measurement first.
-- **Auth is deliberately thin.** Passwordless login, a signed token, no accounts, no refresh
-  rotation. The subject here is distributed data consistency, not identity management.
+- **Identity is federated; the account model around it is not.** An OpenID Connect provider
+  vouches for the person, so a role finally rests on something checked. What is still missing is
+  everything a real product puts on top: no account page, no way to link a Google account to a
+  GitHub one (sign in with the other and you are a different person), no session revocation beyond
+  the token's twelve-hour life, and no way to delete an account. The development login also still
+  exists — off by default, 404 when off — because a contributor without an OAuth client of their
+  own has to be able to run the project.
 - **Invitations are multi-use** until they expire or are revoked, which is what "anyone with this
-  link" means when there are no addressable users. A single-use invite bound to an email address
-  would be the first thing to add.
+  link" means. Now that a provider gives every user a verified email, an invitation bound to an
+  address — single-use, addressed to a person rather than to whoever holds the URL — is the obvious
+  next step and was impossible before.
+- **`link` visibility grants edit, to anyone holding the address.** That is the mode working as
+  intended: possession of an unguessable URL *is* the credential. The bug worth recording is what it
+  used to mean — the document list published those URLs to every signed-in user, so "anyone with the
+  link" was "everyone", and 132 of 133 documents on a development instance were world-editable.
+  Listing and access are separate questions now, and a link-visible document appears only in the
+  lists of people it actually belongs to.
 - **The authorization guard checks that a decision was made, not that it was right.** A read
   capability declared on a write endpoint passes.
 - **The performance numbers come from a single process,** with clients, server and database on one
