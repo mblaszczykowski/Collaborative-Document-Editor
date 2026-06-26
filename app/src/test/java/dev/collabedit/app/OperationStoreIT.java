@@ -35,7 +35,7 @@ class OperationStoreIT extends IntegrationTestBase {
 
     private UUID newDocument() {
         UUID id = UUID.randomUUID();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, "store-test");
+        jdbc.update("INSERT INTO documents (id, title, visibility) VALUES (?, ?, 'link')", id, "store-test");
         return id;
     }
 

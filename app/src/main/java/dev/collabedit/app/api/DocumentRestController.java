@@ -205,9 +205,17 @@ public class DocumentRestController {
     private DocumentCatalog.DocumentSummary createOwned(String title, UUID workspaceId,
                                                         String ownerId) {
         UUID id = UUID.randomUUID();
+        // `private` is in the INSERT now (DocumentCatalog.create) rather than being set by a
+        // follow-up UPDATE here. The difference is where the safety lives: this call was the only
+        // reason documents created through the product were private, so every OTHER path into
+        // `create` produced a world-editable document — which is how a two-day-old development
+        // database ended up holding 132 of them. V12 drops the column default that allowed it.
+        //
+        // It also removes an invalidation: setOwner and setVisibility each broadcast an access
+        // change, so creating a document published two of them, to a topic for an identifier
+        // nobody can yet be subscribed to.
         catalog.create(id, title, workspaceId);
         permissions.setOwner(id, ownerId);
-        permissions.setVisibility(id, "private");
         return catalog.find(id).orElseThrow();
     }
 

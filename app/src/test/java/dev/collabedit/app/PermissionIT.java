@@ -345,11 +345,15 @@ class PermissionIT extends IntegrationTestBase {
         User anna = newUser("Anna");
         User anybody = newUser("Anybody");
 
-        // The default visibility — exactly what documents created before CP12 have, and all those
-        // created without an explicit settings change.
+        // Link visibility, named explicitly — which it has to be now, and that is the point of
+        // V12. This used to rely on the COLUMN DEFAULT being 'link', so the test's setup was the
+        // very mechanism that made a hundred and thirty documents world-editable by accident. What
+        // the test is about is unchanged: a document shared by link stays open to anyone holding
+        // it, whether it was shared deliberately today or inherited that visibility from before.
         UUID document = UUID.randomUUID();
         catalog.create(document, "Shared by link", null);
         permissions.setOwner(document, anna.id());
+        permissions.setVisibility(document, "link");
 
         assertThat(permissions.roleOf(anybody.id(), document))
             .as("the migration took away access to a document that used to work")

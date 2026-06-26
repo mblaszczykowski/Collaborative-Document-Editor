@@ -50,18 +50,40 @@ class ContentSearchIT extends IntegrationTestBase {
     @Autowired
     SnapshotStore snapshots;
 
-    /** Any signed-in user — these fixtures leave visibility at its default of `link`. */
-    private static final String ANY_USER = "user-" + UUID.randomUUID();
+    /**
+     * The user these fixtures belong to.
+     *
+     * <p>It used to be "any signed-in user", because the fixtures took the {@code visibility}
+     * column's default of {@code link} and search returned anything world-visible to anybody. Both
+     * halves of that are gone: V12 removed the default, and the listing predicate no longer treats
+     * link visibility as a reason to show somebody a document. Search is scoped to what is YOURS,
+     * so the fixture has to be.
+     *
+     * <p>Which is the right shape for these tests anyway — they are about whether the search index
+     * finds a word, not about who may see the document.
+     */
+    private static final String OWNER = "user-" + UUID.randomUUID();
 
     private UUID newDocument(String title) {
         UUID id = UUID.randomUUID();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, title);
+        jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?) "
+            + "ON CONFLICT (id) DO NOTHING", OWNER, "Owner", "#4C5FD5");
+        jdbc.update(
+            "INSERT INTO documents (id, title, owner_id, visibility) VALUES (?, ?, ?, 'private')",
+            id, title, OWNER);
         return id;
     }
 
+    /**
+     * A token for the user these fixtures belong to.
+     *
+     * <p>It used to mint a fresh random identity per call, which worked only because the documents
+     * were world-visible. They are owned and private now, so a client that is not the owner cannot
+     * write to them — and a write that is refused shows up here as a test timing out waiting for an
+     * acknowledgement, which says nothing about search.
+     */
     private String tokenFor(String name) {
-        return tokens.issue(
-            new TokenService.Principal(UUID.randomUUID().toString(), name, "#4C5FD5"));
+        return tokens.issue(new TokenService.Principal(OWNER, name, "#4C5FD5"));
     }
 
     private void awaitSnapshot(UUID document) throws InterruptedException {
@@ -94,7 +116,7 @@ class ContentSearchIT extends IntegrationTestBase {
         }
         awaitSnapshot(document);
 
-        assertThat(catalog.search(ANY_USER, null, needle, 20))
+        assertThat(catalog.search(OWNER, null, needle, 20))
             .as("the word is in the document and the search does not find it — which is worse "
                 + "than not having search, because the answer looks like an answer")
             .extracting(DocumentCatalog.DocumentSummary::id)
@@ -109,7 +131,7 @@ class ContentSearchIT extends IntegrationTestBase {
 
         // No operations, so no snapshot, so no search vector. This is the state of every document
         // in its first seconds — and the one somebody is most likely to be looking for.
-        assertThat(catalog.search(ANY_USER, null, title, 20))
+        assertThat(catalog.search(OWNER, null, title, 20))
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
     }
@@ -136,7 +158,7 @@ class ContentSearchIT extends IntegrationTestBase {
 
         catalog.updatePreview(document, huge);
 
-        assertThat(catalog.search(ANY_USER, null, needle, 20))
+        assertThat(catalog.search(OWNER, null, needle, 20))
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
     }
@@ -149,7 +171,7 @@ class ContentSearchIT extends IntegrationTestBase {
 
         catalog.rename(document, after);
 
-        assertThat(catalog.search(ANY_USER, null, after, 20))
+        assertThat(catalog.search(OWNER, null, after, 20))
             .as("renaming does not rebuild the vector, so without the title fallback the new "
                 + "name would be invisible to search until the next snapshot — which for a "
                 + "document nobody is typing in is never")

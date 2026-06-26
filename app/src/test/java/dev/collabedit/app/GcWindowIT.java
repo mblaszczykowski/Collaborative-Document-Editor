@@ -69,7 +69,7 @@ class GcWindowIT extends IntegrationTestBase {
      */
     private UUID newDocument() {
         UUID id = UUID.randomUUID();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, "GC window");
+        jdbc.update("INSERT INTO documents (id, title, visibility) VALUES (?, ?, 'link')", id, "GC window");
         return id;
     }
 

@@ -108,20 +108,21 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
                     workspace, caller, scenario.workspaceRole());
             }
 
-            boolean sqlSaysReadable = catalog.list(caller, workspace, 500).stream()
+            boolean listed = catalog.list(caller, workspace, 500).stream()
                 .anyMatch(summary -> summary.id().equals(document));
-            boolean javaSaysReadable = permissions.canRead(caller, document);
+            boolean readable = permissions.canRead(caller, document);
 
-            if (sqlSaysReadable != javaSaysReadable) {
-                disagreements.add(scenario + " -> SQL says " + sqlSaysReadable
-                    + ", PermissionService says " + javaSaysReadable);
+            // An IMPLICATION, not an equivalence: everything listed must be readable. The reverse
+            // does not hold and must not be asserted — see the class javadoc.
+            if (listed && !readable) {
+                disagreements.add(scenario + " -> listed but NOT readable");
             }
         }
 
         assertThat(disagreements)
-            .as("the access rule in DocumentCatalog's SQL has drifted from the one in "
-                + "PermissionService. Too narrow hides a document from somebody entitled to it; "
-                + "too wide is a leak that only the controller's second filter is now stopping")
+            .as("DocumentCatalog's SQL listed a document PermissionService would refuse. That is "
+                + "the leak direction: the list is the one screen that hands out identifiers, and "
+                + "only the controller's second filter is now stopping it")
             .isEmpty();
     }
 
@@ -199,4 +200,48 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(mine);
     }
+
+    /**
+     * The property the equivalence used to forbid, and the reason it had to stop being one.
+     *
+     * <p>This test asserted that listing and access AGREE on every combination. That reads like
+     * rigour and was in fact pinning a defect: it forced the list to include everything the caller
+     * could open, and {@code link} visibility means anyone logged in can open it — so every
+     * sidebar listed every link-visible document in the database, and login is passwordless.
+     *
+     * <p>The two are different questions. {@code link} means <i>anyone with the link</i>:
+     * possession of the address is the credential, and a list that hands out addresses gives the
+     * credential away. So access stays exactly as it was, and discovery does not.
+     */
+    @Test
+    @DisplayName("a link-visible document is readable by a stranger but listed for nobody but its own")
+    void linkVisibilityGrantsAccessWithoutDiscovery() {
+        String owner = "user-" + UUID.randomUUID();
+        String stranger = "user-" + UUID.randomUUID();
+        UUID document = UUID.randomUUID();
+
+        jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
+            owner, "Owner", "#4C5FD5");
+        jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
+            stranger, "Stranger", "#C1592E");
+        jdbc.update("INSERT INTO documents (id, title, owner_id, visibility) VALUES (?, ?, ?, ?)",
+            document, "Shared by link", owner, "link");
+
+        assertThat(permissions.canRead(stranger, document))
+            .as("link visibility stopped granting access — somebody holding the link can no "
+                + "longer open it, which is the whole mode")
+            .isTrue();
+
+        assertThat(catalog.list(stranger, null, 500))
+            .as("""
+                A document nobody shared with this person appeared in their list. That is how \
+                every user of this application came to see every document in it: the list was \
+                asking "could you open this" instead of "is this yours".""")
+            .noneMatch(summary -> summary.id().equals(document));
+
+        assertThat(catalog.list(owner, null, 500))
+            .as("the owner lost sight of their own document — the fix narrowed too far")
+            .anyMatch(summary -> summary.id().equals(document));
+    }
+
 }

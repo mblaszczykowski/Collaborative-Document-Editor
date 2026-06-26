@@ -81,7 +81,7 @@ class BroadcastFanoutIT extends IntegrationTestBase {
 
     private Result runRound(int clientCount) throws Exception {
         UUID document = UUID.randomUUID();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", document, "fanout-" + clientCount);
+        jdbc.update("INSERT INTO documents (id, title, visibility) VALUES (?, ?, 'link')", document, "fanout-" + clientCount);
 
         List<TestStompClient> clients = new ArrayList<>(clientCount);
         try {

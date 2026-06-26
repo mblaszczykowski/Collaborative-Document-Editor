@@ -105,7 +105,7 @@ class LoadHarnessIT extends IntegrationTestBase {
 
     private void runScenario(int documentSize, int clientCount) throws Exception {
         UUID document = UUID.randomUUID();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)",
+        jdbc.update("INSERT INTO documents (id, title, visibility) VALUES (?, ?, 'link')",
             document, "bench-" + documentSize + "-" + clientCount);
 
         List<TestStompClient> clients = new ArrayList<>(clientCount);

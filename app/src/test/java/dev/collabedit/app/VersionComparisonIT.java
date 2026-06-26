@@ -62,7 +62,7 @@ class VersionComparisonIT extends IntegrationTestBase {
 
     private UUID newDocument(String title) {
         UUID id = UUID.randomUUID();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, title);
+        jdbc.update("INSERT INTO documents (id, title, visibility) VALUES (?, ?, 'link')", id, title);
         return id;
     }
 

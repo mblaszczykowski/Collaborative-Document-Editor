@@ -53,7 +53,7 @@ class SnapshotRetentionIT extends IntegrationTestBase {
 
     private UUID newDocument() {
         UUID id = UUID.randomUUID();
-        jdbc.update("INSERT INTO documents (id, title) VALUES (?, ?)", id, "retention-test");
+        jdbc.update("INSERT INTO documents (id, title, visibility) VALUES (?, ?, 'link')", id, "retention-test");
         return id;
     }
 

@@ -63,20 +63,41 @@ public class DocumentCatalog {
      * EMPTY list — and empty search results for a word that is in their own document. Silently, on
      * the first screen of the product, and worse the busier the instance gets.
      *
-     * <p>So the predicate has to be in the query. That duplicates the resolution order from
+     * <p>So the predicate has to be in the query. It duplicates part of the resolution order in
      * {@code PermissionService.roleFrom}, and the duplication is pinned rather than trusted:
-     * {@code DocumentCatalogPermissionParityTest} generates ownership, membership and visibility
-     * combinations and fails if the two ever disagree.
+     * {@code DocumentCatalogPermissionParityIT} generates ownership, membership and visibility
+     * combinations and fails if this ever admits something that service would refuse.
      *
      * <p>The Java filter in {@code DocumentRestController} stays as well. This narrows the
      * candidate set; that one remains the authority. So a mistake here can only ever show too
      * FEW documents, never somebody else's.
      *
+     * <h2>Why {@code visibility = 'link'} is NOT in here, though it grants access</h2>
+     * <b>Listing and access are two different questions, and this predicate answers only the
+     * first.</b> It used to answer both, and that was the single line that made the product look
+     * like it had no permissions at all: every logged-in person's sidebar listed every
+     * link-visible document in the database, because "may I open this" was being used as "does
+     * this belong on your screen".
+     *
+     * <p>Which defeats the point of the mode. {@code link} means <i>anyone with the link</i> —
+     * possession of an unguessable URL is the credential. Handing that URL to everybody who logs
+     * in, in a list, gives it away. The whole mechanism only means something if the link is the
+     * thing you have to have.
+     *
+     * <p>So a link-visible document is still fully readable and editable by anyone who holds its
+     * address — {@code PermissionService.roleFrom} is unchanged and still answers EDITOR — it
+     * simply stops appearing in the lists of people it was never shared with. Owners, document
+     * members and workspace members see it exactly as before, because those are the three ways a
+     * document is actually somebody's.
+     *
+     * <p>The parity test changed shape with it, from an equivalence to an implication: everything
+     * listed must be readable, and not everything readable need be listed. That is the direction
+     * that matters — the other one is a leak.
+     *
      * <p>Takes the caller's id three times.
      */
     private static final String READABLE_BY_CALLER =
         "(d.owner_id = ? "
-            + " OR d.visibility = 'link' "
             + " OR EXISTS (SELECT 1 FROM document_members dm "
             + " WHERE dm.doc_id = d.id AND dm.user_id = ?) "
             + " OR EXISTS (SELECT 1 FROM workspace_members wm "
@@ -172,8 +193,19 @@ public class DocumentCatalog {
     // Writes
     // ------------------------------------------------------------------
 
+    /**
+     * Creates a document — <b>private</b>, and says so in the INSERT.
+     *
+     * <p>It used to leave {@code visibility} to the column default, which was {@code 'link'}. So
+     * every document created by any path that did not follow up with an explicit
+     * {@code setVisibility} was world-editable from the moment it existed, and the only reason the
+     * product's own endpoint was safe is that it remembered to make that second call. V12 drops the
+     * default for the same reason V10 dropped {@code document_members.role}'s: a default that
+     * grants access is a decision nobody makes on purpose, taken by whoever forgets.
+     */
     public void create(UUID documentId, String title, UUID workspaceId) {
-        jdbc.update("INSERT INTO documents (id, title, workspace_id) VALUES (?, ?, ?)",
+        jdbc.update(
+            "INSERT INTO documents (id, title, workspace_id, visibility) VALUES (?, ?, ?, 'private')",
             documentId, title, workspaceId);
     }
 

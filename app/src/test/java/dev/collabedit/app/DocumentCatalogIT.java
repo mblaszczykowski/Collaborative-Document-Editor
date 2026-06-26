@@ -2,6 +2,7 @@ package dev.collabedit.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.collabedit.app.auth.PermissionService;
 import dev.collabedit.app.auth.TokenService;
 import dev.collabedit.app.persist.DocumentCatalog;
 import java.util.UUID;
@@ -49,20 +50,33 @@ class DocumentCatalogIT extends IntegrationTestBase {
     JdbcTemplate jdbc;
     @Autowired
     TokenService tokens;
+    @Autowired
+    PermissionService permissions;
 
     /**
-     * Any signed-in user.
+     * The user these fixtures belong to.
      *
-     * <p>The listings are scoped to the caller since the LIMIT was moved behind the access
-     * rule. These fixtures create documents through {@code catalog.create}, which leaves
-     * {@code visibility} at its default of {@code link} — readable by anybody signed in — so
-     * the identity here does not select anything, it only has to exist.
+     * <p>It used to be "any signed-in user", and the javadoc said so: the documents were created
+     * through {@code catalog.create}, which left {@code visibility} at its default of {@code link},
+     * "readable by anybody signed in — so the identity here does not select anything, it only has
+     * to exist".
+     *
+     * <p>That is no longer true and should never have been what these tests rested on. Listing is
+     * about what is YOURS — owned, or shared with you — and a fixture that appeared in the list
+     * because it was world-visible was exercising the leak rather than the feature. The documents
+     * are owned now, which is also what makes the assertions below mean what they say: a document
+     * disappearing from this list is a statement about deletion, not about visibility.
      */
-    private static final String ANY_USER = "user-" + UUID.randomUUID();
+    private static final String OWNER = "user-" + UUID.randomUUID();
 
     private UUID newDocument(String title) {
         UUID id = UUID.randomUUID();
+        // The row first: documents.owner_id is a foreign key, which is itself part of the design —
+        // an ownerless document is not a state the schema allows.
+        jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?) "
+            + "ON CONFLICT (id) DO NOTHING", OWNER, "Owner", "#4C5FD5");
         catalog.create(id, title, null);
+        permissions.setOwner(id, OWNER);
         return id;
     }
 
@@ -79,7 +93,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
 
         try (TestStompClient anna = new TestStompClient(
             port, tokens.issue(new TokenService.Principal(
-                UUID.randomUUID().toString(), "Anna", "#C1592E")), document, 901)) {
+                OWNER, "Anna", "#C1592E")), document, 901)) {
             anna.insert(0, "content that must not be lost");
             anna.awaitCondition(() -> anna.lastAckSeq() > 0, PATIENCE, "write acknowledged");
         }
@@ -98,14 +112,14 @@ class DocumentCatalogIT extends IntegrationTestBase {
     @DisplayName("a deleted document disappears from the list and appears in the bin")
     void deletedDocumentDisappearsFromList() {
         UUID document = newDocument("Vanishing");
-        assertThat(catalog.list(ANY_USER, null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
+        assertThat(catalog.list(OWNER, null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
 
         catalog.softDelete(document);
 
-        assertThat(catalog.list(ANY_USER, null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
+        assertThat(catalog.list(OWNER, null, 500)).extracting(DocumentCatalog.DocumentSummary::id)
             .doesNotContain(document);
-        assertThat(catalog.listDeleted(ANY_USER, 500)).extracting(DocumentCatalog.DocumentSummary::id)
+        assertThat(catalog.listDeleted(OWNER, 500)).extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
         assertThat(catalog.find(document)).isEmpty();
     }
@@ -140,7 +154,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
 
         try (TestStompClient anna = new TestStompClient(
             port, tokens.issue(new TokenService.Principal(
-                UUID.randomUUID().toString(), "Anna", "#C1592E")), document, 902)) {
+                OWNER, "Anna", "#C1592E")), document, 902)) {
             // The snapshot threshold in tests is 20 operations.
             for (int i = 0; i < 25; i++) {
                 anna.insert(i, "x");
@@ -166,7 +180,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
         String marker = "quantum" + System.nanoTime();
         UUID byTitle = newDocument("Report " + marker);
 
-        assertThat(catalog.search(ANY_USER, null, marker, 50))
+        assertThat(catalog.search(OWNER, null, marker, 50))
             .as("search does not find by title")
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(byTitle);
@@ -176,7 +190,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
         String contentMarker = "photonic" + System.nanoTime();
         try (TestStompClient anna = new TestStompClient(
             port, tokens.issue(new TokenService.Principal(
-                UUID.randomUUID().toString(), "Anna", "#C1592E")), byContent, 903)) {
+                OWNER, "Anna", "#C1592E")), byContent, 903)) {
             for (int i = 0; i < 25; i++) {
                 anna.insert(anna.text().length(), i == 0 ? contentMarker : " ");
             }
@@ -185,7 +199,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
 
         boolean found = false;
         for (int attempt = 0; attempt < 200 && !found; attempt++) {
-            found = catalog.search(ANY_USER, null, contentMarker, 50).stream()
+            found = catalog.search(OWNER, null, contentMarker, 50).stream()
                 .anyMatch(d -> d.id().equals(byContent));
             if (!found) {
                 Thread.sleep(20);
