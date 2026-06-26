@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { API_ORIGIN } from './config'
-import { api, setAuthToken, type DocumentSummary, type Session, type AuthOptions } from './api'
+import { ApiError, api, type DocumentSummary, type Session, type AuthOptions } from './api'
 import { Editor } from './editor/Editor'
 import { useCollaborativeDocument } from './editor/useCollaborativeDocument'
 import { DiagnosticsBar } from './ui/DiagnosticsBar'
@@ -13,7 +13,7 @@ import { SaveIndicator } from './ui/SaveIndicator'
 import { SharePanel } from './ui/SharePanel'
 import { SuggestionsPanel } from './ui/SuggestionsPanel'
 import { copyText } from './ui/browser'
-import { DEBUG, SESSION_KEY, loadSession } from './ui/session'
+import { DEBUG, forgetSession, loadSession, rememberSession } from './ui/session'
 import { useFailure } from './ui/useFailure'
 
 /**
@@ -33,12 +33,29 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(loadSession)
 
   function remember(next: Session): void {
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(next))
-    setAuthToken(next.token)
+    rememberSession(next)
     setSession(next)
   }
 
-  return session ? <Workspace session={session} /> : <Login onLogin={remember} />
+  /**
+   * Back to the sign-in screen — used by the sign-out control and by an expired token alike.
+   *
+   * The second caller is the one that makes this necessary rather than pleasant. A token lasts
+   * twelve hours and the session now outlives the browser, so "signed in yesterday, opened it
+   * today" is the ordinary case, not an edge one. Without this the workspace answered 401 to every
+   * request and offered a "Try again" that reloaded into the same 401 for ever, with no way back to
+   * a login screen — a dead end reachable by doing nothing but waiting.
+   */
+  const signOut = useCallback(() => {
+    forgetSession()
+    setSession(null)
+  }, [])
+
+  return session ? (
+    <Workspace session={session} onSignOut={signOut} />
+  ) : (
+    <Login onLogin={remember} />
+  )
 }
 
 /** Where the API lives, for the sign-in links — which are full-page navigations, not fetches. */
@@ -189,7 +206,7 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
   )
 }
 
-function Workspace({ session }: { session: Session }) {
+function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
   const [openId, setOpenId] = useState<string | null>(null)
 
@@ -267,17 +284,26 @@ function Workspace({ session }: { session: Session }) {
         return
       }
       setOpenId(list[0].id)
-    }).catch(() => {
+    }).catch((error: unknown) => {
       // Without this the failure was an uncaught rejection in the console and a page stuck on
       // "Loading…" for ever: `openId` stayed null, so Workspace rendered the placeholder and
       // nothing ever replaced it. A list that cannot be fetched is a normal thing to survive —
       // an expired token, a backend that is down — and the user needs a way out of it.
-      if (!cancelled) setBootstrapFailed(true)
+      if (cancelled) return
+      // The two failures need different exits, and telling them apart is what `ApiError.status`
+      // is for. A backend that is down is worth retrying; a token the server refuses is not, and
+      // "Try again" against a 401 reloads into the same 401 until the user gives up. That one
+      // needs the sign-in screen, so it takes the same route as signing out.
+      if (error instanceof ApiError && error.status === 401) {
+        onSignOut()
+        return
+      }
+      setBootstrapFailed(true)
     })
     return () => {
       cancelled = true
     }
-  }, [refresh])
+  }, [refresh, onSignOut])
 
   /**
    * The address is the source of truth about what is open.
@@ -329,6 +355,7 @@ function Workspace({ session }: { session: Session }) {
       onSelect={select}
       onCreate={createDocument}
       onRefresh={() => void refresh()}
+      onSignOut={onSignOut}
     />
   ) : (
     <div className="app">
@@ -336,6 +363,10 @@ function Workspace({ session }: { session: Session }) {
         <div className="loading">
           <p>The document list could not be loaded.</p>
           <button onClick={() => window.location.reload()}>Try again</button>
+          {/* The second exit, for the failure that retrying cannot fix. A 401 already leaves on
+              its own, but a backend that refuses for any other reason must not strand somebody on
+              a screen whose only control reloads into the same screen. */}
+          <button className="linklike" onClick={onSignOut}>Sign out</button>
         </div>
       ): (
         <div className="loading">Loading…</div>
@@ -353,6 +384,8 @@ function DocumentWorkspace(props: {
   onCreate: () => Promise<void>
   /** The list needs refreshing — after a rename, a delete or a restore. */
   onRefresh: () => void
+  /** Discards the identity and returns to the sign-in screen. */
+  onSignOut: () => void
 }) {
   const { session, documentId } = props
 
@@ -428,9 +461,19 @@ function DocumentWorkspace(props: {
         <div className="menubar-right">
           <SaveIndicator state={doc.connectionState} pending={doc.pendingCount} />
           <div className="presence">
-            <span className="avatar" style={{ background: session.color }} title={session.displayName}>
+            {/* Own avatar first, and it is the sign-out control. A button rather than a menu with
+                one item in it, and it says whose session it ends: the alternative to naming the
+                account is a second identity signing the first one out without ever showing it,
+                which is the confusion a shared browser produces. */}
+            <button
+              type="button"
+              className="avatar avatar-self"
+              style={{ background: session.color }}
+              title={`Signed in as ${session.displayName} — sign out`}
+              onClick={props.onSignOut}
+            >
               {initials(session.displayName)}
-            </span>
+            </button>
             {others.slice(0, 4).map((person) => (
               <span
                 key={person.replicaId}

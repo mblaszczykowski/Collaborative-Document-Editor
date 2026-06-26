@@ -1,26 +1,59 @@
 /**
- * The identity remembered for the lifetime of a browser TAB, plus the diagnostics toggle.
+ * The identity this browser remembers, plus the diagnostics toggle.
  *
- * Split out of App.tsx, because these are the only places that reach into `sessionStorage` and the
- * page address — that is, into state from outside the application. Keeping them together means one
- * can say at a glance what this application reads from its environment.
+ * Split out of App.tsx, because these are the only places that reach into web storage and the page
+ * address — that is, into state from outside the application. Keeping them together means one can
+ * say at a glance what this application reads from its environment.
  */
 import { setAuthToken, type Session } from '../api'
 
-export const SESSION_KEY = 'inkline.session'
+const SESSION_KEY = 'inkline.session'
 
 /** Diagnostics mode — only for working on the project and for the chaos tests. */
 export const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 /**
- * The session survives a page reload.
+ * Where the session is kept — and it used to be `sessionStorage` unconditionally, which meant
+ * <b>opening the application in a second tab signed you out</b>.
  *
- * `sessionStorage`, not `localStorage`: the identity is meant to be tied to a TAB, not to the
- * browser. With `localStorage` two tabs open side by side would share an account — so the "two
- * people in two windows" scenario would stop working.
+ * <h2>The reason that was chosen, and why it stopped being a reason</h2>
+ * `sessionStorage` is scoped to a tab, so two tabs could hold two different identities, and "two
+ * people editing in two windows" is the demo a collaborative editor lives or dies by. That was a
+ * fair trade when signing in meant typing a name: a second identity cost one keystroke.
+ *
+ * <p>Federated sign-in invalidated both halves of it. Getting an identity now costs a round trip to
+ * Google, and the identity that comes back is <b>the same one</b> — the provider signs you into the
+ * account you are already signed into, so a second tab cannot be a second person however the token
+ * is stored. The cost stayed and the benefit went away.
+ *
+ * <p>So the default is `localStorage`: signed in once per browser, as every application the user
+ * has ever used behaves. The per-tab behaviour survives as an explicit request, because it is still
+ * how the demo is driven when {@code COLLABEDIT_DEV_LOGIN=true} makes a second identity free again.
+ *
+ * <h2>Why the opt-in is a stored marker rather than a look at the address</h2>
+ * `?tab-session` cannot simply be read on each load, because the sign-in flow navigates away to the
+ * provider and comes back to a bare `?code=…` — the parameter would not survive the trip that
+ * matters. A marker in `sessionStorage` does: it is scoped to the tab, and a tab keeps it across
+ * navigations, including one that leaves the origin and returns.
  */
+const TAB_SCOPED_KEY = 'inkline.tab-scoped'
+
+// Recorded when the module loads, exactly like DEBUG above, and NOT on the first call that happens
+// to need a store. That distinction has teeth: written lazily, the opt-in is only honoured if
+// something reads or writes a session, so `?tab-session` on a tab that goes straight to the
+// provider would be forgotten by the time the identity came back — the one journey it exists for.
+// A test covers it (`the opt-in survives the sign-in redirect`), because it is invisible otherwise.
+if (new URLSearchParams(window.location.search).has('tab-session')) {
+  sessionStorage.setItem(TAB_SCOPED_KEY, '1')
+}
+
+function storage(): Storage {
+  return sessionStorage.getItem(TAB_SCOPED_KEY) === null ? localStorage : sessionStorage
+}
+
+/** The session survives a page reload — and, by default, closing the browser. */
 export function loadSession(): Session | null {
-  const stored = sessionStorage.getItem(SESSION_KEY)
+  const stored = storage().getItem(SESSION_KEY)
   if (stored === null) {
     setAuthToken(null)
     return null
@@ -29,17 +62,41 @@ export function loadSession(): Session | null {
     const session = JSON.parse(stored) as Session
     // The token is armed HERE, where the session is read, rather than by the caller.
     //
-    // It has to be set before the first REST request goes out — including for a session restored
-    // from sessionStorage, where there is no login to set it at. App.tsx used to do that from
-    // inside a `useState` initialiser whose value was never read and whose setter was never
-    // called, kept alive by a `void` to satisfy noUnusedLocals: a fake piece of state existing
-    // only to run a side effect before the first render. This file already owns every read from
-    // sessionStorage and says so at the top, so the ordering rule belongs with it.
+    // It has to be set before the first REST request goes out — including for a restored session,
+    // where there is no login to set it at. App.tsx used to do that from inside a `useState`
+    // initialiser whose value was never read and whose setter was never called, kept alive by a
+    // `void` to satisfy noUnusedLocals: a fake piece of state existing only to run a side effect
+    // before the first render. This file already owns every read from storage and says so at the
+    // top, so the ordering rule belongs with it.
     setAuthToken(session.token)
     return session
   } catch {
-    sessionStorage.removeItem(SESSION_KEY)
+    storage().removeItem(SESSION_KEY)
     setAuthToken(null)
     return null
   }
+}
+
+/** Records a freshly obtained identity, and arms the token for the requests that follow. */
+export function rememberSession(session: Session): void {
+  storage().setItem(SESSION_KEY, JSON.stringify(session))
+  setAuthToken(session.token)
+}
+
+/**
+ * Discards the identity.
+ *
+ * <p>Both stores are cleared rather than only the one in use. A tab that opted into `?tab-session`
+ * has a session in each, and clearing one would sign the user out of a session they can still see —
+ * the surest way to make "sign out" look broken.
+ *
+ * <p>There is nothing to tell the server. Tokens are signed rather than stored ({@code
+ * TokenService}: no refresh, no revocation, a twelve-hour expiry), so discarding it here is the
+ * whole of signing out. That is a real limitation and it is written down in the README rather than
+ * hidden behind a request that would only pretend to do something.
+ */
+export function forgetSession(): void {
+  localStorage.removeItem(SESSION_KEY)
+  sessionStorage.removeItem(SESSION_KEY)
+  setAuthToken(null)
 }

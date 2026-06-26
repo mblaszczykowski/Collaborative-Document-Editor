@@ -73,6 +73,18 @@ button { font-family: inherit; cursor: pointer; }
   border: 1.5px solid var(--chrome); margin-left: -6px;
 }
 .avatar:first-child { margin-left: 0; }
+/* The own avatar is a <button>, so it needs the browser's button chrome removed to sit level with
+   the <span> avatars beside it — without `padding: 0` it renders a few pixels larger than the
+   people it is standing next to, and the row stops looking like one row. */
+.avatar-self { padding: 0; font-family: inherit; }
+.avatar-self:hover { outline: 2px solid var(--chrome-line); outline-offset: 1px; }
+
+/* A button that reads as a link — for an exit offered inside a failure message, where a second
+   filled button would compete with the recovery the user should try first. */
+.linklike {
+  background: none; border: none; padding: 4px; margin-top: 6px;
+  color: var(--text-dim); font-size: 12px; text-decoration: underline;
+}
 
 .menu-divider { width: 1px; height: 16px; background: var(--chrome-line); }
 .doc-title { font-size: 12.5px; color: var(--text-dim); }

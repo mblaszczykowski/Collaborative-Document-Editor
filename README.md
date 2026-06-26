@@ -582,10 +582,31 @@ next. What crosses is a single-use code: 192 random bits, stored hashed, dead on
 after a minute. That is the third option in `V13__federated_identity.sql`, which writes out why the
 other two — the token in a fragment, or a cookie — are worse here.
 
+**Where the session is kept, and a decision that quietly expired.** It lived in `sessionStorage`,
+which is scoped to a tab — so opening the application in a second tab presented the sign-in screen.
+That was deliberate: a tab was the unit of identity, so two tabs could be two people, and "two
+people editing in two windows" is the demo this project is judged on. Federated sign-in removed the
+benefit and left the cost. A second identity used to be a typed name; it is now a round trip to a
+provider that signs you back into the account you already have, so a second tab cannot be a second
+person however the token is stored.
+
+So it is `localStorage` now — signed in once per browser, like everything else the user has ever
+used — and the per-tab behaviour survives as `?tab-session`, which is how the demo is driven when
+`COLLABEDIT_DEV_LOGIN=true` makes a second identity free again. The opt-in is recorded when the page
+loads rather than when a session is first touched, because the sign-in journey returns to a bare
+`?code=…`: read lazily, the flag would be forgotten at precisely the moment the identity arrives.
+
+That change is also what forced a **sign out** control to exist. There was none — closing the tab
+was the sign-out — and once a session outlives the browser, "signed in yesterday, opened it today"
+means a token past its twelve-hour life, a document list that answers 401, and a *Try again* button
+reloading into the same 401 for ever. A 401 now returns to the sign-in screen on its own.
+
 **What is deliberately still simple.** There is no account page, no way to merge a Google account
-with a GitHub one, and no revocation beyond the token's twelve-hour life. The development login
-survives too — `COLLABEDIT_DEV_LOGIN=true`, off by default and answered with 404 when off — because
-a contributor without an OAuth client of their own still has to be able to run the thing.
+with a GitHub one, and no revocation beyond the token's twelve-hour life — tokens are signed rather
+than stored, so signing out discards the token locally and cannot invalidate one already taken. The
+development login survives too — `COLLABEDIT_DEV_LOGIN=true`, off by default and answered with 404
+when off — because a contributor without an OAuth client of their own still has to be able to run
+the thing.
 
 ---
 
