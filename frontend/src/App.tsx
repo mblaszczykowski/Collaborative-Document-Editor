@@ -375,6 +375,74 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
   )
 }
 
+/**
+ * The signed-in person, and the way out.
+ *
+ * <h2>Why a menu and not a button</h2>
+ * The avatar WAS the sign-out button, with a tooltip for a warning. Clicking it signed you out
+ * instantly — and it was reported as a bug about the authentication, which is the right reading:
+ * everywhere else on the web your own avatar opens an account menu, so a control that looks like
+ * one and instead ends the session is not a surprising button, it is a broken-looking application.
+ *
+ * <p>A tooltip does not fix that. It appears after a delay the user has already clicked through,
+ * and never at all on a touch screen. So the destructive thing is one step further in, behind a
+ * menu that first says who you are — which is also the question somebody clicking their own avatar
+ * is usually asking.
+ */
+function AccountMenu({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
+  const [open, setOpen] = useState(false)
+
+  // Escape closes, and so does a click anywhere else — the two ways out of every other transient
+  // surface in this application (SharePanel, the rename field in DocumentList). A menu that only
+  // closes by clicking the thing that opened it is a menu people leave open by accident.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    // `pointerdown` rather than `click`: a click on another control would otherwise be spent
+    // closing this, and the user has to press the thing twice.
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target as Element | null)?.closest('.account')) setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('pointerdown', onPointerDown)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [open])
+
+  return (
+    <div className="account">
+      <button
+        type="button"
+        className="avatar avatar-self"
+        style={{ background: session.color }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={session.displayName}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {initials(session.displayName)}
+      </button>
+      {open && (
+        <div className="account-menu" role="menu">
+          <div className="account-who">
+            <strong>{session.displayName}</strong>
+            {/* Said out loud, because a shared browser is exactly where somebody signs out — and
+                being told which account is about to end is the whole reason to look here first. */}
+            <span>Signed in</span>
+          </div>
+          <button type="button" role="menuitem" onClick={onSignOut}>
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DocumentWorkspace(props: {
   session: Session
   documentId: string
@@ -461,19 +529,7 @@ function DocumentWorkspace(props: {
         <div className="menubar-right">
           <SaveIndicator state={doc.connectionState} pending={doc.pendingCount} />
           <div className="presence">
-            {/* Own avatar first, and it is the sign-out control. A button rather than a menu with
-                one item in it, and it says whose session it ends: the alternative to naming the
-                account is a second identity signing the first one out without ever showing it,
-                which is the confusion a shared browser produces. */}
-            <button
-              type="button"
-              className="avatar avatar-self"
-              style={{ background: session.color }}
-              title={`Signed in as ${session.displayName} — sign out`}
-              onClick={props.onSignOut}
-            >
-              {initials(session.displayName)}
-            </button>
+            <AccountMenu session={session} onSignOut={props.onSignOut} />
             {others.slice(0, 4).map((person) => (
               <span
                 key={person.replicaId}

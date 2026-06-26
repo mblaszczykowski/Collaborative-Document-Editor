@@ -79,6 +79,25 @@ button { font-family: inherit; cursor: pointer; }
 .avatar-self { padding: 0; font-family: inherit; }
 .avatar-self:hover { outline: 2px solid var(--chrome-line); outline-offset: 1px; }
 
+/* The account menu hangs under the avatar. `position: relative` on the wrapper rather than on the
+   avatar itself, because the avatars overlap by a negative margin and positioning one of them
+   would lift it out of that stack. */
+.account { position: relative; display: flex; }
+.account-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; min-width: 176px;
+  background: var(--chrome); border: 1px solid var(--chrome-line); border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%); padding: 4px; text-align: left;
+}
+.account-who { padding: 8px 10px 6px; display: flex; flex-direction: column; gap: 2px; }
+.account-who strong { font-size: 12.5px; font-weight: 600; }
+.account-who span { font-size: 11px; color: var(--text-dim); }
+.account-menu button {
+  display: block; width: 100%; text-align: left; padding: 7px 10px;
+  background: none; border: none; border-top: 1px solid var(--chrome-line);
+  font-size: 12.5px; color: var(--text); border-radius: 0 0 5px 5px;
+}
+.account-menu button:hover { background: var(--hover); }
+
 /* A button that reads as a link — for an exit offered inside a failure message, where a second
    filled button would compete with the recovery the user should try first. */
 .linklike {
