@@ -154,6 +154,22 @@ services:
       # and the local default applies when it is not, so `docker compose --profile app up` still
       # works with nothing configured.
       COLLABEDIT_AUTH_SECRET: ${COLLABEDIT_AUTH_SECRET:-local-development-secret-not-for-production}
+      # The identity providers, passed through from the host — and unlike the secret above, with
+      # NO default, because there is no such thing as a local default OAuth application. An empty
+      # value is how "no provider" is spelled: `CollabEditProperties.Auth.Provider.configured()`
+      # treats blank as absent, so with nothing set the container starts with federated sign-in
+      # unavailable rather than with a half-configured registration that fails at the redirect.
+      #
+      # Compose reads `.env` from this directory automatically, which is where these belong —
+      # `.env` is in .gitignore, and .env.example documents the names without the values. A client
+      # secret written into this file would be committed, and a committed OAuth secret is one
+      # `git push` away from being everyone's.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      # Off unless asked for. See DevLoginDisabledIT for why the default is the security property.
+      COLLABEDIT_DEV_LOGIN: ${COLLABEDIT_DEV_LOGIN:-false}
     ports:
       - "8090:8090"
     depends_on:
