@@ -71,7 +71,7 @@ COPY --from=build --chown=10001:0 ${EXTRACTED}/snapshot-dependencies/ ./
 COPY --from=build --chown=10001:0 ${EXTRACTED}/application/ ./
 
 USER 10001
-EXPOSE 8080
+EXPOSE 8090
 
 # MaxRAMPercentage rather than -Xmx: the memory limit is set by the orchestrator and the JVM is
 # meant to adapt to it, rather than carrying a hardcoded value that, when the container limit
@@ -86,6 +86,6 @@ ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 # A start-period of 40 s, because startup includes the Flyway migrations and the first connection
 # to Postgres; a shorter value would mean restarting the container mid-startup.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=40s --retries=5 \
-    CMD curl --fail --silent http://localhost:8080/actuator/health || exit 1
+    CMD curl --fail --silent http://localhost:8090/actuator/health || exit 1
 
 ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]

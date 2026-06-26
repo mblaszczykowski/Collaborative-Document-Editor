@@ -192,7 +192,7 @@ export class DocumentConnection {
 
     const client = new Client({
       // Scheme and host come from config.ts, which derives them from the page. Writing
-      // `ws://…:8080` here meant the app could not run over TLS at all: a page served over
+      // `ws://…:8090` here meant the app could not run over TLS at all: a page served over
       // https may not open a ws: socket, and the browser blocks it as mixed content.
       brokerURL: WS_URL,
       connectHeaders: { token: this.token },

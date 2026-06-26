@@ -1,14 +1,10 @@
 package dev.collabedit.app.auth;
 
-import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -201,15 +197,10 @@ public class InviteService {
         return updated > 0;
     }
 
+    /** See {@link TokenService#sha256} — shared with the login-code store, which stores the same
+     * kind of secret for the same reason. */
     private static String hashOf(String token) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(token.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            // SHA-256 is required of every JVM. If it is missing, nothing about this service is
-            // salvageable and pretending otherwise would store unhashed tokens.
-            throw new IllegalStateException("SHA-256 unavailable", e);
-        }
+        return TokenService.sha256(token);
     }
 
     private record Row(UUID documentId, Role role) {

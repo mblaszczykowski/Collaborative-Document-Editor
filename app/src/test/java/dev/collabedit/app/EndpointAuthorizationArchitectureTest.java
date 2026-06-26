@@ -66,7 +66,23 @@ class EndpointAuthorizationArchitectureTest {
     private static final List<String> EXPECTED_PUBLIC = List.of(
         // Moved out of DocumentRestController: issuing an identity is not a document operation,
         // and it was the only raw SQL under api/. See LoginController.
-        "LoginController#login");
+        //
+        // Still public, and now also DISABLED by default: it is the development login, and a
+        // deployment that does not ask for it does not serve it at all. Public here means "no
+        // identity is required to call it", which is unchanged — the gate is a different question
+        // from the declaration, and this test is about the declaration.
+        "LoginController#login",
+
+        // Says which providers this deployment offers and whether the development login exists.
+        // A visitor reads it BEFORE they have an identity, which is the whole reason it is public;
+        // it discloses configuration that the login screen displays to everybody anyway.
+        "LoginController#options",
+
+        // Exchanges the single-use code from a finished federated sign-in for a session token.
+        // Public because the CODE is the authorization: there is no identity yet to check it
+        // against — establishing one is what this endpoint does. The code is 192 random bits, dies
+        // on first use and expires in a minute (LoginCodeStore).
+        "LoginController#session");
 
     @Test
     @DisplayName("no REST endpoint is missing an access declaration")

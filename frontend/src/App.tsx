@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, setAuthToken, type DocumentSummary, type Session } from './api'
+import { API_ORIGIN } from './config'
+import { api, setAuthToken, type DocumentSummary, type Session, type AuthOptions } from './api'
 import { Editor } from './editor/Editor'
 import { useCollaborativeDocument } from './editor/useCollaborativeDocument'
 import { DiagnosticsBar } from './ui/DiagnosticsBar'
@@ -40,10 +41,79 @@ export default function App() {
   return session ? <Workspace session={session} /> : <Login onLogin={remember} />
 }
 
+/** Where the API lives, for the sign-in links — which are full-page navigations, not fetches. */
+const PROVIDER_LABELS: Record<string, string> = { google: 'Google', github: 'GitHub' }
+
+/**
+ * The sign-in screen.
+ *
+ * Two things reach it. Ordinarily it asks the server how sign-in works and renders a button per
+ * configured provider. But it is also where the browser LANDS after a provider redirect, carrying
+ * either `?code=` (a finished sign-in, to be exchanged for a token) or `?error=` (one that was not).
+ * Both are handled before anything is drawn, so a returning user never sees the buttons flash.
+ */
 function Login({ onLogin }: { onLogin: (session: Session) => void }) {
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
+  const [options, setOptions] = useState<AuthOptions | null>(null)
   const failure = useFailure()
+
+  // The redirect handler. It runs once, before the options are fetched, because a code is only
+  // ever valid for a moment and exchanging it is more urgent than drawing a screen the user is
+  // about to leave.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('code')
+    const error = params.get('error')
+
+    // The parameters come off the address bar either way. A spent code left in the URL survives a
+    // refresh and produces a second, failing exchange — which looks to the user like the sign-in
+    // broke rather than like it already worked.
+    if (code !== null || error !== null) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    if (error !== null) {
+      failure.report(
+        error === 'no-subject'
+          ? 'That provider did not identify the account. Try a different one.'
+          : 'Sign-in did not complete. Please try again.',
+      )
+      return
+    }
+    if (code === null) return
+
+    setBusy(true)
+    void failure
+      .attempt('Could not finish signing in. Please try again.', async () =>
+        onLogin(await api.session(code)),
+      )
+      .finally(() => setBusy(false))
+    // Deliberately once, on mount: `failure` and `onLogin` are stable, and re-running this would
+    // re-exchange a code that is by then spent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void api
+      .authOptions()
+      .then((fetched) => {
+        if (!cancelled) setOptions(fetched)
+      })
+      .catch(() => {
+        // A server that cannot say how to sign in is a server that cannot sign anybody in. Showing
+        // the buttons anyway would offer a door that leads nowhere; this at least says so.
+        if (!cancelled) {
+          setOptions({ providers: [], devLoginEnabled: false })
+          failure.report('Could not reach the server. It may be starting up — try again shortly.')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     setBusy(true)
@@ -64,25 +134,57 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
 
   return (
     <div className="login">
-      <form className="login-card" onSubmit={submit}>
+      <div className="login-card">
         <div className="login-brand">
           <span className="brand-mark" />
           Inkline
         </div>
         <p>A document editor for real-time teamwork.</p>
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="Your name"
-          autoFocus
-        />
-        <button type="submit" disabled={busy}>
-          {busy ? 'Connecting…' : 'Get started'}
-        </button>
+
+        {options === null && <p className="login-hint">Checking how to sign in…</p>}
+
+        {options?.providers.map((provider) => (
+          <a
+            key={provider}
+            className="login-provider"
+            // A full-page navigation rather than fetch: the whole point of the redirect flow is
+            // that the browser visits the provider, and XHR cannot show somebody a consent screen.
+            href={`${API_ORIGIN}/oauth2/authorization/${provider}`}
+          >
+            {busy ? 'Signing in…' : `Continue with ${PROVIDER_LABELS[provider] ?? provider}`}
+          </a>
+        ))}
+
+        {options?.devLoginEnabled === true && (
+          <form className="login-dev" onSubmit={submit}>
+            {options.providers.length > 0 && (
+              <p className="login-hint">or, for local development</p>
+            )}
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Your name"
+              aria-label="Your name"
+            />
+            <button type="submit" disabled={busy}>
+              {busy ? 'Connecting…' : 'Get started'}
+            </button>
+          </form>
+        )}
+
+        {options !== null
+          && options.providers.length === 0
+          && !options.devLoginEnabled && (
+          <p className="login-hint">
+            No sign-in method is configured on this server. See the README — a provider needs a
+            client id and secret, or set COLLABEDIT_DEV_LOGIN=true for local development.
+          </p>
+        )}
+
         {failure.message !== null && (
           <FailureNote message={failure.message} onDismiss={failure.dismiss} />
         )}
-      </form>
+      </div>
     </div>
   )
 }

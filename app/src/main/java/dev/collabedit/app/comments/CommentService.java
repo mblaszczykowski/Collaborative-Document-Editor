@@ -223,10 +223,17 @@ public class CommentService implements ThreadDocumentResolver, CommentAnchorAuth
      * <h2>Why the thread's document, and NOT "you created it"</h2>
      * The first version of this asked for {@code created_by = ?}, which is the tightest rule and
      * matches the only moment the product legitimately anchors a thread — immediately after
-     * creating it. It is the wrong rule <b>in this system</b>, because identity here does not
-     * outlive a tab: login is passwordless, {@code UserDirectory} mints a fresh {@code UUID} on
-     * every login, and {@code session.ts} keeps it in {@code sessionStorage} precisely so it is
-     * per-tab.
+     * creating it. It was the wrong rule when it was written, because identity did not outlive a
+     * tab: the only login was passwordless, {@code UserDirectory.create} minted a fresh
+     * {@code UUID} per call, and {@code session.ts} keeps the session in {@code sessionStorage}
+     * precisely so it is per-tab.
+     *
+     * <p><b>That constraint is now lifted for federated users</b> — a provider returns the same
+     * {@code (provider, subject)} every time, so {@code created_by} is durable. The rule has not
+     * been tightened back, deliberately: the development login still mints an identifier per call,
+     * so a deployment with it enabled would strand replayed anchors exactly as described below.
+     * Tightening it belongs with removing that login, not before, and it is written here so the
+     * next person finds a decision rather than an oversight.
      *
      * <p>The client's unacknowledged-operation buffer, by contrast, is in IndexedDB — origin-scoped
      * and replayed on every reconnect, for every operation type including this one. So: post a

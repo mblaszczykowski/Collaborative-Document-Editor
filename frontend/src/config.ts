@@ -6,8 +6,8 @@
  * Both addresses used to be written out at their point of use:
  *
  * ```
- * const BASE = `http://${window.location.hostname}:8080/api`   // api.ts
- * brokerURL: `ws://${window.location.hostname}:8080/ws`        // connection.ts
+ * const BASE = `http://${window.location.hostname}:8090/api`   // api.ts
+ * brokerURL: `ws://${window.location.hostname}:8090/ws`        // connection.ts
  * ```
  *
  * That works on a laptop and **cannot work anywhere else**, for a reason worse than the
@@ -24,7 +24,7 @@
  * 1. **`VITE_API_BASE` is set** — the backend is on a known, different origin. Vite compiles
  *    environment variables into the bundle, so this is fixed at *build* time, not at container
  *    start; `frontend/Dockerfile` takes it as a build argument for exactly that reason.
- * 2. **Vite dev server (port 5173)** — the backend is a separate process on `:8080`. This is
+ * 2. **Vite dev server (port 5173)** — the backend is a separate process on `:8090`. This is
  *    what `npm run dev` and the Playwright suite use, and it is why the check exists at all.
  * 3. **Anything else — same origin.** nginx proxies `/api` and `/ws` to the backend, so there
  *    is one origin, one certificate, no CORS preflight and no mixed content. This is the shape
@@ -42,8 +42,8 @@ function backendOrigin(): string {
   // The first version treated `''` as "not configured" and fell through to the dev-port check.
   // docker-compose builds the image with VITE_API_BASE: "" meaning "same origin, go through the
   // proxy", and publishes the frontend on 5173 — so the check fired, traffic went straight to
-  // :8080, and the nginx proxy was never exercised by the one command the README tells people to
-  // run. It still worked, because compose also publishes 8080; what it stopped doing was testing
+  // :8090, and the nginx proxy was never exercised by the one command the README tells people to
+  // run. It still worked, because compose also publishes 8090; what it stopped doing was testing
   // the arrangement a real deployment uses.
   //
   // That also made the compose build argument a no-op that looks like configuration, which is the
@@ -54,7 +54,7 @@ function backendOrigin(): string {
     return configured === '' ? window.location.origin : configured.replace(/\/+$/, '')
   }
   if (window.location.port === VITE_DEV_PORT) {
-    return `${window.location.protocol}//${window.location.hostname}:8080`
+    return `${window.location.protocol}//${window.location.hostname}:8090`
   }
   return window.location.origin
 }
@@ -86,3 +86,13 @@ export const WS_URL = `${ORIGIN.replace(/^http/, 'ws')}/ws`
  */
 export const TRACE_ENDPOINT: string | null =
   (import.meta.env.VITE_OTLP_ENDPOINT as string | undefined) || null
+
+/**
+ * The API's origin, without the {@code /api} prefix.
+ *
+ * The OAuth entry point Spring installs lives at {@code /oauth2/authorization/{provider}} — at the
+ * root, not under {@code /api} — and the login screen links to it directly. Derived from
+ * {@link API_BASE} rather than resolved a second time, so the two cannot disagree about which
+ * server this is.
+ */
+export const API_ORIGIN = API_BASE.replace(/\/api$/, '')

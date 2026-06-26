@@ -17,7 +17,8 @@ public record CollabEditProperties(
     WebSocket websocket,
     Persistence persistence,
     Cluster cluster,
-    Gc gc
+    Gc gc,
+    Auth auth
 ) {
 
     /**
@@ -98,6 +99,7 @@ public record CollabEditProperties(
         persistence = persistence == null ? Persistence.defaults() : persistence;
         cluster = cluster == null ? Cluster.defaults() : cluster;
         gc = gc == null ? Gc.defaults() : gc;
+        auth = auth == null ? Auth.defaults() : auth;
     }
 
     /** the transport decision — transport. */
@@ -205,4 +207,83 @@ public record CollabEditProperties(
             return new Gc(7, 60_000);
         }
     }
+
+    /**
+     * Who is allowed in, and how they prove it.
+     *
+     * @param devLoginEnabled whether {@code POST /api/login} — "type a name, get an identity" —
+     *     is served. <b>Default false</b>, and that default is the point: it is the mechanism that
+     *     made every role in this system rest on an unverified claim, so a deployment that does not
+     *     ask for it does not get it. Local development turns it on with
+     *     {@code COLLABEDIT_DEV_LOGIN=true}. The same shape as {@code COLLABEDIT_AUTH_SECRET}: the
+     *     unsafe convenience is opt-in and visible in the command that starts the process, rather
+     *     than a value somebody has to remember to change.
+     * @param appUrl where a finished sign-in sends the browser. The provider redirects to the
+     *     SERVER, and the single-page application is a different origin, so this is the address the
+     *     one-time code is handed to. It has to be an exact match rather than "whatever the request
+     *     came from" — an open redirect at the end of an authentication flow is how a login becomes
+     *     a credential-forwarding service.
+     * @param providers the registration ids the browser should be offered, derived from what is
+     *     actually configured rather than hard-coded, so the login screen cannot advertise a button
+     *     that leads nowhere.
+     */
+    public record Auth(
+        boolean devLoginEnabled,
+        String appUrl,
+        Provider google,
+        Provider github
+    ) {
+        static Auth defaults() {
+            return new Auth(false, "http://localhost:5173", Provider.none(), Provider.none());
+        }
+
+        public Auth {
+            google = google == null ? Provider.none() : google;
+            github = github == null ? Provider.none() : github;
+            appUrl = appUrl == null ? "http://localhost:5173" : appUrl;
+        }
+
+        /**
+         * One provider's credentials.
+         *
+         * @param clientId the registration's client id; blank means "not configured", which is the
+         *     state a fresh clone is in and the only sensible default — an application shipping with
+         *     credentials is an application whose credentials are public
+         */
+        public record Provider(String clientId, String clientSecret) {
+            static Provider none() {
+                return new Provider(null, null);
+            }
+
+            public boolean configured() {
+                return clientId != null && !clientId.isBlank();
+            }
+        }
+
+        /**
+         * The registration ids this deployment can actually complete a sign-in with.
+         *
+         * <p><b>Derived, never configured.</b> A separate list would be a second source of truth for
+         * one fact, and the failure it produces is silent in the worst way: the login screen renders
+         * a button for a provider with no client id, the browser follows it, and Spring answers with
+         * a redirect loop rather than an error. Deriving it means the screen cannot offer a door
+         * that does not open.
+         */
+        public List<String> providers() {
+            List<String> configured = new java.util.ArrayList<>(2);
+            if (google.configured()) {
+                configured.add("google");
+            }
+            if (github.configured()) {
+                configured.add("github");
+            }
+            return List.copyOf(configured);
+        }
+
+        /** Whether any provider is configured at all — see {@code SecurityConfig}. */
+        public boolean federatedLoginConfigured() {
+            return !providers().isEmpty();
+        }
+    }
+
 }

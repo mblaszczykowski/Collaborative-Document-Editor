@@ -53,7 +53,7 @@ class ClusterChaosIT extends IntegrationTestBase {
         }
         // Startup ARGUMENTS, not `.properties()`. That is not cosmetic: `.properties()` lands in
         // a source with lower precedence than `application.yml`, so `server.port=0` would be
-        // silently overridden by `server.port: 8080` from the configuration — and the second
+        // silently overridden by `server.port` from application.yml from the configuration — and the second
         // instance would try to come up on a port already in use.
         secondInstance = new SpringApplicationBuilder(CollabEditApplication.class)
             .run(

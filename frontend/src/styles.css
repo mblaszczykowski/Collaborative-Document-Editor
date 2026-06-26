@@ -358,6 +358,25 @@ button { font-family: inherit; cursor: pointer; }
 }
 .login-brand .brand-mark { width: 17px; height: 17px; }
 .login-card p { font-size: 12px; color: var(--text-faint); margin: 0 0 20px; line-height: 1.5; }
+/* Sign-in with a provider. A link rather than a button, because it is a full-page navigation to
+   the provider's consent screen — so it is styled to match the button it sits next to. */
+.login-provider {
+  display: block; width: 100%; box-sizing: border-box; text-align: center;
+  padding: 9px 10px; margin-bottom: 8px;
+  border: 1px solid var(--chrome-line); border-radius: 5px;
+  font-size: 13px; font-weight: 500; text-decoration: none;
+  color: var(--text); background: var(--chrome);
+}
+.login-provider:hover { background: var(--chrome-line); }
+.login-provider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The development login, when the server offers it — visually secondary to the real one. */
+.login-dev { margin-top: 4px; }
+.login-hint {
+  font-size: 11px; color: var(--text-faint); text-align: center;
+  margin: 12px 0 10px;
+}
+
 .login-card input {
   width: 100%; padding: 8px 10px; border: 1px solid var(--chrome-line);
   border-radius: 5px; font-size: 13px; font-family: inherit; margin-bottom: 12px;

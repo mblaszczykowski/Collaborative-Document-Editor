@@ -1,8 +1,12 @@
 package dev.collabedit.app.auth;
 
+import dev.collabedit.app.config.CollabEditProperties;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
+import java.util.List;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -64,16 +68,85 @@ public class LoginController {
 
     private final TokenService tokens;
     private final UserDirectory users;
+    private final LoginCodeStore codes;
+    private final CollabEditProperties properties;
 
-    public LoginController(TokenService tokens, UserDirectory users) {
+    public LoginController(TokenService tokens, UserDirectory users, LoginCodeStore codes,
+                           CollabEditProperties properties) {
         this.tokens = tokens;
         this.users = users;
+        this.codes = codes;
+        this.properties = properties;
     }
 
+    /**
+     * What the login screen should offer.
+     *
+     * <p>Derived from what is actually registered rather than hard-coded in the client, so the
+     * screen cannot advertise a button that leads to a redirect loop. It is also how the browser
+     * learns whether the development login exists at all — which is a server-side decision, and one
+     * the client has no way to guess.
+     *
+     * @param providers registration ids ({@code google}, {@code github}) to render a button for
+     * @param devLoginEnabled whether {@code POST /api/login} is served
+     */
+    public record AuthOptions(List<String> providers, boolean devLoginEnabled) {
+    }
+
+    @GetMapping("/auth/options")
+    @PublicEndpoint("Says how to sign in. Answering it requires no identity, which is the point — "
+        + "it is what a visitor reads before they have one.")
+    public ResponseEntity<AuthOptions> options() {
+        return ResponseEntity.ok(new AuthOptions(
+            properties.auth().providers(), properties.auth().devLoginEnabled()));
+    }
+
+    /** @param code the single-use value the provider redirect handed the application. */
+    public record SessionRequest(@Size(max = 200) String code) {
+    }
+
+    /**
+     * Exchanges the code from a finished sign-in for a session token.
+     *
+     * <p>The second half of the handshake {@link OidcLoginSuccess} starts. It is a POST because the
+     * response carries the credential and a GET would put it in history — the exact thing the code
+     * exists to keep out of the URL.
+     *
+     * <p>The refusal is deliberately shapeless: unknown, already spent and expired are one answer,
+     * because telling them apart tells a guesser which half of their guess was right.
+     */
+    @PostMapping("/session")
+    @PublicEndpoint("Turns a completed sign-in into a token. The code IS the authorization; there "
+        + "is no identity yet to check it against.")
+    public ResponseEntity<LoginResponse> session(@Valid @RequestBody SessionRequest request) {
+        return codes.redeem(request.code())
+            .flatMap(users::find)
+            .map(principal -> ResponseEntity.ok(new LoginResponse(
+                tokens.issue(principal),
+                principal.userId(), principal.displayName(), principal.color())))
+            .orElseGet(() -> ResponseEntity.status(HttpStatus.UNAUTHORIZED).build());
+    }
+
+    /**
+     * The development login: type a name, become somebody.
+     *
+     * <p><b>Off unless explicitly enabled</b>, and answered with 404 rather than 403 when it is
+     * off — consistent with every other refusal in this application, and it means a deployment does
+     * not advertise a door it has closed.
+     *
+     * <p>This is the mechanism federated identity was added to replace. It made every rule above it
+     * rest on an unverified claim: `link` visibility grants EDITOR to "anyone signed in", and
+     * signing in cost nothing. It survives because a contributor with no OAuth client of their own
+     * still has to be able to run the thing, and because the integration tests need an identity
+     * without a provider to talk to — but it is opt-in, per process, and named after what it is.
+     */
     @PostMapping("/login")
     @PublicEndpoint("Issues identity. There is nothing to authorize against yet — this is the "
         + "endpoint that produces the token every other endpoint checks.")
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
+        if (!properties.auth().devLoginEnabled()) {
+            return ResponseEntity.notFound().build();
+        }
         String displayName = request.displayName() == null || request.displayName().isBlank()
             ? "Guest" : request.displayName().trim();
         if (displayName.length() > MAX_DISPLAY_NAME_LENGTH) {

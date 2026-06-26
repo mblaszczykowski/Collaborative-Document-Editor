@@ -9,6 +9,12 @@
 
 import { API_BASE as BASE } from './config'
 
+/** What the login screen should offer — see `authOptions`. */
+export interface AuthOptions {
+  providers: string[]
+  devLoginEnabled: boolean
+}
+
 export interface Session {
   token: string
   userId: string
@@ -323,6 +329,33 @@ export const api = {
     return { bytes: new Uint8Array(await response.arrayBuffer()), throughServerSeq }
   },
 
+  /**
+   * How this deployment lets people in.
+   *
+   * Asked before anything else on the login screen, because the answer is a SERVER decision the
+   * client cannot guess: which providers have credentials configured, and whether the development
+   * login is served at all. Rendering a "Continue with Google" button for a provider that is not
+   * registered produces a redirect loop rather than an error, so the screen is built from this.
+   */
+  authOptions: () => request<AuthOptions>('/auth/options'),
+
+  /**
+   * Exchanges the one-time code from a finished sign-in for a session.
+   *
+   * The provider redirects to the SERVER; the server hands this application a code in the URL and
+   * the token is fetched here, over POST. The token never travels in a URL — see the reasoning on
+   * `login_codes` in V13.
+   */
+  session: (code: string) =>
+    request<Session>('/session', { method: 'POST', body: JSON.stringify({ code }) }),
+
+  /**
+   * The development login: a name, and no proof of anything.
+   *
+   * Served only when the server says so (`authOptions().devLoginEnabled`). It is the mechanism
+   * federated identity replaced, kept so that a contributor without an OAuth client of their own
+   * can still run the project.
+   */
   login: (displayName: string) =>
     request<Session>('/login', { method: 'POST', body: JSON.stringify({ displayName }) }),
 

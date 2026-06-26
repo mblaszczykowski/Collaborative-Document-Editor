@@ -28,6 +28,28 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
+
+        <!--
+          The OpenID Connect client, and the one place this project takes a dependency ON a
+          framework for a decision it had previously made itself.
+
+          The structural-authorization decision rejected Spring Security for AUTHORIZATION, and
+          that still stands: DocumentAccessGuard and DocumentAccessInterceptor decide what a role
+          may do, per endpoint and per frame, and this dependency does not touch either of them.
+          What it brings is AUTHENTICATION — the OAuth 2.0 authorization-code exchange, the
+          provider's JWKS, signature and issuer validation, nonce and state handling — which is
+          cryptography against a spec, is fully solved, and is precisely the kind of thing this
+          project has no business reimplementing to prove a point.
+
+          The trade it forces is real and is handled in SecurityConfig: this starter pulls in
+          Spring Security, whose default is to secure every request. That default is turned OFF
+          deliberately, because turning it on would put two authorization systems in the request
+          path and make it ambiguous which one refused you.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-client</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>

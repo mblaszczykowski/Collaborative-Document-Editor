@@ -18,7 +18,7 @@ scrape_configs:
       # host.docker.internal: the application starts from an IDE or Maven on the host, not in
       # compose. Deliberately — the edit-restart cycle is then an order of magnitude shorter than
       # rebuilding an image, and this is a development environment.
-      - targets: ["host.docker.internal:8080"]
+      - targets: ["host.docker.internal:8090"]
         labels:
           instance: app-local
 

@@ -22,7 +22,7 @@ export { expect }
  * bugs.
  */
 export const APP = process.env.E2E_APP_URL ?? 'http://localhost:5173'
-export const API = `${process.env.E2E_API_URL ?? 'http://localhost:8080'}/api`
+export const API = `${process.env.E2E_API_URL ?? 'http://localhost:8090'}/api`
 
 /**
  * A note on `exact: true`, because this trap costs a debugging session every time.

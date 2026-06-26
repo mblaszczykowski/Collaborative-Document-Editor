@@ -3,6 +3,8 @@ package dev.collabedit.app.auth;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -13,12 +15,18 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
- * Authentication — <b>deliberately simplified</b>, and described that way in the README.
+ * The SESSION token — what the browser presents on every request and every frame.
+ *
+ * <p>Not the same thing as identity, and the distinction sharpened when identity became federated:
+ * an OpenID Connect provider establishes WHO somebody is, once, and this is the credential they
+ * carry afterwards. Keeping the two apart is what lets the WebSocket path stay unchanged — a STOMP
+ * CONNECT frame cannot perform an OAuth redirect, and it does not have to.
  *
  * <p>A token is an HMAC-SHA256-signed payload of {@code userId|displayName|color|expiry}. There is
- * no registration, no passwords, no refresh and no revocation. This project's scope is distributed
- * data consistency, not identity management, and an elaborate auth module would take time away from
- * the core problem while demonstrating nothing.
+ * no refresh and no revocation: signing out discards the token and the twelve-hour expiry is the
+ * only other bound. That is still a deliberate simplification — the scope here is distributed data
+ * consistency — but it is now a simplification about SESSIONS rather than about identity, which is
+ * what it used to be and is no longer.
  *
  * <p>Written by hand on the JDK instead of pulling in a JWT library for two reasons: it is a few
  * dozen lines with no dependencies, and explicit signing code shows better where exactly
@@ -173,6 +181,29 @@ public class TokenService {
             return mac.doFinal(encodedPayload.getBytes(StandardCharsets.UTF_8));
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("cannot sign the token", e);
+        }
+    }
+
+    /**
+     * SHA-256, hex — for the secrets this package stores rather than signs.
+     *
+     * <p>An invitation token and a login code are both credentials that live in a table, and both
+     * are stored hashed so a database read does not yield one. The helper was written twice, once
+     * per store, which is two chances for one of them to be "improved" into something weaker.
+
+     * <p><b>Not for passwords</b>, and worth saying because the name invites it. A bare digest is
+     * right here precisely because the input is 192 bits from {@code SecureRandom} — there is
+     * nothing to guess, so there is nothing for a work factor to slow down. Anything a human chose
+     * would need bcrypt or argon2 instead.
+     */
+    static String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            // Required of every JVM. If it is absent, the alternative is storing credentials in
+            // plaintext, so failing is the only honest option.
+            throw new IllegalStateException("SHA-256 unavailable", e);
         }
     }
 }

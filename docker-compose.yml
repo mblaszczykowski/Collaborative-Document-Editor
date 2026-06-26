@@ -155,7 +155,7 @@ services:
       # works with nothing configured.
       COLLABEDIT_AUTH_SECRET: ${COLLABEDIT_AUTH_SECRET:-local-development-secret-not-for-production}
     ports:
-      - "8080:8080"
+      - "8090:8090"
     depends_on:
       postgres:
         condition: service_healthy
