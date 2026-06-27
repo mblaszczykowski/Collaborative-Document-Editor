@@ -43,7 +43,7 @@ export function initialiseTracing(): void {
   if (TRACE_ENDPOINT === null) return
 
   provider = new WebTracerProvider({
-    resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: 'inkline-frontend' }),
+    resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: 'collabedit-frontend' }),
     spanProcessors: [
       new BatchSpanProcessor(
         // The collector accepts OTLP over HTTP on 4318 (gRPC does not work from a browser).
@@ -59,7 +59,7 @@ export function initialiseTracing(): void {
   provider.register()
 }
 
-const tracer = () => trace.getTracer('inkline')
+const tracer = () => trace.getTracer('collabedit')
 
 /**
  * Performs the send of an operation inside a span and returns the context to hand to the server.

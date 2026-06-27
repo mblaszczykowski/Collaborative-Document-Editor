@@ -24,7 +24,7 @@ class SnapshotCodecTest {
     @DisplayName("a round trip preserves the structure, the clock and the version vector")
     void roundTrip() {
         RgaDocument document = new RgaDocument(7);
-        document.insert(0, "Inkline");
+        document.insert(0, "Collabedit");
         document.insert(7, " works");
         document.delete(0, 3);
 

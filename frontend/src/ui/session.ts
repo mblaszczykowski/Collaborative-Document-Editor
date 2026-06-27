@@ -8,7 +8,7 @@
 import { setAuthToken, type Session } from '../api'
 
 /** Exported so the cross-tab listener in App.tsx can recognise its own key rather than guess it. */
-export const SESSION_KEY = 'inkline.session'
+export const SESSION_KEY = 'collabedit.session'
 
 /** Diagnostics mode — only for working on the project and for the chaos tests. */
 export const DEBUG = new URLSearchParams(window.location.search).has('debug')
@@ -37,7 +37,7 @@ export const DEBUG = new URLSearchParams(window.location.search).has('debug')
  * matters. A marker in `sessionStorage` does: it is scoped to the tab, and a tab keeps it across
  * navigations, including one that leaves the origin and returns.
  */
-const TAB_SCOPED_KEY = 'inkline.tab-scoped'
+const TAB_SCOPED_KEY = 'collabedit.tab-scoped'
 
 // Recorded when the module loads, exactly like DEBUG above, and NOT on the first call that happens
 // to need a store. That distinction has teeth: written lazily, the opt-in is only honoured if

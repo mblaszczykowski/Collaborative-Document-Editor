@@ -118,7 +118,7 @@ export default function App() {
  * document is still created (an empty workspace with no way in is worse), but it now says what it
  * is.
  */
-const FIRST_DOCUMENT_TITLE = 'Welcome to Inkline'
+const FIRST_DOCUMENT_TITLE = 'Welcome to the Collaborative Document Editor'
 
 /** Where the API lives, for the sign-in links — which are full-page navigations, not fetches. */
 const PROVIDER_LABELS: Record<string, string> = { google: 'Google', github: 'GitHub' }
@@ -136,7 +136,7 @@ const PROVIDER_LABELS: Record<string, string> = { google: 'Google', github: 'Git
  * within the same tab, which is exactly the journey. The same property is what makes `?tab-session`
  * work; see `session.ts`.
  */
-const RETURN_KEY = 'inkline.return'
+const RETURN_KEY = 'collabedit.return'
 
 /**
  * The sign-in screen.
@@ -264,7 +264,7 @@ function Login({ onLogin, notice }: {
       <div className="login-card">
         <div className="login-brand">
           <span className="brand-mark" />
-          Inkline
+          Collaborative Document Editor
         </div>
         <p>A document editor for real-time teamwork.</p>
 
@@ -688,7 +688,7 @@ function DocumentWorkspace(props: {
       <header className="menubar">
         <div className="brand">
           <span className="brand-mark" />
-          Inkline
+          Collaborative Document Editor
         </div>
         <span className="menu-divider" />
         <span className="doc-title">{doc.title}</span>

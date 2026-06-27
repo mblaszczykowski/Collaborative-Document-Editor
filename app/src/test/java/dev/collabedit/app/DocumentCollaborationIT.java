@@ -107,13 +107,19 @@ class DocumentCollaborationIT extends IntegrationTestBase {
     void stateSurvivesReplicaLoss() throws Exception {
         UUID document = newDocument("Replay");
 
+        // The second position is DERIVED from the first string rather than written as a literal.
+        // It was `insert(7, …)`, which was the end of the word only for as long as the word was
+        // seven characters — renaming it left the test appending into the middle and failing on an
+        // assertion about replay, which is not what had changed.
+        String typed = "Collabedit";
+
         try (TestStompClient anna = new TestStompClient(port, tokenFor("Anna"), document, 111)) {
-            anna.insert(0, "Inkline");
-            anna.insert(7, " works");
+            anna.insert(0, typed);
+            anna.insert(typed.length(), " works");
             // BOTH operations, not just one. Acknowledgements follow the write, so `> 0` proved
             // only that the FIRST had reached the log — and the two are sent back to back with a
             // 20 ms batch window, so a flush tick landing between them left the second unwritten
-            // and the replay produced "Inkline". That is a flake in the test, not in the system.
+            // and the replay produced "Collabedit". That is a flake in the test, not in the system.
             anna.awaitCondition(() -> anna.lastAckSeq() >= 2, PATIENCE, "both writes acknowledged");
         }
 
@@ -126,7 +132,7 @@ class DocumentCollaborationIT extends IntegrationTestBase {
         assertThat(documents.textOf(document))
             .as("replaying the log gave different text from the state before the replica was lost")
             .isEqualTo(beforeEviction)
-            .isEqualTo("Inkline works");
+            .isEqualTo(typed + " works");
     }
 
     @Test

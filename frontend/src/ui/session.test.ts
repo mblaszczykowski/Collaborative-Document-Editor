@@ -26,9 +26,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  *   <tr><td>{@code theOptInSurvivesTheSignInRedirect}</td>
  *       <td>The subtle one. The provider returns to a bare `?code=…`, so an opt-in read from the
  *           address would be lost exactly when the identity arrives.</td></tr>
- *   <tr><td>{@code signingOutClearsBothStores}</td>
- *       <td>A sign-out that leaves a session in the store it was not using — the user clicks it,
- *           the screen returns, and a reload signs them back in as the person they just left.</td></tr>
+ *   <tr><td>{@code signingOutEndsTheSessionTheTabIsUsing}</td>
+ *       <td>A sign-out that leaves the session behind — the user clicks it, the screen returns,
+ *           and a reload signs them back in as the person they just left.</td></tr>
+ *   <tr><td>{@code signingOutOfATabScopedIdentityLeavesTheBrowserWideOneAlone}</td>
+ *       <td>The opposite excess: ending the scratch identity taking the primary window's session
+ *           with it, which is the one workflow the opt-in exists for.</td></tr>
  *   <tr><td>{@code aCorruptEntryIsDiscardedRatherThanThrown}</td>
  *       <td>An unparseable entry taking the whole application down at its first line, with a
  *           blank page and no way to clear it short of the developer tools.</td></tr>
@@ -129,11 +132,11 @@ describe('where the session is kept', () => {
     returned.rememberSession(SESSION)
 
     expect(
-      local.getItem('inkline.session'),
+      local.getItem('collabedit.session'),
       'The identity landed in the browser-wide store, so signing in from an opted-in tab quietly '
         + 'reverted it to the shared session — the opt-in works until the moment it is used.',
     ).toBeNull()
-    expect(tabStore.getItem('inkline.session')).not.toBeNull()
+    expect(tabStore.getItem('collabedit.session')).not.toBeNull()
   })
 
   it('signing out ends the session the tab is actually using', async () => {
@@ -171,7 +174,7 @@ describe('where the session is kept', () => {
   })
 
   it('a corrupt entry is discarded rather than thrown', async () => {
-    local.setItem('inkline.session', '{not json')
+    local.setItem('collabedit.session', '{not json')
     const app = await load('', local, stubStorage())
 
     expect(
@@ -179,6 +182,6 @@ describe('where the session is kept', () => {
       'An unparseable entry propagated out of the first call the application makes, which is a '
         + 'blank page that no reload can clear.',
     ).toBeNull()
-    expect(local.getItem('inkline.session'), 'the bad entry was left to fail again').toBeNull()
+    expect(local.getItem('collabedit.session'), 'the bad entry was left to fail again').toBeNull()
   })
 })

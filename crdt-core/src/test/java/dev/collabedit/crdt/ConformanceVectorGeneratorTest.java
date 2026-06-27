@@ -144,7 +144,7 @@ class ConformanceVectorGeneratorTest {
     private static List<Op> sequentialTyping() {
         RgaDocument document = new RgaDocument(1);
         List<Op> ops = new ArrayList<>();
-        String text = "Inkline";
+        String text = "Collabedit";
         for (int i = 0; i < text.length(); i++) {
             ops.add(document.insert(i, String.valueOf(text.charAt(i))));
         }

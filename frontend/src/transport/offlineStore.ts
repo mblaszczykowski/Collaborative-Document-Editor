@@ -17,7 +17,18 @@ import type { Op } from '../crdt/types'
  * broadcast alone.
  */
 
-const DATABASE = 'inkline'
+/**
+ * Renamed from `inkline` when the product name was dropped, and that rename is not free: a browser
+ * holding unacknowledged operations under the old database keeps them, unread, for ever. Those are
+ * edits the user watched appear on screen.
+ *
+ * <p>Accepted rather than migrated, and the reason is the window rather than the principle. The
+ * buffer only holds anything between a write and its acknowledgement, so a client has to have been
+ * offline or mid-flight across the exact deploy that carried the rename — and this project has no
+ * deployment with users to be caught by it. A real one would open the old database, drain it into
+ * the new one and delete it, which is perhaps thirty lines and worth every one of them there.
+ */
+const DATABASE = 'collabedit'
 const STORE = 'unacknowledged'
 
 /**
