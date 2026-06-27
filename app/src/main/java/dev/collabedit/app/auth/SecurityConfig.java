@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.web.SecurityFilterChain;
 
 /**
@@ -61,6 +62,7 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http,
+                                           ClientRegistrationRepository registrations,
                                            OidcLoginSuccess oidcSuccess,
                                            OidcLoginFailure oidcFailure) throws Exception {
         http
@@ -77,6 +79,12 @@ public class SecurityConfig {
         // a redirect loop rather than a message.
         if (properties.auth().federatedLoginConfigured()) {
             http.oauth2Login(login -> login
+                // Ask the provider to show its account chooser. Signing out here cannot end the
+                // session at Google, so without this the next sign-in silently returned the same
+                // person — which on a shared computer means the previous user's account. See
+                // AccountChooserResolver.
+                .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(
+                    new AccountChooserResolver(registrations, "/oauth2/authorization")))
                 // The browser application never sees this callback: the handler finishes the
                 // sign-in and redirects to the app with a single-use code. See OidcLoginSuccess.
                 .successHandler(oidcSuccess)

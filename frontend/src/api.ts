@@ -75,6 +75,41 @@ function authHeaders(): Record<string, string> {
 }
 
 /**
+ * What to do when the server stops recognising our token — registered once, by the application.
+ *
+ * <h2>Why this belongs here and not at each call site</h2>
+ * A token lasts twelve hours and the session outlives the browser, so it lapses far more often
+ * while the application is OPEN than in any other way. Exactly one place used to notice: the
+ * document-list bootstrap. Everything else got a 401 it had no name for, and the results were
+ * worse than silence — {@code useCollaborativeDocument} showed "We cannot open this document. It
+ * may have been deleted, or you may not have access to it — ask whoever sent you the link to share
+ * it again", which is wrong, unactionable, and sends the user to bother a colleague about a
+ * problem the colleague cannot fix. The side panels just kept displaying stale data.
+ *
+ * <p>Putting it in `send` covers every REST call at once, including ones written later. That is the
+ * point: a rule each caller has to remember is a rule that holds until somebody adds a caller.
+ */
+let onUnauthorized: (() => void) | null = null
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler
+}
+
+/**
+ * Reports a 401 — but only when we actually presented a token.
+ *
+ * <p>The distinction is what keeps this from breaking sign-in itself. `POST /api/session` answers
+ * 401 for a code that is unknown, spent or expired, and `POST /api/login` can too; both are
+ * requests made by somebody who has no session yet. Treating those as an expiry would call the
+ * handler while the user is already looking at the sign-in screen — and, worse, would discard the
+ * identity a concurrent successful exchange had just established.
+ */
+function reportUnauthorized(): void {
+  if (authToken === null || onUnauthorized === null) return
+  onUnauthorized()
+}
+
+/**
  * A refusal from the server, carrying the status that caused it.
  *
  * Every call in this file used to fail with a bare `Error` whose only content was a message ending
@@ -142,6 +177,12 @@ async function send<T>(path: string, init: RequestInit | undefined, expectBody: 
     throw new ApiError(method, path, 0, { cause })
   }
   if (!response.ok) {
+    if (response.status === 401) {
+      reportUnauthorized()
+    }
+    // Still thrown, not swallowed. The handler decides what the APPLICATION does about an expiry;
+    // the caller still has a failed request to unwind, and a promise that never settled because
+    // the session ended would hang whatever was awaiting it.
     throw new ApiError(method, path, response.status)
   }
   // `undefined as T` for the no-content case rather than a separate return type: the callers that
@@ -323,6 +364,13 @@ export const api = {
       headers: authHeaders(),
     })
     if (!response.ok) {
+      // Reported even though the failure itself is swallowed. A snapshot is a cache and falling
+      // back to the log is always correct — but "the server no longer knows who we are" is not a
+      // cache miss, and this is one of the first requests made when a document opens, so it is
+      // often the earliest evidence available that the session has ended.
+      if (response.status === 401) {
+        reportUnauthorized()
+      }
       return null
     }
     const throughServerSeq = Number(response.headers.get('X-Through-Server-Seq') ?? '0')

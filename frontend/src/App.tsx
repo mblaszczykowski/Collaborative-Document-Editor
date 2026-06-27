@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { API_ORIGIN } from './config'
-import { ApiError, api, type DocumentSummary, type Session, type AuthOptions } from './api'
+import {
+  ApiError,
+  api,
+  setUnauthorizedHandler,
+  type AuthOptions,
+  type DocumentSummary,
+  type Session,
+} from './api'
 import { Editor } from './editor/Editor'
 import { useCollaborativeDocument } from './editor/useCollaborativeDocument'
 import { DiagnosticsBar } from './ui/DiagnosticsBar'
@@ -78,6 +85,23 @@ export default function App() {
     setSession(null)
     setNotice(reason ?? null)
   }, [])
+
+  /**
+   * Every 401, from anywhere, ends the session — registered once rather than checked per call.
+   *
+   * <p>Only the document-list bootstrap used to notice, and a token lapsing while the application
+   * is OPEN is the common case, not the rare one. What the other callers did instead was worse than
+   * nothing: the editor rendered "We cannot open this document… ask whoever sent you the link to
+   * share it again", which is untrue and sends the user to bother somebody who cannot help, and the
+   * side panels went on showing data from before the session ended.
+   *
+   * <p>`api.ts` fires this only when a token was actually presented, so the sign-in exchange —
+   * which answers 401 for a spent code — does not route through here.
+   */
+  useEffect(() => {
+    setUnauthorizedHandler(() => signOut('Your session expired. Please sign in again.'))
+    return () => setUnauthorizedHandler(null)
+  }, [signOut])
 
   return session ? (
     <Workspace session={session} onSignOut={signOut} />

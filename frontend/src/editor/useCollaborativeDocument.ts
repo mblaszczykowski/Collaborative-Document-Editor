@@ -511,6 +511,28 @@ export function useCollaborativeDocument(
           // refused edit both change what they should do next, whereas a transport hiccup is
           // already visible in the connection indicator.
           console.error(`[${code}] ${message}`)
+          if (code === 'STOMP_ERROR') {
+            /*
+             * A refused CONNECT is what an expired token looks like on this side, and it used to
+             * be invisible. The socket authenticates ONCE, at CONNECT, so a session that lapses
+             * while the tab is open keeps working until the connection drops for any reason — and
+             * the reconnect then presents the same dead token, is refused, and the STOMP client
+             * retries with backoff for ever. The user sees "Working offline" permanently, goes on
+             * typing into IndexedDB, and is never told to sign in again.
+             *
+             * The probe rather than reading the refusal: the ERROR frame carries a message header
+             * whose text is decided by Spring's exception conversion, and keying the session's
+             * fate on that string would break the day somebody rewords a `throw`. Asking a cheap
+             * authenticated question answers the same thing directly — a 401 goes through the one
+             * handler in `api.ts` and ends the session; anything else means the transport is
+             * unhappy for some other reason, which the connection indicator already reports.
+             *
+             * Failures are swallowed on purpose. This is a diagnostic, not an operation: a 404
+             * (the document is gone) is already handled by `onAccessChanged`, and a probe that
+             * cannot reach the server has learned nothing worth showing anybody.
+             */
+            void api.myRole(documentId).catch(() => undefined)
+          }
           const explanation = USER_FACING_ERRORS[code]
           if (explanation !== undefined) {
             setNotice(explanation)

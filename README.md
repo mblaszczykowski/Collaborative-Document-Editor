@@ -602,16 +602,37 @@ means a token past its twelve-hour life, a document list that answers 401, and a
 reloading into the same 401 for ever. A 401 during startup now returns to the sign-in screen
 on its own, saying that the session expired rather than ejecting the user silently.
 
-**What that does not cover, stated because the sentence above used to imply it did.** A token
-that lapses while the application is already open is still not noticed everywhere: the
-WebSocket is authenticated once at `CONNECT` and never re-checked, so editing continues until
-the socket drops, and a reconnect then re-sends the dead token and retries behind a "Working
-offline" indicator. Closing that properly means routing every 401 through one place and
-treating a refused `CONNECT` as an expiry — worth doing, not yet done.
+**A token that lapses while the application is open is the harder half, and it took two changes.**
+Only the document-list bootstrap noticed a 401; every other caller rendered whatever it says when a
+request fails, and the editor's version — "ask whoever sent you the link to share it again" — is
+untrue and sends the user to bother somebody who cannot help. So a 401 is now recognised in one
+place, `api.ts`, which covers every REST call including ones written later. It fires only when a
+token was actually presented, so the sign-in exchange (401 for a spent code) does not route
+through it.
+
+The WebSocket needed its own answer, because it authenticates **once**, at `CONNECT`, and is never
+re-checked. A session that lapses mid-edit therefore keeps working until the socket drops for any
+reason — and the reconnect then presents the same dead token, is refused, and the STOMP client
+retries with backoff for ever behind a "Working offline" indicator, while the user goes on typing
+into IndexedDB. A refused `CONNECT` now triggers one cheap authenticated request: a 401 goes
+through the handler above and ends the session, and anything else means the transport is unhappy
+for some other reason. Asking a question rather than reading the ERROR frame's text is deliberate —
+that string is produced by Spring's exception conversion, and a session's fate should not depend on
+the wording of a `throw`.
+
+**Signing out lets you sign in as somebody else.** It did not: signing out here discards a token
+and cannot end the session at Google, so the next click re-authenticated the same person with no
+chooser — which on a shared computer hands the next user the previous user's account, the exact
+case the account menu exists for. Google is now sent `prompt=select_account`. GitHub is not: it has
+no `prompt`, and sending an unknown parameter in the one flow whose failure mode is "cannot sign
+in at all" is not a bet worth taking, so switching GitHub accounts still has to happen at GitHub.
 
 **What is deliberately still simple.** There is no account page, no way to merge a Google account
 with a GitHub one, and no revocation beyond the token's twelve-hour life — tokens are signed rather
-than stored, so signing out discards the token locally and cannot invalidate one already taken. The
+than stored, so signing out discards the token locally and cannot invalidate one already taken. A
+WebSocket already open is bounded by the same gap: its identity is fixed at `CONNECT`, and what the
+paragraph above adds is that the session ends promptly once anything is refused, not that the
+twelve hours are enforced mid-connection. The
 development login survives too — `COLLABEDIT_DEV_LOGIN=true`, off by default and answered with 404
 when off — because a contributor without an OAuth client of their own still has to be able to run
 the thing.
@@ -855,7 +876,9 @@ Deliberate simplifications, and the ones that turned out worse than I assumed.
   vouches for the person, so a role finally rests on something checked. What is still missing is
   everything a real product puts on top: no account page, no way to link a Google account to a
   GitHub one (sign in with the other and you are a different person), no session revocation beyond
-  the token's twelve-hour life, and no way to delete an account. The development login also still
+  the token's twelve-hour life, and no way to delete an account. Switching GitHub accounts has to be
+  done at GitHub — only Google is sent `prompt=select_account`, because GitHub's OAuth endpoint has
+  no equivalent. The development login also still
   exists — off by default, 404 when off — because a contributor without an OAuth client of their
   own has to be able to run the project.
 - **Invitations are multi-use** until they expire or are revoked, which is what "anyone with this
