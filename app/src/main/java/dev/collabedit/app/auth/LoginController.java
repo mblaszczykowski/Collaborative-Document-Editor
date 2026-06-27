@@ -23,42 +23,43 @@ import org.springframework.web.bind.annotation.RestController;
  * does a user come from" had no reason to open a file about documents.
  *
  * <h2>Login with no password</h2>
- * A deliberate simplification described in the README: the project's scope is distributed data
- * consistency, not identity management. A full account mechanism would take time away from the core
- * problem while demonstrating nothing this project sets out to prove.
+ * <b>This described the whole of identity here, and now describes only the development path.</b> It
+ * is left rather than deleted because it is the reasoning behind a feature that has not changed.
  *
- * <p>The consequence is stated rather than hidden, and it shapes another feature: "Anna" today and
- * "Anna" tomorrow are two different users, because each login mints a fresh identifier. That is why
- * sharing works by invite LINK rather than by naming a person — see the long note at the top of
- * {@code V5__invites.sql}.
+ * <p>It read: a deliberate simplification, the project's scope being distributed data consistency
+ * rather than identity management — and the consequence, stated rather than hidden, was that "Anna"
+ * today and "Anna" tomorrow were two different users, because each login minted a fresh identifier.
+ * That is why sharing works by invite LINK rather than by naming a person; see the long note at the
+ * top of {@code V5__invites.sql}.
+ *
+ * <p>Since identity became federated, the premise is false for every sign-in that matters:
+ * {@code (provider, subject)} finds the same row every time, so a person IS addressable and Anna
+ * keeps her documents. Only {@link #login} — off unless a deployment asks for it — still mints a
+ * fresh identifier per call, and only because the tests and a contributor with no OAuth client of
+ * their own need an identity without a provider to talk to.
+ *
+ * <p>Sharing by link stays, and no longer for that reason: an invite carries a role to whoever
+ * opens it, which is what a link is good at, and building a user search on top of federated
+ * identity would be a second feature rather than a fix. What changed is that this is now a choice
+ * rather than the only option — see "Who you are" in the README.
  */
 @RestController
 @RequestMapping("/api")
 public class LoginController {
 
     /**
-     * The upper bound on the length of a name visible to others.
-     *
-     * <p>The name goes into the token, into the database and — most importantly — into <b>every
-     * presence broadcast</b>, that is, a message sent many times a second to every participant in
-     * the document. Without a limit, one user with a megabyte-long name loads everyone else's
-     * connection. 64 characters accommodate any real name.
-     *
-     * <p>Enforced by TRUNCATION rather than by refusal, and that is the one place in this
-     * application where an over-long field is not a 400. The reason is what the endpoint is for: it
-     * is the first request a visitor makes, it has no prior state to protect, and refusing it means
-     * the product does not open. A name quietly shortened to 64 characters is a worse experience
-     * than a name; a login screen that rejects you is not an experience at all.
-     */
-    private static final int MAX_DISPLAY_NAME_LENGTH = 64;
-
-    /**
-     * @param displayName the name others will see. The {@code @Size} bound here is not the same
-     *                    rule as {@link #MAX_DISPLAY_NAME_LENGTH} and does not replace it: this one
+     * @param displayName the name others will see. This {@code @Size} bound is not the same rule as
+     *                    {@code UserDirectory}'s length cap and does not replace it: this one
      *                    refuses a body that is absurd — a megabyte of text posted at an
-     *                    unauthenticated endpoint — while the constant above shortens a name that
-     *                    is merely long. Two bounds because there are two failures: one is abuse,
-     *                    the other is a person with a long name.
+     *                    unauthenticated endpoint — while the cap shortens a name that is merely
+     *                    long. Two bounds because there are two failures: one is abuse, the other is
+     *                    a person with a long name.
+     *                    <p>The cap is enforced by TRUNCATION rather than refusal, which is the one
+     *                    place in this application where an over-long field is not a 400. The reason
+     *                    is what the endpoint is for: it is the first request a visitor makes, it
+     *                    has no prior state to protect, and refusing it means the product does not
+     *                    open. A quietly shortened name is a worse experience than a name; a login
+     *                    screen that rejects you is not an experience at all.
      */
     public record LoginRequest(@Size(max = 4096) String displayName) {
     }
@@ -149,10 +150,12 @@ public class LoginController {
         }
         String displayName = request.displayName() == null || request.displayName().isBlank()
             ? "Guest" : request.displayName().trim();
-        if (displayName.length() > MAX_DISPLAY_NAME_LENGTH) {
-            displayName = displayName.substring(0, MAX_DISPLAY_NAME_LENGTH);
-        }
 
+        // Shortening happens in UserDirectory, for every caller rather than for the ones that
+        // remember. The version here was a `substring(0, 64)` that could cut a surrogate pair in
+        // half; the constant it used lived in this file while the same 64 lived in OidcLoginSuccess
+        // too. What stays here is the `@Size(max = 4096)` on the request, which is a different rule
+        // — see the record's javadoc.
         TokenService.Principal principal = users.create(displayName);
         return ResponseEntity.ok(new LoginResponse(
             tokens.issue(principal),

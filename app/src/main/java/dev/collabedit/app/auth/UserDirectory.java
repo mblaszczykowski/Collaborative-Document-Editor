@@ -37,6 +37,46 @@ public class UserDirectory {
     private static final String[] PALETTE =
         {"#C1592E", "#4C5FD5", "#2E8B6B", "#8A5CB8", "#B8862E"};
 
+    /**
+     * The upper bound on a name visible to others — enforced <b>here</b>, where the name is stored.
+     *
+     * <p>The name goes into the token, into this table and into every presence broadcast, that is,
+     * a message sent many times a second to every participant. Without a limit one user with a
+     * megabyte-long name loads everyone else's connection.
+     *
+     * <p>It was enforced by each caller instead: {@code LoginController} for the typed name and
+     * {@code OidcLoginSuccess} for the provider's, with the same {@code 64} written twice and
+     * nothing requiring a third caller to know about either. That is the shape of safeguard
+     * {@code DocumentAccessGuard} exists to argue against — one that holds only while everybody
+     * remembers it. Both callers now hand over whatever they have and this decides.
+     */
+    private static final int MAX_DISPLAY_NAME_LENGTH = 64;
+
+    /**
+     * Shortens a name to {@link #MAX_DISPLAY_NAME_LENGTH} <b>without splitting a character</b>.
+     *
+     * <p>A plain {@code substring(0, 64)} cuts between the two halves of a surrogate pair when the
+     * 64th unit is the first half of one, and the result is a lone surrogate: not a character, not
+     * encodable as UTF-8, and stored as a replacement byte or rejected outright depending on which
+     * driver sees it first. Emoji in a display name is ordinary at both providers this application
+     * talks to, and a 64-character name ending in one is all it takes.
+     *
+     * <p>The same cut is handled the same way in {@code DocumentService.splitForInsert} and
+     * {@code HistoryService}, for the same reason — this was the third copy of the mistake and the
+     * only one still open.
+     */
+    private static String capped(String displayName) {
+        if (displayName.length() <= MAX_DISPLAY_NAME_LENGTH) {
+            return displayName;
+        }
+        int end = MAX_DISPLAY_NAME_LENGTH;
+        // The partner of a high surrogate at the boundary is the unit being cut, so drop both.
+        if (Character.isHighSurrogate(displayName.charAt(end - 1))) {
+            end--;
+        }
+        return displayName.substring(0, end);
+    }
+
     private final JdbcTemplate jdbc;
 
     public UserDirectory(JdbcTemplate jdbc) {
@@ -59,10 +99,18 @@ public class UserDirectory {
      */
     public TokenService.Principal create(String displayName) {
         String userId = UUID.randomUUID().toString();
-        String color = colourFor(displayName);
+        String name = capped(displayName);
+        // Derived from the NAME here, and from the identifier in upsertFederated — a difference
+        // that looks like an oversight and is not. This path mints a new identifier on every call,
+        // so an identifier-derived colour would give "Anna" a different colour every time she
+        // signs in; the whole use of this path is two tabs pretending to be two people, and a
+        // participant who changes colour on each reload defeats it. The federated path has the
+        // opposite problem — a stable person who can rename themselves — so it keys on the thing
+        // that does not move there. Same goal, different stable key.
+        String color = colourFor(name);
         jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
-            userId, displayName, color);
-        return new TokenService.Principal(userId, displayName, color);
+            userId, name, color);
+        return new TokenService.Principal(userId, name, color);
     }
 
     /**
@@ -103,7 +151,7 @@ public class UserDirectory {
             """,
             (rs, rowNum) -> new TokenService.Principal(
                 rs.getString("id"), rs.getString("display_name"), rs.getString("color")),
-            candidateId, displayName, colourFor(candidateId), provider, subject, email);
+            candidateId, capped(displayName), colourFor(candidateId), provider, subject, email);
     }
 
     /**

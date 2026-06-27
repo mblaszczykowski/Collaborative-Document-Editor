@@ -111,7 +111,11 @@ public class OidcLoginSuccess implements AuthenticationSuccessHandler {
         for (String attribute : new String[] {"name", "login", "preferred_username", "email"}) {
             String value = claim(principal, attribute);
             if (value != null && !value.isBlank()) {
-                return value.length() > 64 ? value.substring(0, 64) : value;
+                // Not shortened here. It used to be, with a `substring(0, 64)` that splits a
+                // surrogate pair when the 64th unit is half of one — and emoji in a provider's
+                // display name is ordinary. The bound belongs to UserDirectory, which stores the
+                // name and now applies it for every caller.
+                return value;
             }
         }
         return "User " + subject.substring(0, Math.min(8, subject.length()));

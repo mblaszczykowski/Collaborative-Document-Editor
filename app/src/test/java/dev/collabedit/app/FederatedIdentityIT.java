@@ -126,6 +126,27 @@ class FederatedIdentityIT extends IntegrationTestBase {
     }
 
     @Test
+    @DisplayName("a very long name is shortened without splitting a character")
+    void aLongNameIsCutOnACharacterBoundary() {
+        // 63 units of ASCII then one emoji: the pair straddles the 64-unit boundary exactly, which
+        // is the only input that distinguishes a correct cut from `substring(0, 64)`.
+        String name = "a".repeat(63) + "😀";
+
+        TokenService.Principal stored =
+            users.upsertFederated("google", subject(), name, "long@example.test");
+
+        assertThat(stored.displayName().length())
+            .as("the name was stored unbounded; it travels in every presence broadcast")
+            .isLessThanOrEqualTo(64);
+        assertThat(stored.displayName().chars().noneMatch(unit -> Character.isSurrogate((char) unit)))
+            .as("""
+                The cut landed between the two halves of a surrogate pair, leaving a lone surrogate \
+                — not a character, and not encodable as UTF-8. Emoji in a provider's display name \
+                is ordinary, so this is an ordinary name rather than a hostile one.""")
+            .isTrue();
+    }
+
+    @Test
     @DisplayName("a login code works exactly once")
     void aLoginCodeWorksExactlyOnce() {
         TokenService.Principal anna =
