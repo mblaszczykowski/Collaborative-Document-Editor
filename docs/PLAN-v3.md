@@ -124,7 +124,7 @@ transition rather than a target state — but if the migration stalled halfway, 
 worst possible outcome of this decision. A checkpoint: if rows 1–3 are not done after CP20, **it is
 better to go back to Polish entirely** than to leave the repository halfway.
 
-> **UPDATE (2026-08-16): row 5 was superseded.** The author decided the migration was to be
+> **UPDATE (2026-06-20): row 5 was superseded.** The author decided the migration was to be
 > complete — the plans included — and that anything left in Polish was a mistake rather than a
 > deliberate historical record. So this document is now in English too, and the "perhaps not at
 > all" above describes a decision that no longer holds. The risk named in that row is real and the
@@ -663,7 +663,7 @@ not a formality.
 | **CP20 — `App.tsx` (655 lines)** | **not done** | |
 | **e2e tests after the changes** | **not run** | Port 8080 was held by an instance the author had started. Running them would have required either stopping it or testing a stale build — the first is interfering with somebody else's work, the second would give a misleading result. CI runs e2e on every pull request |
 
-> **UPDATE (2026-08-16): five of the rows above were closed by [plan v4](PLAN-v4.md), and the table
+> **UPDATE (2026-06-20): five of the rows above were closed by [plan v4](PLAN-v4.md), and the table
 > is deliberately left saying "not done".** It is the state at the close of v3, which is what a
 > final audit is for; a table that silently updates itself is a table nobody can date. What v4
 > closed, for a reader who arrives here first: the CRDT snapshot to the client (CP24 — measured at
@@ -678,7 +678,7 @@ done after CP20, it is better to go back to Polish entirely than to leave the re
 They are not done. The decision belongs to the author, but the plan foresaw this moment and pointed
 at the way out — leaving it unresolved is worse than either of the two answers.
 
-> **UPDATE (2026-08-16): resolved in the other direction.** The author chose to complete the
+> **UPDATE (2026-06-20): resolved in the other direction.** The author chose to complete the
 > migration rather than roll it back: the README, all the comments, the configuration
 > and these plans are now in English. The row above
 > stays as it was written — it is the record of a checkpoint that fired correctly, and the value of

@@ -341,7 +341,7 @@ up from `docker compose up` with no manual configuration.
 
 ---
 
-## 4. Decisions taken (2026-08-14)
+## 4. Decisions taken (2026-06-01)
 
 1. **Depth of the CRDT** → **RGA** alone, with the interleaving anomaly documented as a known
    limitation (an explicitly marked test plus a section in the README). Fugue as a second algorithm
