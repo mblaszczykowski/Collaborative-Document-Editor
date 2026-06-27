@@ -2,73 +2,55 @@
 
 ![Two people editing at once, one loses the network, changes merge on reconnect, a version is rolled back](docs/demo.gif)
 
-*Two browsers, one document: concurrent editing of the same paragraph, work continuing after the
-network is cut, merging on reconnect, and a rollback. Recorded from
-[a script](frontend/e2e/demo.spec.ts) that CI runs on every pull request, so the scenario cannot
-quietly stop working while the image goes on showing it.*
+*Concurrent editing of the same paragraph, work continuing after the network is cut, merging on
+reconnect, a rollback. Recorded from [a script](frontend/e2e/demo.spec.ts) that CI runs on every
+pull request, so the scenario cannot quietly stop working while the image goes on showing it.*
 
 ![Bolding a range, typing inside it, commenting on a selection, deleting anchored text, restoring from the bin](docs/demo-v2.gif)
 
-*The same thing one layer up. Anna bolds a fragment; Marek, not seeing it yet, types a word in the
-middle of it, and the formatting covers the new text instead of leaving a hole. Then a comment on a
-selection, deleting the anchored text (the thread stays, marked detached), and restoring a document
-from the bin.*
+*One layer up. Anna bolds a fragment; Marek, not seeing it yet, types inside it, and the formatting
+covers the new text instead of leaving a hole. Then a comment on a selection, deleting the anchored
+text, and a restore from the bin.*
 
 Real-time collaborative editing: several people in one document at once, over a bad connection, in
 the same paragraph, with no server deciding who wins.
 
-The merge algorithm is an RGA-style CRDT **written from scratch, twice** — Java on the server and
-TypeScript in the browser. It is not a wrapper around Yjs or Automerge. Formatting, comments and
-suggestions all run on that same core rather than beside it.
+The merge algorithm is an RGA-style CRDT **written from scratch, twice** — Java on the server,
+TypeScript in the browser. Not a wrapper around Yjs or Automerge. Formatting, comments and
+suggestions all run on that same core instead of beside it.
 
 **Contents**
 
-- [Features](#features)
-- [Architecture](#architecture)
-- [How the merge works](#how-the-merge-works)
-- [Anchors: one mechanism, four features](#anchors-one-mechanism-four-features)
-- [Undo in a shared document](#undo-in-a-shared-document)
-- [History, and a diff by identity](#history-and-a-diff-by-identity)
-- [Offline, reconnect, and the gap you cannot see](#offline-reconnect-and-the-gap-you-cannot-see)
-- [The cluster](#the-cluster)
-- [Authorization](#authorization)
-- [Running it](#running-it)
-- [Tests](#tests)
-- [Performance](#performance)
-- [Failure modes](#failure-modes)
-- [Limitations](#limitations)
-- [Observability](#observability)
+- [Features](#features) · [Architecture](#architecture) · [How the merge works](#how-the-merge-works)
+- [Anchors: one mechanism, four features](#anchors-one-mechanism-four-features) · [Undo](#undo-in-a-shared-document) · [History](#history-and-a-diff-by-identity)
+- [Offline and reconnect](#offline-reconnect-and-the-gap-you-cannot-see) · [The cluster](#the-cluster) · [Who you are](#who-you-are) · [Authorization](#authorization)
+- [Tests](#tests) · [Performance](#performance) · [Failure modes](#failure-modes) · [Limitations](#limitations)
+- Running it, configuration, observability: [`docs/RUNNING.md`](docs/RUNNING.md)
 
 ---
 
 ## Features
 
-**Editing** — any number of people in one document; a keystroke is visible locally immediately and
-reaches everyone else in about 130 ms with 50 clients connected. Offline editing into an IndexedDB
-buffer that survives the tab closing. Undo and redo that take back **your** operations, never
-someone else's. Live cursors and a participant list that works across backend instances. Large
-pastes split into operations at the source, because nothing downstream is allowed to split one.
+**Editing** — any number of people per document, ~130 ms propagation with 50 clients connected,
+offline into an IndexedDB buffer that survives the tab closing, undo that takes back *your*
+operations and nobody else's, live cursors and presence across backend instances.
 
-**Rich text** — bold, italic, underline, strikethrough, inline code, links; headings, block quotes
-and lists as marks over a line rather than nodes in a tree. Formatting survives concurrent editing
-inside its own range, which is [the interesting
-one](#which-side-an-anchor-sits-on-decides-how-formatting-behaves).
+**Rich text** — six inline styles plus headings, quotes and lists, all as marks over a flat
+sequence instead of nodes in a tree. Formatting survives concurrent editing inside its own range,
+which is [the interesting one](#which-side-an-anchor-sits-on-decides-how-formatting-behaves).
 
-**Comments** — threads anchored to a range; reply, resolve, reopen. Deleting the commented text
-keeps the thread, marks it detached, and shows the quote as of when it was written. A comment
-written with no connection is retried, and a retry does not create a second thread.
+**Comments** — threads anchored to a range. Delete the commented text and the thread stays, marked
+detached, quoting the fragment as of when it was written.
 
-**Suggestions** — your edits become proposals drawn over the real text instead of changing it.
-Accept or reject per suggestion; the resulting operations are generated server-side, so a suggester
-can never write directly.
+**Suggestions** — edits as proposals drawn over the real text, accepted or rejected one at a time.
+The resulting operations are generated server-side, so a suggester can never write directly.
 
-**History** — time travel to any point in the operation log, diff between two versions **by
-character identity** rather than by string, and restore recorded as new operations rather than as a
-rewrite of the past.
+**History** — time travel to any point in the log, diff two versions *by character identity*, and
+restore recorded as new operations instead of a rewrite of the past.
 
-**Documents and access** — workspaces, document list, full-text search over content, trash with
-restore. Four ordered roles (`viewer < commenter < editor < owner`), invitation links that carry a
-role and are stored only as a hash, and revocation that takes effect mid-session on every instance.
+**Documents and access** — workspaces, search, trash, four ordered roles
+(`viewer < commenter < editor < owner`), invitation links stored only as a hash, revocation that
+lands mid-session on every instance.
 
 ---
 
@@ -76,11 +58,10 @@ role and are stored only as a hash, and revocation that takes effect mid-session
 
 ![Two browsers and two backend instances, each holding an RGA replica, all appending to and replaying from one Postgres operation log](docs/diagrams/architecture.svg)
 
-All four replicas are peers. A browser is not a thin client of an instance, and an instance is not an
-authority over a browser — they run the same algorithm and merge each other's operations by the same
-rule. Instances also gossip over Redis, which the [edit path](#the-path-of-a-single-edit) below shows
-and [the cluster](#the-cluster) explains; it is left out here because it is a fast path rather than
-part of the structure.
+All four replicas are peers. A browser is not a thin client of an instance, and an instance is not
+an authority over a browser: they run the same algorithm and merge each other's operations by the
+same rule. Instances also gossip over Redis, which [the cluster](#the-cluster) explains. It is left
+out of the diagram because it is a fast path, not part of the structure.
 
 ```
 crdt-core/     the algorithm. A separate Maven module with ZERO Spring dependencies,
@@ -115,48 +96,43 @@ ops/           Prometheus / Tempo / Grafana / OTel Collector configuration
 
 ### Two implementations, one corpus
 
-The algorithm exists twice, in two languages, and they have to agree exactly — a browser and a
-server that order two concurrent inserts differently produce a permanently split document.
+The algorithm exists twice, and the two have to agree exactly: a browser and a server that order two
+concurrent inserts differently produce a permanently split document. Keeping them in step is a
+shared corpus in [`conformance/`](conformance/) — operation sequences with their expected text and
+formatting, generated once and replayed by both suites. Change the ordering rule in one language and
+the other language's build fails.
 
-Keeping them in step is a shared corpus in [`conformance/`](conformance/): operation sequences with
-their expected resulting text and formatting, generated once and replayed by both test suites. A
-change to the ordering rule in one language fails the other language's build.
-
-The corpus does not cover everything, and the hole is worth being precise about. Vectors contain
-operations that were **already created**, carrying concrete anchor sides, but "does bold grow when you
-type at its end" is decided at *creation* time — so changing the expansion table on one side changes
-no vector and the whole corpus stays green. That is why the table is a JSON file both sides read, with
-a conformance test on each side, including one that walks the *other* way from the declared constants
-back to the file: a type declared in Java and forgotten in the JSON left both suites green while the
-client had no idea it existed.
+The corpus has a hole worth naming. Vectors contain operations that were *already created*, carrying
+concrete anchor sides, but "does bold grow when you type at its end" is decided at *creation* time.
+Changing the expansion table on one side changes no vector, and the whole corpus stays green. So the
+table is a JSON file both sides read, with a test on each side, including one that walks the other
+way — from the declared constants back to the file. A type declared in Java and forgotten in the
+JSON had left both suites green while the client had no idea it existed.
 
 ---
 
 ## How the merge works
 
-### The problem
+Two people type into the same spot at once. Neither has seen the other, there is no central
+sequencer to ask, and both must end up with the same document. Not "eventually, after a conflict
+dialog". Always.
 
-Two people type into the same spot at the same time. Neither has seen the other. There is no
-central sequencer to ask, and both must end up with the same document — not "eventually, after a
-conflict dialog", but always, with no arbiter anywhere.
-
-The naive answer is to send positions: *insert "!" at index 2*. That breaks the moment anything is
-inserted earlier, because by the time the message arrives index 2 means a different place. Every
-position-based approach ends up rewriting other people's messages to compensate. That is
-Operational Transformation, and doing it correctly for N peers with no server is famously hard.
+Sending positions (*insert "!" at index 2*) breaks the moment anything is inserted earlier, because
+by the time the message lands, index 2 means somewhere else. Every position-based approach ends up
+rewriting other people's messages to compensate. That is Operational Transformation, and doing it
+correctly for N peers with no server is famously hard.
 
 ### Every character has an identifier
 
-So we do not send positions. Each character gets an identifier when it is created and keeps it for
-the life of the document:
+So we do not send positions. Each character gets an identifier at creation and keeps it for life:
 
 ```
 Id = (replicaId, lamport)        printed as   1@7
 ```
 
-`lamport` is a Lamport clock: bumped on every local edit, and bumped to
-`max(local, incoming + 1)` on receipt of anyone else's operation. An insert names the character it
-goes **after**, by identifier:
+`lamport` is a Lamport clock: bumped on every local edit, and bumped to `max(local, incoming + 1)`
+when someone else's operation arrives. An insert names the character it goes **after**, by
+identifier:
 
 ```
 Insert { id: 1@7, originLeft: 1@6, text: "!" }
@@ -167,9 +143,9 @@ from an index.
 
 ### Ordering two concurrent inserts
 
-The insertion rule is: **find the origin, walk right while the block you meet has a higher
-identifier than the one being inserted, and stop at the first lower one.** Identifiers compare by
-`(lamport, replicaId)`, which is a total order, so it can never tie.
+Find the origin, walk right while the block you meet has a higher identifier than the one being
+inserted, stop at the first lower one. Identifiers compare by `(lamport, replicaId)`, a total order,
+so it can never tie.
 
 ```
    both replicas hold "ok"; neither has seen the other
@@ -192,21 +168,20 @@ identifier than the one being inserted, and stop at the first lower one.** Ident
                             2@5  1@5
 ```
 
-Same result, opposite delivery order, no messages rewritten and nothing to roll back. Higher
-identifiers sort to the left, which is arbitrary but has to be *decided*.
+Same result, opposite delivery order, no messages rewritten, nothing to roll back. Higher
+identifiers sort left, which is arbitrary but has to be *decided*.
 
-Two properties make the walk correct, and both rest on `lamport` being a real Lamport clock:
-
-- Anything created causally after a block S has a higher timestamp than S, so skipping S skips its
-  whole subtree. Concurrent runs never get shredded into each other.
-- The first block past the origin's subtree has a *lower* timestamp than the origin, while the
-  incoming block has a *higher* one — its author had seen the origin. So the scan stops on its own
-  and never wanders out of the subtree.
+Two properties make the walk correct, and both rest on `lamport` being a real Lamport clock.
+Anything created causally after a block S has a higher timestamp than S, so skipping S skips its
+whole subtree and concurrent runs never get shredded into each other. And the first block past the
+origin's subtree has a *lower* timestamp than the origin, while the incoming block has a higher one
+(its author had seen the origin), so the scan stops on its own instead of wandering out of the
+subtree.
 
 ### The document is a list of runs, not characters
 
-Storing one object per character is wasteful and, worse, means one operation per keystroke. The
-document is a list of **blocks**, each holding a whole run:
+One object per character is wasteful, and worse, it means one operation per keystroke. The document
+is a list of **blocks**, each holding a whole run:
 
 ```
    Block{1@1, "Hello "}   Block{1@7, "world"}
@@ -219,52 +194,47 @@ document is a list of **blocks**, each holding a whole run:
                                              GC tests this, not the insert.
 ```
 
-Two invariants keep this honest:
+Two invariants keep it honest. A block is entirely alive or entirely deleted, so deleting part of
+one splits it first; the alternative, a per-character flag array, complicates every index operation
+and saves little. And the insertion scan is coarse, by blocks: safe because lamports inside a block
+increase and the characters are causally chained, so if a block's first character outranks the
+incoming one, so does every other. The scan never needs to stop mid-block either, because if the
+origin *is* mid-block, the block was split first anyway.
 
-1. **A block is entirely alive or entirely deleted.** Deleting part of one splits it first. The
-   alternative — a per-character flag array — complicates every index operation and saves little.
-2. **The insertion scan is coarse, by blocks rather than characters.** Safe because lamports inside a
-   block increase and the characters are causally chained: if a block's first character outranks the
-   incoming one, so does every other. And the scan never needs to stop mid-block, because if the
-   origin *is* mid-block the block is split first anyway.
-
-Typing appends into the previous block when the replica, the lamport and the origin all line up;
-without that fast path run-length encoding would buy nothing, since every keystroke is still its own
-operation on the wire. A deleted block keeps its identity and its length so it can still serve as an
-origin, and may drop its `text` while keeping both.
+Typing appends into the previous block when the replica, the lamport and the origin all line up.
+Without that fast path, run-length encoding would buy nothing, since every keystroke is still its
+own operation on the wire. A deleted block keeps its identity and its length so it can still serve
+as an origin, and may drop its `text` while keeping both.
 
 ### Two index implementations, one algorithm
 
 `RgaDocument` does not know how the block list is stored. It goes through a `BlockList` interface,
-and there are two of them:
+and there are two:
 
 | | Insert a block | Find by offset | Find by identifier |
 |---|---|---|---|
 | `ArrayBlockList` | O(n) | O(n) | O(n) |
 | `TreapBlockList` | O(log n) | O(log n) | O(log n) |
 
-The treap is a binary search tree keyed by document order, with a heap priority for balance, and
-every node carries its subtree's visible and total length so a position lookup can descend instead
-of scanning. The priority is not random: it is a splitmix64 hash of the block's identifier, so
-every replica independently builds **the same tree shape** — which makes a failing test
-reproducible instead of merely likely.
+The treap is a BST keyed by document order with a heap priority for balance, every node carrying its
+subtree's visible and total length so a position lookup can descend instead of scan. The priority is
+a splitmix64 hash of the block's identifier, not a random number, so every replica independently
+builds the same tree shape and a failing test is reproducible instead of merely likely.
 
-Both implementations pass the same property suite, which feeds them the same random operation
-sequence and compares step by step. The companion property
+Both pass the same property suite, fed the same random sequence and compared step by step.
 `bothImplementationsAnswerQueriesIdentically` is the one that earns its keep: a mutation once left
-the *text* identical in both and only the *positions* wrong — a document that looks healthy with
-everybody's cursor in the wrong place. A comparison on text alone missed it.
+the *text* identical in both and only the *positions* wrong, which is a document that looks healthy
+with everybody's cursor in the wrong place.
 
-The naive implementation came first, then the full test suite, then the JMH measurement, and only
-then the tree. The commit history shows that order because it is more honest than dropping in a
-clever structure on day one.
+Naive implementation first, then the tests, then JMH, and only then the tree. The commit history
+shows that order because it is more honest than dropping in a clever structure on day one.
 
 ### Tombstones, and when one can be dropped
 
-Tombstones can never be deleted on a whim: another replica may still be holding an operation whose
-origin is that character. The condition for dropping one is **causal stability** — every replica
-that could still refer to it has already seen the deletion. The server keeps the version vector
-each connected replica reports and takes the component-wise minimum:
+A tombstone can never be deleted on a whim, because another replica may still hold an operation
+whose origin is that character. The condition is **causal stability**: every replica that could
+still refer to it has already seen the deletion. The server keeps the version vector each connected
+replica reports and takes the component-wise minimum.
 
 ```
    replica A reports   { 1:120, 2:88, 3:200 }
@@ -274,76 +244,74 @@ each connected replica reports and takes the component-wise minimum:
    the meet            { 1:118, 2:88, 3:196 }
 ```
 
-The test is on the **deletion**, not on the insertion. An audit found it applied to the insertion,
-which is the same thing only when nothing was ever deleted quickly: a paragraph written last week and
-deleted a second ago has an insertion far below the meet, so its tombstone was collectable
-immediately while a peer 10 ms behind was still displaying the text. That is what `Block.deletedBy`
-is for, and `GcSafetyTest` pins the scenario.
+The test is on the **deletion**, not the insertion. An audit found it applied to the insertion,
+which is the same thing only when nothing was ever deleted quickly: a paragraph written last week
+and deleted a second ago has an insertion far below the meet, so its tombstone was collectable
+immediately while a peer 10 ms behind still displayed the text. That is what `Block.deletedBy` is
+for, and `GcSafetyTest` pins the scenario.
 
-Two more things are held back from collection, both found the same way. **Anchors of buffered
-operations**, because a mark waiting for one anchor still needs the other to exist — collecting it
-stranded the operation in the pending buffer for the life of the process and the formatting silently
-vanished. And **every character in a buffered delete range**, not just the first, because the range
-walk goes block by block and removing anything in the middle breaks it permanently.
+Two more things are held back, both found the same way. Anchors of buffered operations, since a mark
+waiting on one anchor still needs the other to exist; collecting it stranded the operation in the
+pending buffer for the life of the process and the formatting silently vanished. And every character
+in a buffered delete range, not just the first, because the range walk goes block by block and
+removing anything in the middle breaks it permanently.
 
-A replica offline for longer than the GC window (7 days) is refused with `RESYNC_REQUIRED` and its
-local version saved as a separate "Recovered draft". No faked merge: where those characters belong is
+A replica offline longer than the GC window (7 days) is refused with `RESYNC_REQUIRED` and its local
+version kept as a separate "Recovered draft". No faked merge: where those characters belong is
 genuinely gone.
 
 ### Why deduplication is not the version vector's job
 
-The reflex is to keep a version vector and reject anything already seen. That is wrong with a Lamport
-clock, because **per-replica counters are not contiguous** — the clock jumps whenever someone else's
+The reflex is to keep a version vector and reject anything already seen. With a Lamport clock that
+is wrong, because per-replica counters are not contiguous: the clock jumps whenever someone else's
 operation arrives, so replica A may legitimately produce lamports 1, 2, 47, 48, 103. "I have
-everything from A up to 48" cannot distinguish a hole left by a lost message from a hole left by a
-clock jump.
+everything from A up to 48" cannot tell a hole left by a lost message from a hole left by a jump.
 
-Instead: an `Insert` is a duplicate if a character with that identifier is already in the structure —
-exact, and free, because the structure indexes by identifier anyway. A `Delete` is not checked at all,
+Instead, an `Insert` is a duplicate if a character with that identifier is already in the structure.
+Exact, and free, since the structure indexes by identifier anyway. A `Delete` is not checked at all,
 because setting a tombstone twice is a no-op.
 
-The version vector still exists, for causal stability above and for the "what do you have" exchange on
-reconnect, but it is not a correctness mechanism of the core. **Detecting gaps in delivery is the
-transport's job, not the algorithm's.** The CRDT has to be correct under any order and any repetition,
-and it is.
+The version vector still exists, for causal stability and for the "what do you have" exchange on
+reconnect, but it is not a correctness mechanism of the core. Detecting gaps in delivery is the
+transport's job. The CRDT has to be correct under any order and any repetition.
 
 ### What the Lamport clock is actually for
 
-An earlier version of these notes claimed that without bumping the clock on receipt the implementation
-**diverges**, and gave a counterexample. That claim was too strong and is withdrawn. I removed the
-bump from production code (`clock = max(clock, 0)`) and ran a brute-force divergence search — 200 000
+An earlier version of these notes claimed that without bumping the clock on receipt the
+implementation **diverges**, and gave a counterexample. Too strong, and I withdraw it. I removed the
+bump from production code (`clock = max(clock, 0)`) and ran a brute-force divergence search: 200 000
 random scenarios, 3–5 replicas, 30 edits each, aggressive interleaving, every operation delivered
-twice — and got **zero divergences and zero operations stuck in the buffer**. The integration function
-is deterministic with respect to the *set* of present elements rather than the order they arrived in,
-and that is enough for convergence.
+twice. Zero divergences, zero operations stuck in the buffer. The integration function is
+deterministic with respect to the *set* of present elements, not the order they arrived in, and that
+is enough for convergence.
 
 The bump stays for an honestly named reason: it is a premise of the published RGA correctness proof,
-and 200 000 random scenarios are evidence rather than a proof. What it does guarantee is the
-structural property above — skipping a sibling skips its subtree, so a concurrently typed run stays
-contiguous. That is an invariant about the linearisation, not about two replicas agreeing, and for a
-long time nothing was checking it: removing the bump left every property test green. The fix is three
-lines in `RgaInvariants`, the helper every property already calls after each step — assert that a
-block's timestamp is above its origin's.
+and 200 000 scenarios are evidence, not a proof. What it does guarantee is the structural property
+above, that skipping a sibling skips its subtree, so a concurrently typed run stays contiguous. That
+is an invariant about the linearisation, not about two replicas agreeing, and nothing checked it for
+a long time — removing the bump left every property test green. The fix is three lines in
+`RgaInvariants`, the helper every property already calls after each step: assert a block's timestamp
+is above its origin's.
 
 ---
 
 ## Anchors: one mechanism, four features
 
-Cursors, formatting, comment highlights and suggestions are all "a place in the document that has
-to survive other people typing". They are all the same object:
+Cursors, formatting, comment highlights and suggestions are all "a place in the document that has to
+survive other people typing". They are the same object:
 
 ```
 Anchor { charId: Id, side: BEFORE | AFTER }
 ```
 
-Not an offset — an offset stops pointing at the same place the moment somebody inserts text
-earlier. An anchor is attached to a character, so it moves with the text.
+Not an offset. An offset stops pointing at the same place the moment somebody inserts text earlier;
+an anchor is attached to a character, so it moves with the text.
 
 ### Which side an anchor sits on decides how formatting behaves
 
 This is the heart of rich text in a CRDT and the easiest part to overlook. An anchor "after X" and
-an anchor "before Y" point at the same gap in `…XY…` — until somebody inserts between X and Y.
-Then they differ, and that difference is exactly what decides whether formatting grows:
+an anchor "before Y" point at the same gap in `…XY…` until somebody inserts between X and Y. Then
+they differ, and that difference is exactly what decides whether formatting grows:
 
 ```
    a mark ends between b and c in "abcd". Two ways to say that:
@@ -363,19 +331,19 @@ Then they differ, and that difference is exactly what decides whether formatting
 ```
 
 Same mechanism, one field different. The alternative is a separate "should this expand" flag, which
-describes the same thing worse — because it is detached from where the anchor actually is.
+describes the same thing worse because it is detached from where the anchor actually is.
 
-The table of which types expand lives in
+Which types expand lives in
 [`conformance/schema/mark-types.json`](conformance/schema/mark-types.json), read by both
-implementations, with a test on each side that fails if they drift. An unknown type does not
-expand: a mark that expands unexpectedly changes the look of text the user never formatted, while
-one that fails to expand costs a repeated gesture.
+implementations, with a test on each side that fails if they drift. An unknown type does not expand:
+a mark that expands unexpectedly restyles text the user never formatted, while one that fails to
+expand costs a repeated gesture.
 
 ### Formatting is a layer, not a character attribute
 
 Marks are a separate CRDT layer over the character layer, in the style of Peritext. The character
-layer never gained a field for bold, or for comments, or for suggestions. This is what the second
-demo GIF shows:
+layer never gained a field for bold, or comments, or suggestions. This is what the second demo GIF
+shows:
 
 ```
    Ann bolds "llo" in "Hello world".
@@ -391,82 +359,76 @@ demo GIF shows:
                                                  the hole is permanent
 ```
 
-Resolving marks to spans is a sweep over the block list. Because "the sweep agrees with itself on
-every replica" is a test that passes when the sweep returns nothing at all, it is checked against
-`NaiveMarkResolver` — an independent, obviously correct, far too slow implementation that resolves
+Resolving marks to spans is a sweep over the block list. "The sweep agrees with itself on every
+replica" is a test that passes when the sweep returns nothing at all, so it is checked against
+`NaiveMarkResolver`: an independent, obviously correct, far too slow implementation that resolves
 anchors straight from the block list. Replacing `MarkSet.spans` with `return List.of()` left all
-four of the original mark properties green. It does not survive the oracle.
+four original mark properties green. It does not survive the oracle.
 
 Twelve mark types share the mechanism: six inline styles, `comment`, two suggestion types, and
-`heading` / `quote` / `list` for block structure.
+`heading` / `quote` / `list`.
 
 ### A comment is half in the CRDT and half out
 
 The common misreading of this codebase is "there is a CRDT, so the comments must be in it". They are
-not. The **anchor** is a CRDT operation; the **conversation** is rows in Postgres. They need
-different things: a range has to merge without an arbiter under concurrent edits, while a sentence
-written by one person has a single author and an obvious order, so running it through a merge
-algorithm buys nothing and costs a lot.
+not. The **anchor** is a CRDT operation; the **conversation** is rows in Postgres. A range has to
+merge without an arbiter under concurrent edits; a sentence written by one person has a single
+author and an obvious order, so running it through a merge algorithm buys nothing and costs a lot.
 
-Two consequences are easy to miss in the code:
+Two consequences are easy to miss in the code. The anchor is created *after* the thread, because it
+needs the thread's id, so there is a window where a thread exists with no anchor. And the highlight
+and the content travel by different routes at different speeds: the highlight is a CRDT operation
+and appears for everyone at once, while the conversation goes over REST and waits for the panel to
+refresh. It looks like an inconsistency and is not.
 
-1. **The anchor is created after the thread**, because it needs the thread's id, so there is a window
-   where a thread exists with no anchor. Accepted consequence of the split, not an oversight.
-2. **The highlight and the content travel by different routes at different speeds.** The highlight is
-   a CRDT operation and appears for everyone immediately; the conversation goes over REST and waits
-   for the panel to refresh. It looks like an inconsistency and is not.
-
-Offline, a comment goes to an outbox with its anchor and is retried on reconnect. A retry of one that
-did arrive is recognised by an idempotency key and does not become a second thread — the offline path
-here needs exactly-once, not merging.
+Offline, a comment goes to an outbox with its anchor and is retried on reconnect. An idempotency key
+stops a retry of one that did arrive becoming a second thread. This path needs exactly-once, not
+merging.
 
 ### Suggestions are marks over real text
 
-A suggestion does not modify the document and does not live in a side buffer. Typing in suggest
-mode produces text that is really inserted, carrying a `suggest-insert` mark; deleting produces a
-`suggest-delete` mark over text that is still there. Accepting means dropping the mark. Rejecting
-means generating the operations that undo it — **server-side**, so a role that may suggest can
-never write directly, whatever the client sends.
+A suggestion does not modify the document and does not live in a side buffer. Typing in suggest mode
+inserts real text carrying a `suggest-insert` mark; deleting adds a `suggest-delete` mark over text
+that is still there. Accepting drops the mark. Rejecting generates the operations that undo it,
+**server-side**, so a role that may suggest can never write directly whatever the client sends.
 
-That is the payoff of the mark layer being general. Suggestions needed no new anchor mechanism, no
-new merge rule and no change to the character layer.
+That is the payoff of a general mark layer: no new anchor mechanism, no new merge rule, no change to
+the character layer.
 
 ---
 
 ## Undo in a shared document
 
 CodeMirror's own history is switched off. It works on text, so an undo would also take back whatever
-other people typed in the meantime — in a shared editor that is not an inconvenience, it is deleting
+other people typed in the meantime. In a shared editor that is not an inconvenience, it is deleting
 someone else's work.
 
-Undo therefore operates on **your own operations**, and the difficulty is that in a CRDT an operation
-cannot be inverted: a deleted character has a tombstone and does not come back to life. Restoring
-text means inserting **new** characters with new identifiers. The visible effect is the same; the
-identity is not. Yjs does the same thing.
+Undo therefore operates on your own operations, and the difficulty is that a CRDT operation cannot
+be inverted: a deleted character has a tombstone and does not come back to life. Restoring text
+means inserting *new* characters with new identifiers. The visible effect is the same; the identity
+is not. Yjs does the same thing.
 
-A stack entry remembers a **character identifier**, not an offset, because an offset recorded at edit
+A stack entry remembers a character identifier, not an offset, because an offset recorded at edit
 time is stale by the time you press Ctrl-Z. Undoing a formatting change is not "remove the mark"
 either: the inverse of "make this bold" is "put back whatever this range had before", which differs
-whenever somebody else's mark of the same type was already there — removing would take away their
+whenever somebody else's mark of the same type was already there. Removing would take away their
 formatting too, and they never touched anything.
 
-If the anchor has since been deleted by somebody else, the entry is **skipped** rather than guessed
-at. Putting the text back "roughly there" would appear somewhere random with no explanation.
+If the anchor has since been deleted by somebody else, the entry is skipped rather than guessed at.
+Putting the text back "roughly there" would appear somewhere random with no explanation.
 
 ---
 
 ## History, and a diff by identity
 
 The operation log in Postgres is the source of truth. Snapshots are a disposable cache — deleting
-every snapshot in the database changes only how long a load takes, and there is a test that does
-exactly that (`snapshotsAreOnlyACache`).
-
-That buys time travel for free: `GET …/history/at?seq=` replays the log to any point. Restoring is
-recorded as **new operations** rather than a rewrite, so the history of a restore is itself in the
+every snapshot in the database changes only how long a load takes, and `snapshotsAreOnlyACache` does
+exactly that. Time travel comes free: `GET …/history/at?seq=` replays the log to any point. Restore
+is recorded as new operations instead of a rewrite, so the history of a restore is itself in the
 history.
 
-The diff endpoint compares two versions by **character identity**, which answers a question a text
-diff cannot:
+The diff endpoint compares two versions by character identity, which answers a question a text diff
+cannot:
 
 ```
    delete a word, then type the same word again
@@ -476,64 +438,59 @@ diff cannot:
                                                               by a named author
 ```
 
-Restore uses a common prefix and suffix rather than a full Myers diff. A restore is usually a
-rollback of one recent edit, so prefix/suffix is short and cheap; Myers would produce smaller
-operations at a cost in complexity that has not been worth paying.
+Restore uses a common prefix and suffix, not a full Myers diff. A restore is usually a rollback of
+one recent edit, so prefix/suffix is short and cheap; Myers would produce smaller operations at a
+cost in complexity that has not been worth paying.
 
 ---
 
 ## Offline, reconnect, and the gap you cannot see
 
-Losing the connection is the normal case, not the exception. Editing continues into an IndexedDB
-buffer that survives the tab being closed, and drains on reconnect.
+Losing the connection is the normal case. Editing continues into an IndexedDB buffer that survives
+the tab closing, and drains on reconnect.
 
 What decides when an operation may leave that buffer is the interesting part. The release is on the
 **write** acknowledgement, never on the broadcast. If an instance dies in between, the operation is
-on other people's screens but not in the log — and because the buffer never released it, the client
+on other people's screens but not in the log, and because the buffer never released it, the client
 retransmits.
 
 The reverse failure is the one worth designing for, because it is silent. A broadcast to one client
 is lost. Nothing errors; the client simply has a hole and does not know it. Watching `server_seq`
-for gaps does not help, because the cursor advances on **acknowledgements**, which are broadcast to
-everybody — so it looks perfectly current while the operation is missing. So the acknowledgement
-carries the operation's **identity**, and the client asks a different question:
+for gaps does not help, because the cursor advances on acknowledgements, which go to everybody, so
+it looks perfectly current while the operation is missing. So the acknowledgement carries the
+operation's **identity**, and the client asks a different question:
 
 ```
    ack for 7@41 arrives  →  have I actually handled the operation 7@41?
                             no  →  a broadcast was lost  →  resynchronise
 ```
 
-That check was originally "does my replica contain a character 7@41", which is exact for inserts and
-always false for deletes and marks — their identity comes from the same clock but never names a
-character. So one backspace by anybody set the gap flag and the client resynchronised from zero every
-15 seconds for ever, making the repair mechanism its own permanent load. It is now a bounded window
-of handled identities, with the structural check kept as a second line.
+That check started as "does my replica contain a character 7@41", which is exact for inserts and
+always false for deletes and marks, whose identity comes from the same clock but never names a
+character. One backspace by anybody set the gap flag, and the client resynchronised from zero every
+15 seconds for ever, making the repair mechanism its own permanent load. It is a bounded window of
+handled identities now, with the structural check kept as a second line.
 
 ![Client connection states, with the two exits: resynchronising on a detected gap, and a refusal past the collection window](docs/diagrams/connection-states.svg)
 
-`Offline` is not a dead end — edits continue into IndexedDB and survive the tab closing. `Refused` is
-the only state the client cannot recover from on its own.
-
-The heartbeat is not what the user experiences. The client listens for the browser's
-`online`/`offline` events and for socket errors, which fire immediately. The broker's timeout is
+`Offline` is not a dead end. `Refused` is the only state the client cannot recover from on its own.
+The heartbeat is not what the user experiences: the client listens for the browser's
+`online`/`offline` events and for socket errors, which fire immediately, and the broker's timeout is
 the backstop for a socket that is dead without saying so.
 
 ---
 
 ## The cluster
 
-Every backend instance is an ordinary CRDT replica — a peer of the other instances and of the
-browsers, as in the [architecture diagram](#architecture). No leader, no distributed lock, no
-sticky sessions.
+Every backend instance is an ordinary CRDT replica, a peer of the other instances and of the
+browsers. No leader, no distributed lock, no sticky sessions.
 
-Redis is a fast path, not a channel with delivery guarantees. Losing a message is a **latency**
-problem rather than a correctness one, because the log is authoritative and the anti-entropy sweep
-repairs the difference. `ClusterChaosIT` pauses the Redis container mid-write to check that, and
-`redisOutageIsRepairedByAntiEntropy` checks the repair specifically.
-
-There is a deterministic simulation of the whole cluster as well: the same scenarios driven from a
-seed instead of from thread interleaving, so a failure arrives with the number that reproduces it
-rather than with "sometimes".
+Redis is a fast path, not a channel with delivery guarantees. Losing a message is a latency problem,
+not a correctness one, because the log is authoritative and the anti-entropy sweep repairs the
+difference. `ClusterChaosIT` pauses the Redis container mid-write to check that, and
+`redisOutageIsRepairedByAntiEntropy` checks the repair specifically. There is also a deterministic
+simulation of the whole cluster: the same scenarios driven from a seed instead of thread
+interleaving, so a failure arrives with the number that reproduces it rather than with "sometimes".
 
 The cost of having no owner is on the [limitations](#limitations) list: a document open on three
 instances lives in three copies.
@@ -543,20 +500,15 @@ instances lives in three copies.
 ## Who you are
 
 Authorization is only as good as the identity under it, and for most of this project's life there
-was none: `POST /api/login` took a name, minted a fresh `UUID`, and handed back a token. Nothing
-checked anything. Two consequences, and the second is the one that matters.
+was none. `POST /api/login` took a name, minted a fresh `UUID`, handed back a token, and checked
+nothing. So "Anna" today and "Anna" tomorrow were different people, and documents, memberships and
+comments belonged to an identity that stopped existing when the tab closed — sharing works by
+invitation *link* partly because there was nobody stable to name. Worse, every rule above it rested
+on an unverified claim: `link` visibility grants EDITOR to "anyone signed in", and signing in cost
+nothing. The role model underneath was fine. It was resting on air.
 
-**"Anna" today and "Anna" tomorrow were different people.** Every login produced a new identifier,
-so documents, memberships and comments belonged to an identity that ceased to exist when the tab
-closed. Sharing works by invitation *link* rather than by naming a person partly because there was
-nobody stable to name.
-
-**Every rule above it rested on an unverified claim.** `link` visibility grants EDITOR to "anyone
-signed in" — and signing in cost nothing, so it granted edit to anyone at all. The role model
-underneath was fine; it was resting on air.
-
-So identity is **federated**. An OpenID Connect provider vouches for the person, and this
-application never sees a password.
+So identity is federated. An OpenID Connect provider vouches for the person, and this application
+never sees a password.
 
 ```
 browser ──1── /oauth2/authorization/google ──▶ server ──2──▶ Google
@@ -567,210 +519,83 @@ browser ──1── /oauth2/authorization/google ──▶ server ──2─�
        app ──5── POST /api/session {code} ──▶ server ──▶ session token
 ```
 
-Two decisions in that picture are worth the words:
+Two decisions in that picture are worth the words.
 
 **The identity is `(provider, subject)`, never the email.** `subject` is the provider's own
-identifier for the account and the only field OpenID Connect promises never changes. An email can
-be changed by its owner and, at some providers, released and reassigned to somebody else — so
-keying on it would eventually hand one person another person's documents. The email is stored and
-shown; it identifies nobody.
+identifier for the account and the only field OpenID Connect promises never changes. An email can be
+changed by its owner and, at some providers, released and reassigned, so keying on it would
+eventually hand one person another's documents. The email is stored and shown. It identifies nobody.
 
 **Step 5 exists so the token never travels in a URL.** The provider redirects to the *server*, and
-the token is needed by the *application* on another origin — so something must cross in a redirect,
-and a redirect target lands in browser history and in the `Referer` of whatever the page loads
+the token is needed by the *application* on another origin, so something has to cross in a redirect
+— and a redirect target lands in browser history and in the `Referer` of whatever the page loads
 next. What crosses is a single-use code: 192 random bits, stored hashed, dead on first use, expired
-after a minute. That is the third option in `V13__federated_identity.sql`, which writes out why the
-other two — the token in a fragment, or a cookie — are worse here.
+after a minute. `V13__federated_identity.sql` writes out why the two obvious alternatives, a token
+in a fragment and a cookie, are worse here.
 
-**Where the session is kept, and a decision that quietly expired.** It lived in `sessionStorage`,
-which is scoped to a tab — so opening the application in a second tab presented the sign-in screen.
-That was deliberate: a tab was the unit of identity, so two tabs could be two people, and "two
-people editing in two windows" is the demo this project is judged on. Federated sign-in removed the
-benefit and left the cost. A second identity used to be a typed name; it is now a round trip to a
-provider that signs you back into the account you already have, so a second tab cannot be a second
-person however the token is stored.
+The session lives in `localStorage`, once per browser. It was `sessionStorage`, per tab, so two tabs
+could hold two people — the demo a collaborative editor is judged on. Federated sign-in removed that
+benefit and left the cost, since a second identity used to be a typed name and is now a round trip
+to a provider that signs you back into the same account. `?tab-session` keeps the old behaviour for
+driving the demo under `COLLABEDIT_DEV_LOGIN`.
 
-So it is `localStorage` now — signed in once per browser, like everything else the user has ever
-used — and the per-tab behaviour survives as `?tab-session`, which is how the demo is driven when
-`COLLABEDIT_DEV_LOGIN=true` makes a second identity free again. The opt-in is recorded when the page
-loads rather than when a session is first touched, because the sign-in journey returns to a bare
-`?code=…`: read lazily, the flag would be forgotten at precisely the moment the identity arrives.
+That is what forced a sign-out control to exist; there had never been one, because closing the tab
+was the sign-out. Three related holes came out of the same review, all invisible until somebody sat
+with the product for an afternoon:
 
-That change is also what forced a **sign out** control to exist. There was none — closing the tab
-was the sign-out — and once a session outlives the browser, "signed in yesterday, opened it today"
-means a token past its twelve-hour life, a document list that answers 401, and a *Try again* button
-reloading into the same 401 for ever. A 401 during startup now returns to the sign-in screen
-on its own, saying that the session expired rather than ejecting the user silently.
+- A 401 was noticed in exactly one place, the document-list bootstrap. Everywhere else the user got
+  whatever that screen says when a request fails, and the editor's version told them to ask a
+  colleague to re-share a document the colleague had not touched. Every REST call routes through one
+  handler now.
+- The WebSocket authenticates once, at `CONNECT`, and is never re-checked, so a lapsed session kept
+  working until the socket dropped — then reconnected with the same dead token, was refused, and
+  retried behind "Working offline" for ever. A refused `CONNECT` now asks one cheap authenticated
+  question and lets that handler decide.
+- Signing out could not be followed by signing in as somebody else. Google gets
+  `prompt=select_account` now; GitHub has no equivalent, so switching there still happens at GitHub.
 
-**A token that lapses while the application is open is the harder half, and it took two changes.**
-Only the document-list bootstrap noticed a 401; every other caller rendered whatever it says when a
-request fails, and the editor's version — "ask whoever sent you the link to share it again" — is
-untrue and sends the user to bother somebody who cannot help. So a 401 is now recognised in one
-place, `api.ts`, which covers every REST call including ones written later. It fires only when a
-token was actually presented, so the sign-in exchange (401 for a spent code) does not route
-through it.
-
-The WebSocket needed its own answer, because it authenticates **once**, at `CONNECT`, and is never
-re-checked. A session that lapses mid-edit therefore keeps working until the socket drops for any
-reason — and the reconnect then presents the same dead token, is refused, and the STOMP client
-retries with backoff for ever behind a "Working offline" indicator, while the user goes on typing
-into IndexedDB. A refused `CONNECT` now triggers one cheap authenticated request: a 401 goes
-through the handler above and ends the session, and anything else means the transport is unhappy
-for some other reason. Asking a question rather than reading the ERROR frame's text is deliberate —
-that string is produced by Spring's exception conversion, and a session's fate should not depend on
-the wording of a `throw`.
-
-**Signing out lets you sign in as somebody else.** It did not: signing out here discards a token
-and cannot end the session at Google, so the next click re-authenticated the same person with no
-chooser — which on a shared computer hands the next user the previous user's account, the exact
-case the account menu exists for. Google is now sent `prompt=select_account`. GitHub is not: it has
-no `prompt`, and sending an unknown parameter in the one flow whose failure mode is "cannot sign
-in at all" is not a bet worth taking, so switching GitHub accounts still has to happen at GitHub.
-
-**What is deliberately still simple.** There is no account page, no way to merge a Google account
-with a GitHub one, and no revocation beyond the token's twelve-hour life — tokens are signed rather
-than stored, so signing out discards the token locally and cannot invalidate one already taken. A
-WebSocket already open is bounded by the same gap: its identity is fixed at `CONNECT`, and what the
-paragraph above adds is that the session ends promptly once anything is refused, not that the
-twelve hours are enforced mid-connection. The
-development login survives too — `COLLABEDIT_DEV_LOGIN=true`, off by default and answered with 404
-when off — because a contributor without an OAuth client of their own still has to be able to run
-the thing.
+Deliberately still simple: no account page, no linking a Google account to a GitHub one, and no
+revocation beyond the token's twelve-hour life, since tokens are signed rather than stored. The
+development login survives too — off by default, 404 when off — because a contributor without an
+OAuth client of their own still has to be able to run the thing.
 
 ---
 
 ## Authorization
 
-Two doors — HTTP and WebSocket — and one `PermissionService` behind both. The interesting part is
-the HTTP side, where the rule is **declare what you need, or you are not served**.
+Two doors, HTTP and WebSocket, and one `PermissionService` behind both. The interesting part is the
+HTTP side, where the rule is: declare what you need, or you are not served.
 
 ![Every request passes one interceptor: a handler declaring no access requirement is answered with 500 and never runs](docs/diagrams/authorization.svg)
 
-Three things in that picture are the whole of it, and each answers a hole that actually shipped
-here:
+Three things in that picture are the whole of it, and each answers a hole that actually shipped here.
 
-1. **The default branch refuses,** so a new controller starts *broken and loud* rather than open and
-   quiet — which is what `HistoryController` was for a whole checkpoint, handing out the full content
-   of any document and letting a reader **overwrite** it. 500 rather than 404 is deliberate: this is
-   our bug, not a caller doing anything wrong, and it should read that way in a log.
+1. **The default branch refuses,** so a new controller starts broken and loud instead of open and
+   quiet. That is what `HistoryController` was for a whole checkpoint, handing out the full content
+   of any document and letting a reader overwrite it. 500 rather than 404 is deliberate: this is our
+   bug, not a caller doing anything wrong, and it should read that way in a log.
 2. **The document id comes from the declaration**, not from wherever the handler happens to look.
    That is why creating a comment is `POST /api/documents/{id}/comments` with the document in the
-   path — a mechanism that resolves its subject from a declaration cannot be pointed at an endpoint
+   path. A mechanism that resolves its subject from a declaration cannot be pointed at an endpoint
    that keeps its subject in the body.
 3. **The build enforces the same rule as the runtime.** An undeclared mapping fails
    `EndpointAuthorizationArchitectureTest`, and `publicEndpointsAreExactlyTheExpectedOnes` pins the
    exemption list by name. The runtime guard alone would be a rule you discover by breaking
    production; the test alone would be a rule anyone can delete.
 
-**What it does not claim.** The guard checks that a decision was *made*, not that it was the *right*
-one. `@RequiresDocumentAccess(READ)` on something that writes is declared, consistent, and wrong.
+What it does not claim: the guard checks that a decision was *made*, not that it was the *right* one.
+`@RequiresDocumentAccess(READ)` on something that writes is declared, consistent, and wrong.
 
-On the WebSocket side, `DocumentAccessInterceptor` checks **every** SEND and SUBSCRIBE frame. It
-asks not "do you have access to the document" but "does your role permit *this* operation" —
-comments and edits travel the same channel, so the distinction has to descend to the operation type.
-An unresolvable destination is refused, which it was not at first: Spring's simple broker matches
-subscription destinations as **Ant patterns**, so `SUBSCRIBE /topic/**` resolved to no document,
-passed unchecked as if it were a private queue, and then matched every document's broadcast.
-
----
-
-## Running it
-
-Requirements: JDK 21, Node 22.12+, Docker.
-
-```bash
-docker compose --profile app up -d      # everything, on http://localhost:5173
-```
-
-The first run takes a few minutes to build the images. To work on the code instead:
-
-```bash
-docker compose up -d postgres redis
-
-# Required, with no default: the server refuses to start without it. A secret committed to the
-# repository would let any reader mint a token for any user. Compose and CI set their own.
-export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)
-
-# How you sign in. Pick ONE of the two blocks below — with neither, the application starts and
-# says on its own login screen that there is no way in, which is the intended default rather
-# than a failure.
-
-# (a) The quick one, for working on the code. "Type a name, become somebody" — the mechanism
-#     federated identity replaced. Off unless asked for, per process, so no deployment is
-#     signed into by a stranger because somebody forgot a setting.
-export COLLABEDIT_DEV_LOGIN=true
-
-# (b) The real one. Create an OAuth client and register the redirect URI EXACTLY, port included:
-#       Google — console.cloud.google.com   ->  http://localhost:8090/login/oauth2/code/google
-#       GitHub — github.com/settings/developers -> http://localhost:8090/login/oauth2/code/github
-export GOOGLE_CLIENT_ID=…  GOOGLE_CLIENT_SECRET=…
-export GITHUB_CLIENT_ID=…  GITHUB_CLIENT_SECRET=…
-
-./mvnw -pl app spring-boot:run              # backend on :8090
-cd frontend && npm install && npm run dev   # frontend on :5173
-```
-
-The login screen is built from what the server reports at `GET /api/auth/options`, so it shows a
-button per configured provider and nothing for the ones you have not set up — a screen cannot
-advertise a door that does not open.
-
-| Variable | Default | What it does |
-|---|---|---|
-| `COLLABEDIT_AUTH_SECRET` | *none — refuses to start* | Signs session tokens |
-| `COLLABEDIT_DEV_LOGIN` | `false` | Serves `POST /api/login`, the name-only login |
-| `GOOGLE_CLIENT_ID` / `_SECRET` | unset | Enables the Google button |
-| `GITHUB_CLIENT_ID` / `_SECRET` | unset | Enables the GitHub button |
-| `COLLABEDIT_APP_URL` | `http://localhost:5173` | Where a finished sign-in returns to |
-| `COLLABEDIT_PORT` | `8090` | The API port — must match the registered redirect URI |
-
-<details>
-<summary>If you use colima rather than Docker Desktop</summary>
-
-Testcontainers does not read the docker context, and Docker 29+ rejects the API version
-docker-java negotiates by default. All three symptoms read as "no Docker":
-
-```bash
-# "Could not find a valid Docker environment"
-export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
-# "error while creating mount source path ..." — the socket path inside the VM, for Ryuk
-export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
-# "client version 1.32 is too old"
-echo "api.version=1.44" > ~/.docker-java.properties
-```
-
-None of this is needed on GitHub runners.
-</details>
-
-Deploying somewhere that is not a laptop: the frontend resolves the backend address at build time
-([`frontend/src/config.ts`](frontend/src/config.ts)) and defaults to the origin it was served from,
-with nginx proxying `/api` and `/ws`. That is the only arrangement that works over TLS, since a
-page served over `https:` may not open a `ws:` socket. For separate origins, set `VITE_API_BASE` at
-build time and `COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS` on the backend.
-
-Regenerating the pictures in this file — the diagrams come from mermaid sources in
-[`docs/diagrams/`](docs/diagrams), the GIFs from a Playwright script:
-
-```bash
-./tools/render-diagrams.sh                 # docs/diagrams/*.mmd -> *.svg
-
-./tools/reset-demo-data.sh
-cd frontend && npm run demo
-cd .. && ./tools/make-gif.sh core docs/demo.gif && ./tools/make-gif.sh product docs/demo-v2.gif
-```
+On the WebSocket side, `DocumentAccessInterceptor` checks every SEND and SUBSCRIBE frame. It asks not
+"do you have access to the document" but "does your role permit *this* operation", because comments
+and edits travel the same channel and the distinction has to descend to the operation type. An
+unresolvable destination is refused, which it was not at first: Spring's simple broker matches
+subscription destinations as Ant patterns, so `SUBSCRIBE /topic/**` resolved to no document, passed
+unchecked as if it were a private queue, and then matched every document's broadcast.
 
 ---
 
 ## Tests
-
-```bash
-./mvnw install                         # everything, integration tests on a real Postgres
-./mvnw -pl crdt-core test              # property tests (1000 tries, random seed — it searches)
-./mvnw -pl crdt-core -Pthorough test   # 10 000 tries, as in the nightly run
-cd frontend && npm test                # client unit tests
-cd frontend && npm run e2e             # two browsers, needs a running stack
-```
-
-A failing property prints its seed; `@Property(seed = "…")` replays it.
 
 | Layer | Tests |
 |---|---:|
@@ -780,36 +605,36 @@ A failing property prints its seed; `@Property(seed = "…")` replays it.
 | end-to-end — two browser contexts, every spec failing on an uncaught console error | 21 |
 | **total** | **469** |
 
-The deterministic cluster simulation is counted separately: 1207 is a count of **seeds**, not of
-distinct assertions, and folding it into the total would turn an honest number into a marketing one.
-Its value is that a failure arrives with the seed that reproduces it.
+The deterministic cluster simulation is counted separately: 1207 is a count of *seeds*, not distinct
+assertions, and folding it into the total would turn an honest number into a marketing one. Its
+value is that a failure arrives with the seed that reproduces it.
 
-The order of priority is property tests of the algorithm, then integration tests against a real
-Postgres and Redis through Testcontainers rather than mocks, then chaos and seeded simulation, and
-only then ordinary unit tests. Load harness, JMH and the fan-out measurement run nightly instead of
-on every build — they take minutes and measure the machine as much as the system.
+Priority order is property tests of the algorithm, then integration tests against a real Postgres
+and Redis through Testcontainers instead of mocks, then chaos and seeded simulation, and only then
+ordinary unit tests. Load harness, JMH and the fan-out measurement run nightly, because they take
+minutes and measure the machine as much as the system.
 
-**The tests get checked too.** I mutate production code and check the suite goes red. That has found
+The tests get checked too. I mutate production code and check the suite goes red, which has found
 three tests that verified nothing:
 
 - Removing the Lamport clock bump left all fifteen property tests green, while four comments claimed
   they existed to catch exactly that. [Full story above.](#what-the-lamport-clock-is-actually-for)
 - Removing the treap's aggregate update after a tombstone sailed through convergence, because every
   replica was wrong in the same way. The text agreed; only the positions were wrong.
-- `garbageCollectionSparesMarkAnchors` passed with its mechanism switched off: I had anchored the
+- `garbageCollectionSparesMarkAnchors` passed with its mechanism switched off. I had anchored the
   mark mid-text, where an older rule already protected the character, so the test was checking the
   old rule and crediting the new one.
 
-**A test written to check mechanism X may be passing thanks to mechanism Y**, and breaking X is the
-only way to find out.
+A test written to check mechanism X may be passing thanks to mechanism Y, and breaking X is the only
+way to find out.
 
 ---
 
 ## Performance
 
 All numbers from one machine: MacBook, Apple Silicon, 10 cores, JDK 25-ea, 4 GB heap, with Postgres
-and Redis in containers alongside. Full tables, methodology, and the claims that turned out to be
-wrong once measured, are in [`docs/performance.md`](docs/performance.md).
+and Redis in containers alongside. Full tables, methodology, and the claims that turned out wrong
+once measured are in [`docs/performance.md`](docs/performance.md).
 
 Index structure, JMH, at 100 000 characters:
 
@@ -822,7 +647,7 @@ Index structure, JMH, at 100 000 characters:
 The shape matters more than the values: for a tenfold larger document the naive scan grows about
 13×, the treap about 2×. Reading the whole text is 40% slower in the treap because walking a tree
 has worse locality than iterating an array. That runs once per document open while lookup runs on
-every keystroke, so it is an easy trade — but it is a trade, not a free win.
+every keystroke, so it is an easy trade — but a trade, not a free win.
 
 Propagation between clients, from the load harness. All twelve scenarios converge:
 
@@ -832,9 +657,9 @@ Propagation between clients, from the load harness. All twelve scenarios converg
 | 10 000 chars | 50 | 135 ms | 230 ms |
 | 100 000 chars | 50 | 124 ms | 1299 ms |
 
-Document size barely affects median latency. The p99 tail at 100 000 characters is the rate limiter
-rather than the algorithm; `docs/performance.md` has the measurement that disproved my first
-explanation of it, along with the time I blamed the system for a 8 KiB buffer in my own test client.
+Document size barely affects median latency. The p99 tail at 100 000 characters is the rate limiter,
+not the algorithm; `docs/performance.md` has the measurement that disproved my first explanation of
+it, along with the time I blamed the system for an 8 KiB buffer in my own test client.
 
 ---
 
@@ -856,7 +681,7 @@ What actually happens when something goes wrong. Rows naming a test have one tha
 | **Rate limit exceeded** | The frame is refused with the exact wait, and the client retries from its buffer. Unlike a permission refusal, this one is not silent: a silent one is data loss. | harness: 351 rejections, zero lost operations |
 | **Deleting formatted text** | Formatting stays on what survived; mark anchors are tombstones held back from GC. | `garbageCollectionSparesMarkAnchors` |
 | **Deleting commented text** | The thread stays, marked detached, quoting the fragment as of when it was written. | `threadSurvivesDeletionOfAnchoredText` |
-| **Access revoked mid-session** | Takes effect on every instance, with the 5 s cache TTL as the floor. Subscriptions are re-checked per frame, so the session survives and the permission does not. The client half was wrong until a review found it: the banner appeared above an editor that was still writable, so keystrokes were sent, silently refused, and counted as unsaved — the indicator read "Saving…" while the work was discarded. Losing access now drops the role to viewer too. | `revokedAccessTerminatesLiveSubscription`, `PermissionClusterInvalidationIT` |
+| **Access revoked mid-session** | Takes effect on every instance, with the 5 s cache TTL as the floor. Subscriptions are re-checked per frame, so the session survives and the permission does not. The client half was wrong until a review found it: the banner appeared above a still-writable editor, so keystrokes were sent, silently refused, and counted as unsaved — the indicator read "Saving…" while the work was discarded. Losing access drops the role to viewer now. | `revokedAccessTerminatesLiveSubscription`, `PermissionClusterInvalidationIT` |
 
 ---
 
@@ -868,32 +693,28 @@ Deliberate simplifications, and the ones that turned out worse than I assumed.
   it. Structure as marks over a flat sequence is what makes it merge cleanly with everything else,
   and also what makes this unfixable without rewriting the layer everything else stands on. The real
   fix is a tree CRDT for structure with a sequence CRDT inside each node.
-- **A document open on three instances lives in three copies** — the declared cost of having no
+- **A document open on three instances lives in three copies,** the declared cost of having no
   document owner. Per-replica memory has never been measured, so `max-loaded-documents: 200` is an
   order-of-magnitude guess rather than a capacity plan. At real scale this wants document-affinity
   routing or a measured eviction policy, and I would want the measurement first.
-- **Identity is federated; the account model around it is not.** An OpenID Connect provider
-  vouches for the person, so a role finally rests on something checked. What is still missing is
-  everything a real product puts on top: no account page, no way to link a Google account to a
-  GitHub one (sign in with the other and you are a different person), no session revocation beyond
-  the token's twelve-hour life, and no way to delete an account. Switching GitHub accounts has to be
-  done at GitHub — only Google is sent `prompt=select_account`, because GitHub's OAuth endpoint has
-  no equivalent. The development login also still
-  exists — off by default, 404 when off — because a contributor without an OAuth client of their
-  own has to be able to run the project.
+- **Identity is federated; the account model around it is not.** No account page, no linking a
+  Google account to a GitHub one (sign in with the other and you are a different person), no session
+  revocation beyond the token's twelve-hour life, no way to delete an account. Switching GitHub
+  accounts has to happen at GitHub, since only Google understands `prompt=select_account`. The
+  development login still exists, off by default, because a contributor without an OAuth client has
+  to be able to run the project.
 - **Invitations are multi-use** until they expire or are revoked, which is what "anyone with this
   link" means. Now that a provider gives every user a verified email, an invitation bound to an
-  address — single-use, addressed to a person rather than to whoever holds the URL — is the obvious
-  next step and was impossible before.
-- **`link` visibility grants edit, to anyone holding the address.** That is the mode working as
+  address — single-use, addressed to a person instead of to whoever holds the URL — is the obvious
+  next step, and was impossible before.
+- **`link` visibility grants edit to anyone holding the address.** That is the mode working as
   intended: possession of an unguessable URL *is* the credential. The bug worth recording is what it
-  used to mean — the document list published those URLs to every signed-in user, so "anyone with the
+  used to mean. The document list published those URLs to every signed-in user, so "anyone with the
   link" was "everyone", and 132 of 133 documents on a development instance were world-editable.
-  Listing and access are separate questions now, and a link-visible document appears only in the
-  lists of people it actually belongs to.
+  Listing and access are separate questions now.
 - **The authorization guard checks that a decision was made, not that it was right.** A read
   capability declared on a write endpoint passes.
-- **The performance numbers come from a single process,** with clients, server and database on one
+- **The performance numbers come from a single process,** clients, server and database on one
   machine, so they exclude real network latency and real disk contention.
 - **GC reclaims less than I assumed.** Causal stability needs every replica to have seen the
   deletion, so one client that closed its laptop holds the window open for everyone in that document
@@ -901,32 +722,26 @@ Deliberate simplifications, and the ones that turned out worse than I assumed.
 - **A cluster message for a document whose replica is still loading is dropped,** and anti-entropy
   cannot detect it afterwards, because the fresh replica is labelled at log head so
   `head > appliedServerSeq` is never true. A client on that instance can stay permanently one
-  operation behind. Known, reproduced under load, not fixed — it needs a design decision about the
-  cluster load path rather than a patch.
+  operation behind. Known, reproduced under load, not fixed: it needs a design decision about the
+  cluster load path, not a patch.
 
 ---
 
 ## Observability
 
-```bash
-docker compose --profile observability up -d   # Prometheus, Tempo, Grafana on :3001
-```
-
-Use the backend started from Maven on the host, not `--profile app`: the containerised backend sets
-`OTEL_SDK_DISABLED` unconditionally, so a browser span arrives with no server span to join and the
-trace looks broken rather than disabled.
-
 One keystroke produces a single trace across two services: `edit.submit` in the browser, then
-`op.receive`, `crdt.merge` and `op.broadcast.local` on the server. The context travels in a STOMP frame
-header, because the WebSocket handshake happens once per session and an HTTP header would describe the
-session rather than the edit. The write to the log is attached by **links** rather than nesting, since
-one write covers many operations from different traces.
+`op.receive`, `crdt.merge` and `op.broadcast.local` on the server. The context travels in a STOMP
+frame header, because the WebSocket handshake happens once per session and an HTTP header would
+describe the session rather than the edit. The write to the log is attached by **links** instead of
+nesting, since one write covers many operations from different traces.
 
 Metrics: active sessions, propagation latency percentiles, operations merged, conflicts resolved,
 characters reclaimed by GC, cluster messages dropped, frames refused by reason. The
 [dashboard](ops/grafana/dashboards/collabedit.json) is a file in the repository, and each panel says
-what a bad value looks like — including that a permanently zero count of gap repairs is not good news
-but a sign the repair path has never run.
+what a bad value looks like — including that a permanently zero count of gap repairs is not good
+news but a sign the repair path has never run.
+
+Setup is in [`docs/RUNNING.md`](docs/RUNNING.md).
 
 ---
 
