@@ -136,7 +136,7 @@ describe('where the session is kept', () => {
     expect(tabStore.getItem('inkline.session')).not.toBeNull()
   })
 
-  it('signing out clears both stores', async () => {
+  it('signing out ends the session the tab is actually using', async () => {
     const tabStore = stubStorage()
     const shared = await load('', local, tabStore)
     shared.rememberSession(SESSION)
@@ -150,8 +150,24 @@ describe('where the session is kept', () => {
       'A session survived signing out. The user clicks it, the sign-in screen appears, and the '
         + 'next reload restores the identity they had just left.',
     ).toBeNull()
-    const stillShared = await load('', local, stubStorage())
-    expect(stillShared.loadSession()).toBeNull()
+  })
+
+  it('signing out of a tab-scoped identity leaves the browser-wide one alone', async () => {
+    const tabStore = stubStorage()
+    const shared = await load('', local, tabStore)
+    shared.rememberSession(SESSION)
+    const opted = await load('?tab-session', local, tabStore)
+    opted.rememberSession({ ...SESSION, userId: 'u-2', token: 'token-marek' })
+
+    opted.forgetSession()
+
+    const primary = await load('', local, stubStorage())
+    expect(
+      primary.loadSession(),
+      `Signing out of the scratch identity signed out the main window too. That is the one
+       workflow the opt-in exists for — two identities side by side — and it means ending the
+       throwaway one costs you the real one.`,
+    ).toEqual(SESSION)
   })
 
   it('a corrupt entry is discarded rather than thrown', async () => {

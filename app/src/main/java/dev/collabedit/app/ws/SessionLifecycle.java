@@ -92,13 +92,20 @@ public class SessionLifecycle {
      * — that is the offline buffer working as designed.
      *
      * <p><b>The user is too strict as well, which is less obvious and was the first answer here.</b>
-     * It assumed the user identifier persists across reconnects. It does not: {@code UserDirectory}
-     * mints a fresh {@code UUID} on every login and {@code session.ts} keeps it in
-     * {@code sessionStorage}, which is scoped to the TAB. So close the tab, reopen it, log in
-     * again, and the operations restored from IndexedDB — the ones written offline, the whole point
-     * of the buffer — arrive under a replica identifier the log records against a user id that no
-     * longer exists anywhere. Verified: they were refused with {@code REPLICA_ID_CONFLICT} and
-     * resent on every reconnect for ever.
+     * It assumed the user identifier persists across reconnects. It does not always — and the two
+     * reasons originally given here have both since stopped being true, so they are restated rather
+     * than left to mislead. They were: {@code UserDirectory} mints a fresh {@code UUID} on every
+     * login, and {@code session.ts} keeps it in {@code sessionStorage}, scoped to the TAB.
+     *
+     * <p>Neither holds now. {@code upsertFederated} returns the SAME id for a returning
+     * {@code (provider, subject)} — that is what V13 is for — and the session lives in
+     * {@code localStorage} unless a tab asks otherwise. What survives is the conclusion, by a
+     * narrower route: the development login still mints a fresh identifier per call, a
+     * {@code ?tab-session} tab is still per-tab, and a browser whose storage was cleared still
+     * comes back as somebody new. In each case the operations restored from IndexedDB — the ones
+     * written offline, the whole point of the buffer — arrive under a replica identifier the log
+     * records against a user id that no longer matches. Verified: they were refused with
+     * {@code REPLICA_ID_CONFLICT} and resent on every reconnect for ever.
      *
      * <p>So the question is not "who owned this identifier once" but "is somebody using it NOW".
      * A live session holding it is exactly the case the forgery needs and the case offline replay

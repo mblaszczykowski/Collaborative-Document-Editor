@@ -7,7 +7,8 @@
  */
 import { setAuthToken, type Session } from '../api'
 
-const SESSION_KEY = 'inkline.session'
+/** Exported so the cross-tab listener in App.tsx can recognise its own key rather than guess it. */
+export const SESSION_KEY = 'inkline.session'
 
 /** Diagnostics mode — only for working on the project and for the chaos tests. */
 export const DEBUG = new URLSearchParams(window.location.search).has('debug')
@@ -84,11 +85,19 @@ export function rememberSession(session: Session): void {
 }
 
 /**
- * Discards the identity.
+ * Discards the identity — <b>from the store this tab is actually using</b>.
  *
- * <p>Both stores are cleared rather than only the one in use. A tab that opted into `?tab-session`
- * has a session in each, and clearing one would sign the user out of a session they can still see —
- * the surest way to make "sign out" look broken.
+ * <p>It cleared both, with a comment claiming a tab-scoped tab "has a session in each, so clearing
+ * one would sign the user out of a session they can still see". That reasoning was backwards, and
+ * tracing the two stores shows why. A session reaches `sessionStorage` only in a tab holding the
+ * marker, and such a tab reads only `sessionStorage` — so clearing it from an ordinary tab was
+ * always a no-op, and the only half that did anything was an opted-in tab wiping `localStorage`,
+ * which destroys the identity belonging to the OTHER window. The code did the exact thing the
+ * comment gave as the reason for not doing it, and it broke the one workflow the opt-in exists
+ * for: signing out of the scratch identity also signed out the primary window.
+ *
+ * <p>So: one store, the one in use. An ordinary sign-out is browser-wide because an ordinary
+ * session is; a tab-scoped sign-out ends only the tab-scoped identity.
  *
  * <p>There is nothing to tell the server. Tokens are signed rather than stored ({@code
  * TokenService}: no refresh, no revocation, a twelve-hour expiry), so discarding it here is the
@@ -96,7 +105,6 @@ export function rememberSession(session: Session): void {
  * hidden behind a request that would only pretend to do something.
  */
 export function forgetSession(): void {
-  localStorage.removeItem(SESSION_KEY)
-  sessionStorage.removeItem(SESSION_KEY)
+  storage().removeItem(SESSION_KEY)
   setAuthToken(null)
 }

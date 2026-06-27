@@ -27,11 +27,18 @@ import java.util.UUID;
 public interface CommentAnchorAuthority {
 
     /**
-     * @param userId the caller
+     * @param userId the caller — <b>checked for presence, not for ownership</b>; see the return
      * @param documentId the document the frame was authorized against
      * @param threadId the value carried by the {@code comment} mark
-     * @return {@code true} when that thread exists, belongs to that document, and was opened by
-     *     that caller
+     * @return {@code true} when that thread exists and belongs to that document.
+     *     <p><b>Not "and was opened by that caller"</b>, which is what this said. The rule was
+     *     deliberately loosened from {@code created_by = ?} to document membership — the reasoning
+     *     is in {@code CommentService.mayAnchorThread} and in {@code V13__federated_identity.sql},
+     *     and the short version is that an editor can already delete the text a thread hangs on, so
+     *     refusing them the anchor buys nothing. What it costs is recorded there too: any commenter
+     *     can re-anchor or stretch somebody else's highlight within the same document.
+     *     <p>Left wrong, this was the worse kind of stale comment — the contract a reader meets
+     *     first, describing a security check that is not performed.
      */
     boolean mayAnchorThread(String userId, UUID documentId, UUID threadId);
 }

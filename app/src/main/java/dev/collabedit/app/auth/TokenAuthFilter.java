@@ -98,11 +98,17 @@ public class TokenAuthFilter extends OncePerRequestFilter {
      * wiring fault in our own code, which {@link DocumentAccessGuard} also answers with a 500 for
      * exactly the same reason. Returning null instead would push the fault downstream, into a
      * foreign key or an ownerless document, which is how CP16 found three separate bugs.
+     *
+     * <p>The type is {@link AuthorizationWiringException} and not {@code IllegalStateException},
+     * which is what made the sentence above true. It threw the latter, and every one of those is
+     * mapped to <b>409 with the message in the body</b> — so the fault this raises was reported as
+     * the caller's mistake, stayed out of 5xx monitoring, and handed our internal wording to a
+     * client. See that class.
      */
     public static String requiredCallerId(HttpServletRequest request) {
         return principalOf(request)
             .map(TokenService.Principal::userId)
-            .orElseThrow(() -> new IllegalStateException(
+            .orElseThrow(() -> new AuthorizationWiringException(
                 "an authenticated endpoint was reached with no principal — the access guard did "
                     + "not run for it"));
     }

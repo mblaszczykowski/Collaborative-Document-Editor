@@ -27,6 +27,15 @@
   --warn: #b8862e;
   --bad: #c1592e;
 
+  /* Used by two rules and declared by neither, until now — and the way it failed is worth keeping
+     a note about. `.login-provider:focus-visible` sets `outline: 2px solid var(--accent)` with no
+     fallback, and an undefined custom property with no fallback makes the whole declaration
+     invalid at computed-value time: the shorthand computes to `unset`, `outline-style` falls back
+     to `none`, and because the author rule still beats the UA stylesheet it SUPPRESSES the default
+     focus ring rather than replacing it. The primary — often only — control on the first screen of
+     the application had no visible focus at all for a keyboard user. Worse than writing no rule. */
+  --accent: #4C5FD5;
+
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
   --sans: 'Inter', -apple-system, sans-serif;
   --serif: 'Source Serif 4', Georgia, serif;
@@ -119,7 +128,10 @@ button { font-family: inherit; cursor: pointer; }
 .save-state.offline { color: var(--bad); }
 .save-state.pending { color: var(--warn); }
 
-.loading { padding: 24px; color: var(--text-faint); }
+/* --text-dim, not --text-faint. #999 on the #efefef page is 2.48:1, and this rule is inherited by
+   "The document list could not be loaded." — a failure message at a contrast ratio that fails AA
+   by more than half. The dim tone reads the same and measures 5.55:1. */
+.loading { padding: 24px; color: var(--text-dim); }
 
 /* ===== TOOLBAR — formatting (CP13), comments (CP14), undo/redo.
    Nothing here is a dummy: every button performs a CRDT operation or switches a panel. ===== */
@@ -388,7 +400,7 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 17px; font-weight: 600; margin-bottom: 6px;
 }
 .login-brand .brand-mark { width: 17px; height: 17px; }
-.login-card p { font-size: 12px; color: var(--text-faint); margin: 0 0 20px; line-height: 1.5; }
+.login-card p { font-size: 12px; color: var(--text-dim); margin: 0 0 20px; line-height: 1.5; }
 /* Sign-in with a provider. A link rather than a button, because it is a full-page navigation to
    the provider's consent screen — so it is styled to match the button it sits next to. */
 .login-provider {
@@ -404,7 +416,10 @@ button { font-family: inherit; cursor: pointer; }
 /* The development login, when the server offers it — visually secondary to the real one. */
 .login-dev { margin-top: 4px; }
 .login-hint {
-  font-size: 11px; color: var(--text-faint); text-align: center;
+  /* Also --text-dim, and here it matters most: this class carries "No sign-in method is configured
+     on this server…", which is the entire diagnosis when a deployment is misconfigured. 2.85:1 at
+     11px is the least legible text on the screen carrying the most necessary sentence. */
+  font-size: 11px; color: var(--text-dim); text-align: center;
   margin: 12px 0 10px;
 }
 

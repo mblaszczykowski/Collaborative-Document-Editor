@@ -13,7 +13,7 @@ import { SaveIndicator } from './ui/SaveIndicator'
 import { SharePanel } from './ui/SharePanel'
 import { SuggestionsPanel } from './ui/SuggestionsPanel'
 import { copyText } from './ui/browser'
-import { DEBUG, forgetSession, loadSession, rememberSession } from './ui/session'
+import { DEBUG, SESSION_KEY, forgetSession, loadSession, rememberSession } from './ui/session'
 import { useFailure } from './ui/useFailure'
 
 /**
@@ -31,11 +31,38 @@ import { useFailure } from './ui/useFailure'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(loadSession)
+  const [notice, setNotice] = useState<string | null>(null)
 
   function remember(next: Session): void {
     rememberSession(next)
     setSession(next)
+    setNotice(null)
   }
+
+  /**
+   * Signing out in one tab has to reach the others, now that the session is browser-wide.
+   *
+   * <p>It did not, and that was a regression the move to `localStorage` introduced: the second tab
+   * holds its session in React state and its token in the api module, and tokens are signed with no
+   * revocation — so it did not merely look signed in, it kept WORKING. On a shared machine somebody
+   * clicks "Sign out", walks away, and the other window is still open on their document. That is
+   * the exact case the account menu exists for.
+   *
+   * <p>The `storage` event fires only in OTHER tabs, which is precisely the wanted scope. Reading
+   * through `loadSession` rather than assuming null handles the sign-IN direction too — a tab
+   * sitting on the login screen picks up an identity obtained next door — and it is correct for a
+   * `?tab-session` tab for free, because that tab reads its own `sessionStorage` and finds its
+   * identity untouched.
+   */
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      // `key === null` is a `clear()`, which concerns every key including ours.
+      if (event.key !== null && event.key !== SESSION_KEY) return
+      setSession(loadSession())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
 
   /**
    * Back to the sign-in screen — used by the sign-out control and by an expired token alike.
@@ -46,20 +73,46 @@ export default function App() {
    * request and offered a "Try again" that reloaded into the same 401 for ever, with no way back to
    * a login screen — a dead end reachable by doing nothing but waiting.
    */
-  const signOut = useCallback(() => {
+  const signOut = useCallback((reason?: string) => {
     forgetSession()
     setSession(null)
+    setNotice(reason ?? null)
   }, [])
 
   return session ? (
     <Workspace session={session} onSignOut={signOut} />
   ) : (
-    <Login onLogin={remember} />
+    <Login onLogin={remember} notice={notice} />
   )
 }
 
+/**
+ * What a brand-new account's first document is called.
+ *
+ * <p>It was "Q3 Product Roadmap" — somebody's quarterly planning, created silently and opened on a
+ * first visit, which reads as the developer's test data having leaked into the product. The
+ * document is still created (an empty workspace with no way in is worse), but it now says what it
+ * is.
+ */
+const FIRST_DOCUMENT_TITLE = 'Welcome to Inkline'
+
 /** Where the API lives, for the sign-in links — which are full-page navigations, not fetches. */
 const PROVIDER_LABELS: Record<string, string> = { google: 'Google', github: 'GitHub' }
+
+/**
+ * Where the address a visitor arrived at is kept while they are away at the provider.
+ *
+ * <p>An invitation link is `?doc=…&invite=…` (SharePanel), and signing in used to destroy it: the
+ * provider redirects to a FIXED `app-url` with only `?code=` on it, and the handler below then
+ * strips what is left. The recipient of "Anna shared a document with you" signed in and landed on a
+ * document of their own, with the invitation never redeemed and nothing on screen explaining it —
+ * on the single most common path into this product.
+ *
+ * <p>`sessionStorage` because it is the one store that survives leaving the origin and coming back
+ * within the same tab, which is exactly the journey. The same property is what makes `?tab-session`
+ * work; see `session.ts`.
+ */
+const RETURN_KEY = 'inkline.return'
 
 /**
  * The sign-in screen.
@@ -67,12 +120,29 @@ const PROVIDER_LABELS: Record<string, string> = { google: 'Google', github: 'Git
  * Two things reach it. Ordinarily it asks the server how sign-in works and renders a button per
  * configured provider. But it is also where the browser LANDS after a provider redirect, carrying
  * either `?code=` (a finished sign-in, to be exchanged for a token) or `?error=` (one that was not).
- * Both are handled before anything is drawn, so a returning user never sees the buttons flash.
+ *
+ * <p>This used to claim both were "handled before anything is drawn, so a returning user never sees
+ * the buttons flash". That was false twice over: effects run AFTER the first paint, and the two
+ * effects here race — the options request is a GET against configuration while the exchange is a
+ * POST that mints a token, so the provider list usually won. The returning user was shown the
+ * sign-in card again, with live links that would abandon the exchange if clicked. `busy` is now
+ * seeded during render and replaces the card body outright.
  */
-function Login({ onLogin }: { onLogin: (session: Session) => void }) {
+function Login({ onLogin, notice }: {
+  onLogin: (session: Session) => void
+  /** Why the user is looking at this screen, when they did not ask to be. */
+  notice: string | null
+}) {
   const [name, setName] = useState('')
-  const [busy, setBusy] = useState(false)
+  // Seeded synchronously from the address, not defaulted to false and set in an effect. Effects run
+  // AFTER the first paint, so a user returning from the provider was shown the sign-in card again —
+  // brand, tagline and a full set of provider buttons — while the exchange was already in flight.
+  // A `useState` initialiser runs during render, before the effect below strips the query, so this
+  // reads the code reliably; StrictMode double-invoking a pure initialiser is harmless.
+  const [busy, setBusy] = useState(() =>
+    new URLSearchParams(window.location.search).has('code'))
   const [options, setOptions] = useState<AuthOptions | null>(null)
+  const [optionsFailed, setOptionsFailed] = useState(false)
   const failure = useFailure()
 
   // The redirect handler. It runs once, before the options are fetched, because a code is only
@@ -101,35 +171,51 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
 
     setBusy(true)
     void failure
-      .attempt('Could not finish signing in. Please try again.', async () =>
-        onLogin(await api.session(code)),
-      )
+      .attempt('Could not finish signing in. Please try again.', async () => {
+        const session = await api.session(code)
+        // The address the visitor arrived at, put back before the workspace reads it. Restoring
+        // it AFTER the strip above and BEFORE `onLogin` unmounts this screen is what makes an
+        // invitation survive the provider round trip — `Workspace` reads `?doc=` and `?invite=`
+        // from the address at bootstrap, so a moment later is too late.
+        const arrivedAt = sessionStorage.getItem(RETURN_KEY)
+        sessionStorage.removeItem(RETURN_KEY)
+        if (arrivedAt !== null && arrivedAt !== '') {
+          window.history.replaceState({}, '', window.location.pathname + arrivedAt)
+        }
+        onLogin(session)
+      })
       .finally(() => setBusy(false))
-    // Deliberately once, on mount: `failure` and `onLogin` are stable, and re-running this would
-    // re-exchange a code that is by then spent.
+    // The deps are empty because the exchange is SINGLE-USE, not because the values it closes over
+    // are stable — they are not: `onLogin` is a plain function declaration and `failure` is a fresh
+    // object each render. It is harmless here (the first render's closures reach only module
+    // functions and stable setters), and it is written down because the previous comment claimed
+    // stability as the justification. Anyone relaxing these deps on the strength of that would
+    // re-run the effect and re-exchange a code that is by then spent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => {
-    let cancelled = false
+  /**
+   * Asks the server how to sign in.
+   *
+   * <p>A failure is held in its own flag rather than faked as `{providers: [], devLoginEnabled:
+   * false}`. That value is indistinguishable from what a REACHABLE but unconfigured server
+   * returns, so the screen rendered both messages at once: "No sign-in method is configured on
+   * this server" — longer, louder and above — together with "Could not reach the server". The
+   * first is a lie about the deployment when the truth is a connection that failed.
+   */
+  const loadOptions = useCallback(() => {
+    setOptionsFailed(false)
     void api
       .authOptions()
-      .then((fetched) => {
-        if (!cancelled) setOptions(fetched)
-      })
+      .then(setOptions)
       .catch(() => {
-        // A server that cannot say how to sign in is a server that cannot sign anybody in. Showing
-        // the buttons anyway would offer a door that leads nowhere; this at least says so.
-        if (!cancelled) {
-          setOptions({ providers: [], devLoginEnabled: false })
-          failure.report('Could not reach the server. It may be starting up — try again shortly.')
-        }
+        // A server that cannot say how to sign in is a server that cannot sign anybody in.
+        // Offering buttons anyway would be a door that leads nowhere.
+        setOptionsFailed(true)
       })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(loadOptions, [loadOptions])
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -158,21 +244,49 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
         </div>
         <p>A document editor for real-time teamwork.</p>
 
-        {options === null && <p className="login-hint">Checking how to sign in…</p>}
+        {/* Said before the buttons, because it is the answer to "why am I looking at this?" — the
+            user did not click sign out, their session ran out while they were away. Without it
+            they are silently ejected onto a login card and the application looks like it logs
+            people out at random. */}
+        {notice !== null && <p className="login-hint">{notice}</p>}
 
-        {options?.providers.map((provider) => (
-          <a
-            key={provider}
-            className="login-provider"
-            // A full-page navigation rather than fetch: the whole point of the redirect flow is
-            // that the browser visits the provider, and XHR cannot show somebody a consent screen.
-            href={`${API_ORIGIN}/oauth2/authorization/${provider}`}
-          >
-            {busy ? 'Signing in…' : `Continue with ${PROVIDER_LABELS[provider] ?? provider}`}
-          </a>
-        ))}
+        {/* The whole card body, replaced. A returning user is mid-exchange and must not be shown a
+            set of provider buttons: they are `<a href>` elements, so clicking one navigates back
+            to the provider and abandons an exchange that was about to succeed. Swapping only the
+            label — which is what this did — left them live, and said "Signing in…" on EVERY
+            provider at once, which names none of them. */}
+        {busy ? (
+          <p className="login-hint">Signing you in…</p>
+        ) : optionsFailed ? (
+          <>
+            <p className="login-hint">
+              Could not reach the server. It may still be starting up.
+            </p>
+            <button type="button" onClick={loadOptions}>Try again</button>
+          </>
+        ) : (
+          <>
+            {options === null && <p className="login-hint">Checking how to sign in…</p>}
 
-        {options?.devLoginEnabled === true && (
+            {options?.providers.map((provider) => (
+              <a
+                key={provider}
+                className="login-provider"
+                // A full-page navigation rather than fetch: the whole point of the redirect flow is
+                // that the browser visits the provider, and XHR cannot show a consent screen.
+                href={`${API_ORIGIN}/oauth2/authorization/${provider}`}
+                // The address is stashed HERE, on the way out, because this is the last moment it
+                // exists — the provider redirects to a fixed app-url and whatever the visitor
+                // arrived with is gone. See RETURN_KEY.
+                onClick={() => sessionStorage.setItem(RETURN_KEY, window.location.search)}
+              >
+                Continue with {PROVIDER_LABELS[provider] ?? provider}
+              </a>
+            ))}
+          </>
+        )}
+
+        {!busy && !optionsFailed && options?.devLoginEnabled === true && (
           <form className="login-dev" onSubmit={submit}>
             {options.providers.length > 0 && (
               <p className="login-hint">or, for local development</p>
@@ -183,13 +297,19 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
               placeholder="Your name"
               aria-label="Your name"
             />
-            <button type="submit" disabled={busy}>
-              {busy ? 'Connecting…' : 'Get started'}
+            {/* Disabled on an empty field, which it was not. LoginController substitutes "Guest"
+                for a blank name, so pressing this under a placeholder reading "Your name" signed
+                you in as somebody called Guest — a surprise, and one that then appears next to
+                your cursor for everybody else in the document. */}
+            <button type="submit" disabled={name.trim() === ''}>
+              Get started
             </button>
           </form>
         )}
 
-        {options !== null
+        {!busy
+          && !optionsFailed
+          && options !== null
           && options.providers.length === 0
           && !options.devLoginEnabled && (
           <p className="login-hint">
@@ -206,7 +326,10 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
   )
 }
 
-function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
+function Workspace({ session, onSignOut }: {
+  session: Session
+  onSignOut: (reason?: string) => void
+}) {
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
   const [openId, setOpenId] = useState<string | null>(null)
 
@@ -225,7 +348,7 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
      * The flag existed and only the `.catch` consulted it, so the success path ran to completion
      * on an effect that had already torn down. Under `<StrictMode>` React deliberately mounts,
      * unmounts and remounts every effect in development, so two of these run concurrently — and
-     * if the account has no documents yet, BOTH reach `api.createDocument('Q3 Product Roadmap')`
+     * if the account has no documents yet, BOTH reach `api.createDocument(...)`
      * and two real documents are created on the server, on a first visit, every time. That is not
      * a development-only artifact: it leaves the user with a duplicate they have to delete.
      *
@@ -277,7 +400,7 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
         return
       }
       if (list.length === 0) {
-        const created = await api.createDocument('Q3 Product Roadmap')
+        const created = await api.createDocument(FIRST_DOCUMENT_TITLE)
         if (cancelled) return
         setDocuments([created])
         setOpenId(created.id)
@@ -295,7 +418,11 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
       // "Try again" against a 401 reloads into the same 401 until the user gives up. That one
       // needs the sign-in screen, so it takes the same route as signing out.
       if (error instanceof ApiError && error.status === 401) {
-        onSignOut()
+        // With a reason, because being dropped onto a sign-in screen with no explanation reads as
+        // the application logging people out at random — and with a twelve-hour token and a
+        // session that outlives the browser, "signed in yesterday, opened it today" is the
+        // ORDINARY case rather than an edge one.
+        onSignOut('Your session expired. Please sign in again.')
         return
       }
       setBootstrapFailed(true)
@@ -392,6 +519,7 @@ function Workspace({ session, onSignOut }: { session: Session; onSignOut: () => 
 function AccountMenu({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [open, setOpen] = useState(false)
 
+
   // Escape closes, and so does a click anywhere else — the two ways out of every other transient
   // surface in this application (SharePanel, the rename field in DocumentList). A menu that only
   // closes by clicking the thing that opened it is a menu people leave open by accident.
@@ -414,27 +542,42 @@ function AccountMenu({ session, onSignOut }: { session: Session; onSignOut: () =
   }, [open])
 
   return (
-    <div className="account">
+    <div
+      className="account"
+      // Tabbing past "Sign out" closes it. Escape and a click outside were the only two ways out,
+      // so a keyboard user who tabbed onward left the popover floating over the toolbar.
+      // `relatedTarget` is where focus went; inside our own subtree means it has not left.
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false)
+      }}
+    >
       <button
         type="button"
         className="avatar avatar-self"
         style={{ background: session.color }}
-        aria-haspopup="menu"
+        // NOT `aria-haspopup="menu"`, and the contents carry no menu roles either. `role="menu"`
+        // is a contract — only menuitem-shaped children, plus arrow-key navigation and roving
+        // focus — and none of that was implemented; assistive tech entering menu mode would have
+        // exposed the items and hidden the name, which is the one thing this exists to say. With
+        // one action and a line of text it is a disclosure, so it is spelled as one: the name is
+        // ordinary content, Sign out is an ordinary button in ordinary Tab order.
         aria-expanded={open}
-        title={session.displayName}
+        // The accessible name would otherwise be the initials — a screen reader announcing "AB,
+        // button". Name-from-content beats `title`, and `title` never appears on touch at all.
+        aria-label={`Account: ${session.displayName}`}
         onClick={() => setOpen((current) => !current)}
       >
         {initials(session.displayName)}
       </button>
       {open && (
-        <div className="account-menu" role="menu">
+        <div className="account-menu">
           <div className="account-who">
             <strong>{session.displayName}</strong>
             {/* Said out loud, because a shared browser is exactly where somebody signs out — and
                 being told which account is about to end is the whole reason to look here first. */}
             <span>Signed in</span>
           </div>
-          <button type="button" role="menuitem" onClick={onSignOut}>
+          <button type="button" onClick={onSignOut}>
             Sign out
           </button>
         </div>

@@ -73,9 +73,29 @@ public class OidcLoginSuccess implements AuthenticationSuccessHandler {
         String displayName = displayNameOf(principal, subject);
         String email = claim(principal, "email");
 
-        TokenService.Principal identity =
-            users.upsertFederated(provider, subject, displayName, email);
-        String code = codes.issue(identity.userId());
+        String code;
+        TokenService.Principal identity;
+        try {
+            identity = users.upsertFederated(provider, subject, displayName, email);
+            code = codes.issue(identity.userId());
+        } catch (RuntimeException e) {
+            // Both of these talk to Postgres, and neither was guarded. A pool timeout or a database
+            // briefly unreachable threw out of this handler — and Spring Security's
+            // AbstractAuthenticationProcessingFilter catches only AuthenticationException around
+            // this call, so a DataAccessException escapes into Boot's error dispatch.
+            //
+            // The user lands on a whitelabel 500 at the CALLBACK address, which is the API origin
+            // and not the product, with a back button that re-submits an authorization code the
+            // provider has already spent. That is word for word the dead end OidcLoginFailure was
+            // written to eliminate — and the success path had the same hole with no handler on it.
+            //
+            // The detail stays in the log; the browser gets the same shapeless answer as any other
+            // failed sign-in, because which half of the database was unhappy is not the user's
+            // business and not something they can act on.
+            log.error("Could not complete the sign-in for provider {}", provider, e);
+            response.sendRedirect(appUrlWith("error", "sign-in-failed"));
+            return;
+        }
 
         log.info("Signed in {} via {}", identity.userId(), provider);
         response.sendRedirect(appUrlWith("code", code));

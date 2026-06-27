@@ -1,5 +1,6 @@
 package dev.collabedit.app.api;
 
+import dev.collabedit.app.auth.AuthorizationWiringException;
 import dev.collabedit.app.domain.DocumentReplica;
 import dev.collabedit.app.domain.DocumentService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -121,6 +122,27 @@ public class ApiExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiError> onIllegalArgument(IllegalArgumentException e) {
         return ResponseEntity.badRequest().body(new ApiError(e.getMessage()));
+    }
+
+    /**
+     * A fault in our own wiring — 500, and nothing about it in the body.
+     *
+     * <p>This case used to arrive as an {@code IllegalStateException} and leave as the 409 below,
+     * which was wrong in all three of its parts: the status blamed the caller for a server fault,
+     * the response carried our internal diagnostic text, and nothing landed in 5xx monitoring —
+     * where an endpoint that forgot its access annotation is exactly the thing somebody needs to
+     * see. {@code DocumentAccessGuard} answers the same class of fault with the same status, so the
+     * two halves of "we forgot to authorize something" now read alike.
+     *
+     * <p>ERROR rather than WARN, for the same reason: this is never the caller's doing.
+     */
+    @ExceptionHandler(AuthorizationWiringException.class)
+    public ResponseEntity<ApiError> onWiringFault(AuthorizationWiringException e,
+                                                  HttpServletRequest request) {
+        log.error("Authorization wiring fault handling {} {}", request.getMethod(),
+            request.getRequestURI(), e);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(new ApiError("The server could not process the request."));
     }
 
     /**

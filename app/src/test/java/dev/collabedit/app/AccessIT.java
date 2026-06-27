@@ -39,8 +39,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *   <tr><td>{@code unknownRoleNameIsRefused}</td>
  *       <td>{@code Role.parse} falling back to VIEWER on the WRITE path: a typo would report
  *           success and grant a different role than the one named.</td></tr>
- *   <tr><td>{@code ownershipCannotBeGranted}, {@code ownerCannotRevokeThemselves}</td>
- *       <td>The two ways an access API produces a document nobody can administer.</td></tr>
+ *   <tr><td>{@code ownershipCannotBeGranted}</td>
+ *       <td>An access API that produces a document nobody can administer.</td></tr>
+ *   <tr><td>{@code ownerCannotRevokeThemselves}</td>
+ *       <td>A control that silently does nothing. It was filed under the row above, which
+ *           claimed it prevented an unadministrable document — it does not, and could not:
+ *           ownership lives in {@code documents.owner_id} and revoke touches only
+ *           {@code document_members}, so removing the guard leaves both assertions passing.
+ *           What it pins is that the request is REFUSED rather than answered 204, which is
+ *           the difference between telling somebody "that does nothing" and letting them
+ *           believe they have left the document.</td></tr>
  *   <tr><td>{@code memberListRequiresManageAccess}</td>
  *       <td>"Who else has access" leaking to everyone who may read the text.</td></tr>
  *   <tr><td>{@code inviteGrantsExactlyTheRoleItCarries}</td>
@@ -234,8 +242,17 @@ class AccessIT extends IntegrationTestBase {
         UUID document = createDocument(anna, "Notes");
 
         assertThat(send("DELETE", "/api/documents/" + document + "/access/members/" + anna.id(),
-            anna.token(), null).statusCode()).isEqualTo(409);
-        assertThat(permissions.roleOf(anna.id(), document)).contains(Role.OWNER);
+            anna.token(), null).statusCode())
+            .as("Answered rather than refused. The deletion removes a document_members row that "
+                + "carries no ownership, leaves Anna OWNER through documents.owner_id, and "
+                + "reports success — so the interface says \"you were removed\" about a document "
+                + "the caller still owns.")
+            .isEqualTo(409);
+        assertThat(permissions.roleOf(anna.id(), document))
+            .as("ownership resolves from documents.owner_id before document_members is consulted, "
+                + "so this holds whether or not the guard above ran — it pins the resolution "
+                + "order, not the guard")
+            .contains(Role.OWNER);
     }
 
     @Test

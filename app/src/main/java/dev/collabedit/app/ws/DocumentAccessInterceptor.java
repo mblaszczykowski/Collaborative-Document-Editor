@@ -294,12 +294,17 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             if (role.canWriteText()) {
                 return true;
             }
-            // A commenter may send ONLY a comment mark, and only one anchoring a thread of their
-            // own. This is the point where authorization has to descend into the OPERATION: comments
-            // travel the same channel as editing, so they cannot be distinguished at the destination
-            // level. Without the first half the "commenter" role would mean "editor"; without the
-            // second it would mean "editor of everybody's anchors", because the mark's VALUE is a
-            // thread identifier and every commenter can read all of them.
+            // A commenter may send ONLY a comment mark, and only one anchoring a thread that
+            // belongs to THIS DOCUMENT. This is the point where authorization has to descend into
+            // the OPERATION: comments travel the same channel as editing, so they cannot be
+            // distinguished at the destination level. Without the first half the "commenter" role
+            // would mean "editor"; without the second it would mean "editor of every document's
+            // anchors", because the mark's VALUE is a thread identifier and thread ids are global.
+            //
+            // It used to say "a thread of THEIR OWN", which the check has not done since the rule
+            // was loosened to document membership on purpose — see CommentAnchorAuthority. Within
+            // one document a commenter can still re-anchor somebody else's highlight; that cost is
+            // recorded in CommentService rather than denied here.
             if (!role.canComment()) {
                 return false;
             }

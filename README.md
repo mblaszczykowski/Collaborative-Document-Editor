@@ -599,7 +599,15 @@ loads rather than when a session is first touched, because the sign-in journey r
 That change is also what forced a **sign out** control to exist. There was none — closing the tab
 was the sign-out — and once a session outlives the browser, "signed in yesterday, opened it today"
 means a token past its twelve-hour life, a document list that answers 401, and a *Try again* button
-reloading into the same 401 for ever. A 401 now returns to the sign-in screen on its own.
+reloading into the same 401 for ever. A 401 during startup now returns to the sign-in screen
+on its own, saying that the session expired rather than ejecting the user silently.
+
+**What that does not cover, stated because the sentence above used to imply it did.** A token
+that lapses while the application is already open is still not noticed everywhere: the
+WebSocket is authenticated once at `CONNECT` and never re-checked, so editing continues until
+the socket drops, and a reconnect then re-sends the dead token and retries behind a "Working
+offline" indicator. Closing that properly means routing every 401 through one place and
+treating a refused `CONNECT` as an expiry — worth doing, not yet done.
 
 **What is deliberately still simple.** There is no account page, no way to merge a Google account
 with a GitHub one, and no revocation beyond the token's twelve-hour life — tokens are signed rather
@@ -827,7 +835,7 @@ What actually happens when something goes wrong. Rows naming a test have one tha
 | **Rate limit exceeded** | The frame is refused with the exact wait, and the client retries from its buffer. Unlike a permission refusal, this one is not silent: a silent one is data loss. | harness: 351 rejections, zero lost operations |
 | **Deleting formatted text** | Formatting stays on what survived; mark anchors are tombstones held back from GC. | `garbageCollectionSparesMarkAnchors` |
 | **Deleting commented text** | The thread stays, marked detached, quoting the fragment as of when it was written. | `threadSurvivesDeletionOfAnchoredText` |
-| **Access revoked mid-session** | Takes effect on every instance, with the 5 s cache TTL as the floor. Subscriptions are re-checked per frame, so the session survives and the permission does not. | `revokedAccessTerminatesLiveSubscription`, `PermissionClusterInvalidationIT` |
+| **Access revoked mid-session** | Takes effect on every instance, with the 5 s cache TTL as the floor. Subscriptions are re-checked per frame, so the session survives and the permission does not. The client half was wrong until a review found it: the banner appeared above an editor that was still writable, so keystrokes were sent, silently refused, and counted as unsaved — the indicator read "Saving…" while the work was discarded. Losing access now drops the role to viewer too. | `revokedAccessTerminatesLiveSubscription`, `PermissionClusterInvalidationIT` |
 
 ---
 

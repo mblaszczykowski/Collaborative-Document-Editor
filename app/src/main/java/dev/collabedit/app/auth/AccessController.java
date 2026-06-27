@@ -39,9 +39,10 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li><b>No grant of {@code owner}.</b> Ownership transfer has a consequence a role change does
  *       not: the previous owner may be unable to undo it. Folding it into "set a role" is how
  *       that happens by accident rather than by intent.</li>
- *   <li><b>The owner may not revoke themselves.</b> A document with no owner cannot be secured by
- *       anybody, ever — the exact state CP16 fixed in {@code POST /documents}, which would
- *       otherwise be reachable again through the front door.</li>
+ *   <li><b>The owner may not revoke themselves.</b> Not because it would strand the document —
+ *       that justification was checked and is false; see {@code removeMember}. Because removing
+ *       yourself is a gesture that reads as "leave this document" and does nothing at all here,
+ *       and a control that silently no-ops is worse than one that refuses.</li>
  * </ol>
  *
  * <h2>Reading the member list needs MANAGE_ACCESS too</h2>
@@ -188,8 +189,20 @@ public class AccessController {
                                              HttpServletRequest request) {
         String caller = TokenAuthFilter.requiredCallerId(request);
         if (userId.equals(caller)) {
-            // Removing yourself from your own document leaves it with an owner_id that no longer
-            // matches anybody who can act — and nothing else in the system can repair that.
+            // This said: "removing yourself from your own document leaves it with an owner_id that
+            // no longer matches anybody who can act". That is not what happens, and the invariant
+            // was fictional. `PermissionService.revoke` deletes only a `document_members` row, and
+            // `roleFrom` resolves `owner_id` BEFORE it ever looks at that table — so an owner who
+            // deleted their own membership would still be OWNER. Since V10 the row could not have
+            // carried ownership anyway; `role` may not hold 'owner'.
+            //
+            // The refusal stays, on the honest ground: it is a gesture that looks like "leave this
+            // document" and would have accomplished nothing, and 409 says so where a 204 would have
+            // claimed something happened.
+            //
+            // The genuinely ownerless state exists and arrives by another door entirely —
+            // `documents.owner_id` is ON DELETE SET NULL (V3), so deleting a user orphans their
+            // documents. Nothing here can reach it.
             return ResponseEntity.status(HttpStatus.CONFLICT).build();
         }
         // 404 when there was no membership row to remove, matching revokeInvite one method below

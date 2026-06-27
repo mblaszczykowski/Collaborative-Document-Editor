@@ -255,8 +255,22 @@ public record CollabEditProperties(
                 return new Provider(null, null);
             }
 
+            /**
+             * Both halves, not just the id.
+             *
+             * <p>It asked about the client id alone, and {@code ClientRegistration.Builder.build()}
+             * does not require a secret — so a deployment with {@code GOOGLE_CLIENT_ID} set and
+             * {@code GOOGLE_CLIENT_SECRET} forgotten started cleanly, advertised the button, and
+             * failed at the token exchange with {@code invalid_client}, which reaches the user as a
+             * generic "Sign-in did not complete".
+             *
+             * <p>That is precisely the failure {@code ClientRegistrations} says this derivation
+             * exists to prevent: a screen cannot advertise a button that leads nowhere. Half a
+             * credential is not a configured provider.
+             */
             public boolean configured() {
-                return clientId != null && !clientId.isBlank();
+                return clientId != null && !clientId.isBlank()
+                    && clientSecret != null && !clientSecret.isBlank();
             }
         }
 

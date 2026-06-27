@@ -547,6 +547,17 @@ export function useCollaborativeDocument(
               // about whether the document exists.
               if (error instanceof ApiError && error.status === 404) {
                 setUnavailable(true)
+                // AND drop the role, which this did not do — the banner appeared above an editor
+                // that was still writable. `readOnly` is computed from `canWrite` alone (App.tsx),
+                // so losing access left the caret blinking: every keystroke went out as a SEND
+                // frame, DocumentAccessInterceptor refused it silently by design, and the
+                // unacknowledged buffer grew — so the indicator read "Saving…" for the whole time
+                // the server was discarding the work. Being told a document is unavailable while
+                // it accepts typing is worse than either message alone.
+                //
+                // 'viewer' rather than clearing it: the same weakest-role default the state above
+                // opens with, and for the same reason.
+                setRole('viewer')
                 return
               }
               console.error('could not refresh the role after an access change', error)

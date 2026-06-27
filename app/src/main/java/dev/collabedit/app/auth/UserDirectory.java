@@ -146,7 +146,13 @@ public class UserDirectory {
                  VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (provider, subject) WHERE provider IS NOT NULL DO UPDATE
                     SET display_name = EXCLUDED.display_name,
-                        email        = EXCLUDED.email
+                        -- COALESCE, because a sign-in that does not carry an email must not erase
+                        -- one an earlier sign-in did. GitHub returns a null email whenever the
+                        -- address is private, and a user can make it private at any time — so the
+                        -- plain assignment meant the column emptied itself on a later login,
+                        -- non-deterministically. The javadoc says the email is kept so that a
+                        -- future "invite by email" can mean something; that only holds if it stays.
+                        email        = COALESCE(EXCLUDED.email, users.email)
               RETURNING id, display_name, color
             """,
             (rs, rowNum) -> new TokenService.Principal(
