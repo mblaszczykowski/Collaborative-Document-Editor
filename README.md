@@ -25,32 +25,25 @@ suggestions all run on that same core instead of beside it.
 - [Anchors: one mechanism, four features](#anchors-one-mechanism-four-features) · [Undo](#undo-in-a-shared-document) · [History](#history-and-a-diff-by-identity)
 - [Offline and reconnect](#offline-reconnect-and-the-gap-you-cannot-see) · [The cluster](#the-cluster) · [Who you are](#who-you-are) · [Authorization](#authorization)
 - [Tests](#tests) · [Performance](#performance) · [Failure modes](#failure-modes) · [Limitations](#limitations)
-- Running it, configuration, observability: [`docs/RUNNING.md`](docs/RUNNING.md)
+- [Running it](#running-it) · [Observability](#observability)
 
 ---
 
 ## Features
 
-**Editing** — any number of people per document, ~130 ms propagation with 50 clients connected,
-offline into an IndexedDB buffer that survives the tab closing, undo that takes back *your*
-operations and nobody else's, live cursors and presence across backend instances.
-
-**Rich text** — six inline styles plus headings, quotes and lists, all as marks over a flat
-sequence instead of nodes in a tree. Formatting survives concurrent editing inside its own range,
-which is [the interesting one](#which-side-an-anchor-sits-on-decides-how-formatting-behaves).
-
-**Comments** — threads anchored to a range. Delete the commented text and the thread stays, marked
-detached, quoting the fragment as of when it was written.
-
-**Suggestions** — edits as proposals drawn over the real text, accepted or rejected one at a time.
-The resulting operations are generated server-side, so a suggester can never write directly.
-
-**History** — time travel to any point in the log, diff two versions *by character identity*, and
-restore recorded as new operations instead of a rewrite of the past.
-
-**Documents and access** — workspaces, search, trash, four ordered roles
-(`viewer < commenter < editor < owner`), invitation links stored only as a hash, revocation that
-lands mid-session on every instance.
+- **Editing** — unlimited participants, ~130 ms propagation at 50 clients, offline into IndexedDB
+  that survives the tab closing, undo that takes back *your* operations only, cursors and presence
+  across instances.
+- **Rich text** — six inline styles plus headings, quotes and lists, as marks over a flat sequence
+  instead of nodes in a tree. Formatting survives concurrent editing inside its own range, which is
+  [the interesting one](#which-side-an-anchor-sits-on-decides-how-formatting-behaves).
+- **Comments** — threads anchored to a range; delete the text and the thread stays, marked detached.
+- **Suggestions** — edits as proposals over the real text. The operations are generated
+  server-side, so a suggester can never write directly.
+- **History** — time travel to any point in the log, diff two versions *by character identity*,
+  restore recorded as new operations instead of a rewrite.
+- **Access** — workspaces, search, trash, four ordered roles, hashed invitation links, revocation
+  that lands mid-session on every instance.
 
 ---
 
@@ -64,17 +57,16 @@ same rule. Instances also gossip over Redis, which [the cluster](#the-cluster) e
 out of the diagram because it is a fast path, not part of the structure.
 
 ```
-crdt-core/     the algorithm. A separate Maven module with ZERO Spring dependencies,
-               so it can be tested and benchmarked in isolation and so the compiler
-               stops the application layer leaking into it.
-               Block, RgaDocument, MarkSet, Anchor, {Array,Treap}BlockList,
-               OpCodec, SnapshotCodec, VersionVector + property tests + JMH
+crdt-core/     the algorithm, as a Maven module with ZERO Spring dependencies, so it
+               can be benchmarked in isolation and the compiler stops the application
+               layer leaking in. RgaDocument, Block, MarkSet, Anchor,
+               {Array,Treap}BlockList, OpCodec, SnapshotCodec, VersionVector
 
 app/           Spring Boot 3, Java 21
   ws/          STOMP, presence, per-frame authorization, rate limiting
   auth/        roles, permissions, invitations, tokens
   domain/      the in-memory document replica
-  persist/     operation log, snapshots, document catalog, search
+  persist/     operation log, snapshots, catalog, search
   history/     time travel, diff, restore
   comments/    threads and messages (content outside the CRDT)
   suggestions/ accept and reject, server-side operation generation
@@ -86,8 +78,8 @@ frontend/      React + TypeScript + Vite
   editor/      the CodeMirror 6 bridge, formatting, remote cursors
   ui/          document list, history, comments, suggestions, sharing
 
-conformance/   test vectors and the mark-type table shared by both implementations
-ops/           Prometheus / Tempo / Grafana / OTel Collector configuration
+conformance/   vectors and the mark-type table, shared by both implementations
+ops/           Prometheus / Tempo / Grafana / OTel Collector
 ```
 
 ### The path of a single edit
@@ -102,12 +94,10 @@ shared corpus in [`conformance/`](conformance/) — operation sequences with the
 formatting, generated once and replayed by both suites. Change the ordering rule in one language and
 the other language's build fails.
 
-The corpus has a hole worth naming. Vectors contain operations that were *already created*, carrying
-concrete anchor sides, but "does bold grow when you type at its end" is decided at *creation* time.
-Changing the expansion table on one side changes no vector, and the whole corpus stays green. So the
-table is a JSON file both sides read, with a test on each side, including one that walks the other
-way — from the declared constants back to the file. A type declared in Java and forgotten in the
-JSON had left both suites green while the client had no idea it existed.
+It has a hole worth naming: vectors carry operations already created, so "does bold grow when you
+type at its end", decided at *creation* time, changes no vector. That rule lives in a JSON file both
+sides read, with a test each way — including one from the declared constants back to the file, after
+a type declared in Java and forgotten in the JSON left both suites green.
 
 ---
 
@@ -171,12 +161,9 @@ so it can never tie.
 Same result, opposite delivery order, no messages rewritten, nothing to roll back. Higher
 identifiers sort left, which is arbitrary but has to be *decided*.
 
-Two properties make the walk correct, and both rest on `lamport` being a real Lamport clock.
-Anything created causally after a block S has a higher timestamp than S, so skipping S skips its
-whole subtree and concurrent runs never get shredded into each other. And the first block past the
-origin's subtree has a *lower* timestamp than the origin, while the incoming block has a higher one
-(its author had seen the origin), so the scan stops on its own instead of wandering out of the
-subtree.
+Termination rests on `lamport` being a real Lamport clock: anything created causally after a block
+has a higher timestamp, so skipping a block skips its whole subtree, and the first block past that
+subtree ranks below the origin while the incoming one ranks above it. The scan stops on its own.
 
 ### The document is a list of runs, not characters
 
@@ -195,18 +182,18 @@ is a list of **blocks**, each holding a whole run:
 ```
 
 Two invariants keep it honest. A block is entirely alive or entirely deleted, so deleting part of
-one splits it first; the alternative, a per-character flag array, complicates every index operation
-and saves little. And the insertion scan is coarse, by blocks: safe because lamports inside a block
-increase and the characters are causally chained, so if a block's first character outranks the
-incoming one, so does every other. The scan never needs to stop mid-block either, because if the
-origin *is* mid-block, the block was split first anyway.
+one splits it first — a per-character flag array complicates every index operation and saves little.
+And the insertion scan is coarse, by block: lamports inside a block increase and its characters are
+causally chained, so if the first outranks the incoming one, so does every other.
 
-Typing appends into the previous block when the replica, the lamport and the origin all line up.
-Without that fast path, run-length encoding would buy nothing, since every keystroke is still its
-own operation on the wire. A deleted block keeps its identity and its length so it can still serve
-as an origin, and may drop its `text` while keeping both.
+Typing appends into the previous block when replica, lamport and origin all line up. Without that
+fast path run-length encoding buys nothing, since every keystroke is still its own operation on the
+wire. A deleted block keeps its identity and length so it can still serve as an origin.
 
 ### Two index implementations, one algorithm
+
+<details>
+<summary>O(n) to O(log n), the same tree shape on every replica, and the property that caught what comparing text could not.</summary>
 
 `RgaDocument` does not know how the block list is stored. It goes through a `BlockList` interface,
 and there are two:
@@ -229,6 +216,8 @@ with everybody's cursor in the wrong place.
 Naive implementation first, then the tests, then JMH, and only then the tree. The commit history
 shows that order because it is more honest than dropping in a clever structure on day one.
 
+</details>
+
 ### Tombstones, and when one can be dropped
 
 A tombstone can never be deleted on a whim, because another replica may still hold an operation
@@ -250,48 +239,36 @@ and deleted a second ago has an insertion far below the meet, so its tombstone w
 immediately while a peer 10 ms behind still displayed the text. That is what `Block.deletedBy` is
 for, and `GcSafetyTest` pins the scenario.
 
-Two more things are held back, both found the same way. Anchors of buffered operations, since a mark
-waiting on one anchor still needs the other to exist; collecting it stranded the operation in the
-pending buffer for the life of the process and the formatting silently vanished. And every character
-in a buffered delete range, not just the first, because the range walk goes block by block and
-removing anything in the middle breaks it permanently.
+Two more things are held back, both found the same way: anchors of buffered operations (collecting
+one stranded the operation in the pending buffer for the life of the process, and the formatting
+silently vanished), and every character in a buffered delete range, not just the first.
 
 A replica offline longer than the GC window (7 days) is refused with `RESYNC_REQUIRED` and its local
 version kept as a separate "Recovered draft". No faked merge: where those characters belong is
 genuinely gone.
 
-### Why deduplication is not the version vector's job
+### What the clock is not for
 
-The reflex is to keep a version vector and reject anything already seen. With a Lamport clock that
-is wrong, because per-replica counters are not contiguous: the clock jumps whenever someone else's
-operation arrives, so replica A may legitimately produce lamports 1, 2, 47, 48, 103. "I have
-everything from A up to 48" cannot tell a hole left by a lost message from a hole left by a jump.
+Two things I had wrong about it, both worth keeping because the corrections were expensive.
 
-Instead, an `Insert` is a duplicate if a character with that identifier is already in the structure.
-Exact, and free, since the structure indexes by identifier anyway. A `Delete` is not checked at all,
-because setting a tombstone twice is a no-op.
+**Deduplication is not the version vector's job.** The reflex is to reject anything already seen,
+but per-replica counters are not contiguous: the clock jumps whenever someone else's operation
+arrives, so replica A legitimately produces lamports 1, 2, 47, 48, 103, and "everything from A up to
+48" cannot tell a lost message from a jump. An `Insert` is a duplicate if that identifier is already
+in the structure — exact and free, since the structure indexes by identifier. A `Delete` is not
+checked at all, because setting a tombstone twice is a no-op. The version vector stays for causal
+stability and for the reconnect exchange, but detecting gaps in delivery is the transport's job.
 
-The version vector still exists, for causal stability and for the "what do you have" exchange on
-reconnect, but it is not a correctness mechanism of the core. Detecting gaps in delivery is the
-transport's job. The CRDT has to be correct under any order and any repetition.
+**The clock does not buy convergence.** These notes used to claim that without bumping it on receipt
+the implementation diverges, with a counterexample. Too strong, and I withdraw it: I removed the
+bump (`clock = max(clock, 0)`) and ran 200 000 random scenarios, 3–5 replicas, 30 edits each, every
+operation delivered twice. Zero divergences. The integration function is deterministic with respect
+to the *set* of present elements, not the order they arrive in. The bump stays because it is a
+premise of the published RGA proof and 200 000 scenarios are evidence rather than one — and because
+it does guarantee the structural property above, that a concurrently typed run stays contiguous.
+Nothing was checking that either; removing the bump left every property test green. Three lines in
+`RgaInvariants` assert it now.
 
-### What the Lamport clock is actually for
-
-An earlier version of these notes claimed that without bumping the clock on receipt the
-implementation **diverges**, and gave a counterexample. Too strong, and I withdraw it. I removed the
-bump from production code (`clock = max(clock, 0)`) and ran a brute-force divergence search: 200 000
-random scenarios, 3–5 replicas, 30 edits each, aggressive interleaving, every operation delivered
-twice. Zero divergences, zero operations stuck in the buffer. The integration function is
-deterministic with respect to the *set* of present elements, not the order they arrived in, and that
-is enough for convergence.
-
-The bump stays for an honestly named reason: it is a premise of the published RGA correctness proof,
-and 200 000 scenarios are evidence, not a proof. What it does guarantee is the structural property
-above, that skipping a sibling skips its subtree, so a concurrently typed run stays contiguous. That
-is an invariant about the linearisation, not about two replicas agreeing, and nothing checked it for
-a long time — removing the bump left every property test green. The fix is three lines in
-`RgaInvariants`, the helper every property already calls after each step: assert a block's timestamp
-is above its origin's.
 
 ---
 
@@ -370,6 +347,9 @@ Twelve mark types share the mechanism: six inline styles, `comment`, two suggest
 
 ### A comment is half in the CRDT and half out
 
+<details>
+<summary>Why the anchor is a CRDT operation and the conversation is rows in Postgres.</summary>
+
 The common misreading of this codebase is "there is a CRDT, so the comments must be in it". They are
 not. The **anchor** is a CRDT operation; the **conversation** is rows in Postgres. A range has to
 merge without an arbiter under concurrent edits; a sentence written by one person has a single
@@ -385,6 +365,8 @@ Offline, a comment goes to an outbox with its anchor and is retried on reconnect
 stops a retry of one that did arrive becoming a second thread. This path needs exactly-once, not
 merging.
 
+</details>
+
 ### Suggestions are marks over real text
 
 A suggestion does not modify the document and does not live in a side buffer. Typing in suggest mode
@@ -399,23 +381,19 @@ the character layer.
 
 ## Undo in a shared document
 
-CodeMirror's own history is switched off. It works on text, so an undo would also take back whatever
-other people typed in the meantime. In a shared editor that is not an inconvenience, it is deleting
+CodeMirror's own history is off. It works on text, so an undo would also take back whatever other
+people typed in the meantime — in a shared editor that is not an inconvenience, it is deleting
 someone else's work.
 
-Undo therefore operates on your own operations, and the difficulty is that a CRDT operation cannot
-be inverted: a deleted character has a tombstone and does not come back to life. Restoring text
-means inserting *new* characters with new identifiers. The visible effect is the same; the identity
-is not. Yjs does the same thing.
+Undo therefore operates on your own operations, and a CRDT operation cannot be inverted: a deleted
+character has a tombstone and does not come back to life. Restoring text means inserting *new*
+characters with new identifiers. Same visible effect, different identity. Yjs does the same.
 
 A stack entry remembers a character identifier, not an offset, because an offset recorded at edit
-time is stale by the time you press Ctrl-Z. Undoing a formatting change is not "remove the mark"
-either: the inverse of "make this bold" is "put back whatever this range had before", which differs
-whenever somebody else's mark of the same type was already there. Removing would take away their
-formatting too, and they never touched anything.
-
-If the anchor has since been deleted by somebody else, the entry is skipped rather than guessed at.
-Putting the text back "roughly there" would appear somewhere random with no explanation.
+time is stale by the time you press Ctrl-Z. Undoing formatting is not "remove the mark" either: the
+inverse of "make this bold" is "restore whatever this range had before", which differs when somebody
+else's mark of the same type was already there. If the anchor has since been deleted, the entry is
+skipped rather than guessed at — text put back "roughly there" appears somewhere random.
 
 ---
 
@@ -438,9 +416,9 @@ cannot:
                                                               by a named author
 ```
 
-Restore uses a common prefix and suffix, not a full Myers diff. A restore is usually a rollback of
-one recent edit, so prefix/suffix is short and cheap; Myers would produce smaller operations at a
-cost in complexity that has not been worth paying.
+Restore uses a common prefix and suffix, not a full Myers diff: a restore is usually a rollback of
+one recent edit, so prefix/suffix is short and cheap, and Myers would produce smaller operations at
+a cost in complexity not worth paying yet.
 
 ---
 
@@ -466,10 +444,10 @@ operation's **identity**, and the client asks a different question:
 ```
 
 That check started as "does my replica contain a character 7@41", which is exact for inserts and
-always false for deletes and marks, whose identity comes from the same clock but never names a
-character. One backspace by anybody set the gap flag, and the client resynchronised from zero every
-15 seconds for ever, making the repair mechanism its own permanent load. It is a bounded window of
-handled identities now, with the structural check kept as a second line.
+always false for deletes and marks — their identity comes from the same clock but never names a
+character. So one backspace by anybody set the gap flag, and the client resynchronised from zero
+every 15 seconds for ever, making the repair its own permanent load. It is a bounded window of
+handled identities now.
 
 ![Client connection states, with the two exits: resynchronising on a detected gap, and a refusal past the collection window](docs/diagrams/connection-states.svg)
 
@@ -574,14 +552,14 @@ Three things in that picture are the whole of it, and each answers a hole that a
    quiet. That is what `HistoryController` was for a whole checkpoint, handing out the full content
    of any document and letting a reader overwrite it. 500 rather than 404 is deliberate: this is our
    bug, not a caller doing anything wrong, and it should read that way in a log.
-2. **The document id comes from the declaration**, not from wherever the handler happens to look.
-   That is why creating a comment is `POST /api/documents/{id}/comments` with the document in the
+2. **The document id comes from the declaration**, not from wherever the handler happens to look,
+   which is why creating a comment is `POST /api/documents/{id}/comments` with the document in the
    path. A mechanism that resolves its subject from a declaration cannot be pointed at an endpoint
-   that keeps its subject in the body.
+   keeping its subject in the body.
 3. **The build enforces the same rule as the runtime.** An undeclared mapping fails
    `EndpointAuthorizationArchitectureTest`, and `publicEndpointsAreExactlyTheExpectedOnes` pins the
-   exemption list by name. The runtime guard alone would be a rule you discover by breaking
-   production; the test alone would be a rule anyone can delete.
+   exemption list by name. The guard alone would be a rule you discover by breaking production; the
+   test alone would be one anyone can delete.
 
 What it does not claim: the guard checks that a decision was *made*, not that it was the *right* one.
 `@RequiresDocumentAccess(READ)` on something that writes is declared, consistent, and wrong.
@@ -592,6 +570,57 @@ and edits travel the same channel and the distinction has to descend to the oper
 unresolvable destination is refused, which it was not at first: Spring's simple broker matches
 subscription destinations as Ant patterns, so `SUBSCRIBE /topic/**` resolved to no document, passed
 unchecked as if it were a private queue, and then matched every document's broadcast.
+
+---
+
+## Running it
+
+JDK 21, Node 22.12+, Docker.
+
+```bash
+docker compose --profile app up -d          # everything, on http://localhost:5173
+```
+
+To work on the code instead, run the dependencies and the two halves separately:
+
+```bash
+docker compose up -d postgres redis
+export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)   # no default; see below
+export COLLABEDIT_DEV_LOGIN=true                           # or configure a provider
+
+./mvnw -pl app spring-boot:run              # backend on :8090
+cd frontend && npm install && npm run dev   # frontend on :5173
+```
+
+| Variable | Default | |
+|---|---|---|
+| `COLLABEDIT_AUTH_SECRET` | *none — refuses to start* | Signs session tokens. A secret committed here would let any reader mint a token for any user, so there is no fallback. |
+| `COLLABEDIT_DEV_LOGIN` | `false` | Serves the name-only login. 404 when off. |
+| `GOOGLE_CLIENT_ID` / `_SECRET` | unset | Enables the Google button. Both halves required, or it would advertise a button that fails at the token exchange. |
+| `GITHUB_CLIENT_ID` / `_SECRET` | unset | Same, for GitHub. |
+| `COLLABEDIT_APP_URL` | `localhost:5173` | Where a finished sign-in returns to. |
+| `COLLABEDIT_PORT` | `8090` | Must match the registered redirect URI. |
+
+With no provider and no dev login the application starts and says on its own screen that there is no
+way in, which is the intended default. Register the redirect URI as
+`http://localhost:8090/login/oauth2/code/{google,github}` — that path is Spring Security's, not
+ours, and pointing it at the app instead is the usual first mistake. `cp .env.example .env` if you
+prefer a file; Compose reads it and it is gitignored.
+
+```bash
+./mvnw install                         # everything, integration tests on a real Postgres
+./mvnw -pl crdt-core -Pthorough test   # 10 000 property tries, as in the nightly run
+cd frontend && npm test                # client unit tests
+cd frontend && npm run e2e             # two browsers, needs a running stack
+```
+
+A failing property prints its seed; `@Property(seed = "…")` replays it. On colima rather than Docker
+Desktop, Testcontainers needs `DOCKER_HOST`, `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock`
+and `api.version=1.44` in `~/.docker-java.properties`; all three failures read as "no Docker". Off a
+laptop, the frontend resolves the backend at build time ([`config.ts`](frontend/src/config.ts)) and
+defaults to its own origin with nginx proxying `/api` and `/ws` — the only arrangement that works
+over TLS, since an `https:` page may not open a `ws:` socket. Separate origins need `VITE_API_BASE`
+at build time and `COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS` on the backend.
 
 ---
 
@@ -618,7 +647,7 @@ The tests get checked too. I mutate production code and check the suite goes red
 three tests that verified nothing:
 
 - Removing the Lamport clock bump left all fifteen property tests green, while four comments claimed
-  they existed to catch exactly that. [Full story above.](#what-the-lamport-clock-is-actually-for)
+  they existed to catch exactly that. [Full story above.](#what-the-clock-is-not-for)
 - Removing the treap's aggregate update after a tombstone sailed through convergence, because every
   replica was wrong in the same way. The text agreed; only the positions were wrong.
 - `garbageCollectionSparesMarkAnchors` passed with its mechanism switched off. I had anchored the
@@ -681,7 +710,7 @@ What actually happens when something goes wrong. Rows naming a test have one tha
 | **Rate limit exceeded** | The frame is refused with the exact wait, and the client retries from its buffer. Unlike a permission refusal, this one is not silent: a silent one is data loss. | harness: 351 rejections, zero lost operations |
 | **Deleting formatted text** | Formatting stays on what survived; mark anchors are tombstones held back from GC. | `garbageCollectionSparesMarkAnchors` |
 | **Deleting commented text** | The thread stays, marked detached, quoting the fragment as of when it was written. | `threadSurvivesDeletionOfAnchoredText` |
-| **Access revoked mid-session** | Takes effect on every instance, with the 5 s cache TTL as the floor. Subscriptions are re-checked per frame, so the session survives and the permission does not. The client half was wrong until a review found it: the banner appeared above a still-writable editor, so keystrokes were sent, silently refused, and counted as unsaved — the indicator read "Saving…" while the work was discarded. Losing access drops the role to viewer now. | `revokedAccessTerminatesLiveSubscription`, `PermissionClusterInvalidationIT` |
+| **Access revoked mid-session** | Takes effect on every instance, 5 s cache TTL as the floor; frames are re-checked individually, so the session survives and the permission does not. The client half was wrong until a review found it — the banner sat above a still-writable editor, and refused keystrokes counted as unsaved, so the indicator read "Saving…" while the work was discarded. | `revokedAccessTerminatesLiveSubscription`, `PermissionClusterInvalidationIT` |
 
 ---
 
@@ -691,39 +720,34 @@ Deliberate simplifications, and the ones that turned out worse than I assumed.
 
 - **No paragraph identity, so no move operation.** Two people moving the same paragraph get two of
   it. Structure as marks over a flat sequence is what makes it merge cleanly with everything else,
-  and also what makes this unfixable without rewriting the layer everything else stands on. The real
-  fix is a tree CRDT for structure with a sequence CRDT inside each node.
+  and equally what makes this unfixable without rewriting the layer the rest stands on. The real fix
+  is a tree CRDT for structure with a sequence CRDT inside each node.
 - **A document open on three instances lives in three copies,** the declared cost of having no
-  document owner. Per-replica memory has never been measured, so `max-loaded-documents: 200` is an
-  order-of-magnitude guess rather than a capacity plan. At real scale this wants document-affinity
-  routing or a measured eviction policy, and I would want the measurement first.
-- **Identity is federated; the account model around it is not.** No account page, no linking a
-  Google account to a GitHub one (sign in with the other and you are a different person), no session
-  revocation beyond the token's twelve-hour life, no way to delete an account. Switching GitHub
-  accounts has to happen at GitHub, since only Google understands `prompt=select_account`. The
-  development login still exists, off by default, because a contributor without an OAuth client has
-  to be able to run the project.
+  owner. Per-replica memory has never been measured, so `max-loaded-documents: 200` is an
+  order-of-magnitude guess, not a capacity plan. At scale this wants document-affinity routing — but
+  I would want the measurement first.
+- **Identity is federated; the account model around it is not.** No account page, no linking Google
+  to GitHub (sign in with the other and you are a different person), no revocation beyond the
+  token's twelve-hour life, no account deletion. Switching GitHub accounts happens at GitHub, since
+  only Google understands `prompt=select_account`.
 - **Invitations are multi-use** until they expire or are revoked, which is what "anyone with this
-  link" means. Now that a provider gives every user a verified email, an invitation bound to an
-  address — single-use, addressed to a person instead of to whoever holds the URL — is the obvious
-  next step, and was impossible before.
-- **`link` visibility grants edit to anyone holding the address.** That is the mode working as
-  intended: possession of an unguessable URL *is* the credential. The bug worth recording is what it
-  used to mean. The document list published those URLs to every signed-in user, so "anyone with the
-  link" was "everyone", and 132 of 133 documents on a development instance were world-editable.
-  Listing and access are separate questions now.
+  link" means. Now that every user arrives with a verified email, an invitation bound to an address
+  is the obvious next step, and was impossible before.
+- **`link` visibility grants edit to anyone holding the address** — the mode working as intended,
+  since possession of an unguessable URL *is* the credential. What is worth recording is what it
+  used to mean: the document list published those URLs to every signed-in user, so "anyone with the
+  link" was "everyone", and 132 of 133 documents on a dev instance were world-editable. Listing and
+  access are separate questions now.
 - **The authorization guard checks that a decision was made, not that it was right.** A read
   capability declared on a write endpoint passes.
-- **The performance numbers come from a single process,** clients, server and database on one
-  machine, so they exclude real network latency and real disk contention.
+- **The performance numbers come from a single process,** so they exclude real network latency and
+  disk contention.
 - **GC reclaims less than I assumed.** Causal stability needs every replica to have seen the
-  deletion, so one client that closed its laptop holds the window open for everyone in that document
-  until it times out.
+  deletion, so one client that closed its laptop holds the window open for everyone in that document.
 - **A cluster message for a document whose replica is still loading is dropped,** and anti-entropy
-  cannot detect it afterwards, because the fresh replica is labelled at log head so
-  `head > appliedServerSeq` is never true. A client on that instance can stay permanently one
-  operation behind. Known, reproduced under load, not fixed: it needs a design decision about the
-  cluster load path, not a patch.
+  cannot find it afterwards, because the fresh replica is labelled at log head so
+  `head > appliedServerSeq` never fires. A client there can stay permanently one operation behind.
+  Reproduced under load, not fixed: it needs a decision about the cluster load path, not a patch.
 
 ---
 
@@ -741,7 +765,13 @@ characters reclaimed by GC, cluster messages dropped, frames refused by reason. 
 what a bad value looks like — including that a permanently zero count of gap repairs is not good
 news but a sign the repair path has never run.
 
-Setup is in [`docs/RUNNING.md`](docs/RUNNING.md).
+```bash
+docker compose --profile observability up -d   # Prometheus, Tempo, Grafana on :3001
+```
+
+Point it at a backend started from Maven, not `--profile app`: the containerised one sets
+`OTEL_SDK_DISABLED`, so a browser span arrives with no server span to join and the trace looks
+broken rather than disabled.
 
 ---
 
