@@ -40,7 +40,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: crdt-core-surefire
@@ -67,7 +67,7 @@ jobs:
           docker build -f app/Dockerfile -t collabedit-app:ci.
           docker build -t collabedit-frontend:ci./frontend
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: app-surefire
@@ -157,7 +157,7 @@ jobs:
       - run: npm run demo
         working-directory: frontend
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-artifacts
