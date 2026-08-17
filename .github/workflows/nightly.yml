@@ -24,7 +24,7 @@ jobs:
       - name: Deep property tests
         run: ./mvnw -B -pl crdt-core -Pthorough test
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: counterexamples
@@ -45,7 +45,7 @@ jobs:
       - name: JMH
         run: ./mvnw -B -pl crdt-core test-compile exec:exec@run-benchmarks
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jmh-result
           path: crdt-core/target/jmh-result.json
@@ -70,7 +70,7 @@ jobs:
           -Dtest=ClusterSimulationTest
           -Dsimulation.seeds=20000
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: simulation-counterexamples
@@ -106,7 +106,7 @@ jobs:
           echo "Failed runs: $failed/10"
           [ "$failed" -eq 0 ]
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: chaos-failed-runs
@@ -137,7 +137,7 @@ jobs:
           set -o pipefail
           ./mvnw -B -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true | tee fanout.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: measurements
