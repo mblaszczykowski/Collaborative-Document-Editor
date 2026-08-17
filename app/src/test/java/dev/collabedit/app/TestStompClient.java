@@ -21,76 +21,35 @@ import org.springframework.messaging.simp.stomp.StompSessionHandlerAdapter;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 
-/**
- * The test client — a browser faked faithfully enough for the test to be about something.
- *
- * <p>The crucial part: the client keeps <b>its own CRDT replica</b> and applies operations received
- * from the server to it, exactly as the frontend does. Without that, a test would only check
- * whether the server broadcasts something — whereas the question is whether <b>every party arrives
- * at the same text</b>, which is the whole project's thesis.
- */
 public class TestStompClient implements AutoCloseable {
-
     private final StompSession session;
     private final UUID documentId;
     private final RgaDocument document;
 
-    /**
-     * Access to the replica is serialised.
-     *
-     * <p>{@link RgaDocument} deliberately is NOT thread-safe — the algorithm's core has no business
-     * dealing with concurrency (DocumentReplica handles that on the server, and the browser has one
-     * thread). This test client, however, has two threads: STOMP reception and sending from the
-     * load harness. Without this lock the replica's state was silently corrupted and the harness
-     * reported non-convergence — that is, it measured its own bug and attributed it to the system.
-     */
     private final Object documentLock = new Object();
 
-    /** Serialises writes to the STOMP session — see {@link #publish}. */
     private final Object sendLock = new Object();
 
     private final List<Op> received = new CopyOnWriteArrayList<>();
 
-    /** Completed resynchronisation responses — the signal a test can wait on. */
     private final java.util.concurrent.atomic.AtomicInteger syncResponses =
         new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger accessChanges =
         new java.util.concurrent.atomic.AtomicInteger();
     private final AtomicLong lastAckSeq = new AtomicLong(0);
 
-    /** Set when the server refused an operation for rate — see {@link #send}. */
     private final java.util.concurrent.atomic.AtomicBoolean throttled =
         new java.util.concurrent.atomic.AtomicBoolean();
 
-    /** The code of the most recent error frame, or {@code null} if none has arrived. */
     private final java.util.concurrent.atomic.AtomicReference<String> lastErrorCode =
         new java.util.concurrent.atomic.AtomicReference<>();
 
-    /**
-     * Called when an operation is received, with the time of receipt.
-     *
-     * <p>It exists for the load harness: propagation latency can only be measured honestly when
-     * sender and receiver share ONE clock. Here both ends are in the same process, so
-     * {@code System.nanoTime()} on either side is comparable — which cannot be said of two browsers
-     * on two machines.
-     */
     private volatile java.util.function.ObjLongConsumer<Op> onOperationReceived = (op, at) -> { };
 
     public TestStompClient(int port, String token, UUID documentId, int replicaId) throws Exception {
         this.documentId = documentId;
         this.document = new RgaDocument(replicaId, new TreapBlockList());
 
-        // The JSR-356 container's text buffer defaults to 8 KiB — that is, EIGHT TIMES SMALLER
-        // than the frame limit this system declares in the transport decision (64 KiB). Without raising it, the
-        // test client loses every message above 8 KiB, and it looks like operation loss on the
-        // server.
-        //
-        // This cost one false alarm: after broadcast coalescing was introduced (CP10) the harness
-        // showed non-convergence at 10 clients while the server held the complete set of
-        // operations. The system would have taken the blame, except that a browser has no such
-        // limit — the WebSocket API reassembles multi-frame messages itself. This is a limitation
-        // of the MEASURING RIG and has to be set ABOVE the server's limit, so that the rig measures
-        // the system rather than itself.
         jakarta.websocket.WebSocketContainer container =
             jakarta.websocket.ContainerProvider.getWebSocketContainer();
         container.setDefaultMaxTextMessageBufferSize(1024 * 1024);
@@ -100,8 +59,6 @@ public class TestStompClient implements AutoCloseable {
         client.setMessageConverter(new MappingJackson2MessageConverter());
 
         StompHeaders connectHeaders = new StompHeaders();
-        // The token goes in a CONNECT frame header, not an HTTP header — a browser cannot set
-        // headers on the WebSocket handshake (see StompConnectInterceptor).
         connectHeaders.add("token", token);
 
         this.session = client
@@ -123,32 +80,16 @@ public class TestStompClient implements AutoCloseable {
             }
         });
 
-        // The access topic, so a test can assert that a revoked client still learns it was
-        // revoked. The payload is deliberately empty (Messages.AccessChanged) — what matters is
-        // that the frame arrives, because it is the only thing that makes a client re-ask for its
-        // role, and the outbound filter that stops a revoked user's OPERATIONS must not stop it.
         subscribe("/topic/doc/" + documentId + "/access", java.util.Map.class,
             payload -> accessChanges.incrementAndGet());
 
         subscribe("/topic/doc/" + documentId + "/acks", List.class, payload -> {
-            // Whether one of OUR OWN operations got through — the backoff resets on that, not on
-            // the batch being non-empty. Acknowledgements go to a SHARED topic (this client
-            // subscribes precisely so it can do the gap detection below on everybody's), so
-            // "not empty" was true of some other client. Under load — the only condition the rate
-            // limiter fires in — ack batches arrive continuously, so the backoff reset before
-            // nearly every retry and the doubling never advanced past its first step.
-            //
-            // The same defect was in connection.ts, which means the README's comparison of
-            // "retry-after alone" against "retry-after + exponential backoff" measured this
-            // degenerate form on both sides.
             boolean mine = false;
             for (Object entry : (List<?>) payload) {
                 var node = OpCodec.mapper().valueToTree(entry);
                 long seq = node.get("serverSeq").asLong();
                 lastAckSeq.accumulateAndGet(seq, Math::max);
 
-                // Gap detection: an acknowledgement carries the operation's identity, so not
-                // holding that operation means its broadcast never reached us.
                 Id acknowledged = new Id(node.get("r").asInt(), node.get("l").asLong());
                 if (unacknowledged.remove(
                     acknowledged.replicaId() + "@" + acknowledged.lamport()) != null) {
@@ -165,10 +106,6 @@ public class TestStompClient implements AutoCloseable {
             }
         });
 
-        // Responses to a resynchronisation request. Without this subscription `requestSync` sent
-        // a question whose answer went nowhere — and a detected gap never healed. The real frontend
-        // subscribes to this channel from the start; it was missing ONLY in the measuring rig,
-        // which for a while looked like a defect in the system.
         subscribe("/user/queue/sync", java.util.Map.class, payload -> {
             Object ops = ((Map<?, ?>) payload).get("ops");
             if (ops instanceof List<?> list) {
@@ -179,11 +116,6 @@ public class TestStompClient implements AutoCloseable {
                     }
                 }
             }
-            // The cursor advances only on the FINAL chunk, exactly as connection.ts does. A large
-            // resynchronisation arrives split across frames, every one carrying the same head, so
-            // moving the cursor on each of them would let this rig believe it holds operations a
-            // lost middle chunk never delivered — and a rig that models the protocol wrongly
-            // measures its own behaviour, which is the mistake CP8 spent a checkpoint on.
             Object last = ((Map<?, ?>) payload).get("last");
             boolean finalChunk = !(last instanceof Boolean flag) || flag;
             if (finalChunk) {
@@ -195,18 +127,8 @@ public class TestStompClient implements AutoCloseable {
             }
         });
 
-        // Rate-limit refusals. A real client retries after the time ADVERTISED BY THE SERVER
-        // (connection.ts, CP20), so the rig has to do the same — otherwise it measures a different
-        // recovery mechanism from the one running in the browser, and the p99 numbers in the README
-        // come from this very harness.
         subscribe("/user/queue/errors", java.util.Map.class, payload -> {
             Map<?, ?> error = (Map<?, ?>) payload;
-            // Every code is recorded, not only the one this handler acts on. A real client
-            // distinguishes them — SNAPSHOT_REQUIRED means "re-open through the snapshot endpoint",
-            // RESYNC_REQUIRED means "your work cannot be merged" — and a test asserting that the
-            // server refused for the RIGHT REASON needs to see which arrived. Without this, a
-            // refusal test could only observe the absence of a response, which is also what a
-            // hung server looks like.
             lastErrorCode.set(String.valueOf(error.get("code")));
             if (!"RATE_LIMITED".equals(error.get("code"))) {
                 return;
@@ -222,39 +144,17 @@ public class TestStompClient implements AutoCloseable {
 
         publish("/app/doc/" + documentId + "/join", Map.of());
 
-        // The progress report — the same one a real client sends. From it the server detects that
-        // a replica is behind and sends the missing operations. Without this the harness would
-        // measure the system WITHOUT its repair mechanism, which is not the one running in the
-        // browser.
         progressReporter = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(r, "progress-" + replicaId);
             thread.setDaemon(true);
             return thread;
         });
-        // A safety net, not the main path. The retry is now scheduled by the refusal message, for
-        // the time the server advertised; this sweep only catches the case where that message was
-        // lost.
         progressReporter.scheduleWithFixedDelay(this::retryThrottledOperations, 1000, 1000,
             java.util.concurrent.TimeUnit.MILLISECONDS);
         progressReporter.scheduleWithFixedDelay(this::reportProgress, 500, 500,
             java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
-    /**
-     * Every outbound frame goes through here, under one lock.
-     *
-     * <h2>Why the lock</h2>
-     * Frames are sent from TWO threads: the test's own, through {@code insert}, {@code delete} and
-     * {@code requestSync}, and the {@code progressReporter} executor, through the periodic progress
-     * report and the throttled-operation retry. A {@code WebSocketSession} is not safe for
-     * concurrent writes, and Tomcat says so by throwing
-     * {@code IllegalStateException: The remote endpoint was in state [TEXT_PARTIAL_WRITING]} —
-     * from whichever of the two lost, which in practice is the test.
-     *
-     * <p>The same reasoning as {@code documentLock} one field up, and the same conclusion the
-     * class javadoc already draws about it: a rig that fails on its own race reports the system as
-     * broken and is believed, because the stack trace points at the system.
-     */
     private void publish(String destination, Object payload) {
         synchronized (sendLock) {
             session.send(destination, payload);
@@ -277,24 +177,10 @@ public class TestStompClient implements AutoCloseable {
         });
     }
 
-    /** Inserts text locally and sends the operation — exactly as the editor does. */
     public void insert(int position, String text) {
         insertReturningOp(position, text);
     }
 
-    /** Like {@link #insert}, but returns the operation — the load harness timestamps it. */
-    /**
-     * Creates a mark locally and sends it (CP13/CP14).
-     *
-     * <p>Separate from {@link #insert}, because the authorization test has to be able to send
-     * EXACTLY a mark operation and check that it gets through where a text insertion does not.
-     */
-    /**
-     * Sends a presence report — the same one a real client sends on cursor movement.
-     *
-     * <p>It exists for the harness: up to CP15 the rig generated NO presence traffic, so it
-     * measured a lighter system than the one a browser uses.
-     */
     public void sendPresence() {
         try {
             publish("/app/doc/" + documentId + "/presence", Map.of(
@@ -302,8 +188,6 @@ public class TestStompClient implements AutoCloseable {
                 "cursorLamport", Math.max(0, document.clock() - 1),
                 "typing", true));
         } catch (RuntimeException e) {
-            // Presence is best-effort — its failure must not bring down a measurement whose
-            // subject is operation propagation.
         }
     }
 
@@ -334,60 +218,24 @@ public class TestStompClient implements AutoCloseable {
     }
 
     private void send(Op op) {
-        // We send an OBJECT, not ready-made JSON in a string. The Jackson converter would
-        // serialise a string as a JSON string ("{\"op\":...}"), and the server would receive text
-        // instead of a structure — and silently do nothing. This cost one test run.
         publish("/app/doc/" + documentId + "/op", Map.of("op", OpCodec.toJson(op)));
         unacknowledged.put(op.id().replicaId() + "@" + op.id().lamport(), op);
     }
 
-    /** The buffer of unacknowledged operations — the counterpart of `unacknowledged` in connection.ts. */
     private final Map<String, Op> unacknowledged = new java.util.concurrent.ConcurrentHashMap<>();
 
-    /**
-     * Retries unacknowledged operations after a rate-limit refusal.
-     *
-     * <p><b>On its own schedule, not on the back of the next send</b> — and that matters. The first
-     * version checked the flag inside {@code send}, so when the client's LAST operations were
-     * refused, nobody retried them: the loop ended and the signal was lost. A browser does not have
-     * this problem because it uses a timer (connection.ts), so the rig has to do the same —
-     * otherwise it measures a weaker recovery mechanism than the one actually running for the user.
-     */
-    /**
-     * Headroom on top of the time the server advertised — the same as in {@code connection.ts}.
-     *
-     * <p>The bucket refills continuously and the two sides' clocks are not synchronised, so a retry
-     * a millisecond too early is refused a second time.
-     */
     private static final long THROTTLE_GRACE_MS = 25;
 
-    /** When the server advertised no time — the pre-CP20 behaviour. */
     private static final long THROTTLE_FALLBACK_MS = 1000;
 
-    /** The upper bound on the backoff under consecutive refusals — the pre-CP20 constant's value. */
     private static final long THROTTLE_MAX_MS = 1000;
 
-    /**
-     * Consecutive refusals, for exponential backoff.
-     *
-     * <p>The same mechanism as in {@code connection.ts} and for the same measured reason: the time
-     * the server advertises is for ONE token, while the client has dozens of operations buffered —
-     * so retrying after that time turns into polling in a loop. The harness showed p99 rising from
-     * 872 ms to 1352 ms from adding the server's time alone, without backoff.
-     */
     private final java.util.concurrent.atomic.AtomicInteger throttleRounds =
         new java.util.concurrent.atomic.AtomicInteger();
 
     private final java.util.concurrent.atomic.AtomicBoolean retryScheduled =
         new java.util.concurrent.atomic.AtomicBoolean();
 
-    /**
-     * Schedules ONE retry of the whole buffer after the given wait.
-     *
-     * <p>One per run of refusals, not one per refused frame: when the limit is exceeded, many
-     * frames are usually refused at once, and a separate retry for each would recreate exactly the
-     * burst the limit just refused.
-     */
     private void scheduleThrottledRetry(long waitMillis) {
         if (progressReporter == null || !retryScheduled.compareAndSet(false, true)) {
             return;
@@ -406,7 +254,6 @@ public class TestStompClient implements AutoCloseable {
             try {
                 publish("/app/doc/" + documentId + "/op", Map.of("op", OpCodec.toJson(pending)));
             } catch (RuntimeException e) {
-                // The retry is best-effort; the next refusal will set the flag again.
                 throttled.set(true);
                 return;
             }
@@ -422,8 +269,6 @@ public class TestStompClient implements AutoCloseable {
         if (!session.isConnected()) {
             return;
         }
-        // A gap detected from the acknowledgements -> ask for the missing operations. We rewind
-        // the cursor to the last CONFIRMED WRITE, because everything below it we know for certain.
         if (gapDetected.compareAndSet(true, false)) {
             requestSync(0);
         }
@@ -431,8 +276,6 @@ public class TestStompClient implements AutoCloseable {
             publish("/app/doc/" + documentId + "/progress",
                 Map.of("sinceServerSeq", lastAckSeq.get(), "version", Map.of(0, 0)));
         } catch (RuntimeException e) {
-            // The progress report is best-effort — its failure must not bring down the client or
-            // the test.
         }
     }
 
@@ -451,22 +294,6 @@ public class TestStompClient implements AutoCloseable {
         }
     }
 
-    // receivedCount used to sit here, returning received.size, with no caller in any test —
-    // only a comment in DocumentCollaborationIT explaining why an earlier version of that test had
-    // stopped using it. Every test that waits on delivery polls text instead, which is the
-    // question they actually mean: not "how many frames arrived" but "does this replica agree".
-    //
-    // The `received` list itself stays: it is what makes the client's own replica auditable if a
-    // convergence failure ever needs looking at from inside the rig.
-
-    /**
-     * How many complete resynchronisation responses have arrived.
-     *
-     * <p>A sync response arrives on the user QUEUE, not the ops topic, and is applied straight to
-     * the replica — so a test waiting for one had nothing to poll and used to fall back on a fixed
-     * sleep.
-     */
-    /** How many "access to this document changed" notices have arrived. */
     public int accessChangeCount() {
         return accessChanges.get();
     }
@@ -475,7 +302,6 @@ public class TestStompClient implements AutoCloseable {
         return syncResponses.get();
     }
 
-    /** How many mark operations this replica knows — for checking whether formatting arrived. */
     public int markCount() {
         synchronized (documentLock) {
             return document.markCount();
@@ -486,16 +312,9 @@ public class TestStompClient implements AutoCloseable {
         return lastAckSeq.get();
     }
 
-    /** The code of the last error frame the server sent to this session. */
     public String lastErrorCode() {
         return lastErrorCode.get();
     }
-
-    // An awaitText(String, Duration) used to sit here with no callers, polling `document.text`
-    // WITHOUT documentLock — while the receive thread mutates the same replica under it. That is
-    // exactly the race this class's javadoc says corrupted the harness once already and made it
-    // report the system as non-convergent when the bug was its own. Every integration test polls
-    // through awaitCondition(() -> client.text...), and text synchronises.
 
     public void awaitCondition(java.util.function.BooleanSupplier condition, Duration timeout, String what) {
         long deadline = System.nanoTime() + timeout.toNanos();

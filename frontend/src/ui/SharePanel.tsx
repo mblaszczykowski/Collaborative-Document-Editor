@@ -4,20 +4,6 @@ import { FailureNote } from './FailureNote'
 import { copyText } from './browser'
 import { useFailure } from './useFailure'
 
-/**
- * Who may open this document, and how somebody new gets in (CP21).
- *
- * The panel is deliberately thin — the interesting half of this feature is on the server. What it
- * has to get right is one thing the API cannot: **making the link the primary gesture**. Logging in
- * has no password and mints a new identifier every time, so there is nothing to type into a
- * "share with…" box; a person becomes addressable only once they have arrived. An invitation
- * carries the role and binds identity at redemption.
- *
- * Everything visible here needs `owner`, so the panel is never rendered for anybody else — the
- * server would refuse each of these calls with a 404, which reads as "this document does not
- * exist" and would be a confusing thing to show somebody looking at it.
- */
-
 type Role = DocumentState['role']
 
 const INVITABLE: { value: Role; label: string; hint: string }[] = [
@@ -37,18 +23,12 @@ export function SharePanel(props: {
   const [freshLink, setFreshLink] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
-  /** True once a copy has failed — the link is on screen anyway, so the user copies it by hand. */
   const [copyByHand, setCopyByHand] = useState(false)
   const failure = useFailure()
-  // Destructured, because `attempt` is stable across renders while the object holding it is not.
-  // Depending on the object would rebuild `reload` on every render, and `reload` drives an effect.
   const { attempt } = failure
   const panel = useRef<HTMLDivElement>(null)
 
   const reload = useCallback(async () => {
-    // A panel that cannot load its own state used to stay on "Loading…" for ever, with the failure
-    // in nobody's console. It is the OWNER's view of who can read their document, so "we do not
-    // know" has to be said out loud rather than shown as a spinner.
     await attempt('Could not load who has access to this document.', async () => {
       setState(await api.access(documentId))
     })
@@ -58,8 +38,6 @@ export function SharePanel(props: {
     void reload()
   }, [reload])
 
-  // Escape closes. Without it the only way out of a modal is the mouse, which is wrong for a
-  // panel that opens from a keyboard-reachable button.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -68,20 +46,6 @@ export function SharePanel(props: {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  /**
-   * Focus goes INTO the dialog, stays there, and comes back where it started.
-   *
-   * `role="dialog"` was here with none of it: `aria-modal` was missing, so a screen reader kept
-   * reading the document behind the backdrop as though it were still available; focus stayed on
-   * the Share button, so the first Tab went into the page underneath rather than into the panel;
-   * and nothing brought focus back on close, which leaves a keyboard user at the top of the
-   * document with no idea where they are. A modal that only closes for the mouse is a modal for
-   * the mouse.
-   *
-   * Trapped by hand rather than with a library: it is one keydown handler over the focusable
-   * children, the dependency would exist for one dialog, and the behaviour is small enough to
-   * read here in full.
-   */
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null
     panel.current?.focus()
@@ -96,8 +60,6 @@ export function SharePanel(props: {
       if (focusable.length === 0) return
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
-      // Only the two edges need handling; everything in between is the browser's own order, which
-      // is the right one and which we should not be reimplementing.
       if (!event.shiftKey && document.activeElement === last) {
         event.preventDefault()
         first.focus()
@@ -110,8 +72,6 @@ export function SharePanel(props: {
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
-      // Back to the button that opened this, if it is still on screen. Without it, closing the
-      // panel leaves focus on `<body>` and the next Tab starts from the top of the page.
       opener?.focus?.()
     }
   }, [])
@@ -121,35 +81,18 @@ export function SharePanel(props: {
     try {
       await attempt('Could not create the invitation link.', async () => {
         const invite = await api.createInvite(documentId, inviteRole)
-        // The token is shown ONCE — the server stores only its hash, exactly like a password
-        // reset link. Re-opening this panel lists the invitation but cannot show the link again.
         const url = new URL(window.location.href)
         url.searchParams.set('doc', documentId)
         url.searchParams.set('invite', invite.token)
         setFreshLink(url.toString())
         setCopyByHand(false)
       })
-      // OUTSIDE the attempt: the link is already created and shown by this point, so a failure to
-      // re-list the invitations is not "could not create the invitation link". SuggestionsPanel
-      // makes the same move for the same reason.
       await reload()
     } finally {
       setBusy(false)
     }
   }
 
-  /**
-   * Copies the invitation link, or admits it could not.
-   *
-   * This was `await navigator.clipboard.writeText(link)` in a function nothing awaited. On a page
-   * that is not `https:` or `localhost` — which `config.ts` supports deliberately — that property
-   * does not exist and the call threw into an unhandled rejection: no copy, no "Copied", nothing
-   * on screen. The link is a bearer credential shown exactly once, so failing to hand it over
-   * without saying so costs the user the invitation itself.
-   *
-   * The fallback is the field the link is already sitting in: select it, and say which key to
-   * press. See `ui/browser.ts` for why there is no `execCommand` fallback behind this.
-   */
   async function copy(link: string) {
     if (await copyText(link)) {
       setCopied(true)
@@ -164,14 +107,6 @@ export function SharePanel(props: {
   }
 
   async function changeRole(userId: string, role: Role) {
-    // Every one of these three used to be an unhandled rejection on failure. The role dropdown is
-    // the worst of them: React keeps showing the value the user picked, so a refused change looks
-    // exactly like a successful one — the interface asserting somebody has edit rights they were
-    // never given.
-    // Reloaded only on SUCCESS. `reload` is itself an `attempt`, and `attempt` opens by clearing
-    // the message — so reloading after a failed gesture wipes the sentence that gesture just wrote,
-    // and the user is left with a control that snapped back and no reason why. `attempt` returns
-    // whether it worked precisely so the caller can ask.
     if (await attempt('Could not change that person’s role.', async () => {
       await api.setMemberRole(documentId, userId, role)
     })) {
@@ -196,7 +131,7 @@ export function SharePanel(props: {
   }
 
   async function revokeInvite(inviteId: string) {
-    if (await attempt('Could not revoke that invitation link — it may still work.',
+    if (await attempt('Could not revoke that invitation link - it may still work.',
       async () => {
         await api.revokeInvite(documentId, inviteId)
       })) {
@@ -209,13 +144,8 @@ export function SharePanel(props: {
       <div
         className="share-panel"
         role="dialog"
-        // `aria-modal` is what tells a screen reader that everything behind the backdrop is
-        // unavailable. Without it the dialog is announced as a region of a page the user can still
-        // wander into, which is the opposite of what a backdrop means.
         aria-modal="true"
         aria-label="Share this document"
-        // The dialog itself takes focus when it opens; see the trap effect above. -1 keeps it out
-        // of the Tab order once focus has moved into the controls.
         tabIndex={-1}
         ref={panel}
         onClick={(event) => event.stopPropagation()}
@@ -241,13 +171,8 @@ export function SharePanel(props: {
                 {INVITABLE.find((option) => option.value === inviteRole)?.hint}
               </p>
               <div className="share-row">
-                {/* Named out loud. All three selects in this panel rendered with no accessible
-                    name at all: the explanation sits in a sibling `<p class="share-hint">`, which
-                    a sighted user reads as a label and a screen reader announces as unrelated
-                    prose — the control itself was "combo box, Can edit" with nothing saying what
-                    it decides. `aria-labelledby` onto the hint was the alternative and is worse
-                    here: the hint changes with the selection, so the control's NAME would change
-                    every time its value did. */}
+                {
+}
                 <select
                   aria-label="Role for the invitation link"
                   value={inviteRole}
@@ -275,12 +200,9 @@ export function SharePanel(props: {
                     invitation later but never show the link again.
                   </p>
                   {copyByHand && (
-                    // Not phrased as an error, because nothing went wrong that the user has to
-                    // understand — this browser simply has no clipboard API on a page that is not
-                    // https (see ui/browser.ts). The link is already selected above.
                     <p className="share-hint">
                       This browser will not let a page write to the clipboard here. The link is
-                      selected above — copy it with ⌘C or Ctrl+C.
+                      selected above - copy it with ⌘C or Ctrl+C.
                     </p>
                   )}
                 </div>
@@ -319,9 +241,6 @@ export function SharePanel(props: {
                   <li key={member.userId}>
                     <span>{member.displayName}</span>
                     <select
-                      // Names the PERSON, because the list repeats this control once per member
-                      // and "Role" three times over tells a screen-reader user nothing about
-                      // which row they are in.
                       aria-label={`Role for ${member.displayName}`}
                       value={member.role}
                       onChange={(event) =>
@@ -355,13 +274,13 @@ export function SharePanel(props: {
                     void setVisibility(event.target.value as 'private' | 'link')
                   }
                 >
-                  <option value="private">Restricted — only people listed above</option>
+                  <option value="private">Restricted - only people listed above</option>
                   <option value="link">Anyone signed in with the link can edit</option>
                 </select>
               </div>
               <p className="share-hint">
                 {state.visibility === 'private'
-                  ? 'This is the default for new documents since CP21.'
+                  ? 'This is the default for new documents.'
                   : 'Anybody who signs in and has the address becomes an editor. Use an invite link instead when the role matters.'}
               </p>
             </section>

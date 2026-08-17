@@ -16,64 +16,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Component;
 
-/**
- * Every periodic job names the pool it runs on.
- *
- * <h2>The bug this pins</h2>
- * All four {@code @Scheduled} methods in this application used to run on the <b>STOMP heartbeat
- * scheduler</b>, which has a pool of one thread. Nobody chose that and nothing recorded it; it
- * fell out of three separate decisions that are individually reasonable:
- *
- * <ol>
- *   <li>{@code WebSocketConfig} declares a {@code TaskScheduler} bean, because the in-memory
- *       broker silently stops sending heartbeats without one;</li>
- *   <li>Spring Boot's {@code TaskSchedulingConfigurations$TaskSchedulerConfiguration} carries
- *       {@code @ConditionalOnMissingBean({TaskScheduler.class, ScheduledExecutorService.class})},
- *       so declaring that bean makes the auto-configured pool disappear;</li>
- *   <li>{@code ScheduledAnnotationBeanPostProcessor} then resolves the unique
- *       {@code TaskScheduler} in the context — the heartbeat one.</li>
- * </ol>
- *
- * <p>The consequence was not a failure but a missing property: the 10 ms broadcast, the 50 ms
- * flush with its database round trips, document snapshots and an anti-entropy sweep issuing one
- * query per loaded document all ran strictly in sequence, on the same thread as heartbeat
- * emission. {@code DocumentReplica} documents the two buffers as having "different rhythms".
- * On one thread they cannot.
- *
- * <h2>What is asserted, and what deliberately is not</h2>
- * This checks the <b>declaration</b>, not the runtime thread. A test that asserted "broadcast
- * ran on a thread named collabedit-flow-" would need a full application context and would still
- * only prove it for the moment it looked. The declaration is what regresses: someone adds a
- * fifth {@code @Scheduled} method, omits the attribute, and it silently lands on whichever pool
- * bean resolution happens to pick. That is exactly how this started.
- *
- * <p>Verified by mutation, per house convention: removing {@code scheduler = ...} from any one
- * of the four methods in {@code DocumentService} turns
- * {@link #everyScheduledMethodNamesItsPool()} red.
- */
 @DisplayName("Every scheduled job declares which pool it belongs to")
 class SchedulingWiringTest {
-
     private static final String BASE_PACKAGE = "dev.collabedit.app";
 
-    /**
-     * The pools a periodic job may name.
-     *
-     * <p>Pinned rather than "any non-empty string" for the same reason
-     * {@code EndpointAuthorizationArchitectureTest} pins its public endpoints: adding a third
-     * pool should read as a decision in the diff, not slip in as a typo that happens to resolve
-     * to a bean nobody meant.
-     */
     private static final Set<String> KNOWN_POOLS =
         Set.of(SchedulingConfig.FLOW, SchedulingConfig.MAINTENANCE);
 
-    /**
-     * The heartbeat scheduler's bean name.
-     *
-     * <p>Named here as a value rather than imported, because the point of the assertion is that
-     * no periodic job refers to it — importing it would be the only reference in this file and
-     * would read as if one were expected.
-     */
     private static final String HEARTBEAT_POOL = "stompHeartbeatScheduler";
 
     @Test
@@ -81,8 +30,6 @@ class SchedulingWiringTest {
     void everyScheduledMethodNamesItsPool() {
         List<Method> jobs = scheduledMethods();
 
-        // Guard against the test passing because the scan found nothing — the same failure mode
-        // as the *Measurement class that was green by never running at all.
         assertThat(jobs)
             .as("no @Scheduled methods found; the scan is broken, not the code")
             .isNotEmpty();
@@ -103,7 +50,7 @@ class SchedulingWiringTest {
         assertThat(unnamed)
             .as("""
                 Scheduled methods with no scheduler named. Without it, Spring binds the job to \
-                whichever single TaskScheduler bean it finds — which in this application is the \
+                whichever single TaskScheduler bean it finds - which in this application is the \
                 one-thread STOMP heartbeat pool. Name a pool from SchedulingConfig.""")
             .isEmpty();
 
@@ -130,17 +77,6 @@ class SchedulingWiringTest {
             .isEmpty();
     }
 
-    /**
-     * The flow pool must stay single-threaded.
-     *
-     * <p>This is the one place where a pool size is a correctness property rather than a tuning
-     * choice. Broadcast and flush both drain the same per-document buffers; draining them under
-     * one lock stops an acknowledgement from being <i>built</i> before its broadcast, but only
-     * running them on one thread stops the two frames from being <i>sent</i> out of order. A
-     * client that sees an ack for an operation it does not have treats it as a gap and asks for
-     * a full resynchronisation — so raising this number turns a recovery mechanism into
-     * routine background traffic.
-     */
     @Test
     @DisplayName("the flow pool is single-threaded, because ordering depends on it")
     void flowPoolIsSingleThreaded() {
@@ -150,19 +86,16 @@ class SchedulingWiringTest {
                 .as("""
                     The flow pool is no longer single-threaded. Broadcast and flush of the same \
                     document may now overlap, and an acknowledgement can overtake the broadcast \
-                    of its own operation — see SchedulingConfig.""")
+                    of its own operation - see SchedulingConfig.""")
                 .isEqualTo(1);
         } finally {
             scheduler.shutdown();
         }
     }
 
-    // ------------------------------------------------------------------
-
     private static List<Method> scheduledMethods() {
         ClassPathScanningCandidateComponentProvider scanner =
             new ClassPathScanningCandidateComponentProvider(false);
-        // @Component finds @Service and @Repository too, since both are meta-annotated with it.
         scanner.addIncludeFilter(new AnnotationTypeFilter(Component.class));
 
         List<Method> found = new ArrayList<>();

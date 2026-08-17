@@ -18,51 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * Sharing a document with a specific person (CP21).
- *
- * <p>These tests exist because the role model was complete, enforced and <b>unreachable</b>:
- * {@code grant} and {@code revoke} were called from {@code PermissionIT} and from no production
- * code at all. {@code PermissionIT} therefore proves that the rule is right; this class proves
- * there is a way to invoke it, which is a different claim and was the false one.
- *
- * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code freshDocumentIsPrivate}</td>
- *       <td>The schema default {@code link} coming back. It means every document created through
- *           the interface is editable by anybody who logged in — four documented roles collapsing
- *           into two the product can actually produce.</td></tr>
- *   <tr><td>{@code grantedRoleIsTheRoleAsked}</td>
- *       <td>A grant that lands as something else. Off-by-one in a role ordering is silent and
- *           permanent.</td></tr>
- *   <tr><td>{@code unknownRoleNameIsRefused}</td>
- *       <td>{@code Role.parse} falling back to VIEWER on the WRITE path: a typo would report
- *           success and grant a different role than the one named.</td></tr>
- *   <tr><td>{@code ownershipCannotBeGranted}</td>
- *       <td>An access API that produces a document nobody can administer.</td></tr>
- *   <tr><td>{@code ownerCannotRevokeThemselves}</td>
- *       <td>A control that silently does nothing. It was filed under the row above, which
- *           claimed it prevented an unadministrable document — it does not, and could not:
- *           ownership lives in {@code documents.owner_id} and revoke touches only
- *           {@code document_members}, so removing the guard leaves both assertions passing.
- *           What it pins is that the request is REFUSED rather than answered 204, which is
- *           the difference between telling somebody "that does nothing" and letting them
- *           believe they have left the document.</td></tr>
- *   <tr><td>{@code memberListRequiresManageAccess}</td>
- *       <td>"Who else has access" leaking to everyone who may read the text.</td></tr>
- *   <tr><td>{@code inviteGrantsExactlyTheRoleItCarries}</td>
- *       <td>The invite being treated as "let them in" rather than as "let them in AS THIS". A
- *           bearer credential that grants more than it says is the worst kind.</td></tr>
- *   <tr><td>{@code revokedInviteStopsWorking}, {@code expiredInviteStopsWorking}</td>
- *       <td>An invitation that cannot be taken back — the reason invites are a table and not a
- *           signed token.</td></tr>
- *   <tr><td>{@code redeemingNeverDemotes}</td>
- *       <td>The owner testing their own share link and losing their document to it.</td></tr>
- * </table>
- */
 class AccessIT extends IntegrationTestBase {
-
     private static final ObjectMapper JSON = new ObjectMapper();
 
     @LocalServerPort
@@ -85,7 +41,6 @@ class AccessIT extends IntegrationTestBase {
         return new User(id, tokens.issue(new TokenService.Principal(id, name, "#4C5FD5")));
     }
 
-    /** Creates a document the way the product does — through REST, as a logged-in caller. */
     private UUID createDocument(User owner, String title) throws Exception {
         HttpResponse<String> response = send("POST", "/api/documents", owner.token(),
             "{\"title\":\"" + title + "\"}");
@@ -117,8 +72,6 @@ class AccessIT extends IntegrationTestBase {
         return JSON.readTree(response.body()).get("token").asText();
     }
 
-    // ------------------------------------------------------------------
-
     @Test
     @DisplayName("a freshly created document is private, so a stranger sees nothing")
     void freshDocumentIsPrivate() throws Exception {
@@ -131,7 +84,7 @@ class AccessIT extends IntegrationTestBase {
             .isEqualTo(200);
 
         assertThat(send("GET", "/api/documents/" + document, marek.token(), null).statusCode())
-            .as("until CP21 this was 200 with full edit rights, because the column defaults "
+            .as("this used to be 200 with full edit rights, because the column defaults "
                 + "to 'link' and 'link' means EDITOR for every logged-in user")
             .isEqualTo(404);
     }
@@ -231,7 +184,7 @@ class AccessIT extends IntegrationTestBase {
             "/api/documents/" + document + "/access/members/" + UUID.randomUUID(),
             anna.token(), "{\"role\":\"editor\"}").statusCode())
             .as("the identifier hits a foreign key, and an unhandled constraint violation is a "
-                + "500 — a server error reported for a caller who simply named nobody")
+                + "500 - a server error reported for a caller who simply named nobody")
             .isEqualTo(404);
     }
 
@@ -245,12 +198,12 @@ class AccessIT extends IntegrationTestBase {
             anna.token(), null).statusCode())
             .as("Answered rather than refused. The deletion removes a document_members row that "
                 + "carries no ownership, leaves Anna OWNER through documents.owner_id, and "
-                + "reports success — so the interface says \"you were removed\" about a document "
+                + "reports success - so the interface says \"you were removed\" about a document "
                 + "the caller still owns.")
             .isEqualTo(409);
         assertThat(permissions.roleOf(anna.id(), document))
             .as("ownership resolves from documents.owner_id before document_members is consulted, "
-                + "so this holds whether or not the guard above ran — it pins the resolution "
+                + "so this holds whether or not the guard above ran - it pins the resolution "
                 + "order, not the guard")
             .contains(Role.OWNER);
     }
@@ -302,9 +255,6 @@ class AccessIT extends IntegrationTestBase {
         UUID document = createDocument(anna, "Notes");
         String token = mintInvite(anna, document, "editor");
 
-        // Expiry is checked at redemption, not by a job. Moving the row into the past is
-        // therefore enough to test it — and the fact that it IS enough is the property:
-        // nothing has to run for the invitation to stop working.
         jdbc.update("UPDATE document_invites SET expires_at = now() - interval '1 hour' "
             + "WHERE doc_id = ?", document);
 

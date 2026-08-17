@@ -11,38 +11,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * Federated identity: the same person, every time, and a hand-off that does not leak the token.
- *
- * <table>
- *   <caption>Test -&gt; failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code theSameAccountIsTheSamePerson}</td>
- *       <td><b>The defect the whole change exists to fix.</b> Identity used to be a fresh
- *           {@code UUID} per login, so "Anna" today and "Anna" tomorrow owned different documents.
- *           If this ever regresses, every returning user loses everything they made.</td></tr>
- *   <tr><td>{@code twoAccountsAtOneProviderAreTwoPeople}</td>
- *       <td>Over-merging — the mirror failure, and the worse one: two people sharing a row means
- *           one of them can read the other's documents.</td></tr>
- *   <tr><td>{@code theSameSubjectAtTwoProvidersIsTwoPeople}</td>
- *       <td>Keying on the subject alone. Provider identifiers are unique WITHIN an issuer and
- *           nowhere else — GitHub's user 1 and some other provider's user 1 are strangers.</td></tr>
- *   <tr><td>{@code aRenameDoesNotChangeTheColour}</td>
- *       <td>A colour derived from the display name. Somebody renaming themselves at their provider
- *           would change colour mid-document for everyone reading it.</td></tr>
- *   <tr><td>{@code aLoginCodeWorksExactlyOnce}</td>
- *       <td>A replayable hand-off. The code travels in a redirect, so it lands in browser history —
- *           it is safe only because spending it destroys it.</td></tr>
- *   <tr><td>{@code anUnknownCodeIsRefused}</td>
- *       <td>A code exchange that trusts its input, which would turn a guess into a session.</td></tr>
- *   <tr><td>{@code theCodeIsNotStoredInPlaintext}</td>
- *       <td>A credential readable from the table. The same discipline V5 applies to invitations,
- *           and the reason a database read must not yield a way in.</td></tr>
- * </table>
- */
 @DisplayName("A provider vouches for a person, and the same person comes back")
 class FederatedIdentityIT extends IntegrationTestBase {
-
     @Autowired
     UserDirectory users;
     @Autowired
@@ -67,7 +37,7 @@ class FederatedIdentityIT extends IntegrationTestBase {
         assertThat(second.userId())
             .as("""
                 A returning user was given a NEW identifier, which is what login did before it was \
-                federated — and it means every document they own, every membership and every \
+                federated - and it means every document they own, every membership and every \
                 comment belongs to somebody who no longer exists.""")
             .isEqualTo(first.userId());
     }
@@ -89,8 +59,6 @@ class FederatedIdentityIT extends IntegrationTestBase {
     @Test
     @DisplayName("the same subject at two providers is two people")
     void theSameSubjectAtTwoProvidersIsTwoPeople() {
-        // Provider subjects are unique WITHIN an issuer. GitHub's user "1" and Google's user "1"
-        // have nothing to do with each other, and a key that ignores the issuer merges them.
         String shared = subject();
 
         TokenService.Principal viaGoogle =
@@ -121,15 +89,13 @@ class FederatedIdentityIT extends IntegrationTestBase {
             .as("""
                 The colour moved with the name. It is the only continuity a reader of the document \
                 has, so somebody renaming themselves would change colour mid-sentence for everyone \
-                else — which is why it is derived from the identifier and not the name.""")
+                else - which is why it is derived from the identifier and not the name.""")
             .isEqualTo(before.color());
     }
 
     @Test
     @DisplayName("a very long name is shortened without splitting a character")
     void aLongNameIsCutOnACharacterBoundary() {
-        // 63 units of ASCII then one emoji: the pair straddles the 64-unit boundary exactly, which
-        // is the only input that distinguishes a correct cut from `substring(0, 64)`.
         String name = "a".repeat(63) + "😀";
 
         TokenService.Principal stored =
@@ -141,7 +107,7 @@ class FederatedIdentityIT extends IntegrationTestBase {
         assertThat(stored.displayName().chars().noneMatch(unit -> Character.isSurrogate((char) unit)))
             .as("""
                 The cut landed between the two halves of a surrogate pair, leaving a lone surrogate \
-                — not a character, and not encodable as UTF-8. Emoji in a provider's display name \
+                - not a character, and not encodable as UTF-8. Emoji in a provider's display name \
                 is ordinary, so this is an ordinary name rather than a hostile one.""")
             .isTrue();
     }
@@ -158,7 +124,7 @@ class FederatedIdentityIT extends IntegrationTestBase {
         assertThat(codes.redeem(code))
             .as("""
                 The code was spendable twice. It travels in a redirect, so it is in browser \
-                history and in the Referer of whatever the page loads next — the only thing making \
+                history and in the Referer of whatever the page loads next - the only thing making \
                 that acceptable is that spending it destroys it.""")
             .isEmpty();
     }
@@ -184,7 +150,7 @@ class FederatedIdentityIT extends IntegrationTestBase {
         assertThat(stored)
             .as("""
                 The plaintext code is in the table. A row that IS a credential means a backup, a \
-                slow-query log or a support query hands out a session — the same reason invitation \
+                slow-query log or a support query hands out a session - the same reason invitation \
                 tokens are hashed.""")
             .isZero();
     }

@@ -12,55 +12,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Issuing an identity — <b>the one endpoint every other endpoint depends on</b>.
- *
- * <h2>Why it is here and not in DocumentRestController</h2>
- * It was there, writing to the {@code users} table through a {@code JdbcTemplate} injected into the
- * document controller for that single statement. Nothing about logging in concerns documents, and
- * the package that owns identity — token issuing, token verification, the request filter that
- * establishes a principal, the guard that acts on one — is this one. A reader looking for "where
- * does a user come from" had no reason to open a file about documents.
- *
- * <h2>Login with no password</h2>
- * <b>This described the whole of identity here, and now describes only the development path.</b> It
- * is left rather than deleted because it is the reasoning behind a feature that has not changed.
- *
- * <p>It read: a deliberate simplification, the project's scope being distributed data consistency
- * rather than identity management — and the consequence, stated rather than hidden, was that "Anna"
- * today and "Anna" tomorrow were two different users, because each login minted a fresh identifier.
- * That is why sharing works by invite LINK rather than by naming a person; see the long note at the
- * top of {@code V5__invites.sql}.
- *
- * <p>Since identity became federated, the premise is false for every sign-in that matters:
- * {@code (provider, subject)} finds the same row every time, so a person IS addressable and Anna
- * keeps her documents. Only {@link #login} — off unless a deployment asks for it — still mints a
- * fresh identifier per call, and only because the tests and a contributor with no OAuth client of
- * their own need an identity without a provider to talk to.
- *
- * <p>Sharing by link stays, and no longer for that reason: an invite carries a role to whoever
- * opens it, which is what a link is good at, and building a user search on top of federated
- * identity would be a second feature rather than a fix. What changed is that this is now a choice
- * rather than the only option — see "Who you are" in the README.
- */
 @RestController
 @RequestMapping("/api")
 public class LoginController {
-
-    /**
-     * @param displayName the name others will see. This {@code @Size} bound is not the same rule as
-     *                    {@code UserDirectory}'s length cap and does not replace it: this one
-     *                    refuses a body that is absurd — a megabyte of text posted at an
-     *                    unauthenticated endpoint — while the cap shortens a name that is merely
-     *                    long. Two bounds because there are two failures: one is abuse, the other is
-     *                    a person with a long name.
-     *                    <p>The cap is enforced by TRUNCATION rather than refusal, which is the one
-     *                    place in this application where an over-long field is not a 400. The reason
-     *                    is what the endpoint is for: it is the first request a visitor makes, it
-     *                    has no prior state to protect, and refusing it means the product does not
-     *                    open. A quietly shortened name is a worse experience than a name; a login
-     *                    screen that rejects you is not an experience at all.
-     */
     public record LoginRequest(@Size(max = 4096) String displayName) {
     }
 
@@ -80,42 +34,20 @@ public class LoginController {
         this.properties = properties;
     }
 
-    /**
-     * What the login screen should offer.
-     *
-     * <p>Derived from what is actually registered rather than hard-coded in the client, so the
-     * screen cannot advertise a button that leads to a redirect loop. It is also how the browser
-     * learns whether the development login exists at all — which is a server-side decision, and one
-     * the client has no way to guess.
-     *
-     * @param providers registration ids ({@code google}, {@code github}) to render a button for
-     * @param devLoginEnabled whether {@code POST /api/login} is served
-     */
     public record AuthOptions(List<String> providers, boolean devLoginEnabled) {
     }
 
     @GetMapping("/auth/options")
-    @PublicEndpoint("Says how to sign in. Answering it requires no identity, which is the point — "
+    @PublicEndpoint("Says how to sign in. Answering it requires no identity, which is the point - "
         + "it is what a visitor reads before they have one.")
     public ResponseEntity<AuthOptions> options() {
         return ResponseEntity.ok(new AuthOptions(
             properties.auth().providers(), properties.auth().devLoginEnabled()));
     }
 
-    /** @param code the single-use value the provider redirect handed the application. */
     public record SessionRequest(@Size(max = 200) String code) {
     }
 
-    /**
-     * Exchanges the code from a finished sign-in for a session token.
-     *
-     * <p>The second half of the handshake {@link OidcLoginSuccess} starts. It is a POST because the
-     * response carries the credential and a GET would put it in history — the exact thing the code
-     * exists to keep out of the URL.
-     *
-     * <p>The refusal is deliberately shapeless: unknown, already spent and expired are one answer,
-     * because telling them apart tells a guesser which half of their guess was right.
-     */
     @PostMapping("/session")
     @PublicEndpoint("Turns a completed sign-in into a token. The code IS the authorization; there "
         + "is no identity yet to check it against.")
@@ -128,21 +60,8 @@ public class LoginController {
             .orElseGet(() -> ResponseEntity.status(HttpStatus.UNAUTHORIZED).build());
     }
 
-    /**
-     * The development login: type a name, become somebody.
-     *
-     * <p><b>Off unless explicitly enabled</b>, and answered with 404 rather than 403 when it is
-     * off — consistent with every other refusal in this application, and it means a deployment does
-     * not advertise a door it has closed.
-     *
-     * <p>This is the mechanism federated identity was added to replace. It made every rule above it
-     * rest on an unverified claim: `link` visibility grants EDITOR to "anyone signed in", and
-     * signing in cost nothing. It survives because a contributor with no OAuth client of their own
-     * still has to be able to run the thing, and because the integration tests need an identity
-     * without a provider to talk to — but it is opt-in, per process, and named after what it is.
-     */
     @PostMapping("/login")
-    @PublicEndpoint("Issues identity. There is nothing to authorize against yet — this is the "
+    @PublicEndpoint("Issues identity. There is nothing to authorize against yet - this is the "
         + "endpoint that produces the token every other endpoint checks.")
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
         if (!properties.auth().devLoginEnabled()) {
@@ -151,11 +70,6 @@ public class LoginController {
         String displayName = request.displayName() == null || request.displayName().isBlank()
             ? "Guest" : request.displayName().trim();
 
-        // Shortening happens in UserDirectory, for every caller rather than for the ones that
-        // remember. The version here was a `substring(0, 64)` that could cut a surrogate pair in
-        // half; the constant it used lived in this file while the same 64 lived in OidcLoginSuccess
-        // too. What stays here is the `@Size(max = 4096)` on the request, which is a different rule
-        // — see the record's javadoc.
         TokenService.Principal principal = users.create(displayName);
         return ResponseEntity.ok(new LoginResponse(
             tokens.issue(principal),

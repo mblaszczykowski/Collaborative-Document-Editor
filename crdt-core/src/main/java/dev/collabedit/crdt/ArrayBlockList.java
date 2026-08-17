@@ -4,20 +4,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
-/**
- * The naive {@link BlockList} implementation — a plain {@link ArrayList} and a linear scan.
- *
- * <p>It was written <b>first</b>, deliberately. It is obviously correct, so it serves as the
- * reference against which the optimised implementation ({@link TreapBlockList}) is verified. The
- * order "naive first, then measure, only then optimise" is visible in the commit history, because
- * it is more honest than dropping in a clever structure straight away.
- *
- * <p>Every lookup is O(n), and inserting a block additionally shifts the array. On a
- * 100 000-character document that means a noticeable delay on every keystroke — as the JMH
- * benchmark in {@code RgaBenchmark} shows.
- */
 public final class ArrayBlockList implements BlockList {
-
     private final List<Block> blocks = new ArrayList<>();
 
     @Override

@@ -1,44 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-/**
- * Where the session is kept, which decides whether a second tab is signed in.
- *
- * <h2>What went wrong, and why no other test saw it</h2>
- * The session lived in `sessionStorage`, so opening the application in a second tab presented the
- * sign-in screen — reported as a bug, and it was one, but it had been a deliberate choice: a tab is
- * the unit of identity, so two tabs could be two people, which is the demo a collaborative editor
- * is judged on.
- *
- * <p>Federated sign-in removed the benefit and left the cost. A second identity used to be a typed
- * name; it is now a round trip to a provider that signs you into the same account you already have.
- *
- * <p>The Playwright suite could not catch any of this: it drives each participant with
- * `browser.newContext()`, which isolates every store, so it behaves identically whichever one this
- * module picks. That is precisely why these are unit tests over the storage decision itself.
- *
- * <table>
- *   <caption>Test -&gt; failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code aSecondTabIsStillSignedIn}</td>
- *       <td>The reported defect returning: opening a second tab signs the user out.</td></tr>
- *   <tr><td>{@code anOptedInTabKeepsItsOwnIdentity}</td>
- *       <td>The two-people-two-windows demo, which the default would otherwise take away.</td></tr>
- *   <tr><td>{@code theOptInSurvivesTheSignInRedirect}</td>
- *       <td>The subtle one. The provider returns to a bare `?code=…`, so an opt-in read from the
- *           address would be lost exactly when the identity arrives.</td></tr>
- *   <tr><td>{@code signingOutEndsTheSessionTheTabIsUsing}</td>
- *       <td>A sign-out that leaves the session behind — the user clicks it, the screen returns,
- *           and a reload signs them back in as the person they just left.</td></tr>
- *   <tr><td>{@code signingOutOfATabScopedIdentityLeavesTheBrowserWideOneAlone}</td>
- *       <td>The opposite excess: ending the scratch identity taking the primary window's session
- *           with it, which is the one workflow the opt-in exists for.</td></tr>
- *   <tr><td>{@code aCorruptEntryIsDiscardedRatherThanThrown}</td>
- *       <td>An unparseable entry taking the whole application down at its first line, with a
- *           blank page and no way to clear it short of the developer tools.</td></tr>
- * </table>
- */
-
-/** The subset of `Storage` this module uses. A real one is not needed to answer "which store". */
 function stubStorage(): Storage {
   const entries = new Map<string, string>()
   return {
@@ -60,18 +21,8 @@ const SESSION = {
   token: 'token-anna',
 }
 
-/**
- * Loads the module fresh against a given address and pair of stores.
- *
- * <p>It has to be re-imported per case rather than imported once: the module reads the address at
- * load time, which is the thing under test. `resetModules` is what makes each `import()` a new
- * evaluation instead of a cache hit.
- */
 async function load(search: string, local: Storage, session: Storage) {
   vi.resetModules()
-  // `search` is the field under test. The rest of `location` is here because the import reaches
-  // `config.ts` through `api.ts`, and that module derives the backend origin from the address —
-  // so a location carrying only `search` fails at import time, before a single assertion runs.
   vi.stubGlobal('window', {
     location: {
       search,
@@ -90,8 +41,6 @@ describe('where the session is kept', () => {
   let local: Storage
 
   beforeEach(() => {
-    // Shared across the "tabs" of a single test, because one browser has one localStorage — that
-    // sharing is the entire mechanism being tested.
     local = stubStorage()
   })
 
@@ -99,7 +48,6 @@ describe('where the session is kept', () => {
     const first = await load('', local, stubStorage())
     first.rememberSession(SESSION)
 
-    // A new tab: same browser, so the same localStorage, but a sessionStorage of its own.
     const second = await load('', local, stubStorage())
 
     expect(
@@ -126,15 +74,13 @@ describe('where the session is kept', () => {
     const tabStore = stubStorage()
     await load('?tab-session', local, tabStore)
 
-    // Back from the provider: same tab, so the same sessionStorage, but the address is now the
-    // one the server redirected to and `?tab-session` is not in it.
     const returned = await load('?code=abc123', local, tabStore)
     returned.rememberSession(SESSION)
 
     expect(
       local.getItem('collabedit.session'),
       'The identity landed in the browser-wide store, so signing in from an opted-in tab quietly '
-        + 'reverted it to the shared session — the opt-in works until the moment it is used.',
+        + 'reverted it to the shared session - the opt-in works until the moment it is used.',
     ).toBeNull()
     expect(tabStore.getItem('collabedit.session')).not.toBeNull()
   })
@@ -168,7 +114,7 @@ describe('where the session is kept', () => {
     expect(
       primary.loadSession(),
       `Signing out of the scratch identity signed out the main window too. That is the one
-       workflow the opt-in exists for — two identities side by side — and it means ending the
+       workflow the opt-in exists for - two identities side by side - and it means ending the
        throwaway one costs you the real one.`,
     ).toEqual(SESSION)
   })

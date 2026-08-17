@@ -17,51 +17,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-/**
- * Who may do what with a given document (CP12).
- *
- * <h2>The resolution order — and why this one</h2>
- * <ol>
- *   <li><b>The owner</b> — always {@link Role#OWNER}. An owner cannot be denied access by a row in
- *       a table, because they are the one managing those rows.</li>
- *   <li><b>An explicit entry for the document</b> — overrides inheritance. Without it, there would
- *       be no way to remove someone's access to ONE document without ejecting them from the whole
- *       workspace.</li>
- *   <li><b>Workspace membership</b> — inherited by all of its documents.</li>
- *   <li><b>{@code link} visibility</b> — {@link Role#EDITOR} for anyone logged in.</li>
- *   <li>Otherwise — <b>no access</b>.</li>
- * </ol>
- *
- * <h2>Why the COLUMN still defaults to "link", and why new documents no longer do</h2>
- * The column default is a migration decision and stays: CP12 had no business taking away anyone's
- * access to a document they used to open, and rows written before it exist.
- *
- * <p><b>Creation is a different question, and CP21 answered it differently.</b> Until then
- * {@code POST /api/documents} left the default in place, so every document made through the
- * interface was editable by anybody who typed a name into the login box — the four roles below
- * collapsing into the two the product could actually produce. New documents are now {@code private}
- * and sharing is a gesture: an invitation carrying a role, or a deliberate switch back to
- * {@code link}. Which is still on offer — it stopped being what happens when nobody chooses.
- *
- * <h2>The cache and its invalidation</h2>
- * A permission check happens on EVERY STOMP frame, so querying the database each time would be a
- * query per keystroke. The result is cached briefly — briefly enough that revoking access takes
- * effect within what a person would call "immediately", and long enough that the database does not
- * see traffic proportional to typing.
- */
 @Service
 public class PermissionService {
-
     private static final Logger log = LoggerFactory.getLogger(PermissionService.class);
 
-    /**
-     * How long a decision is remembered.
-     *
-     * <p>Five seconds is a compromise between two undesirable phenomena: a database query per
-     * operation (with a zero TTL) and access outliving its revocation (with a long one). The upper
-     * bound on how late a revocation takes effect is this value — and it is the <b>only</b>
-     * guarantee this mechanism gives.
-     */
     static final Duration CACHE_TTL = Duration.ofSeconds(5);
 
     private record CacheKey(String userId, UUID documentId) {
@@ -74,13 +33,6 @@ public class PermissionService {
     private final JdbcTemplate jdbc;
     private final PermissionInvalidationBus invalidations;
 
-    /**
-     * Told that a document's access changed, on <b>this</b> instance, whoever caused it.
-     *
-     * <p>Wired by the WebSocket layer ({@code BroadcastWiring}), the same way the write path's
-     * broadcast is: this service should not know that a STOMP frame exists, and the transport
-     * should not know what a role is.
-     */
     private volatile Consumer<UUID> onAccessChanged = documentId -> { };
 
     public PermissionService(JdbcTemplate jdbc, PermissionInvalidationBus invalidations) {
@@ -88,30 +40,15 @@ public class PermissionService {
         this.invalidations = invalidations;
     }
 
-    /** Registers the notifier; see {@link #onAccessChanged}. */
     public void onAccessChanged(Consumer<UUID> handler) {
         this.onAccessChanged = handler;
     }
 
-    /**
-     * Subscribes to invalidations from the other instances.
-     *
-     * <p>The handler is registered here rather than the bus depending on this service, for the
-     * same reason {@code DocumentService} wires itself to {@link ClusterBus}: the transport should
-     * not know what the message means.
-     */
     @PostConstruct
     void subscribeToInvalidations() {
         invalidations.onInvalidate(this::invalidateLocally);
     }
 
-    /**
-     * The user's role with respect to a document; empty when they have no access at all.
-     *
-     * <p>The returned {@code Optional} distinguishes "has no access" from "has the lowest access",
-     * because those are two different answers: the first means 404/403, the second a read-only
-     * view.
-     */
     public Optional<Role> roleOf(String userId, UUID documentId) {
         if (userId == null || documentId == null) {
             return Optional.empty();
@@ -132,17 +69,6 @@ public class PermissionService {
         return roleOf(userId, documentId).isPresent();
     }
 
-    /**
-     * The role with respect to a <b>deleted</b> document — for the bin and for restoring.
-     *
-     * <p>A separate method, because {@link #roleOf} deliberately treats a document in the bin as
-     * non-existent: that is the right behaviour for opening and editing. But the bin and restoring
-     * must by definition operate on deleted documents, and must not bypass permissions while doing
-     * so — otherwise the bin would become a list of other people's titles.
-     *
-     * <p>Not cached: it is called when displaying the bin and when restoring, that is, rarely. A
-     * cache would add invalidation here for no gain.
-     */
     public Optional<Role> roleOfDeleted(String userId, UUID documentId) {
         if (userId == null || documentId == null) {
             return Optional.empty();
@@ -160,21 +86,6 @@ public class PermissionService {
         return rows.isEmpty() ? Optional.empty() : roleFrom(userId, rows.getFirst());
     }
 
-    // canWriteText, canComment and canManageAccess used to sit here, one predicate per capability.
-    // None had a production caller: every endpoint declares a Capability and DocumentAccessGuard
-    // resolves it through Capability.permittedFor, which is the single mapping the permission model
-    // exists to keep. Three parallel predicates are the table of exceptions that design refuses —
-    // and two of them were called from nowhere at all, the third only from a test.
-    //
-    // canRead stays, because DocumentCatalog's SQL predicate is checked against it row by row.
-
-    /**
-     * One query instead of four.
-     *
-     * <p>The decision needs data from three tables, but there is no reason to query them in
-     * sequence: for a check performed on every frame, three extra round trips to the database are
-     * three times the latency, not three times the readability.
-     */
     private Optional<Role> resolve(String userId, UUID documentId) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
             SELECT d.owner_id,
@@ -188,14 +99,11 @@ public class PermissionService {
             """, userId, userId, documentId);
 
         if (rows.isEmpty()) {
-            // The document does not exist or is in the bin. No access, not an exception — from
-            // authorization's point of view that is the same answer.
             return Optional.empty();
         }
         return roleFrom(userId, rows.getFirst());
     }
 
-    /** The resolution order from the class javadoc, in one place for both paths. */
     private static Optional<Role> roleFrom(String userId, Map<String, Object> row) {
         if (userId.equals(row.get("owner_id"))) {
             return Optional.of(Role.OWNER);
@@ -212,117 +120,24 @@ public class PermissionService {
         return Optional.empty();
     }
 
-    // ------------------------------------------------------------------
-    // Invalidation
-    // ------------------------------------------------------------------
-
-    /**
-     * Drops the cached roles for a document, <b>on every instance</b>.
-     *
-     * <p>Called after every change to access. Without it, revoking a permission would only take
-     * effect once the entry expired — and the person who has just removed somebody's access
-     * expects that to have worked, not to be about to work.
-     *
-     * <h2>It used to stop at this instance, and that was the wrong shape of compromise</h2>
-     * The previous version cleared the local map and documented the gap: on a cluster, the other
-     * instances kept serving the old role until their own entry expired, up to {@link #CACHE_TTL}.
-     * The note called the fix "broadcasting the invalidation over the Redis channel" and left it
-     * as a known limitation.
-     *
-     * <p>It is worth being precise about why that limitation was different from the others in this
-     * project. Almost everything here is built on the idea that replicas may disagree briefly and
-     * converge — that is the CRDT decision's whole argument, and the cluster design makes the cluster bus
-     * deliberately unreliable on the same reasoning. <b>This is the one place where that does not
-     * transfer.</b> A text operation arriving late is still the same document. A revocation
-     * arriving late is a window during which the system keeps doing something it was told to stop
-     * doing. Same system, same Redis, opposite requirement.
-     *
-     * <p>The broadcast is still best-effort, and that is deliberate rather than overlooked: the
-     * TTL is the backstop. A lost message degrades to precisely the old behaviour — bounded by
-     * five seconds — instead of to something unbounded. See {@link PermissionInvalidationBus} for
-     * why a durable channel would be machinery out of proportion to a window that already has a
-     * floor.
-     */
     public void invalidate(UUID documentId) {
         invalidateLocally(documentId);
         invalidations.publish(documentId);
     }
 
-    /**
-     * Drops the cached roles for a document on this instance only, and tells this instance's
-     * clients that they should re-ask about themselves.
-     *
-     * <p>The receiving half of {@link #invalidate}. Separate so that applying a message from
-     * another instance does not rebroadcast it, which would be a loop the deduplication in
-     * {@link PermissionInvalidationBus} only half prevents.
-     *
-     * <h2>Why the notification lives here and not at the endpoint that caused the change</h2>
-     * It used to live in {@code AccessController}, published with a local messaging template, and
-     * its javadoc called that deliberate: a client on another instance "learns of the change when
-     * its permission cache entry expires (five seconds)".
-     *
-     * <p>That reasoning is about the <b>check</b>, and it is correct about the check. It is not
-     * true of the <b>signal</b>, and the signal is load-bearing: {@code RevokedAccessFilter} exempts
-     * {@code /access} from filtering precisely so a revoked client is told, because otherwise —
-     * its own words — "the revoked tab simply went quiet: still showing the document, still letting
-     * the user type into a replica whose operations the inbound interceptor was refusing". On more
-     * than one instance that is exactly what happened, since the frame was never published on the
-     * instance the revoked client was connected to, and {@code onAccessChanged} is the client's
-     * only trigger for re-checking its role.
-     *
-     * <p>Announcing from here fixes it without adding the second channel that javadoc rightly
-     * refused: this method is already the one point every access change reaches on every instance,
-     * local or via the bus. One fact, one channel, and the notification is a consequence of the
-     * invalidation rather than a parallel mechanism that can drift from it.
-     */
     void invalidateLocally(UUID documentId) {
         cache.keySet().removeIf(key -> key.documentId().equals(documentId));
         log.debug("Dropped cached permissions for document {}", documentId);
         try {
             onAccessChanged.accept(documentId);
         } catch (RuntimeException e) {
-            // The change is already in the database, and the TTL is the backstop. Failing to
-            // announce costs at most the five seconds it would have taken anyway — not worth
-            // failing the caller's request over, and definitely not worth killing the Redis
-            // listener thread that delivers invalidations from the other instances.
             log.warn("Failed to announce the access change for document {}: {}", documentId,
                 e.toString());
         }
     }
 
-    /**
-     * Upper bound on the number of cached decisions.
-     *
-     * <p>Expiry alone does not bound anything, and that is the whole reason this exists.
-     * {@link #roleOf} checks the timestamp when it <b>reads</b> an entry and replaces it — but an
-     * entry nobody reads again is never touched, so the map kept one row per
-     * {@code (user, document)} pair ever seen, for the lifetime of the process.
-     *
-     * <p>{@code application.yml} already makes this argument, about a different cache:
-     * <i>"the idle threshold does not bound anything with many documents — a hundred people
-     * opening a hundred different documents in a minute gives a hundred replicas, none of them
-     * idle. A time limit is not a memory limit."</i> The identical argument applies here and had
-     * not been made.
-     *
-     * <p>20 000 entries is roughly a megabyte of small records, and it is a <b>backstop</b> rather
-     * than an operating point: the sweep below keeps the real size at "distinct pairs seen in the
-     * last minute", which normal traffic keeps far below this. Reaching it means something is
-     * enumerating documents, and dropping the cache is the correct response to that — the cost is
-     * one database query per subsequent check, not an error.
-     */
     private static final int MAX_ENTRIES = 20_000;
 
-    /**
-     * Removes entries whose TTL has passed.
-     *
-     * <p>On the maintenance pool, not the flow pool: this walks the whole map, and the flow pool
-     * is the one that must broadcast every 10 ms ({@link SchedulingConfig}).
-     *
-     * <p>Every minute rather than every five seconds. The sweep is not what makes expiry correct
-     * — {@link #roleOf} already refuses to serve a stale entry — so its only job is to stop dead
-     * entries accumulating. Running it at the TTL would walk the map twelve times more often to
-     * reclaim the same memory a few seconds sooner.
-     */
     @Scheduled(
         fixedDelayString = "${collabedit.auth.permission-cache-sweep-ms:60000}",
         scheduler = SchedulingConfig.MAINTENANCE)
@@ -332,10 +147,7 @@ public class PermissionService {
         cache.values().removeIf(cached -> cached.expiresAtMillis() <= now);
 
         if (cache.size() > MAX_ENTRIES) {
-            // Everything left is unexpired, so there is nothing cheaper to drop. Clearing costs a
-            // database query per subsequent check and nothing else — the cache is an
-            // optimisation, and correctness never depended on a hit.
-            log.warn("Permission cache holds {} live entries, above the {} bound — clearing. "
+            log.warn("Permission cache holds {} live entries, above the {} bound - clearing. "
                     + "Something is touching an unusual number of documents.",
                 cache.size(), MAX_ENTRIES);
             cache.clear();
@@ -345,10 +157,6 @@ public class PermissionService {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Managing access
-    // ------------------------------------------------------------------
-
     public void grant(UUID documentId, String userId, Role role) {
         jdbc.update("""
             INSERT INTO document_members (doc_id, user_id, role) VALUES (?, ?, ?)
@@ -357,18 +165,6 @@ public class PermissionService {
         invalidate(documentId);
     }
 
-    /**
-     * Removes an explicit membership row.
-     *
-     * <p>Returns whether anything was actually removed, which it used to discard. The caller had no
-     * way to tell "access revoked" from "that person was never a member", so
-     * {@code AccessController.removeMember} answered 204 either way — and an owner who mistyped a
-     * user identifier, or aimed at the wrong document, was told it had worked.
-     *
-     * <p>Note what this does NOT say: {@code false} does not mean the user has no access. They may
-     * still reach the document through the workspace or through {@code link} visibility, and
-     * removing a row cannot change that. It means there was no per-document grant to remove.
-     */
     public boolean revoke(UUID documentId, String userId) {
         int removed = jdbc.update("DELETE FROM document_members WHERE doc_id = ? AND user_id = ?",
             documentId, userId);
@@ -389,14 +185,6 @@ public class PermissionService {
         invalidate(documentId);
     }
 
-    /**
-     * A document's access settings, as opposed to one user's role in it (CP21).
-     *
-     * <p>Separate from {@link #roleOf} because it answers the owner's question ("who can get in
-     * here") rather than the request path's question ("may this caller do this"). The first is
-     * asked once, when a share panel opens; the second on every operation, which is why one is
-     * cached and the other deliberately is not.
-     */
     public record Settings(String ownerId, String visibility) {
     }
 
@@ -408,7 +196,6 @@ public class PermissionService {
             documentId).stream().findFirst();
     }
 
-    /** Whether anybody holds this identifier — see AccessController.setMemberRole. */
     public boolean userExists(String userId) {
         return userId != null && !jdbc.queryForList(
             "SELECT 1 FROM users WHERE id = ?", Integer.class, userId).isEmpty();

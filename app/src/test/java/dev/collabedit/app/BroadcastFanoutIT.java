@@ -15,21 +15,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * A diagnostic tool for the "before / after" comparison of broadcast coalescing (CP10).
- *
- * <p>It answers one question: <b>how many clients in one document the system handles before it
- * stops converging</b> — repeatably, in tens of seconds rather than the ten minutes of the full
- * harness.
- *
- * <p>Deliberately NOT a correctness test, and it does not run in a normal build: it measures the
- * machine's throughput as much as the system's, so its result depends on how loaded the machine is.
- * Run it explicitly:
- * <pre>./mvnw -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true</pre>
- */
 @EnabledIfSystemProperty(named = "fanout", matches = "true")
 class BroadcastFanoutIT extends IntegrationTestBase {
-
     private static final int OPERATIONS_PER_CLIENT = 40;
     private static final int[] CLIENT_COUNTS = {2, 10, 25, 50};
     private static final int ROUNDS = 3;
@@ -65,12 +52,8 @@ class BroadcastFanoutIT extends IntegrationTestBase {
             System.out.printf("%-10d %-12s %-12s %s%n",
                 clients, converged + "/" + ROUNDS, "", String.join("  ", details));
 
-            // ASSERTED, not only printed. The value was already computed and thrown away, so a run
-            // where 0 of 3 rounds converged was a green test — while README's failure-mode table
-            // cites this class in its "Verified" column, under a heading that promises the marked
-            // rows have a test that checks them.
             assertThat(converged)
-                .as("%d clients in one document did not converge in every round (%d/%d) — the "
+                .as("%d clients in one document did not converge in every round (%d/%d) - the "
                     + "table in the README claims this is verified", clients, converged, ROUNDS)
                 .isEqualTo(ROUNDS);
         }

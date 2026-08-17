@@ -3,15 +3,6 @@ package dev.collabedit.app.config;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-/**
- * The system's tuning parameters. Every one of them is justified — the comments
- * next to the default values live in {@code application.yml} rather than here, so that whoever
- * changes the configuration sees the reason at the point of change.
- *
- * <p>The defaults in the constructors deliberately match those in {@code application.yml}: starting
- * with an empty configuration should give a system that works rather than one that throws at
- * startup.
- */
 @ConfigurationProperties("collabedit")
 public record CollabEditProperties(
     WebSocket websocket,
@@ -20,77 +11,20 @@ public record CollabEditProperties(
     Gc gc,
     Auth auth
 ) {
-
-    /**
-     * The defaults of the values that <b>also appear inside a {@code @Scheduled} annotation</b>.
-     *
-     * <h2>Why these five are constants and the rest are not</h2>
-     * {@code broadcast-window-ms}, {@code op-batch-window-ms}, {@code snapshot-sweep-interval-ms},
-     * {@code anti-entropy-interval-ms} and {@code idle-document-eviction-ms} drive a periodic job,
-     * and Spring resolves a job's period from the literal inside
-     * {@code @Scheduled(fixedDelayString = "${…:10}")}. So each default used to exist in THREE
-     * places — {@code application.yml}, the {@code defaults} factory below, and the annotation —
-     * and only the annotation was load-bearing. Editing {@code defaults} changed nothing, which
-     * made four record components read as settings while being decoration. This project already
-     * dismantled that exact pattern once, for {@code heartbeatTimeoutMs}.
-     *
-     * <p>The fix is not a comment saying "the annotation wins". It is making them <b>unable to
-     * disagree</b>: the annotation and {@code defaults} now read the same constant.
-     *
-     * <h2>Why the accessors still have no callers, and why that is not dead code</h2>
-     * {@code broadcastWindowMs()}, {@code opBatchWindowMs()}, {@code snapshotSweepIntervalMs()} and
-     * {@code antiEntropyIntervalMs()} are called from nowhere, and a search for unused API finds
-     * them. They stay, deliberately, and the reason is the one thing a record component can do that
-     * a constant cannot: <b>be the place a reader finds the setting</b>. Spring resolves these four
-     * from the property placeholder inside the annotation, so nothing will ever call the accessor —
-     * but a configuration surface documented in two halves, some of it modelled here and some of it
-     * only in string literals scattered across {@code @Scheduled} methods, is worse than four
-     * accessors nobody calls.
-     *
-     * <p>Which is a different judgement from the one made about {@code heartbeatTimeoutMs} and about
-     * the getters removed from {@code DocumentRegistry} and {@code DocumentReplica}, and the
-     * difference is worth naming: those described state, and state nobody reads is state nobody
-     * maintains. These describe configuration, and the configuration is real whether or not this
-     * type is how it is read.
-     *
-     * <h2>Why they are strings</h2>
-     * An annotation attribute must be a compile-time constant expression, and
-     * {@code fixedDelayString} takes a {@code String} — so the shared constant has to be one, and
-     * the numeric side is parsed from it. That is the inelegant half of the trade, and it is the
-     * cheaper half: parsing a literal cannot drift, whereas two literals silently can.
-     */
     public static final class Defaults {
-
         private Defaults() {
         }
 
-        /** the transport decision — the broadcast coalescing window. */
         public static final String BROADCAST_WINDOW_MS = "10";
 
-        /** the operation-log decision — how often the write buffers are drained. */
         public static final String OP_BATCH_WINDOW_MS = "50";
 
-        /** the operation-log decision — how often the maintenance pool asks whether a snapshot is due. */
         public static final String SNAPSHOT_SWEEP_INTERVAL_MS = "1000";
 
-        /** the cluster design — the anti-entropy sweep. */
         public static final String ANTI_ENTROPY_INTERVAL_MS = "30000";
 
-        /** the cluster design — how long a replica with no clients stays in memory. */
         public static final String IDLE_DOCUMENT_EVICTION_MS = "300000";
 
-        /**
-         * How often the maintenance pool LOOKS for idle replicas.
-         *
-         * <p>Separate from the threshold above, because the sweep used to run at exactly the
-         * threshold and use it as both period and TTL. A replica going idle just after a pass waits
-         * a full period for the next one, so the real bound was [5, 10) minutes while the setting,
-         * its comment in {@code application.yml} and the cluster design all say five.
-         *
-         * <p>One minute, so the bound is [5, 6) minutes and the stated number is true to within the
-         * sweep. Not shorter: the pass walks every loaded replica and takes each one's lock to claim
-         * it, and nothing here is urgent — this reclaims memory from documents nobody has open.
-         */
         public static final String IDLE_DOCUMENT_SWEEP_MS = "60000";
     }
 
@@ -102,7 +36,6 @@ public record CollabEditProperties(
         auth = auth == null ? Auth.defaults() : auth;
     }
 
-    /** the transport decision — transport. */
     public record WebSocket(
         long heartbeatIntervalMs,
         double heartbeatToleranceFactor,
@@ -112,21 +45,6 @@ public record CollabEditProperties(
         long broadcastWindowMs,
         List<String> allowedOriginPatterns
     ) {
-        /**
-         * Origins allowed to open the WebSocket.
-         *
-         * <p>Configurable rather than compiled in, because the previous version pinned
-         * {@code http://localhost:*} in {@code WebSocketConfig} and thereby made every hosted
-         * deployment fail at the handshake — the browser sends the deployed origin, the server
-         * compares it against localhost and refuses. That was one of four code-level reasons
-         * plan v3 §0.1 could not ship, none of which its audit records, because the audit
-         * looked for a hosting account rather than at the code.
-         *
-         * <p>The default stays local-only. An origin allow-list that defaults to permissive is
-         * the same class of mistake as a signing secret that defaults to a value in the repo
-         * ({@link dev.collabedit.app.auth.TokenService}): it works everywhere, including
-         * everywhere it should not.
-         */
         public WebSocket {
             allowedOriginPatterns = allowedOriginPatterns == null || allowedOriginPatterns.isEmpty()
                 ? List.of("http://localhost:*", "http://127.0.0.1:*")
@@ -137,17 +55,8 @@ public record CollabEditProperties(
             return new WebSocket(10_000, 2.5, 65_536, 524_288, 20_000,
                 Long.parseLong(Defaults.BROADCAST_WINDOW_MS), null);
         }
-
-        // heartbeatTimeoutMs used to be computed here from heartbeatToleranceFactor, and
-        // NOTHING read either of them: WebSocketConfig passes only the interval to the broker, and
-        // the simple broker has no tolerance factor to configure. So the transport decision's row for it, the
-        // comment in application.yml and the derivation of unresponsive-replica-timeout-ms all
-        // rested on a value the system does not have. The factor stays in the properties as the
-        // DOCUMENTED intent — it is what the transport decision argues for and what a broker that accepted one
-        // would be given — and the accessor is gone rather than left looking load-bearing.
     }
 
-    /** the operation-log decision — operation log and snapshots. */
     public record Persistence(
         long opBatchWindowMs,
         int opBatchMaxSize,
@@ -159,14 +68,9 @@ public record CollabEditProperties(
         int maxSyncOperations
     ) {
         public Persistence {
-            // A retention of zero would delete the snapshot being written, which is worse than
-            // having no retention at all: every document open would replay its whole log.
             if (snapshotsKeptPerDocument < 1) {
                 snapshotsKeptPerDocument = 3;
             }
-            // Zero or negative would mean "refuse everything" and "send nothing" respectively,
-            // which are worse than the value being absent — a configuration mistake would take
-            // the whole editing path down rather than one document.
             if (maxPendingOperations < 1) {
                 maxPendingOperations = 10_000;
             }
@@ -182,7 +86,6 @@ public record CollabEditProperties(
         }
     }
 
-    /** the cluster design — horizontal scaling. */
     public record Cluster(
         long antiEntropyIntervalMs,
         long idleDocumentEvictionMs,
@@ -198,7 +101,6 @@ public record CollabEditProperties(
         }
     }
 
-    /** the tombstone-collection design — tombstone garbage collection. */
     public record Gc(
         int windowDays,
         long unresponsiveReplicaTimeoutMs
@@ -208,25 +110,6 @@ public record CollabEditProperties(
         }
     }
 
-    /**
-     * Who is allowed in, and how they prove it.
-     *
-     * @param devLoginEnabled whether {@code POST /api/login} — "type a name, get an identity" —
-     *     is served. <b>Default false</b>, and that default is the point: it is the mechanism that
-     *     made every role in this system rest on an unverified claim, so a deployment that does not
-     *     ask for it does not get it. Local development turns it on with
-     *     {@code COLLABEDIT_DEV_LOGIN=true}. The same shape as {@code COLLABEDIT_AUTH_SECRET}: the
-     *     unsafe convenience is opt-in and visible in the command that starts the process, rather
-     *     than a value somebody has to remember to change.
-     * @param appUrl where a finished sign-in sends the browser. The provider redirects to the
-     *     SERVER, and the single-page application is a different origin, so this is the address the
-     *     one-time code is handed to. It has to be an exact match rather than "whatever the request
-     *     came from" — an open redirect at the end of an authentication flow is how a login becomes
-     *     a credential-forwarding service.
-     * @param providers the registration ids the browser should be offered, derived from what is
-     *     actually configured rather than hard-coded, so the login screen cannot advertise a button
-     *     that leads nowhere.
-     */
     public record Auth(
         boolean devLoginEnabled,
         String appUrl,
@@ -243,46 +126,17 @@ public record CollabEditProperties(
             appUrl = appUrl == null ? "http://localhost:5173" : appUrl;
         }
 
-        /**
-         * One provider's credentials.
-         *
-         * @param clientId the registration's client id; blank means "not configured", which is the
-         *     state a fresh clone is in and the only sensible default — an application shipping with
-         *     credentials is an application whose credentials are public
-         */
         public record Provider(String clientId, String clientSecret) {
             static Provider none() {
                 return new Provider(null, null);
             }
 
-            /**
-             * Both halves, not just the id.
-             *
-             * <p>It asked about the client id alone, and {@code ClientRegistration.Builder.build()}
-             * does not require a secret — so a deployment with {@code GOOGLE_CLIENT_ID} set and
-             * {@code GOOGLE_CLIENT_SECRET} forgotten started cleanly, advertised the button, and
-             * failed at the token exchange with {@code invalid_client}, which reaches the user as a
-             * generic "Sign-in did not complete".
-             *
-             * <p>That is precisely the failure {@code ClientRegistrations} says this derivation
-             * exists to prevent: a screen cannot advertise a button that leads nowhere. Half a
-             * credential is not a configured provider.
-             */
             public boolean configured() {
                 return clientId != null && !clientId.isBlank()
                     && clientSecret != null && !clientSecret.isBlank();
             }
         }
 
-        /**
-         * The registration ids this deployment can actually complete a sign-in with.
-         *
-         * <p><b>Derived, never configured.</b> A separate list would be a second source of truth for
-         * one fact, and the failure it produces is silent in the worst way: the login screen renders
-         * a button for a provider with no client id, the browser follows it, and Spring answers with
-         * a redirect loop rather than an error. Deriving it means the screen cannot offer a door
-         * that does not open.
-         */
         public List<String> providers() {
             List<String> configured = new java.util.ArrayList<>(2);
             if (google.configured()) {
@@ -294,10 +148,8 @@ public record CollabEditProperties(
             return List.copyOf(configured);
         }
 
-        /** Whether any provider is configured at all — see {@code SecurityConfig}. */
         public boolean federatedLoginConfigured() {
             return !providers().isEmpty();
         }
     }
-
 }

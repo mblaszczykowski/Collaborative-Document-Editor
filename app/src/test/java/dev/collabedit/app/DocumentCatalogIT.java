@@ -12,33 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * The document catalog (CP11) — listing, search, soft delete, preview.
- *
- * <table>
- *   <caption>Test -> failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code softDeleteKeepsOperationLog}</td>
- *       <td><b>Irreversible destruction of the source of truth.</b> {@code operations} has
- *           {@code ON DELETE CASCADE} on {@code doc_id}, so one {@code DELETE} on a document
- *           erases its entire history — a table that per the operation-log decision is append-only. It cannot be
- *           undone and is invisible until somebody asks for a restore.</td></tr>
- *   <tr><td>{@code deletedDocumentDisappearsFromList}</td>
- *       <td>A delete that hides nothing. Without this, "delete" does nothing visible.</td></tr>
- *   <tr><td>{@code restoreBringsDocumentBack}</td>
- *       <td>Soft delete with no way back — which is hard delete with the extra cost of database
- *           space and none of its benefits.</td></tr>
- *   <tr><td>{@code previewIsMaterialisedAtSnapshot}</td>
- *       <td>Without a preview, the document list would have to load a CRDT replica per entry.
- *           Correctness is intact; the cost of opening the list grows with the number of documents
- *           times their size.</td></tr>
- *   <tr><td>{@code searchFindsByTitleAndContent}</td>
- *       <td>A full-text index that does not cover content — a search that finds only what the user
- *           named themselves.</td></tr>
- * </table>
- */
 class DocumentCatalogIT extends IntegrationTestBase {
-
     private static final java.time.Duration PATIENCE = java.time.Duration.ofSeconds(10);
 
     @LocalServerPort
@@ -53,26 +27,10 @@ class DocumentCatalogIT extends IntegrationTestBase {
     @Autowired
     PermissionService permissions;
 
-    /**
-     * The user these fixtures belong to.
-     *
-     * <p>It used to be "any signed-in user", and the javadoc said so: the documents were created
-     * through {@code catalog.create}, which left {@code visibility} at its default of {@code link},
-     * "readable by anybody signed in — so the identity here does not select anything, it only has
-     * to exist".
-     *
-     * <p>That is no longer true and should never have been what these tests rested on. Listing is
-     * about what is YOURS — owned, or shared with you — and a fixture that appeared in the list
-     * because it was world-visible was exercising the leak rather than the feature. The documents
-     * are owned now, which is also what makes the assertions below mean what they say: a document
-     * disappearing from this list is a statement about deletion, not about visibility.
-     */
     private static final String OWNER = "user-" + UUID.randomUUID();
 
     private UUID newDocument(String title) {
         UUID id = UUID.randomUUID();
-        // The row first: documents.owner_id is a foreign key, which is itself part of the design —
-        // an ownerless document is not a state the schema allows.
         jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?) "
             + "ON CONFLICT (id) DO NOTHING", OWNER, "Owner", "#4C5FD5");
         catalog.create(id, title, null);
@@ -104,7 +62,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
         assertThat(catalog.softDelete(document)).isTrue();
 
         assertThat(operationRows(document))
-            .as("deleting the document erased its operation log — that is irreversible")
+            .as("deleting the document erased its operation log - that is irreversible")
             .isEqualTo(before);
     }
 
@@ -132,7 +90,6 @@ class DocumentCatalogIT extends IntegrationTestBase {
 
         assertThat(catalog.restore(document)).isTrue();
         assertThat(catalog.find(document)).isPresent();
-        // A repeated restore has nothing to restore, and says so plainly.
         assertThat(catalog.restore(document)).isFalse();
     }
 
@@ -143,7 +100,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
 
         assertThat(catalog.softDelete(document)).isTrue();
         assertThat(catalog.softDelete(document))
-            .as("the second delete reported success — meaning it moved the date to today")
+            .as("the second delete reported success - meaning it moved the date to today")
             .isFalse();
     }
 
@@ -155,7 +112,6 @@ class DocumentCatalogIT extends IntegrationTestBase {
         try (TestStompClient anna = new TestStompClient(
             port, tokens.issue(new TokenService.Principal(
                 OWNER, "Anna", "#C1592E")), document, 902)) {
-            // The snapshot threshold in tests is 20 operations.
             for (int i = 0; i < 25; i++) {
                 anna.insert(i, "x");
             }
@@ -170,7 +126,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
         }
 
         assertThat(catalog.find(document).orElseThrow().preview())
-            .as("the preview was not created — the document list would have to load CRDT replicas")
+            .as("the preview was not created - the document list would have to load CRDT replicas")
             .isEqualTo("x".repeat(25));
     }
 
@@ -185,7 +141,6 @@ class DocumentCatalogIT extends IntegrationTestBase {
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(byTitle);
 
-        // Content enters the index through preview_text, so only after a snapshot.
         UUID byContent = newDocument("No marker in the title");
         String contentMarker = "photonic" + System.nanoTime();
         try (TestStompClient anna = new TestStompClient(
@@ -206,7 +161,7 @@ class DocumentCatalogIT extends IntegrationTestBase {
             }
         }
         assertThat(found)
-            .as("search does not cover content — it finds only what the user named themselves")
+            .as("search does not cover content - it finds only what the user named themselves")
             .isTrue();
     }
 }

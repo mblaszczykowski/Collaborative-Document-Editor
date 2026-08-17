@@ -11,27 +11,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.web.server.LocalServerPort;
 
-/**
- * "Type a name, become somebody" is off unless somebody asks for it.
- *
- * <h2>Why this deserves its own test</h2>
- * The default is the whole security property. {@code POST /api/login} is the mechanism federated
- * identity replaced, and while it was served unconditionally every rule above it rested on an
- * unverified claim — {@code link} visibility grants EDITOR to "anyone signed in", and signing in
- * cost nothing, so it granted edit to anyone at all.
- *
- * <p>A default like that fails silently in exactly one direction: nobody notices an endpoint that
- * still works. Every other test in this suite mints its identity directly through
- * {@code TokenService}, so not one of them would fail if this gate stopped closing. This is the only
- * thing standing between the intended default and a deployment that can be signed into by a
- * stranger.
- *
- * <p>The context runs with the ordinary configuration — no property overrides — precisely so that
- * what is asserted is <b>the default</b> rather than a setting the test itself arranged.
- */
 @DisplayName("The development login is not served unless it is asked for")
 class DevLoginDisabledIT extends IntegrationTestBase {
-
     @LocalServerPort
     int port;
 
@@ -63,7 +44,7 @@ class DevLoginDisabledIT extends IntegrationTestBase {
             .as("""
                 A name was enough to obtain a session. That is the mechanism federated identity \
                 replaced, and while it answers, every role in this system rests on a claim nobody \
-                checked — including `link` visibility, which grants EDITOR to anybody signed in.""")
+                checked - including `link` visibility, which grants EDITOR to anybody signed in.""")
             .isEqualTo(404);
         assertThat(refused.body())
             .as("the refusal leaked a token anyway")
@@ -75,9 +56,6 @@ class DevLoginDisabledIT extends IntegrationTestBase {
     void theRefusalDoesNotAdvertiseTheEndpoint() throws Exception {
         HttpResponse<String> refused = post("/api/login", "{\"displayName\":\"A Stranger\"}");
 
-        // The same convention as DocumentAccessGuard, and for the same reason: 403 says "this
-        // exists and you may not use it", which tells somebody probing the deployment that there is
-        // a development login to go looking for a way to enable.
         assertThat(refused.statusCode()).isEqualTo(404);
     }
 
@@ -93,7 +71,7 @@ class DevLoginDisabledIT extends IntegrationTestBase {
             .as("""
                 The client builds its screen from this. Saying the development login is available \
                 when it is not produces a button that answers 404, and saying a provider is \
-                configured when it is not produces a redirect loop — which is worse, because it \
+                configured when it is not produces a redirect loop - which is worse, because it \
                 has no error to show.""")
             .contains("\"devLoginEnabled\":false")
             .contains("\"providers\":[]");

@@ -15,30 +15,8 @@ import org.springframework.security.oauth2.client.authentication.OAuth2Authentic
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.stereotype.Component;
 
-/**
- * The end of a sign-in: turn what the provider said into a row of ours, and hand the browser a
- * single-use code for it.
- *
- * <h2>Why this does not simply return the token</h2>
- * Because the browser is not here. The provider redirected the USER AGENT to this server, and the
- * thing that needs the token is the single-page application on another origin. The only channel
- * between them is a redirect, and a redirect target is not a private place — it lands in history,
- * in the {@code Referer} of the next request the page makes, and in anything reading
- * {@code location}. So what travels is a code that expires in a minute and dies on first use, and
- * the token is fetched over POST. See {@link LoginCodeStore}.
- *
- * <h2>What is taken from the provider, and what is not</h2>
- * The {@code sub} claim and the issuer's registration id together are the identity — see
- * {@link UserDirectory#upsertFederated}. The name is display only. The email is stored and not used
- * to identify anybody, because an email can be reassigned and a subject cannot.
- *
- * <p>Nothing else is kept. This application has no use for a provider access token, so it does not
- * hold one: an unused credential in a database is a liability with no upside, and the OpenID
- * Connect exchange has already told us the only thing being asked — who this is.
- */
 @Component
 public class OidcLoginSuccess implements AuthenticationSuccessHandler {
-
     private static final Logger log = LoggerFactory.getLogger(OidcLoginSuccess.class);
 
     private final UserDirectory users;
@@ -61,10 +39,6 @@ public class OidcLoginSuccess implements AuthenticationSuccessHandler {
 
         String subject = subjectOf(principal);
         if (subject == null) {
-            // Not reachable through a conformant provider — `sub` is mandatory in OpenID Connect
-            // and GitHub always returns `id`. Refused rather than substituted, because the
-            // alternatives are inventing an identity or keying on the email, and this file's whole
-            // job is to not do the second one.
             log.warn("Provider {} returned no subject claim; refusing the sign-in", provider);
             response.sendRedirect(appUrlWith("error", "no-subject"));
             return;
@@ -79,19 +53,6 @@ public class OidcLoginSuccess implements AuthenticationSuccessHandler {
             identity = users.upsertFederated(provider, subject, displayName, email);
             code = codes.issue(identity.userId());
         } catch (RuntimeException e) {
-            // Both of these talk to Postgres, and neither was guarded. A pool timeout or a database
-            // briefly unreachable threw out of this handler — and Spring Security's
-            // AbstractAuthenticationProcessingFilter catches only AuthenticationException around
-            // this call, so a DataAccessException escapes into Boot's error dispatch.
-            //
-            // The user lands on a whitelabel 500 at the CALLBACK address, which is the API origin
-            // and not the product, with a back button that re-submits an authorization code the
-            // provider has already spent. That is word for word the dead end OidcLoginFailure was
-            // written to eliminate — and the success path had the same hole with no handler on it.
-            //
-            // The detail stays in the log; the browser gets the same shapeless answer as any other
-            // failed sign-in, because which half of the database was unhappy is not the user's
-            // business and not something they can act on.
             log.error("Could not complete the sign-in for provider {}", provider, e);
             response.sendRedirect(appUrlWith("error", "sign-in-failed"));
             return;
@@ -101,13 +62,6 @@ public class OidcLoginSuccess implements AuthenticationSuccessHandler {
         response.sendRedirect(appUrlWith("code", code));
     }
 
-    /**
-     * The provider's stable identifier for this account.
-     *
-     * <p>{@code sub} for anything speaking OpenID Connect. GitHub's OAuth endpoint is not an OIDC
-     * provider and returns {@code id} instead, which is why this looks for both rather than
-     * assuming — the alternative is a second success handler for one field.
-     */
     private static String subjectOf(OAuth2User principal) {
         if (principal instanceof OidcUser oidc && oidc.getSubject() != null) {
             return oidc.getSubject();
@@ -120,21 +74,10 @@ public class OidcLoginSuccess implements AuthenticationSuccessHandler {
         return githubId == null ? null : String.valueOf(githubId);
     }
 
-    /**
-     * Something to call this person in the document.
-     *
-     * <p>Falls back through the fields providers actually populate, and ends at the subject rather
-     * than at "Anonymous": a name that is unique is worse to read than a name that is shared, and a
-     * presence list of four identical placeholders is what "Anonymous" produces.
-     */
     private static String displayNameOf(OAuth2User principal, String subject) {
         for (String attribute : new String[] {"name", "login", "preferred_username", "email"}) {
             String value = claim(principal, attribute);
             if (value != null && !value.isBlank()) {
-                // Not shortened here. It used to be, with a `substring(0, 64)` that splits a
-                // surrogate pair when the 64th unit is half of one — and emoji in a provider's
-                // display name is ordinary. The bound belongs to UserDirectory, which stores the
-                // name and now applies it for every caller.
                 return value;
             }
         }
@@ -146,13 +89,6 @@ public class OidcLoginSuccess implements AuthenticationSuccessHandler {
         return value == null ? null : String.valueOf(value);
     }
 
-    /**
-     * The application's address with one parameter attached.
-     *
-     * <p>Built from configuration and never from the request. Taking it from a {@code redirect_uri}
-     * the caller supplied is how an authentication flow becomes an open redirect — the one place a
-     * forwarding bug hands somebody else's freshly minted credential to an attacker.
-     */
     private String appUrlWith(String parameter, String value) {
         String base = properties.auth().appUrl();
         String separator = base.contains("?") ? "&" : "?";

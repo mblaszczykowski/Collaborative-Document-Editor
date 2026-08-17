@@ -13,29 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * Searching what a document says (CP29).
- *
- * <p>Until CP29 the index covered the title and the first 200 characters, so search worked exactly
- * as far as the opening sentence. That is the kind of half-feature worse than none: it answers, it
- * looks like it searched, and the document containing the word is not in the results.
- *
- * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code aWordDeepInTheDocumentIsFound}</td>
- *       <td>The debt this checkpoint pays. The word is placed past the preview boundary on
- *           purpose.</td></tr>
- *   <tr><td>{@code aDocumentWithNoSnapshotIsStillFoundByTitle}</td>
- *       <td>The index lag turning into "a document created a second ago cannot be found at all" —
- *           which is exactly the document somebody is most likely to be looking for.</td></tr>
- *   <tr><td>{@code renamingIsVisibleToSearchImmediately}</td>
- *       <td>The same lag on the other edge: a rename does not rebuild the vector, so without the
- *           title fallback the new name would not be searchable until the next snapshot.</td></tr>
- * </table>
- */
 class ContentSearchIT extends IntegrationTestBase {
-
     private static final Duration PATIENCE = Duration.ofSeconds(15);
 
     @LocalServerPort
@@ -50,18 +28,6 @@ class ContentSearchIT extends IntegrationTestBase {
     @Autowired
     SnapshotStore snapshots;
 
-    /**
-     * The user these fixtures belong to.
-     *
-     * <p>It used to be "any signed-in user", because the fixtures took the {@code visibility}
-     * column's default of {@code link} and search returned anything world-visible to anybody. Both
-     * halves of that are gone: V12 removed the default, and the listing predicate no longer treats
-     * link visibility as a reason to show somebody a document. Search is scoped to what is YOURS,
-     * so the fixture has to be.
-     *
-     * <p>Which is the right shape for these tests anyway — they are about whether the search index
-     * finds a word, not about who may see the document.
-     */
     private static final String OWNER = "user-" + UUID.randomUUID();
 
     private UUID newDocument(String title) {
@@ -74,14 +40,6 @@ class ContentSearchIT extends IntegrationTestBase {
         return id;
     }
 
-    /**
-     * A token for the user these fixtures belong to.
-     *
-     * <p>It used to mint a fresh random identity per call, which worked only because the documents
-     * were world-visible. They are owned and private now, so a client that is not the owner cannot
-     * write to them — and a write that is refused shows up here as a test timing out waiting for an
-     * acknowledgement, which says nothing about search.
-     */
     private String tokenFor(String name) {
         return tokens.issue(new TokenService.Principal(OWNER, name, "#4C5FD5"));
     }
@@ -97,16 +55,12 @@ class ContentSearchIT extends IntegrationTestBase {
         throw new AssertionError("no snapshot was created for document " + document);
     }
 
-    // ------------------------------------------------------------------
-
     @Test
     @DisplayName("a word past the preview boundary is found")
     void aWordDeepInTheDocumentIsFound() throws Exception {
         UUID document = newDocument("Report");
         String needle = "needle" + System.nanoTime();
 
-        // The preview is 200 characters. The needle sits well beyond it, which is where every
-        // word of a real document sits.
         String filler = "filler ".repeat(40);
         try (TestStompClient author = new TestStompClient(port, tokenFor("Anna"), document, 961)) {
             author.insert(0, filler);
@@ -117,7 +71,7 @@ class ContentSearchIT extends IntegrationTestBase {
         awaitSnapshot(document);
 
         assertThat(catalog.search(OWNER, null, needle, 20))
-            .as("the word is in the document and the search does not find it — which is worse "
+            .as("the word is in the document and the search does not find it - which is worse "
                 + "than not having search, because the answer looks like an answer")
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
@@ -129,8 +83,6 @@ class ContentSearchIT extends IntegrationTestBase {
         String title = "Brand" + System.nanoTime();
         UUID document = newDocument(title);
 
-        // No operations, so no snapshot, so no search vector. This is the state of every document
-        // in its first seconds — and the one somebody is most likely to be looking for.
         assertThat(catalog.search(OWNER, null, title, 20))
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);
@@ -142,13 +94,6 @@ class ContentSearchIT extends IntegrationTestBase {
         UUID document = newDocument("Huge");
         String needle = "needle" + System.nanoTime();
 
-        // Postgres refuses a string of about a megabyte with "string is too long for tsvector",
-        // and this call sits on the SNAPSHOT path. The failure would not lose data — the snapshot
-        // is written first — and would do something worse: `snapshotTaken()` never runs, so the
-        // sweep re-snapshots the same document every second, forever.
-        // DISTINCT words, not one word repeated: the limit is on the resulting tsvector, and a
-        // repeated word compresses to a single lexeme with positions. Prose has hundreds of
-        // thousands of distinct forms in a document this size, and that is what overflows.
         StringBuilder builder = new StringBuilder(needle).append(' ');
         for (int i = 0; i < 200_000; i++) {
             builder.append("wyraz").append(i).append(' ');
@@ -173,7 +118,7 @@ class ContentSearchIT extends IntegrationTestBase {
 
         assertThat(catalog.search(OWNER, null, after, 20))
             .as("renaming does not rebuild the vector, so without the title fallback the new "
-                + "name would be invisible to search until the next snapshot — which for a "
+                + "name would be invisible to search until the next snapshot - which for a "
                 + "document nobody is typing in is never")
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(document);

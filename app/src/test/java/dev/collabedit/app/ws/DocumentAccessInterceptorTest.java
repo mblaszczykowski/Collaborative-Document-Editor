@@ -27,48 +27,15 @@ import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.util.MultiValueMap;
 
-/**
- * The frame-level half of CP12, and the regression test for the hole that made it decorative.
- *
- * <h2>What was wrong</h2>
- * {@link DocumentAccessInterceptor} authorises a frame by parsing a document identifier out of the
- * destination. When it could not find one it used to return the frame <b>unchanged</b>, on the
- * stated reasoning that a destination without a document must be one of the user's own queues.
- *
- * <p>Spring's simple broker matches subscription destinations as <b>Ant patterns</b>, so
- * {@code SUBSCRIBE /topic/**} parsed to no document, was waved through, and then matched every
- * document's broadcast. {@link #springsBrokerReallyDoesMatchSubscriptionsAsPatterns()} pins that
- * property rather than asserting it in a comment — if a future Spring stopped doing it, the reader
- * should learn that this guard became belt-and-braces rather than assume it always was.
- *
- * <p>Unit tests on purpose: the behaviour is a decision about a destination string and a role, and
- * running Postgres and a broker to observe it would make the check slower without making it
- * stronger. {@code PermissionIT} covers the same refusal over a real socket.
- */
 class DocumentAccessInterceptorTest {
-
     private static final UUID DOCUMENT = UUID.randomUUID();
     private static final UUID OTHER_DOCUMENT = UUID.randomUUID();
     private static final String USER = "user-1";
 
     private final PermissionService permissions = mock(PermissionService.class);
 
-    /**
-     * Which comment anchors the caller may attach — see {@link CommentAnchorAuthority}.
-     *
-     * <p>A field rather than a lambda so a test can say "and this thread is not yours", which is
-     * the case the interceptor did not used to ask about at all.
-     */
     private final Set<UUID> ownThreads = new HashSet<>();
 
-    /**
-     * Readable, so a test can assert WHICH rule refused a frame and not merely that something did.
-     *
-     * <p>{@code deny} tags {@code ws.frames.refused.total} with the {@code Refusal} that decided,
-     * which is the only externally visible difference between "refused as a wildcard" and "refused
-     * as an unrecognised destination". Without reading it, a test for one of those rules passes
-     * when the other one does the work.
-     */
     private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
 
     private final DocumentAccessInterceptor interceptor = new DocumentAccessInterceptor(
@@ -79,12 +46,8 @@ class DocumentAccessInterceptorTest {
         (userId, documentId, threadId) ->
             USER.equals(userId) && DOCUMENT.equals(documentId) && ownThreads.contains(threadId));
 
-    // ------------------------------------------------------------------
-    // The hole
-    // ------------------------------------------------------------------
-
     @Test
-    @DisplayName("a wildcard subscription is refused AS a wildcard — this is the CP12 bypass")
+    @DisplayName("a wildcard subscription is refused AS a wildcard - this is the wildcard bypass")
     void wildcardSubscriptionsAreRefused() {
         for (String destination : new String[] {
             "/topic/**",
@@ -97,70 +60,47 @@ class DocumentAccessInterceptorTest {
             long before = refusals("wildcard_destination");
 
             assertThat(subscribe(destination))
-                .as("SUBSCRIBE %s was allowed — the simple broker matches this as a pattern, so the "
+                .as("SUBSCRIBE %s was allowed - the simple broker matches this as a pattern, so the "
                     + "session now receives every document's broadcasts", destination)
                 .isNull();
 
-            // The REASON, not just the refusal. Every destination above also fails documentIdOf and
-            // would therefore be refused by the unknown-destination rule anyway — so asserting only
-            // isNull() passes with the wildcard guard deleted, and this test would go on claiming to
-            // pin the CP12 fix while pinning something else. The tag is the one thing that tells the
-            // two rules apart.
             assertThat(refusals("wildcard_destination"))
                 .as("SUBSCRIBE %s was refused, but as an unrecognised destination rather than as a "
-                    + "wildcard — so the wildcard rule is not what this test is exercising",
+                    + "wildcard - so the wildcard rule is not what this test is exercising",
                     destination)
                 .isEqualTo(before + 1);
         }
     }
 
-    /** How many frames have been refused for a given reason, as {@code deny} tags them. */
     private long refusals(String reason) {
         var counter = meters.find("ws.frames.refused.total").tag("reason", reason).counter();
         return counter == null ? 0L : (long) counter.count();
     }
 
     @Test
-    @DisplayName("a SEND to a BROKER destination is refused — the second CP12 bypass")
+    @DisplayName("a SEND to a BROKER destination is refused - the second bypass")
     void sendingToABrokerDestinationIsRefused() {
-        // The role is deliberately the LOWEST one that exists. This hole needed no privilege at
-        // all: allowedToSend decides on the destination's suffix and never looked at its head, so
-        // "/topic/doc/{id}/presence" matched the "/presence" rule, which returns true for every
-        // role — and Spring's SimpleBrokerMessageHandler then fanned the client's own payload out
-        // to every subscriber of that topic.
         when(permissions.roleOf(USER, DOCUMENT)).thenReturn(Optional.of(Role.VIEWER));
 
         for (String destination : new String[] {
-            // The one that actually got through. What it buys is the participant list of every
-            // client in the document: impersonated names, colours and cursors, an empty room, or
-            // complete:false — the flag whose whole purpose is to tell the user the list is
-            // unreliable.
             "/topic/doc/" + DOCUMENT + "/presence",
-            // These were refused only by the accident of their suffixes. "/ops" does not end with
-            // "/op", and no rule matches "/acks" or "/access" — luck, and one renamed channel away
-            // from being an operation-injection hole.
             "/topic/doc/" + DOCUMENT + "/ops",
             "/topic/doc/" + DOCUMENT + "/acks",
             "/topic/doc/" + DOCUMENT + "/access",
             "/topic/doc/" + DOCUMENT + "/sync",
-            // The user queues are outbound too: a SEND here would be the server's own reply
-            // channel with a client's payload in it.
             "/queue/doc/" + DOCUMENT + "/sync",
             "/user/queue/sync",
         }) {
             assertThat(send(destination, "{}"))
-                .as("SEND %s was allowed — /topic and /queue are BROKER prefixes, so the frame is "
+                .as("SEND %s was allowed - /topic and /queue are BROKER prefixes, so the frame is "
                     + "fanned out to every subscriber with the client's payload in it", destination)
                 .isNull();
         }
     }
 
     @Test
-    @DisplayName("subscribing to those same destinations still works — only SEND is refused")
+    @DisplayName("subscribing to those same destinations still works - only SEND is refused")
     void subscribingToBrokerDestinationsStillWorks() {
-        // The prefix rule must not be applied to SUBSCRIBE: /topic is exactly where a client is
-        // supposed to subscribe. Refusing both would have been a fix that closed the hole by
-        // turning the editor off.
         when(permissions.roleOf(USER, DOCUMENT)).thenReturn(Optional.of(Role.VIEWER));
 
         assertThat(subscribe("/topic/doc/" + DOCUMENT + "/presence")).isNotNull();
@@ -193,16 +133,12 @@ class DocumentAccessInterceptorTest {
             .contains("intruder");
     }
 
-    // ------------------------------------------------------------------
-    // What must still work
-    // ------------------------------------------------------------------
-
     @Test
     @DisplayName("the three private user queues are allowed")
     void privateUserQueuesAreAllowed() {
         for (String destination : DocumentAccessInterceptor.PRIVATE_USER_QUEUES) {
             assertThat(subscribe(destination))
-                .as("SUBSCRIBE %s was refused — the client cannot receive its own session, sync "
+                .as("SUBSCRIBE %s was refused - the client cannot receive its own session, sync "
                     + "or error frames", destination)
                 .isNotNull();
         }
@@ -211,9 +147,6 @@ class DocumentAccessInterceptorTest {
     @Test
     @DisplayName("the private-queue allow-list is exactly what the server sends to")
     void theAllowListIsPinned() {
-        // Pinned by name for the same reason as EXPECTED_PUBLIC in the architecture test: widening
-        // it is a decision, and a decision should be visible in a diff. These three are every
-        // destination `convertAndSendToUser` is called with across the application.
         assertThat(DocumentAccessInterceptor.PRIVATE_USER_QUEUES)
             .containsExactlyInAnyOrder("/user/queue/session", "/user/queue/sync", "/user/queue/errors");
     }
@@ -245,9 +178,6 @@ class DocumentAccessInterceptorTest {
     @Test
     @DisplayName("a frame with no destination is refused, not a NullPointerException")
     void framesWithNoDestinationAreRefused() {
-        // The allow-list is a Set.of(...), and that throws on contains(null). A malformed frame
-        // with no destination header would therefore have blown up INSIDE the interceptor —
-        // turning a refusal into an exception on the inbound channel.
         StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SEND);
         accessor.setSessionId("session-1");
         Map<String, Object> attributes = new HashMap<>();
@@ -268,10 +198,6 @@ class DocumentAccessInterceptorTest {
             MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
         assertThat(interceptor.preSend(message, null)).isSameAs(message);
     }
-
-    // ------------------------------------------------------------------
-    // Fixtures
-    // ------------------------------------------------------------------
 
     private Message<?> subscribe(String destination) {
         return frame(StompCommand.SUBSCRIBE, destination, "");
@@ -307,7 +233,6 @@ class DocumentAccessInterceptorTest {
         return MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
     }
 
-    /** The interceptor only reaches for the template to report a rate-limit refusal. */
     @SuppressWarnings("unchecked")
     private static ObjectProvider<SimpMessagingTemplate> emptyProvider() {
         ObjectProvider<SimpMessagingTemplate> provider = mock(ObjectProvider.class);

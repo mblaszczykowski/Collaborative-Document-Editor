@@ -14,36 +14,12 @@ import net.jqwik.api.Arbitrary;
 import net.jqwik.api.constraints.IntRange;
 import net.jqwik.api.constraints.LongRange;
 
-/**
- * The most important tests in the whole project.
- *
- * <p>Each of them answers a specific "what real failure mode does this catch" — none exists for
- * coverage. The table is in the README.
- *
- * <p>The seed is <b>random on every run</b>, so each one explores a different 1000 cases — these
- * properties search rather than confirm. The nightly build adds depth rather than randomness:
- * {@code -Pthorough} raises the try count to 10 000. A failure reports its seed, and
- * {@code @Property(seed = "…")} replays it exactly; a rerun also retries the last failing seed
- * first, through the jqwik failure database.
- *
- * <p>(An earlier version of this paragraph, and of three other places, said the seed was fixed by
- * default. It never was — jqwik has no configuration key for one.)
- */
 class RgaConvergenceProperties {
-
     @Provide
     Arbitrary<List<EditScript.Cmd>> editScripts() {
         return EditScript.scripts();
     }
 
-    /**
-     * <b>Convergence.</b> The replicas edit entirely independently, then exchange operations, each
-     * in a different random order. All of them must end up with identical text.
-     *
-     * <p><b>Failure mode:</b> merging is not commutative — that is, changes are silently lost or
-     * duplicated when two people type at once. This is the bug the whole project exists to avoid,
-     * and the only one that cannot be caught by clicking around manually.
-     */
     @Property
     void convergence(
         @ForAll("editScripts") List<EditScript.Cmd> script,
@@ -59,29 +35,6 @@ class RgaConvergenceProperties {
             .allMatch(text -> text.equals(replicas.texts().getFirst()));
     }
 
-    /**
-     * <b>Convergence with interleaved editing and delivery.</b> The replicas exchange some of
-     * their operations while typing, so later edits are made on state that already includes other
-     * people's changes.
-     *
-     * <p><b>Failure mode:</b> bugs that only appear when a replica generates an operation on state
-     * already merged with somebody else's changes — that is, in normal use rather than in the
-     * artificial arrangement "everyone types in isolation, then synchronises".
-     *
-     * <p><b>This test exists because it was missing.</b> The original suite contained only the
-     * non-interleaved scenario, in which a replica never receives an operation before generating
-     * its own — so the entire Lamport clock bumping path (the README, "What the Lamport clock is actually for")
-     * was never executed once. Found by deliberately introducing a mutation into production code
-     * and checking whether the tests would catch it.
-     *
-     * <p><b>And it was not enough, which this comment claimed it was.</b> Executing the path is
-     * not the same as depending on it: with {@code observeClock} neutered entirely, this property
-     * and the other fourteen stayed green at 3000 tries. What it needed was an assertion that can
-     * tell — the timestamp condition added to {@link RgaInvariants#violations}, which asks whether
-     * a block's timestamp really is above its origin's rather than whether the replicas agree.
-     * They always agree; they were agreeing on the wrong thing. The property is now red under that
-     * mutation, and this scenario is what makes the condition reachable.
-     */
     @Property
     void convergenceWithInterleavedDelivery(
         @ForAll("editScripts") List<EditScript.Cmd> script,
@@ -101,14 +54,6 @@ class RgaConvergenceProperties {
             .isFalse();
     }
 
-    /**
-     * <b>No orphaned operations.</b> Once everything has been delivered, the pending-operation
-     * buffer must be empty in every replica.
-     *
-     * <p><b>Failure mode:</b> an operation stuck in the buffer forever, because its readiness
-     * condition was stated too strictly. The text would then look converged (every replica agrees
-     * in <i>not</i> having that change), so a convergence test alone would not detect it.
-     */
     @Property
     void noOperationStaysPending(
         @ForAll("editScripts") List<EditScript.Cmd> script,
@@ -124,14 +69,6 @@ class RgaConvergenceProperties {
             .isFalse();
     }
 
-    /**
-     * <b>Idempotence.</b> Delivering every operation twice gives the same result as delivering it
-     * once.
-     *
-     * <p><b>Failure mode:</b> a retransmission after reconnect (CP6) or a repeated message from
-     * Redis duplicates text. Without this property the entire architecture with an
-     * unreliable broadcast is unsafe.
-     */
     @Property
     void idempotence(
         @ForAll("editScripts") List<EditScript.Cmd> script,
@@ -152,15 +89,6 @@ class RgaConvergenceProperties {
         assertThat(twice.allConverged()).isTrue();
     }
 
-    /**
-     * <b>Delivery order does not matter.</b> The same set of operations delivered in two different
-     * random orders gives the same text.
-     *
-     * <p><b>Failure mode:</b> the algorithm is deterministic but order-dependent — that is, two
-     * backend instances diverge despite holding the full set of operations. This is
-     * insidious, because such a system works correctly in single-server tests and only breaks when
-     * scaled out.
-     */
     @Property
     void deliveryOrderDoesNotMatter(
         @ForAll("editScripts") List<EditScript.Cmd> script,
@@ -178,15 +106,6 @@ class RgaConvergenceProperties {
         assertThat(runB.texts().getFirst()).isEqualTo(runA.texts().getFirst());
     }
 
-    /**
-     * <b>Agreement with a reference model.</b> On a single replica the CRDT must behave exactly
-     * like a {@link StringBuilder} — checked after every operation, not only at the end.
-     *
-     * <p><b>Failure mode:</b> a bug in mapping a visible position to an identifier, in splitting
-     * blocks, or in run-length compression. Such bugs can be invisible to a convergence test,
-     * because every replica is wrong in the same way — they converge on shared but <i>incorrect</i>
-     * text.
-     */
     @Property
     void singleReplicaBehavesLikeStringBuilder(@ForAll("editScripts") List<EditScript.Cmd> script) {
         RgaDocument document = new RgaDocument(1);
@@ -208,15 +127,6 @@ class RgaConvergenceProperties {
         }
     }
 
-    /**
-     * <b>The RGA linearisation invariant.</b> In every replica, for every block, everything lying
-     * between it and its origin must have a higher timestamp.
-     *
-     * <p><b>Failure mode:</b> a bug in which <i>every</i> replica is wrong in the same way.
-     * Convergence tests compare replicas against each other, so such a bug passes them — the
-     * replicas agree on the same incorrect structure. This test looks at the structure itself and
-     * has no way of being fooled by a shared error.
-     */
     @Property
     void rgaLinearizationInvariantHolds(
         @ForAll("editScripts") List<EditScript.Cmd> script,
@@ -235,15 +145,6 @@ class RgaConvergenceProperties {
         }
     }
 
-    /**
-     * <b>Run-length compression actually works.</b> After ordinary continuous typing the document
-     * must not fall apart into one-character blocks.
-     *
-     * <p><b>Failure mode:</b> the block-merging condition is too strict and never holds.
-     * Correctness does not suffer, but the entire benefit of the block representation disappears —
-     * a 100 000-character document is 100 000 objects again. A bug invisible to correctness tests
-     * and expensive; hence a separate test rather than only a benchmark.
-     */
     @Property
     void sequentialTypingCompressesIntoFewBlocks(
         @ForAll @IntRange(min = 20, max = 200) int characters
@@ -259,13 +160,6 @@ class RgaConvergenceProperties {
         assertThat(RgaInvariants.fragmentation(document)).isEmpty();
     }
 
-    /**
-     * <b>GC preserves the text.</b> Removing causally stable tombstones must not change the
-     * visible text or corrupt the structure.
-     *
-     * <p><b>Failure mode:</b> GC deletes a node that is another character's origin — the structure
-     * breaks immediately, but the symptom appears only at the next insertion in that spot.
-     */
     @Property
     void gcPreservesText(
         @ForAll("editScripts") List<EditScript.Cmd> script,
@@ -276,8 +170,6 @@ class RgaConvergenceProperties {
         EditScript.runIndependently(replicas, script);
         replicas.deliverAllShuffled(new Random(deliverySeed));
 
-        // Every replica has now seen everything, so stableVersion is simply the meet of their
-        // version vectors — the whole history is causally stable.
         VersionVector stable = VersionVector.meet(
             java.util.stream.IntStream.range(0, replicas.size())
                 .mapToObj(i -> replicas.get(i).version())
@@ -292,44 +184,11 @@ class RgaConvergenceProperties {
                 .isEqualTo(before);
         }
 
-        // After GC the structure must still accept new edits — this is exactly where deleting a
-        // node that was somebody's origin shows up.
         RgaDocument first = replicas.get(0);
         first.insert(first.visibleLength(), "x");
         assertThat(first.text()).endsWith("x");
     }
 
-    /**
-     * <b>GC never removes a character somebody else can still see.</b>
-     *
-     * <h2>The hole this closes, and why every other GC test was blind to it</h2>
-     * Every GC assertion in this suite ran with a <b>fully stable</b> version vector — either a
-     * hand-written {@code Map.of(1, 1000L)} or, as in {@link #gcPreservesText}, the meet taken
-     * <i>after</i> {@code deliverAllShuffled} had given every replica everything. Under those
-     * conditions the difference between "the insertion is stable" and "the deletion is stable" does
-     * not exist, because both are. So the condition {@code RgaDocument.gc} actually used — the
-     * insertion's timestamp against the inserting replica's entry — was unreachable by
-     * construction, and it stayed wrong through five checkpoints while the tombstone-collection design §Mechanism/3 stated
-     * the correct rule one directory away.
-     *
-     * <p>What it cost: a character deleted a moment ago in a document older than one progress
-     * report was instantly collectable, and the peer that had not yet received the delete came back
-     * with an operation anchored to a character the collector had destroyed. That is
-     * {@code RESYNC_REQUIRED} — the refusal the tombstone-collection design reserves for a client absent longer than the
-     * seven-day window — on a race measured in milliseconds.
-     *
-     * <h2>What is asserted, and why not convergence</h2>
-     * The invariant is <b>structural and per-replica</b>: if replica A physically removed character
-     * {@code c}, then no replica may still be displaying {@code c}. That is precisely the safety
-     * property causal stability is supposed to buy, and it is checkable without delivering anything
-     * further.
-     *
-     * <p>Convergence is deliberately <b>not</b> the assertion here. GC under a partial vector has a
-     * real, documented and narrow window — an operation created before its author saw the delete
-     * can still be in flight — which the tombstone-collection design accepts and answers with {@code RESYNC_REQUIRED}.
-     * Asserting convergence would be asserting something the design does not promise, and the test
-     * would be flaky for a correct reason, which is the worst kind.
-     */
     @Property
     void gcNeverRemovesWhatAnotherReplicaStillShows(
         @ForAll("editScripts") List<EditScript.Cmd> script,
@@ -338,8 +197,6 @@ class RgaConvergenceProperties {
     ) {
         ReplicaSet replicas = new ReplicaSet(replicaCount, TreapBlockList::new);
         Random random = new Random(deliverySeed);
-        // Interleaved and PARTIAL: some operations are still undelivered when GC runs, so the meet
-        // below is a genuine partial vector rather than the total one every other GC test uses.
         EditScript.runInterleaved(replicas, script, random, 2);
 
         VersionVector stable = VersionVector.meet(
@@ -369,7 +226,7 @@ class RgaConvergenceProperties {
                 stillVisible.retainAll(removed);
                 assertThat(stillVisible)
                     .as("replica %d physically removed characters that replica %d is still "
-                        + "DISPLAYING — it has not seen the deletion, so it can still anchor to "
+                        + "DISPLAYING - it has not seen the deletion, so it can still anchor to "
                         + "them.%nstable = %s%ncollector = %s%nother = %s",
                         collector, other, stable.asMap(),
                         replicas.get(collector), replicas.get(other))
@@ -378,7 +235,6 @@ class RgaConvergenceProperties {
         }
     }
 
-    /** Every character identifier the replica holds; {@code visibleOnly} skips tombstones. */
     private static Set<Id> idsIn(RgaDocument document, boolean visibleOnly) {
         Set<Id> ids = new HashSet<>();
         for (Block block : document.blocks()) {

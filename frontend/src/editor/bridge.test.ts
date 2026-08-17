@@ -18,8 +18,6 @@ describe('minimalChange', () => {
   })
 
   it('repeated characters do not confuse the suffix computation', () => {
-    // The classic trap: a naive common-suffix computation can run back through the prefix and
-    // produce a negative range.
     const change = minimalChange('aaa', 'aa')!
     expect(change.to - change.from).toBe(1)
     expect(change.insert).toBe('')
@@ -49,10 +47,7 @@ describe('changesToOps', () => {
     expect(applyLocal('abcdef', changes).text).toBe('abef')
   })
 
-  it('SEVERAL changes at once — a multiple selection', () => {
-    // This is the case that forces changes to be processed FROM THE END. Processing forwards, the
-    // second change would land at a position shifted by the first — and the test would give
-    // something other than "aXbcdYef", or worse.
+  it('SEVERAL changes at once - a multiple selection', () => {
     const changes = ChangeSet.of(
       [
         { from: 1, insert: 'X' },
@@ -75,9 +70,6 @@ describe('changesToOps', () => {
   })
 
   it('the result agrees with what CodeMirror itself computed', () => {
-    // The strongest form of this test: rather than checking an expected string from memory, we
-    // compare against what CodeMirror's own implementation produces. Divergence between the two is
-    // exactly the bug that breaks the editor in practice.
     const before = 'The quick brown fox'
     const changes = ChangeSet.of(
       [
@@ -98,9 +90,6 @@ describe('pasting something large', () => {
 
     const ops = changesToOps(document, ChangeSet.of([{ from: 0, insert: pasted }], 0))
 
-    // Three operations, not one. A single 20 000-character insert is ~20 KB of text inside a
-    // JSON envelope, and the frame limit is 64 KiB — one more paste of a long chapter and the
-    // operation stops fitting anywhere, in either direction (CP28).
     expect(ops).toHaveLength(3)
     for (const op of ops) {
       expect(op.kind).toBe('insert')
@@ -109,17 +98,6 @@ describe('pasting something large', () => {
     expect(document.text).toBe(pasted)
   })
 
-  /**
-   * The chunking test above is ASCII, and ASCII is exactly the alphabet in which this bug does not
-   * exist.
-   *
-   * `slice` cuts at UTF-16 code units. An emoji is two of them, so a paste with one straddling
-   * index 8192 gave one operation ending in a lone HIGH surrogate and the next beginning with a
-   * lone LOW surrogate — half a character each, in two separately-identified operations that the
-   * merge algorithm may deliver in either order or interleave with somebody else's text. The
-   * snapshot format has an escape hatch for lone surrogates (v4, for block splits); the operation
-   * log has none, which is why this has to be prevented rather than encoded.
-   */
   const surrogatePairAtTheBoundary = 'x'.repeat(8191) + '😀'.repeat(500)
 
   function endsMidCharacter(piece: string): boolean {
@@ -144,23 +122,16 @@ describe('pasting something large', () => {
     for (const op of ops) {
       expect(op.kind).toBe('insert')
       if (op.kind !== 'insert') continue
-      // The whole assertion, in both directions: no piece may end on an unpaired high surrogate
-      // and none may begin on an unpaired low one.
       expect(endsMidCharacter(op.text)).toBe(false)
       expect(beginsMidCharacter(op.text)).toBe(false)
       expect(op.text.length).toBeLessThanOrEqual(8192)
       reassembled += op.text
     }
-    // Walking the boundary back must not lose or duplicate the character at the seam.
     expect(reassembled).toBe(surrogatePairAtTheBoundary)
     expect(document.text).toBe(surrogatePairAtTheBoundary)
   })
 
   it('still undoes an emoji paste in one step', () => {
-    // The coalescing condition is `previous.first.lamport + previous.length === first.lamport`, so
-    // it depends on `recordInsert` being given the piece's REAL length rather than the nominal
-    // limit. A piece walked back off a surrogate pair is 8191 units, and passing 8192 would break
-    // the chain silently — a paste with an emoji in it would need several presses of Ctrl+Z.
     const document = new RgaDocument(1)
     const undo = new UndoManager(document)
     changesToOps(
@@ -181,8 +152,6 @@ describe('pasting something large', () => {
 
     undo.undo()
 
-    // The pieces coalesce, because they are consecutive Lamport values from one replica inside
-    // the coalescing window — the same condition continuous typing already meets.
     expect(document.text).toBe('')
   })
 })

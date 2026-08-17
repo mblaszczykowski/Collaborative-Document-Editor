@@ -12,34 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * The access rule exists twice, and this is what keeps the two copies honest.
- *
- * <h2>Why there are two copies at all</h2>
- * {@link PermissionService} resolves a role for ONE document, in Java. {@link DocumentCatalog}
- * needs the same question answered for MANY documents inside a query, because the alternative —
- * which is what the code used to do — is to take the 200 most recently updated documents on the
- * instance and filter them afterwards. On a busy instance that made a user's own documents vanish
- * from their own first screen, silently: the {@code LIMIT} was applied before the filter, so the
- * global slice simply did not contain them.
- *
- * <p>The comment the old code carried was right about the risk and wrong about the remedy: "two
- * copies of an access rule drift apart, and then one of them lets too much through". Two copies do
- * drift — unless something fails when they do. That is this test.
- *
- * <h2>What it checks</h2>
- * Every combination of the four inputs the rule reads: ownership, a document-level membership, a
- * workspace-level membership, and visibility. For each one it asserts that
- * {@code catalog.list(...)} includes the document exactly when {@code permissions.canRead(...)}
- * says it may be read. Not "produces a sensible answer" — the SAME answer.
- *
- * <p>The direction of a disagreement matters and the assertion is deliberately symmetric. The SQL
- * being too narrow hides a document from its owner; the SQL being too wide would show one that is
- * not theirs. The controller's Java filter still runs afterwards, so only the first can actually
- * reach a user — but a test that checked one direction would leave the other free to rot.
- */
 class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
-
     @Autowired
     DocumentCatalog catalog;
 
@@ -49,10 +22,8 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
     @Autowired
     JdbcTemplate jdbc;
 
-    /** One combination of the inputs the access rule reads. */
     private record Scenario(boolean owner, String documentRole, String workspaceRole,
                             String visibility) {
-
         @Override
         public String toString() {
             return "owner=" + owner + " documentRole=" + documentRole
@@ -112,8 +83,6 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
                 .anyMatch(summary -> summary.id().equals(document));
             boolean readable = permissions.canRead(caller, document);
 
-            // An IMPLICATION, not an equivalence: everything listed must be readable. The reverse
-            // does not hold and must not be asserted — see the class javadoc.
             if (listed && !readable) {
                 disagreements.add(scenario + " -> listed but NOT readable");
             }
@@ -148,9 +117,6 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
         jdbc.update("INSERT INTO documents (id, title, workspace_id, owner_id, visibility) "
             + "VALUES (?, ?, ?, ?, 'private')", inOther, needle + " elsewhere", other, caller);
 
-        // The endpoint accepts `q` and `workspace` together and used to drop the second silently,
-        // so "search inside this workspace" searched every workspace. The null case is the one the
-        // other tests exercise; this is the one that needs `CAST(? AS uuid)` to bind a real value.
         assertThat(catalog.search(caller, mine, needle, 50))
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(inMine)
@@ -172,9 +138,6 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
         jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
             stranger, "Stranger", "#C1592E");
 
-        // Scoped to a workspace of its own. The suite shares one database, so an unscoped listing
-        // would also be competing with every document the other tests happen to have left behind —
-        // which would make this test's result depend on execution order rather than on the rule.
         UUID workspace = UUID.randomUUID();
         jdbc.update("INSERT INTO workspaces (id, name, owner_id) VALUES (?, ?, ?)",
             workspace, "Shared workspace", stranger);
@@ -184,9 +147,6 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
                 + "VALUES (?, ?, ?, ?, 'private', now() - interval '1 day')",
             mine, "Mine", workspace, caller);
 
-        // A full page of somebody else's PRIVATE documents, all updated more recently. Before the
-        // predicate moved into the query these filled the LIMIT and the caller's own document —
-        // the only one they can see — never made it into the result at all.
         int limit = 20;
         for (int i = 0; i < limit; i++) {
             jdbc.update("INSERT INTO documents (id, title, workspace_id, owner_id, visibility) "
@@ -196,23 +156,11 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
 
         assertThat(catalog.list(caller, workspace, limit))
             .as("the caller's own document fell out of a page filled with documents they cannot "
-                + "see — the failure is silent and gets worse as the instance gets busier")
+                + "see - the failure is silent and gets worse as the instance gets busier")
             .extracting(DocumentCatalog.DocumentSummary::id)
             .contains(mine);
     }
 
-    /**
-     * The property the equivalence used to forbid, and the reason it had to stop being one.
-     *
-     * <p>This test asserted that listing and access AGREE on every combination. That reads like
-     * rigour and was in fact pinning a defect: it forced the list to include everything the caller
-     * could open, and {@code link} visibility means anyone logged in can open it — so every
-     * sidebar listed every link-visible document in the database, and login is passwordless.
-     *
-     * <p>The two are different questions. {@code link} means <i>anyone with the link</i>:
-     * possession of the address is the credential, and a list that hands out addresses gives the
-     * credential away. So access stays exactly as it was, and discovery does not.
-     */
     @Test
     @DisplayName("a link-visible document is readable by a stranger but listed for nobody but its own")
     void linkVisibilityGrantsAccessWithoutDiscovery() {
@@ -228,7 +176,7 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
             document, "Shared by link", owner, "link");
 
         assertThat(permissions.canRead(stranger, document))
-            .as("link visibility stopped granting access — somebody holding the link can no "
+            .as("link visibility stopped granting access - somebody holding the link can no "
                 + "longer open it, which is the whole mode")
             .isTrue();
 
@@ -240,8 +188,7 @@ class DocumentCatalogPermissionParityIT extends IntegrationTestBase {
             .noneMatch(summary -> summary.id().equals(document));
 
         assertThat(catalog.list(owner, null, 500))
-            .as("the owner lost sight of their own document — the fix narrowed too far")
+            .as("the owner lost sight of their own document - the fix narrowed too far")
             .anyMatch(summary -> summary.id().equals(document));
     }
-
 }

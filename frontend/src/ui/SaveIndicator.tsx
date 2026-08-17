@@ -1,9 +1,3 @@
-/**
- * The save state — the one element of the interface that tells the user whether their work is safe.
- * The order of the conditions is not arbitrary: "offline" beats "saving", because promising a save
- * in progress while disconnected is a lie in exactly the situation where the user has to know the
- * truth.
- */
 import type { ConnectionState } from '../transport/connection'
 
 export function SaveIndicator({ state, pending }: { state: ConnectionState; pending: number }) {

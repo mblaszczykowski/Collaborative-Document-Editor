@@ -23,19 +23,6 @@ import { copyText } from './ui/browser'
 import { DEBUG, SESSION_KEY, forgetSession, loadSession, rememberSession } from './ui/session'
 import { useFailure } from './ui/useFailure'
 
-/**
- * The application shell.
- *
- * **The interface shows only things that are a feature of the product.** The network simulator and
- * the CRDT state view — two tools that were invaluable while working on this project — are hidden
- * behind the `?debug=1` parameter and are seen by nobody who simply opened the editor (a
- * revised decision).
- *
- * The reason: a user has no idea what a tombstone or a version vector is, and a "packet loss"
- * slider above the document makes the product look like a laboratory rig. The diagnostics do not
- * disappear — they move to where they belong.
- */
-
 export default function App() {
   const [session, setSession] = useState<Session | null>(loadSession)
   const [notice, setNotice] = useState<string | null>(null)
@@ -46,24 +33,8 @@ export default function App() {
     setNotice(null)
   }
 
-  /**
-   * Signing out in one tab has to reach the others, now that the session is browser-wide.
-   *
-   * <p>It did not, and that was a regression the move to `localStorage` introduced: the second tab
-   * holds its session in React state and its token in the api module, and tokens are signed with no
-   * revocation — so it did not merely look signed in, it kept WORKING. On a shared machine somebody
-   * clicks "Sign out", walks away, and the other window is still open on their document. That is
-   * the exact case the account menu exists for.
-   *
-   * <p>The `storage` event fires only in OTHER tabs, which is precisely the wanted scope. Reading
-   * through `loadSession` rather than assuming null handles the sign-IN direction too — a tab
-   * sitting on the login screen picks up an identity obtained next door — and it is correct for a
-   * `?tab-session` tab for free, because that tab reads its own `sessionStorage` and finds its
-   * identity untouched.
-   */
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      // `key === null` is a `clear()`, which concerns every key including ours.
       if (event.key !== null && event.key !== SESSION_KEY) return
       setSession(loadSession())
     }
@@ -71,33 +42,12 @@ export default function App() {
     return () => window.removeEventListener('storage', onStorage)
   }, [])
 
-  /**
-   * Back to the sign-in screen — used by the sign-out control and by an expired token alike.
-   *
-   * The second caller is the one that makes this necessary rather than pleasant. A token lasts
-   * twelve hours and the session now outlives the browser, so "signed in yesterday, opened it
-   * today" is the ordinary case, not an edge one. Without this the workspace answered 401 to every
-   * request and offered a "Try again" that reloaded into the same 401 for ever, with no way back to
-   * a login screen — a dead end reachable by doing nothing but waiting.
-   */
   const signOut = useCallback((reason?: string) => {
     forgetSession()
     setSession(null)
     setNotice(reason ?? null)
   }, [])
 
-  /**
-   * Every 401, from anywhere, ends the session — registered once rather than checked per call.
-   *
-   * <p>Only the document-list bootstrap used to notice, and a token lapsing while the application
-   * is OPEN is the common case, not the rare one. What the other callers did instead was worse than
-   * nothing: the editor rendered "We cannot open this document… ask whoever sent you the link to
-   * share it again", which is untrue and sends the user to bother somebody who cannot help, and the
-   * side panels went on showing data from before the session ended.
-   *
-   * <p>`api.ts` fires this only when a token was actually presented, so the sign-in exchange —
-   * which answers 401 for a spent code — does not route through here.
-   */
   useEffect(() => {
     setUnauthorizedHandler(() => signOut('Your session expired. Please sign in again.'))
     return () => setUnauthorizedHandler(null)
@@ -110,76 +60,28 @@ export default function App() {
   )
 }
 
-/**
- * What a brand-new account's first document is called.
- *
- * <p>It was "Q3 Product Roadmap" — somebody's quarterly planning, created silently and opened on a
- * first visit, which reads as the developer's test data having leaked into the product. The
- * document is still created (an empty workspace with no way in is worse), but it now says what it
- * is.
- */
 const FIRST_DOCUMENT_TITLE = 'Welcome to the Collaborative Document Editor'
 
-/** Where the API lives, for the sign-in links — which are full-page navigations, not fetches. */
 const PROVIDER_LABELS: Record<string, string> = { google: 'Google', github: 'GitHub' }
 
-/**
- * Where the address a visitor arrived at is kept while they are away at the provider.
- *
- * <p>An invitation link is `?doc=…&invite=…` (SharePanel), and signing in used to destroy it: the
- * provider redirects to a FIXED `app-url` with only `?code=` on it, and the handler below then
- * strips what is left. The recipient of "Anna shared a document with you" signed in and landed on a
- * document of their own, with the invitation never redeemed and nothing on screen explaining it —
- * on the single most common path into this product.
- *
- * <p>`sessionStorage` because it is the one store that survives leaving the origin and coming back
- * within the same tab, which is exactly the journey. The same property is what makes `?tab-session`
- * work; see `session.ts`.
- */
 const RETURN_KEY = 'collabedit.return'
 
-/**
- * The sign-in screen.
- *
- * Two things reach it. Ordinarily it asks the server how sign-in works and renders a button per
- * configured provider. But it is also where the browser LANDS after a provider redirect, carrying
- * either `?code=` (a finished sign-in, to be exchanged for a token) or `?error=` (one that was not).
- *
- * <p>This used to claim both were "handled before anything is drawn, so a returning user never sees
- * the buttons flash". That was false twice over: effects run AFTER the first paint, and the two
- * effects here race — the options request is a GET against configuration while the exchange is a
- * POST that mints a token, so the provider list usually won. The returning user was shown the
- * sign-in card again, with live links that would abandon the exchange if clicked. `busy` is now
- * seeded during render and replaces the card body outright.
- */
 function Login({ onLogin, notice }: {
   onLogin: (session: Session) => void
-  /** Why the user is looking at this screen, when they did not ask to be. */
   notice: string | null
 }) {
   const [name, setName] = useState('')
-  // Seeded synchronously from the address, not defaulted to false and set in an effect. Effects run
-  // AFTER the first paint, so a user returning from the provider was shown the sign-in card again —
-  // brand, tagline and a full set of provider buttons — while the exchange was already in flight.
-  // A `useState` initialiser runs during render, before the effect below strips the query, so this
-  // reads the code reliably; StrictMode double-invoking a pure initialiser is harmless.
   const [busy, setBusy] = useState(() =>
     new URLSearchParams(window.location.search).has('code'))
   const [options, setOptions] = useState<AuthOptions | null>(null)
   const [optionsFailed, setOptionsFailed] = useState(false)
   const failure = useFailure()
 
-  // The redirect handler. It runs once, before the options are fetched, because a code is only
-  // ever valid for a moment and exchanging it is more urgent than drawing a screen the user is
-  // about to leave.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const code = params.get('code')
     const error = params.get('error')
 
-    // The parameters come off the address bar either way. A spent code left in the URL survives a
-    // refresh and produces a second, failing exchange — which looks to the user like the sign-in
-    // broke rather than like it already worked.
     if (code !== null || error !== null) {
       window.history.replaceState({}, '', window.location.pathname)
     }
@@ -197,10 +99,6 @@ function Login({ onLogin, notice }: {
     void failure
       .attempt('Could not finish signing in. Please try again.', async () => {
         const session = await api.session(code)
-        // The address the visitor arrived at, put back before the workspace reads it. Restoring
-        // it AFTER the strip above and BEFORE `onLogin` unmounts this screen is what makes an
-        // invitation survive the provider round trip — `Workspace` reads `?doc=` and `?invite=`
-        // from the address at bootstrap, so a moment later is too late.
         const arrivedAt = sessionStorage.getItem(RETURN_KEY)
         sessionStorage.removeItem(RETURN_KEY)
         if (arrivedAt !== null && arrivedAt !== '') {
@@ -209,32 +107,15 @@ function Login({ onLogin, notice }: {
         onLogin(session)
       })
       .finally(() => setBusy(false))
-    // The deps are empty because the exchange is SINGLE-USE, not because the values it closes over
-    // are stable — they are not: `onLogin` is a plain function declaration and `failure` is a fresh
-    // object each render. It is harmless here (the first render's closures reach only module
-    // functions and stable setters), and it is written down because the previous comment claimed
-    // stability as the justification. Anyone relaxing these deps on the strength of that would
-    // re-run the effect and re-exchange a code that is by then spent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /**
-   * Asks the server how to sign in.
-   *
-   * <p>A failure is held in its own flag rather than faked as `{providers: [], devLoginEnabled:
-   * false}`. That value is indistinguishable from what a REACHABLE but unconfigured server
-   * returns, so the screen rendered both messages at once: "No sign-in method is configured on
-   * this server" — longer, louder and above — together with "Could not reach the server". The
-   * first is a lie about the deployment when the truth is a connection that failed.
-   */
   const loadOptions = useCallback(() => {
     setOptionsFailed(false)
     void api
       .authOptions()
       .then(setOptions)
       .catch(() => {
-        // A server that cannot say how to sign in is a server that cannot sign anybody in.
-        // Offering buttons anyway would be a door that leads nowhere.
         setOptionsFailed(true)
       })
   }, [])
@@ -244,14 +125,9 @@ function Login({ onLogin, notice }: {
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     setBusy(true)
-    // There was a `finally` here and no `catch`, so a login that failed — a backend that is down,
-    // which is the ordinary way to arrive at this screen and get nothing — re-enabled the button
-    // and said nothing at all. The user presses it again, and again, with the interface behaving
-    // exactly as it does when nothing is wrong. This is the FIRST screen of the application; it
-    // is the worst possible place to be silent about a failure.
     try {
       await failure.attempt(
-        'Could not sign in. The server may be unavailable — try again in a moment.',
+        'Could not sign in. The server may be unavailable - try again in a moment.',
         async () => onLogin(await api.login(name)),
       )
     } finally {
@@ -268,17 +144,12 @@ function Login({ onLogin, notice }: {
         </div>
         <p>A document editor for real-time teamwork.</p>
 
-        {/* Said before the buttons, because it is the answer to "why am I looking at this?" — the
-            user did not click sign out, their session ran out while they were away. Without it
-            they are silently ejected onto a login card and the application looks like it logs
-            people out at random. */}
+        {
+}
         {notice !== null && <p className="login-hint">{notice}</p>}
 
-        {/* The whole card body, replaced. A returning user is mid-exchange and must not be shown a
-            set of provider buttons: they are `<a href>` elements, so clicking one navigates back
-            to the provider and abandons an exchange that was about to succeed. Swapping only the
-            label — which is what this did — left them live, and said "Signing in…" on EVERY
-            provider at once, which names none of them. */}
+        {
+}
         {busy ? (
           <p className="login-hint">Signing you in…</p>
         ) : optionsFailed ? (
@@ -296,12 +167,7 @@ function Login({ onLogin, notice }: {
               <a
                 key={provider}
                 className="login-provider"
-                // A full-page navigation rather than fetch: the whole point of the redirect flow is
-                // that the browser visits the provider, and XHR cannot show a consent screen.
                 href={`${API_ORIGIN}/oauth2/authorization/${provider}`}
-                // The address is stashed HERE, on the way out, because this is the last moment it
-                // exists — the provider redirects to a fixed app-url and whatever the visitor
-                // arrived with is gone. See RETURN_KEY.
                 onClick={() => sessionStorage.setItem(RETURN_KEY, window.location.search)}
               >
                 Continue with {PROVIDER_LABELS[provider] ?? provider}
@@ -321,10 +187,8 @@ function Login({ onLogin, notice }: {
               placeholder="Your name"
               aria-label="Your name"
             />
-            {/* Disabled on an empty field, which it was not. LoginController substitutes "Guest"
-                for a blank name, so pressing this under a placeholder reading "Your name" signed
-                you in as somebody called Guest — a surprise, and one that then appears next to
-                your cursor for everybody else in the document. */}
+            {
+}
             <button type="submit" disabled={name.trim() === ''}>
               Get started
             </button>
@@ -337,7 +201,7 @@ function Login({ onLogin, notice }: {
           && options.providers.length === 0
           && !options.devLoginEnabled && (
           <p className="login-hint">
-            No sign-in method is configured on this server. See the README — a provider needs a
+            No sign-in method is configured on this server. See the README - a provider needs a
             client id and secret, or set COLLABEDIT_DEV_LOGIN=true for local development.
           </p>
         )}
@@ -366,36 +230,11 @@ function Workspace({ session, onSignOut }: {
   const [bootstrapFailed, setBootstrapFailed] = useState(false)
 
   useEffect(() => {
-    /**
-     * Set by the cleanup, and CHECKED after every await below — which it was not.
-     *
-     * The flag existed and only the `.catch` consulted it, so the success path ran to completion
-     * on an effect that had already torn down. Under `<StrictMode>` React deliberately mounts,
-     * unmounts and remounts every effect in development, so two of these run concurrently — and
-     * if the account has no documents yet, BOTH reach `api.createDocument(...)`
-     * and two real documents are created on the server, on a first visit, every time. That is not
-     * a development-only artifact: it leaves the user with a duplicate they have to delete.
-     *
-     * Guarding after each await also stops the rest: `setOpenId` on a workspace that is gone,
-     * an invitation redeemed and then its token stripped from an address bar the next run has
-     * already rewritten.
-     */
     let cancelled = false
     void refresh().then(async (list) => {
       if (cancelled) return
       const params = new URLSearchParams(window.location.search)
 
-      /**
-       * An invitation in the address (CP21).
-       *
-       * Redeemed for a role BEFORE the document is opened: without that the first request
-       * would go out with no access and end on the "we cannot open this" screen — the worst
-       * possible message for somebody who has just clicked an invitation.
-       *
-       * The token leaves the address immediately after redemption. Left in the address bar it
-       * would keep being passed on every time somebody copies the link — and it is a bearer
-       * credential.
-       */
       const invite = params.get('invite')
       if (invite !== null) {
         const url = new URL(window.location.href)
@@ -410,10 +249,6 @@ function Workspace({ session, onSignOut }: {
           setOpenId(redeemed.documentId)
           return
         } catch {
-          // Unknown, revoked or expired — one answer to three cases, exactly as with a
-          // document one may not read. We then open the document normally: if access exists
-          // for another reason it works, and if it does not, the user gets the no-access
-          // screen, which explains what to do.
           window.history.replaceState({}, '', url)
         }
       }
@@ -432,20 +267,8 @@ function Workspace({ session, onSignOut }: {
       }
       setOpenId(list[0].id)
     }).catch((error: unknown) => {
-      // Without this the failure was an uncaught rejection in the console and a page stuck on
-      // "Loading…" for ever: `openId` stayed null, so Workspace rendered the placeholder and
-      // nothing ever replaced it. A list that cannot be fetched is a normal thing to survive —
-      // an expired token, a backend that is down — and the user needs a way out of it.
       if (cancelled) return
-      // The two failures need different exits, and telling them apart is what `ApiError.status`
-      // is for. A backend that is down is worth retrying; a token the server refuses is not, and
-      // "Try again" against a 401 reloads into the same 401 until the user gives up. That one
-      // needs the sign-in screen, so it takes the same route as signing out.
       if (error instanceof ApiError && error.status === 401) {
-        // With a reason, because being dropped onto a sign-in screen with no explanation reads as
-        // the application logging people out at random — and with a twelve-hour token and a
-        // session that outlives the browser, "signed in yesterday, opened it today" is the
-        // ORDINARY case rather than an edge one.
         onSignOut('Your session expired. Please sign in again.')
         return
       }
@@ -456,13 +279,6 @@ function Workspace({ session, onSignOut }: {
     }
   }, [refresh, onSignOut])
 
-  /**
-   * The address is the source of truth about what is open.
-   *
-   * `pushState`, not `replaceState`: the browser's back button should return to the previous
-   * document. With `replaceState` the browser history contained no switches, so "back" threw the
-   * user out of the application — behaviour nobody expects from a document list.
-   */
   const select = useCallback((id: string) => {
     setOpenId(id)
     const url = new URL(window.location.href)
@@ -470,8 +286,6 @@ function Workspace({ session, onSignOut }: {
     window.history.pushState({ doc: id }, '', url)
   }, [])
 
-  // Browser navigation (back/forward) has to switch documents, otherwise the address and the
-  // content diverge after the first click of "back".
   useEffect(() => {
     const onPop = () => {
       const requested = new URLSearchParams(window.location.search).get('doc')
@@ -481,16 +295,6 @@ function Workspace({ session, onSignOut }: {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  /**
-   * Creates a document, and lets the failure travel.
-   *
-   * It deliberately does NOT catch: the button that triggers it lives inside `DocumentWorkspace`,
-   * which is where a message about it has to appear, so the error is reported there. Before this
-   * change nobody caught it at all — the button simply did nothing, no document appeared, and
-   * nothing said why. Creating a document is a gesture people repeat when it looks like it did not
-   * work, so silence here also risks a handful of real documents arriving at once when the
-   * connection comes back.
-   */
   async function createDocument() {
     const created = await api.createDocument('Untitled document')
     setDocuments((current) => [created, ...current])
@@ -514,9 +318,8 @@ function Workspace({ session, onSignOut }: {
         <div className="loading">
           <p>The document list could not be loaded.</p>
           <button onClick={() => window.location.reload()}>Try again</button>
-          {/* The second exit, for the failure that retrying cannot fix. A 401 already leaves on
-              its own, but a backend that refuses for any other reason must not strand somebody on
-              a screen whose only control reloads into the same screen. */}
+          {
+}
           <button className="linklike" onClick={onSignOut}>Sign out</button>
         </div>
       ): (
@@ -526,34 +329,14 @@ function Workspace({ session, onSignOut }: {
   )
 }
 
-/**
- * The signed-in person, and the way out.
- *
- * <h2>Why a menu and not a button</h2>
- * The avatar WAS the sign-out button, with a tooltip for a warning. Clicking it signed you out
- * instantly — and it was reported as a bug about the authentication, which is the right reading:
- * everywhere else on the web your own avatar opens an account menu, so a control that looks like
- * one and instead ends the session is not a surprising button, it is a broken-looking application.
- *
- * <p>A tooltip does not fix that. It appears after a delay the user has already clicked through,
- * and never at all on a touch screen. So the destructive thing is one step further in, behind a
- * menu that first says who you are — which is also the question somebody clicking their own avatar
- * is usually asking.
- */
 function AccountMenu({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [open, setOpen] = useState(false)
 
-
-  // Escape closes, and so does a click anywhere else — the two ways out of every other transient
-  // surface in this application (SharePanel, the rename field in DocumentList). A menu that only
-  // closes by clicking the thing that opened it is a menu people leave open by accident.
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false)
     }
-    // `pointerdown` rather than `click`: a click on another control would otherwise be spent
-    // closing this, and the user has to press the thing twice.
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target as Element | null)?.closest('.account')) setOpen(false)
     }
@@ -568,9 +351,6 @@ function AccountMenu({ session, onSignOut }: { session: Session; onSignOut: () =
   return (
     <div
       className="account"
-      // Tabbing past "Sign out" closes it. Escape and a click outside were the only two ways out,
-      // so a keyboard user who tabbed onward left the popover floating over the toolbar.
-      // `relatedTarget` is where focus went; inside our own subtree means it has not left.
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false)
       }}
@@ -579,15 +359,7 @@ function AccountMenu({ session, onSignOut }: { session: Session; onSignOut: () =
         type="button"
         className="avatar avatar-self"
         style={{ background: session.color }}
-        // NOT `aria-haspopup="menu"`, and the contents carry no menu roles either. `role="menu"`
-        // is a contract — only menuitem-shaped children, plus arrow-key navigation and roving
-        // focus — and none of that was implemented; assistive tech entering menu mode would have
-        // exposed the items and hidden the name, which is the one thing this exists to say. With
-        // one action and a line of text it is a disclosure, so it is spelled as one: the name is
-        // ordinary content, Sign out is an ordinary button in ordinary Tab order.
         aria-expanded={open}
-        // The accessible name would otherwise be the initials — a screen reader announcing "AB,
-        // button". Name-from-content beats `title`, and `title` never appears on touch at all.
         aria-label={`Account: ${session.displayName}`}
         onClick={() => setOpen((current) => !current)}
       >
@@ -597,8 +369,8 @@ function AccountMenu({ session, onSignOut }: { session: Session; onSignOut: () =
         <div className="account-menu">
           <div className="account-who">
             <strong>{session.displayName}</strong>
-            {/* Said out loud, because a shared browser is exactly where somebody signs out — and
-                being told which account is about to end is the whole reason to look here first. */}
+            {
+}
             <span>Signed in</span>
           </div>
           <button type="button" onClick={onSignOut}>
@@ -615,57 +387,20 @@ function DocumentWorkspace(props: {
   documentId: string
   documents: DocumentSummary[]
   onSelect: (id: string) => void
-  /** Rejects on failure — this component owns the message, because it owns the screen. */
   onCreate: () => Promise<void>
-  /** The list needs refreshing — after a rename, a delete or a restore. */
   onRefresh: () => void
-  /** Discards the identity and returns to the sign-in screen. */
   onSignOut: () => void
 }) {
   const { session, documentId } = props
 
-  // Everything about the document itself lives in the hook: opening it, the replica, the socket,
-  // the commands and their permission checks. What is left here is what the page LOOKS like.
-  // The split is described in useCollaborativeDocument; the short version is that only one of
-  // those two changes when somebody redesigns the page.
   const doc = useCollaborativeDocument(documentId, session)
 
   const [panel, setPanel] = useState<'history' | 'comments' | 'suggestions'>('history')
   const [shared, setShared] = useState(false)
   const [sharing, setSharing] = useState(false)
-  /**
-   * The address, shown when the clipboard could not be reached.
-   *
-   * Not a failure message: nothing went wrong that the user needs explaining, they simply have to
-   * copy it themselves. See `ui/browser.ts` for why a plain-`http:` deployment — which
-   * `config.ts` supports on purpose, and which is how two browsers on a LAN demonstrate this
-   * product — has no clipboard API at all.
-   */
   const [linkToCopy, setLinkToCopy] = useState<string | null>(null)
-  /**
-   * Stable across renders, because `SharePanel` keys two effects on it.
-   *
-   * Written inline as `onClose={() => setSharing(false)}` it was a new function on every render of
-   * this component — and this component re-renders on **every character typed**, because
-   * `doc.characters` is state here. So while the share dialog was open, every keystroke behind it
-   * tore down and re-registered the panel's Escape listener and its focus trap. It worked, and it
-   * did a window-level listener swap per character for nothing.
-   */
   const closeSharing = useCallback(() => setSharing(false), [])
   const failure = useFailure()
-  /**
-   * Sharing (CP21).
-   *
-   * The owner gets the panel; everybody else gets a copy of the address, which is what this
-   * button did for everyone before. The difference is not cosmetic: since CP21 a new document
-   * is private, so the address alone lets nobody in. Copying it is still a sensible gesture
-   * for somebody without access management ("send me that again"), but it is the invitation
-   * that opens the door — and only the owner can issue one.
-   *
-   * The copy used to be a bare `await navigator.clipboard.writeText(...)` in a function nothing
-   * awaited. On any page that is not `https:` or `localhost` that property does not exist, so the
-   * call threw a `TypeError` into an unhandled rejection: no copy, no "Copied", no message.
-   */
   async function share() {
     if (doc.role === 'owner') {
       setSharing(true)
@@ -709,9 +444,6 @@ function DocumentWorkspace(props: {
             ))}
           </div>
           {!doc.presenceComplete && (
-            // The list may be missing people connected to another instance (CP26). Said out
-            // loud rather than hidden: a participant list that is quietly short looks exactly
-            // like a document nobody else is in, and that is a worse lie than an honest doubt.
             <span className="role-badge" title="This instance cannot reach the cluster channel">
               List may be incomplete
             </span>
@@ -721,16 +453,12 @@ function DocumentWorkspace(props: {
               {doc.canComment ? 'You can comment' : 'Read-only'}
             </span>
           )}
-          {/* An editor whose replica has no identifier yet cannot type, and is told so.
-              The alternative considered was leaving only the "Connecting…" save indicator to
-              carry it: rejected, because a caret blinking in a document that silently discards
-              keystrokes is the interface telling somebody their work is being taken when it is
-              not. It is a fraction of a second on a live connection and permanent on a dead one,
-              and the second case is exactly the one worth naming. See `replicaAssigned`. */}
+          {
+}
           {doc.canWrite && !doc.replicaAssigned && (
             <span
               className="role-badge"
-              title="Waiting for the server to assign this browser a replica identifier — editing
+              title="Waiting for the server to assign this browser a replica identifier - editing
                      starts the moment it arrives"
             >
               Connecting…
@@ -740,14 +468,11 @@ function DocumentWorkspace(props: {
             {shared ? 'Copied' : 'Share'}
           </button>
           {linkToCopy !== null && (
-            // The clipboard was not available, so the address goes on screen instead, selected,
-            // for the user to copy by hand. A worse gesture than a working button and a far
-            // better one than a button that quietly does nothing.
             <input
               className="share-fallback"
               readOnly
               value={linkToCopy}
-              aria-label="Document address — copy it manually"
+              aria-label="Document address - copy it manually"
               autoFocus
               onFocus={(event) => event.target.select()}
             />
@@ -783,12 +508,8 @@ function DocumentWorkspace(props: {
           <div className="editor-toolbar">
             <FormatButtons onToggle={doc.toggleMark} disabled={!doc.canWrite} />
             <span className="tb-divider" />
-            {/* Block structure (CP30). The command and its styling both existed and nothing
-                called it, so heading, quotation and list were unreachable through the product —
-                the same shape of gap CP21 found in sharing, where grant and revoke were called
-                only from tests. The original UI scope's rule cuts both ways: a button that does nothing is a
-                lie in the interface, and a working gesture with no button is a feature that
-                is not there. */}
+            {
+}
             <BlockButtons onToggle={doc.toggleBlock} disabled={!doc.canWrite} />
             <span className="tb-divider" />
             <button
@@ -799,9 +520,8 @@ function DocumentWorkspace(props: {
             >
               💬
             </button>
-            {/* Suggestions (CP23). Shown to anybody who may comment — which includes editors,
-                because proposing a change to somebody else's paragraph is a reasonable thing to
-                do even when you could simply make it. */}
+            {
+}
             <button
               className={`tb-icon${panel === 'suggestions' ? ' active' : ''}`}
               title="Suggestions"
@@ -858,7 +578,7 @@ function DocumentWorkspace(props: {
               {doc.unavailable && (
                 <div className="unavailable-banner">
                   <strong>We cannot open this document.</strong> It may have been deleted, or you
-                  may not have access to it — ask whoever sent you the link to share it again.
+                  may not have access to it - ask whoever sent you the link to share it again.
                 </div>
               )}
               {failure.message !== null && (
@@ -876,14 +596,6 @@ function DocumentWorkspace(props: {
                   onSelectionChange={doc.onSelectionChange}
                   onUndo={doc.runUndo}
                   onRedo={doc.runRedo}
-                  // Two conditions, not one. The role is the obvious half. The other is that this
-                  // browser has not yet been told which replica it is, and until it has been, a
-                  // keystroke mints a character identity from the placeholder id 0 — which a
-                  // second browser in the same window mints too, so the merge algorithm treats two
-                  // different characters as one and one author's text disappears with nothing said
-                  // to either of them. `useCollaborativeDocument`'s `replicaAssigned` documents the
-                  // whole path; the short version is that `ready` fires before the socket is even
-                  // built, and it was the only gate here.
                   readOnly={!doc.canWrite || !doc.replicaAssigned}
                   registerRemoteApply={doc.registerRemoteApply}
                 />
@@ -918,15 +630,6 @@ function DocumentWorkspace(props: {
         {panel === 'suggestions' && (
           <SuggestionsPanel
             documentId={documentId}
-            // The character count alone would not do here: accepting a proposed INSERTION is the
-            // only decision that alters marks without altering the text, and the list has to
-            // follow it.
-            //
-            // This said DELETION, which is backwards, and the expression below it was right the
-            // whole time. A proposed insertion is already IN the document carrying a suggestion
-            // mark, so accepting it only takes the mark off — the server computes exactly that,
-            // `textStays = accept == (kind == INSERT)` in `SuggestionService`. The other three
-            // combinations all move characters and would have moved `doc.characters` on their own.
             revision={doc.characters + doc.formatting.length}
             canPropose={doc.canComment}
             canDecide={doc.canWrite}
@@ -940,22 +643,6 @@ function DocumentWorkspace(props: {
   )
 }
 
-/**
- * The formatting buttons.
- *
- * They act on the selection CodeMirror last reported, which is the same source the keyboard
- * shortcuts use. Clicking a button would normally take focus away from the editor and destroy the
- * selection first, which is what `onMouseDown` with `preventDefault` prevents — the selection is
- * still live when the click handler runs, and the hook's tracked range is still current.
- *
- * **This used to measure the range out of the DOM**, by summing the length of `Range.toString()`
- * over `.cm-content`. CodeMirror renders one `<div class="cm-line">` per line and
- * `Range.toString` concatenates only text-node data — it synthesises nothing for a block
- * boundary — so newlines were never counted and every offset was short by the number of lines
- * above the selection. On a document long enough to be virtualised only the lines near the caret
- * are in the DOM at all, so it was worse still. The bold landed on the wrong words, which reads as
- * a decision the author made.
- */
 function FormatButtons(
   { onToggle, disabled }:
     { onToggle: (type: string) => void; disabled: boolean },
@@ -987,15 +674,6 @@ function FormatButtons(
   )
 }
 
-/**
- * Heading, quotation and list (CP30).
- *
- * Separate from `FormatButtons` because the gesture is different in kind: these act on the LINE the
- * caret is on rather than on the selection. The `preventDefault` on mousedown is still needed and
- * for the same reason — without it the button takes the focus, the editor loses the caret, and
- * there is no line to act on. The heading level travels as the mark's value, which is why
- * `heading` carries one and the other two do not.
- */
 function BlockButtons(
   { onToggle, disabled }:
     { onToggle: (type: string, value: string | null) => void; disabled: boolean },
@@ -1015,11 +693,6 @@ function BlockButtons(
           className="tb-icon tb-format"
           title={button.label}
           aria-label={button.label}
-          // Called, unlike the reference that used to stand here. Without the call the button
-          // takes focus on mousedown, CodeMirror loses the caret, and `toggleBlock` has no line to
-          // act on — so heading, quotation and list did nothing at all when clicked, which is the
-          // exact failure the comment above says this handler exists to prevent. `FormatButtons`
-          // two functions up has always called it.
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => onToggle(button.type, button.value)}
           disabled={disabled}

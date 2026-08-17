@@ -23,36 +23,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * Suggestion mode (CP23) — the first thing the {@code commenter} role can DO.
- *
- * <p>Since CP12 a commenter has been someone who may read and talk but not change the text. In
- * practice that meant a person who could only ever write <i>about</i> a document. A suggestion is
- * a contribution <b>to</b> it that still does not carry the permission to change it — which is
- * what the role was for all along.
- *
- * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code commenterMayProposeAndMayNotDecide}</td>
- *       <td>The two capabilities collapsing into one. If proposing and accepting need the same
- *           permission, suggestion mode is either an editor's toy or a hole.</td></tr>
- *   <tr><td>{@code acceptingAnInsertionKeepsTheText}, {@code rejectingAnInsertionRemovesIt}</td>
- *       <td>The four outcomes crossed over. Accept-insert and reject-delete both mean "the text
- *           stays"; the other two mean "the text goes". Swapping a pair silently deletes work.
- *   </td></tr>
- *   <tr><td>{@code aProposalMovesWithTheTextAroundIt}</td>
- *       <td>Positions stored as offsets. Somebody typing before the proposal would leave it
- *           pointing at different words — attributed to a person who never wrote them.</td></tr>
- *   <tr><td>{@code decidingTwiceChangesNothingTheSecondTime}</td>
- *       <td>Two editors pressing accept at the same moment, from two instances.</td></tr>
- *   <tr><td>{@code aProposalWhoseTextIsGoneResolvesWithoutPretending}</td>
- *       <td>An accept that has nothing to apply reporting success as if it had applied
- *           something.</td></tr>
- * </table>
- */
 class SuggestionIT extends IntegrationTestBase {
-
     private static final Duration PATIENCE = Duration.ofSeconds(10);
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -106,7 +77,6 @@ class SuggestionIT extends IntegrationTestBase {
             HttpResponse.BodyHandlers.ofString());
     }
 
-    /** Seeds a document with text and returns the operation that produced it. */
     private Op seed(UUID document, User author, int replicaId, String text) throws Exception {
         try (TestStompClient client =
                  new TestStompClient(port, author.token(), document, replicaId)) {
@@ -116,7 +86,6 @@ class SuggestionIT extends IntegrationTestBase {
         }
     }
 
-    /** The identifier of the character at {@code index} of a run inserted in one operation. */
     private static String wireId(Op insertion, int index) {
         return "{\"replicaId\":" + insertion.id().replicaId()
             + ",\"lamport\":" + (insertion.id().lamport() + index) + "}";
@@ -141,8 +110,6 @@ class SuggestionIT extends IntegrationTestBase {
         assertThat(response.statusCode()).isEqualTo(200);
         return JSON.readTree(response.body()).get("id").asText();
     }
-
-    // ------------------------------------------------------------------
 
     @Test
     @DisplayName("a commenter may propose a change and may not decide on one")
@@ -188,7 +155,7 @@ class SuggestionIT extends IntegrationTestBase {
         String id = proposeInsertion(document, critic, seedOp, 10, " on the mat");
 
         assertThat(documents.textOf(document))
-            .as("a proposed insertion is real text from the moment it is proposed — that is what "
+            .as("a proposed insertion is real text from the moment it is proposed - that is what "
                 + "lets everybody see it merge like any other change")
             .isEqualTo("The cat sat on the mat");
         assertThat(suggestions.openFor(document)).hasSize(1);
@@ -259,7 +226,6 @@ class SuggestionIT extends IntegrationTestBase {
         var before = suggestions.openFor(document).getFirst();
         assertThat(before.range().from()).isEqualTo(7);
 
-        // Somebody types BEFORE the proposal. An offset would now point four characters short.
         try (TestStompClient anna2 = new TestStompClient(port, anna.token(), document, 816)) {
             anna2.insert(0, "Yes: ");
             anna2.awaitCondition(() -> anna2.lastAckSeq() > 1, PATIENCE, "insertion");
@@ -268,7 +234,7 @@ class SuggestionIT extends IntegrationTestBase {
 
         var after = suggestions.openFor(document).getFirst();
         assertThat(after.range().from())
-            .as("the proposal is anchored to characters, not to positions — the same principle "
+            .as("the proposal is anchored to characters, not to positions - the same principle "
                 + "as cursors and marks")
             .isEqualTo(12);
         assertThat(UUID.fromString(id)).isEqualTo(after.id());
@@ -298,14 +264,8 @@ class SuggestionIT extends IntegrationTestBase {
         assertThat(send("POST",
             "/api/documents/" + document + "/suggestions/" + id + "/reject",
             anna.token(), null).statusCode())
-            .as("the second decision must not re-open a settled one — two editors pressing at "
+            .as("the second decision must not re-open a settled one - two editors pressing at "
                 + "the same moment is the ordinary case, not the exotic one")
-            // 409, not 404, and the change is the point rather than a cosmetic renumbering.
-            // "Already decided" and "no such proposal" used to be the same answer, because
-            // SuggestionService.resolve returned one boolean for both — and they mean opposite
-            // things on screen: one says the list is stale in a way re-reading fixes, the other
-            // says the link is wrong. CommentController answers 409 for the same situation one
-            // package over, which is now the convention everywhere.
                 .isEqualTo(409);
         assertThat(documents.textOf(document)).isEqualTo("The cat sat on the mat");
     }
@@ -317,11 +277,6 @@ class SuggestionIT extends IntegrationTestBase {
         UUID document = privateDocument(anna, "Ordering");
         Op seedOp = seed(document, anna, 820, "The cat sat");
 
-        // An author the users table does not know. The row hits a foreign key and the insert
-        // throws — which is the point of the test rather than its setup: whatever fails while a
-        // proposal is being made, the in-memory document must not be left holding text that was
-        // never written to the log and never broadcast. That state survives no restart and no
-        // other client ever sees it.
         var missingAuthor = new User(UUID.randomUUID().toString(), null);
         assertThatThrownBy(() -> suggestions.proposeInsertion(document, missingAuthor.id(),
             new dev.collabedit.crdt.Id(seedOp.id().replicaId(), seedOp.id().lamport() + 10),
@@ -347,18 +302,10 @@ class SuggestionIT extends IntegrationTestBase {
         Op seedOp = seed(document, anna, 818, "The cat sat");
         String id = proposeDeletion(document, critic, seedOp, 7, 10);
 
-        // An editor deletes the anchored fragment the ordinary way, without touching the
-        // suggestion.
         try (TestStompClient anna2 = new TestStompClient(port, anna.token(), document, 819)) {
-            // Sync first: a delete is expressed against the local replica, and a client that has
-            // not caught up would be describing a range of a document it has not got.
             anna2.requestSync(0);
             anna2.awaitCondition(() -> anna2.text().equals("The cat sat"), PATIENCE, "caught up");
 
-            // Captured BEFORE the delete, and compared against. `> 1` was already true when it was
-            // asked: the sync above raises lastAckSeq to the head, which is 2 by this point (the
-            // seed and the suggest-delete mark). So the await returned on its first poll, proved
-            // nothing about the deletion, and the sleep below was doing the actual waiting.
             long beforeDelete = anna2.lastAckSeq();
             anna2.delete(7, 4);
             anna2.awaitCondition(() -> anna2.lastAckSeq() > beforeDelete, PATIENCE, "deletion");

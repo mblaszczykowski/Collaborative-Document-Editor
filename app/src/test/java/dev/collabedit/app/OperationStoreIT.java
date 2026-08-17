@@ -17,15 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * Batched writes to the operation log (the cluster design).
- *
- * <p>The tests target two properties the rest of the system rests on and that cannot be checked
- * without a real database: <b>write idempotence</b> (which follows from the primary key) and the
- * <b>continuity of {@code server_seq}</b> (which detection of lost Redis messages is based on).
- */
 class OperationStoreIT extends IntegrationTestBase {
-
     @Autowired
     OperationStore operations;
     @Autowired
@@ -64,9 +56,6 @@ class OperationStoreIT extends IntegrationTestBase {
             second.add(client.insert(client.visibleLength(), "b"));
         }
 
-        // A batch with OLD and NEW operations interleaved — exactly what a client retransmitting
-        // its buffer after reconnecting sends. The filtering has to be selective: store the new
-        // ones, skip the known ones, and leave no gap in the numbering.
         List<Op> mixed = new ArrayList<>();
         for (int i = 0; i < 30; i++) {
             mixed.add(first.get(i));
@@ -76,7 +65,7 @@ class OperationStoreIT extends IntegrationTestBase {
         List<StoredOperation> appended = operations.append(document, pending(mixed));
 
         assertThat(appended)
-            .as("the wrong operations were stored — duplicate filtering misbehaved")
+            .as("the wrong operations were stored - duplicate filtering misbehaved")
             .hasSize(30);
         assertThat(appended.stream().map(stored -> stored.op().id()).toList())
             .containsExactlyElementsOf(second.stream().map(Op::id).toList());
@@ -104,8 +93,6 @@ class OperationStoreIT extends IntegrationTestBase {
             .as("the repeated batch was stored a second time")
             .isEmpty();
 
-        // The numbers must be untouched: spending them on a rejected batch would create exactly
-        // the gap in the numbering that filtering-before-allocation guards against.
         Long nextSeq = jdbc.queryForObject(
             "SELECT next_server_seq FROM documents WHERE id = ?", Long.class, document);
         assertThat(nextSeq).isEqualTo(11L);
@@ -113,14 +100,11 @@ class OperationStoreIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("a large batch — the filtering query has fixed text regardless of size")
+    @DisplayName("a large batch - the filtering query has fixed text regardless of size")
     void largeBatch() {
         UUID document = newDocument();
         RgaDocument client = new RgaDocument(3);
 
-        // 500 operations, five times the production op-batch-max-size. The previous
-        // implementation built SQL with five hundred tuples here; the current one sends two
-        // arrays, and the query text is the same as for a single operation.
         List<Op> batch = new ArrayList<>();
         for (int i = 0; i < 500; i++) {
             batch.add(client.insert(i, "y"));
@@ -130,18 +114,12 @@ class OperationStoreIT extends IntegrationTestBase {
         assertNoGapsInSequence(document, 500);
     }
 
-    // ------------------------------------------------------------------
-    // Replica identifiers belong to somebody (CP12, completed)
-    // ------------------------------------------------------------------
-
     private String newUser(String name) {
         String id = UUID.randomUUID().toString();
         jdbc.update("INSERT INTO users (id, display_name, color) VALUES (?, ?, ?)",
             id, name, "#4C5FD5");
         return id;
     }
-
-
 
     private void assertNoGapsInSequence(UUID document, int expectedCount) {
         Integer count = jdbc.queryForObject(

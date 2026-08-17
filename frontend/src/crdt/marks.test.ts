@@ -2,16 +2,6 @@ import { describe, expect, test } from 'vitest'
 import { decodeOp, encodeOp } from './codec'
 import { RgaDocument } from './document'
 
-/**
- * Client-side formatting (CP13) — the twin of `MarkTest.java`.
- *
- * The same scenarios as in Java, deliberately: the two implementations have to behave identically,
- * and the conformance corpus enforces that for operations that already exist. What it does not
- * enforce is the decisions made when an operation is CREATED — the choice of anchor sides — because
- * those happen before anything comparable exists. Hence these tests.
- */
-
-/** The formatting of the character at a given position — easier to assert on than a list of runs. */
 function marksAt(document: RgaDocument, index: number): ReadonlyMap<string, string | null> {
   for (const span of document.formatting()) {
     if (index >= span.from && index < span.to) return span.marks
@@ -28,7 +18,6 @@ describe('formatting', () => {
     bartek.apply(base)
 
     const bold = ania.addMark(1, 5, 'bold', null)
-    // Bartek had NOT seen the bold mark yet.
     const inserted = bartek.insert(3, 'XY')
 
     ania.apply(inserted)
@@ -157,13 +146,11 @@ describe('formatting', () => {
     expect(decodeOp(encodeOp(removed))).toEqual(removed)
   })
 
-  test('the value field is OMITTED when unused — it has to match Java', () => {
+  test('the value field is OMITTED when unused - it has to match Java', () => {
     const document = new RgaDocument(1)
     document.insert(0, 'abcdef')
     const bold = document.addMark(1, 4, 'bold', null)
 
-    // Java omits the `v` field for a mark with no value. Sending `"v":null` would give different
-    // bytes on the wire for the same operation, and the conformance vectors compare text.
     expect(Object.keys(encodeOp(bold))).not.toContain('v')
   })
 })

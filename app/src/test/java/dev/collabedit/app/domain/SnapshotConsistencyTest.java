@@ -12,30 +12,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/**
- * A snapshot may only be labelled with a sequence number that actually describes it.
- *
- * <h2>The window this closes</h2>
- * A flush drains operations under the document lock, appends them to the log <b>outside</b> it,
- * and only then advances {@code appliedServerSeq}. In between, the document holds work that is in
- * neither the unwritten buffer nor the sequence number. A snapshot taken there gets a label lower
- * than the state it contains.
- *
- * <p>Document loading survives that: it re-applies the tail from the log and merging is
- * idempotent. {@code HistoryService.textAt} does not — it asks for the newest snapshot no later
- * than a past point and then replays only up to that point, so a snapshot holding operations from
- * beyond its label makes time travel show a state from slightly in the future.
- *
- * <h2>Why it became worth closing now</h2>
- * The window existed before the scheduler split as well: a merge between reading the number and
- * taking the snapshot did the same thing. But snapshots ran on the same thread as flushes, so a
- * whole flush — including a database round trip — could never fit inside it. Moving snapshots to
- * their own pool made it wide enough to matter. A regression introduced by a fix, which is the
- * kind worth writing a test for rather than a note.
- */
 @DisplayName("A snapshot is refused unless its label describes the state")
 class SnapshotConsistencyTest {
-
     private static DocumentReplica replica() {
         return new DocumentReplica(
             UUID.randomUUID(),
@@ -53,10 +31,6 @@ class SnapshotConsistencyTest {
     void idleReplicaIsConsistent() {
         DocumentReplica replica = replica();
         RgaDocument client = new RgaDocument(2, new TreapBlockList());
-        // applyRemote rather than a setter for the sequence number: this is how a replica's label
-        // actually advances without leaving anything unwritten — an operation that arrived from
-        // another instance is already in the log. The setter it replaces had no production caller
-        // at all, so a test using it was pinning a path nothing takes.
         replica.applyRemote(
             List.of(new StoredOperation(anInsert(client), 7, "u1", Instant.EPOCH)),
             System.currentTimeMillis());
@@ -76,17 +50,10 @@ class SnapshotConsistencyTest {
         assertThat(replica.withConsistentState((document, seq) -> seq))
             .as("""
                 The document holds an operation that is not in the log, so no sequence number \
-                describes this state — but a snapshot was allowed anyway.""")
+                describes this state - but a snapshot was allowed anyway.""")
             .isEmpty();
     }
 
-    /**
-     * The case the counter exists for, and the one no other check catches.
-     *
-     * <p>After {@code drainForFlush} the unwritten buffer is EMPTY and the sequence number has not
-     * moved yet — so every signal available before this change said "consistent", while the
-     * document held an operation whose {@code server_seq} was still being assigned.
-     */
     @Test
     @DisplayName("a flush in flight is refused, even though nothing is left in the buffer")
     void aFlushInFlightBlocksASnapshot() {
@@ -103,7 +70,7 @@ class SnapshotConsistencyTest {
         assertThat(replica.withConsistentState((document, seq) -> seq))
             .as("""
                 The buffer is empty and the sequence number has not moved, so every other signal \
-                says this state is consistent — and it is not: the drained operation is in the \
+                says this state is consistent - and it is not: the drained operation is in the \
                 document and its server_seq is still being assigned. A snapshot here is labelled \
                 with a number lower than what it contains.""")
             .isEmpty();
@@ -124,13 +91,6 @@ class SnapshotConsistencyTest {
             .contains(42L);
     }
 
-    /**
-     * A failed write must still end the flush.
-     *
-     * <p>Otherwise the counter never returns to zero and the document stops snapshotting for the
-     * lifetime of the process — a leak that shows up as "this one document loads slowly" long
-     * after the write that failed.
-     */
     @Test
     @DisplayName("a flush that wrote nothing still ends, so snapshots resume")
     void aFailedFlushStillEnds() {
@@ -148,27 +108,6 @@ class SnapshotConsistencyTest {
             .isPresent();
     }
 
-    /**
-     * The other way a replica could hold work above its own label — through the CLUSTER path.
-     *
-     * <h2>What was wrong</h2>
-     * {@code DocumentService.applyRemote} applied incoming operations one at a time through
-     * {@code withLock} and advanced {@code appliedServerSeq} only after the whole loop. Between the
-     * first {@code apply} and that advance the replica held operations from ABOVE its label while
-     * reporting itself consistent — {@code withConsistentState} guards {@code flushesInFlight} and
-     * {@code unwritten}, and that path touches neither.
-     *
-     * <p>Not a narrow window either: the snapshot sweep runs on the maintenance pool, cluster
-     * messages arrive on a four-to-eight thread listener pool, and anti-entropy runs alongside
-     * both. A snapshot taken inside it is stored with a number LOWER than the state it holds, and
-     * {@code HistoryService.textAt} trusts that number to mean "exactly the operations up to here"
-     * — so time travel shows a state from the future, and {@code /history/restore} builds its
-     * target from it.
-     *
-     * <p>The fix is structural rather than a wider guard: applying and labelling happen under ONE
-     * lock acquisition, so the inconsistent state has no instant to exist in. This test asserts
-     * what that buys — after applying, the label already covers what was applied.
-     */
     @Test
     @DisplayName("remote operations and their label move together, so no snapshot sees them unlabelled")
     void remoteOperationsAreLabelledAsTheyAreApplied() {

@@ -6,35 +6,7 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
 
-/**
- * A {@link BlockList} implementation based on a treap with aggregates in the nodes — the O(log n)
- * version.
- *
- * <p>It was written <b>after</b> {@link ArrayBlockList} and after measuring that one with a JMH
- * benchmark. The order is deliberate: first the obviously correct version, then numbers showing it
- * is too slow, and only then the optimisation — with the same property test suite on both, so that
- * the optimisation changed nothing in the behaviour
- * ({@code BlockListEquivalenceProperties.naiveAndIndexedProduceIdenticalDocuments}).
- *
- * <h2>Three aggregates in every node</h2>
- * <ul>
- *   <li>{@code size} — the number of blocks in the subtree, which gives lookup by block index,</li>
- *   <li>{@code visible} — the number of visible characters, which gives lookup by position in the
- *       text <b>skipping tombstones</b> without visiting them,</li>
- *   <li>{@code total} — all characters, which gives the tombstone overhead in O(1).</li>
- * </ul>
- *
- * <p>Lookup by identifier cannot be done with the tree alone, because the tree is ordered by
- * position rather than by identifier. Hence an additional map
- * {@code replica → (starting lamport → node)}: {@code floorEntry} finds the candidate, and its
- * position is computed by climbing the parent pointers.
- *
- * <p>The heap priorities are <b>deterministic</b> — computed from the block's identifier rather
- * than random. That way the same sequence of operations produces an identical tree on every run,
- * which is a precondition for reproducing counterexamples from the property-based tests.
- */
 public final class TreapBlockList implements BlockList {
-
     private static final class Node {
         Block block;
         final int priority;
@@ -52,13 +24,8 @@ public final class TreapBlockList implements BlockList {
     }
 
     private Node root;
-    /** replica → (block's starting lamport → node). For lookup by identifier. */
     private final Map<Integer, NavigableMap<Long, Node>> index = new HashMap<>();
 
-    /**
-     * The heap priority, computed deterministically from the identifier (a splitmix64 variant). A
-     * random generator would give the same balance but would take away reproducibility.
-     */
     private static int priorityOf(Id id) {
         long h = id.replicaId() * 0x9E3779B97F4A7C15L + id.lamport() * 0xBF58476D1CE4E5B9L;
         h ^= (h >>> 31);
@@ -66,10 +33,6 @@ public final class TreapBlockList implements BlockList {
         h ^= (h >>> 33);
         return (int) h;
     }
-
-    // ------------------------------------------------------------------
-    // Aggregates
-    // ------------------------------------------------------------------
 
     private static int sizeOf(Node node) {
         return node == null ? 0 : node.size;
@@ -89,16 +52,11 @@ public final class TreapBlockList implements BlockList {
         node.total = node.block.length() + totalOf(node.left) + totalOf(node.right);
     }
 
-    /** Updates the aggregates from the given node up to the root. */
     private static void pullUp(Node from) {
         for (Node node = from; node != null; node = node.parent) {
             pull(node);
         }
     }
-
-    // ------------------------------------------------------------------
-    // Rotations
-    // ------------------------------------------------------------------
 
     private void replaceInParent(Node node, Node replacement) {
         Node parent = node.parent;
@@ -140,10 +98,6 @@ public final class TreapBlockList implements BlockList {
         pull(pivot);
     }
 
-    // ------------------------------------------------------------------
-    // Navigation
-    // ------------------------------------------------------------------
-
     private Node nodeAt(int blockIndex) {
         Node node = root;
         int remaining = blockIndex;
@@ -161,7 +115,6 @@ public final class TreapBlockList implements BlockList {
         throw new IndexOutOfBoundsException("no block at index " + blockIndex);
     }
 
-    /** A node's position in in-order traversal — climbing the parents, O(log n). */
     private static int rankOf(Node node) {
         int rank = sizeOf(node.left);
         for (Node current = node; current.parent != null; current = current.parent) {
@@ -179,10 +132,6 @@ public final class TreapBlockList implements BlockList {
         }
         return current;
     }
-
-    // ------------------------------------------------------------------
-    // BlockList
-    // ------------------------------------------------------------------
 
     @Override
     public int size() {
@@ -219,8 +168,6 @@ public final class TreapBlockList implements BlockList {
         pullUp(node.parent);
         registerIndex(node);
 
-        // Restoring the heap property. Rotations do not change the contents of the ancestors'
-        // subtrees, so their aggregates stay correct — a pull inside the rotation is enough.
         while (node.parent != null && node.priority > node.parent.priority) {
             if (node.parent.left == node) {
                 rotateRight(node.parent);
@@ -244,8 +191,6 @@ public final class TreapBlockList implements BlockList {
         Node node = nodeAt(blockIndex);
         unregisterIndex(node);
 
-        // Rotate the node down to a leaf, always promoting the child with the higher priority —
-        // that keeps the heap property intact with no extra repair.
         while (node.left != null || node.right != null) {
             if (node.right == null
                 || (node.left != null && node.left.priority > node.right.priority)) {
@@ -264,28 +209,10 @@ public final class TreapBlockList implements BlockList {
     public void markDeleted(int blockIndex, Id deleteId) {
         Node node = nodeAt(blockIndex);
         boolean wasVisible = !node.block.deleted();
-        // Called even when the block is ALREADY a tombstone, unlike the previous version which
-        // returned early. A deletion that partially overlaps existing tombstones has to reach the
-        // blocks that are already dead: markRangeDeleted walks a range block by block, so one
-        // operation routinely covers both live and dead blocks, and a block skipped here keeps
-        // whatever deleter it already had. Block.markDeleted takes the MINIMUM, so arriving is what
-        // lets an earlier deletion replace a later one — and GC's stability test is per block, so
-        // the block skipped is the block that stays uncollectable longer than it needs to.
-        //
-        // The rest of this comment used to justify the call differently: that the minimum makes the
-        // recorded deleter a function of the operation SET rather than of delivery order. It does
-        // not, and Block.markDeleted now retracts it in as many words — isAlreadyKnown dismisses
-        // the second of two concurrent deletions of the same range before its identifier ever gets
-        // here, and the measurement is recorded there: the same operation set in two orders
-        // produces different snapshot bytes. That asymmetry is documented rather than fixed, and it
-        // was never what this call was for.
         node.block.markDeleted(deleteId);
         if (!wasVisible) {
-            // The aggregates already count this block as invisible; nothing moved.
             return;
         }
-        // Without this the `visible` aggregate in the ancestors would go stale, and lookup by
-        // position would start returning wrong results — silently, and only sometimes.
         pullUp(node);
     }
 
@@ -357,21 +284,6 @@ public final class TreapBlockList implements BlockList {
         return accumulated;
     }
 
-    /**
-     * In-order traversal without materialising the list.
-     *
-     * <p>This used to copy every block into an {@code ArrayList} on every call, which is the one
-     * place in this class where the O(log n) claim in the class javadoc did not hold: three of the
-     * callers — {@code RgaDocument.text()}, {@code snapshot()} and {@code gc()} — only walk the
-     * blocks in order, and each was paying a full-size allocation and copy to do it. The nodes
-     * already carry {@code parent} pointers for the rotations, so the successor is reachable
-     * without any auxiliary structure.
-     *
-     * <p>The iterator does not detect concurrent modification, and neither did the copy — it
-     * merely hid it behind a stale snapshot of the list. No caller mutates while iterating:
-     * {@code gc} completes its reference pass before it removes anything, and does the removing by
-     * index.
-     */
     @Override
     public Iterator<Block> iterator() {
         return new Iterator<>() {
@@ -408,14 +320,11 @@ public final class TreapBlockList implements BlockList {
         if (node.right != null) {
             return leftmost(node.right);
         }
-        // Climb until we come up from a LEFT child: that parent is the next block in order.
         while (node.parent != null && node.parent.right == node) {
             node = node.parent;
         }
         return node.parent;
     }
-
-    // ------------------------------------------------------------------
 
     private void registerIndex(Node node) {
         index.computeIfAbsent(node.block.start().replicaId(), key -> new TreeMap<>())

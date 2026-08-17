@@ -23,31 +23,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * Opening a document from a snapshot instead of from the whole log (CP24).
- *
- * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code snapshotRebuildsTheSameDocument}</td>
- *       <td>The endpoint handing out a state that is not the current one — the failure that
- *           matters here, because it is silent: the client would open a document subtly unlike
- *           the server's and merge the difference back on the first keystroke.</td></tr>
- *   <tr><td>{@code theSequenceNumberNeverRunsAheadOfTheSnapshot}</td>
- *       <td>The boundary going the wrong way. A number behind the snapshot costs duplicate
- *           operations, which merging discards; a number ahead of it skips operations, which
- *           loses text.</td></tr>
- *   <tr><td>{@code aStrangerGetsNothing}</td>
- *       <td>A fourth route to a document's content, of exactly the kind the history endpoints
- *           were for a whole checkpoint.</td></tr>
- *   <tr><td>{@code snapshotIsSmallerThanTheLogItReplaces}</td>
- *       <td>The measurement, not an assertion about taste: if the snapshot were not decisively
- *           smaller, this checkpoint would have no reason to exist and the README should say so.
- *   </td></tr>
- * </table>
- */
 class SnapshotEndpointIT extends IntegrationTestBase {
-
     private static final Logger log = LoggerFactory.getLogger(SnapshotEndpointIT.class);
     private static final Duration PATIENCE = Duration.ofSeconds(15);
 
@@ -92,8 +68,6 @@ class SnapshotEndpointIT extends IntegrationTestBase {
         return HttpClient.newHttpClient().send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
     }
 
-    // ------------------------------------------------------------------
-
     @Test
     @DisplayName("the snapshot rebuilds exactly the document the server holds")
     void snapshotRebuildsTheSameDocument() throws Exception {
@@ -105,7 +79,6 @@ class SnapshotEndpointIT extends IntegrationTestBase {
             client.awaitCondition(() -> client.lastAckSeq() >= 1, PATIENCE, "text");
             client.markReturningOp(0, 3, "bold", null);
             client.awaitCondition(() -> client.lastAckSeq() >= 2, PATIENCE, "mark");
-            // " on the mat" — eleven characters from index 11, leaving "The cat sat".
             client.delete(11, 11);
             client.awaitCondition(() -> client.lastAckSeq() >= 3, PATIENCE, "deletion");
         }
@@ -172,17 +145,6 @@ class SnapshotEndpointIT extends IntegrationTestBase {
         User anna = newUser("Anna");
         UUID document = privateDocument(anna, "Measurement");
 
-        // 200 single-character operations: what typing looks like, and the shape that makes the
-        // old open path expensive — every keystroke is an operation the client used to replay.
-        //
-        // Paced at 20 ms, which is deliberate rather than cosmetic: the server refuses above 60
-        // operations a second (CP12), so a tight loop measures the rate limiter instead of the
-        // format. Real typing is slower than this.
-        // PROSE, not "x" repeated. That distinction is the difference between a measurement and
-        // a compliment: gzip crushes a repeated character to almost nothing, so a document of
-        // 200 identical letters would report a ratio of several hundred and mean nothing. Real
-        // text compresses about two- or threefold, and the number below is about the format
-        // rather than about the compressor.
         String prose = "Another sentence of the document, typed one character at a time, the way real "
             + "writing goes in an editor several people share at once. ";
         try (TestStompClient client = new TestStompClient(port, anna.token(), document, 904)) {
@@ -198,13 +160,13 @@ class SnapshotEndpointIT extends IntegrationTestBase {
             Long.class, document);
         int snapshotBytes = fetchSnapshot(document, anna.token()).body().length;
 
-        log.info("CP24 open cost for 200 operations: log {} B, snapshot {} B ({}x smaller)",
+        log.info("open cost for 200 operations: log {} B, snapshot {} B ({}x smaller)",
             logBytes, snapshotBytes,
             String.format("%.1f", logBytes / (double) snapshotBytes));
 
         assertThat(snapshotBytes)
             .as("if the snapshot were not decisively smaller than the log, this checkpoint would "
-                + "have no reason to exist — the number belongs in the README either way")
+                + "have no reason to exist - the number belongs in the README either way")
             .isLessThan(logBytes.intValue() / 4);
     }
 }

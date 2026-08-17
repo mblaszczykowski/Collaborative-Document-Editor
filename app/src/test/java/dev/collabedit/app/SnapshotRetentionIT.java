@@ -16,30 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * The snapshot table is a cache, and a cache that is never evicted is a leak.
- *
- * <h2>What was wrong</h2>
- * Nothing ever deleted a snapshot row. One is written every {@code snapshot-every-n-ops}
- * operations <b>or</b> after {@code snapshot-after-idle-ms} of quiet, and each holds a full
- * compressed copy of the document — so the table grew for the lifetime of the deployment, and
- * fastest for the documents people actually used.
- *
- * <p>The asymmetry is the interesting part. Tombstone GC <i>in memory</i> has
- * a causal-stability calculation, a
- * rule for excluding unresponsive replicas, and a checkpoint of its own. The cache <i>on disk</i>
- * had no policy at all. The operation-log decision describes the snapshot as a disposable cache throughout; the
- * code had implemented "cache" and skipped "disposable".
- *
- * <h2>Why retention is not one</h2>
- * The newest snapshot is not the only one that gets read: {@link HistoryService#textAt} asks for
- * the newest snapshot <b>not later than</b> a past {@code server_seq}. Keeping only the head
- * would bound the table and make every history lookup replay the log from zero, which is trading
- * a disk problem for a latency problem. {@link #historyStillUsesASnapshotAfterPruning()} is the
- * test that keeps that trade honest.
- */
 class SnapshotRetentionIT extends IntegrationTestBase {
-
     @Autowired
     SnapshotStore snapshots;
     @Autowired
@@ -57,13 +34,6 @@ class SnapshotRetentionIT extends IntegrationTestBase {
         return id;
     }
 
-    /**
-     * Builds a document with {@code rounds} snapshots taken along the way.
-     *
-     * <p>Operations go through {@link OperationStore} so that the log is real: the point of a
-     * snapshot is to be a shortcut over a log that exists, and a test that skipped the log would
-     * not be able to check that removing snapshots changes nothing.
-     */
     private long buildWithSnapshots(UUID document, int rounds, int opsPerRound) {
         RgaDocument replica = new RgaDocument(1);
         long lastSeq = 0;
@@ -91,7 +61,7 @@ class SnapshotRetentionIT extends IntegrationTestBase {
             .as("""
                 The snapshot table grew past the retention limit. Every snapshot holds a full \
                 copy of the document, so without pruning this table grows for the lifetime of \
-                the deployment — see SnapshotStore.prune.""")
+                the deployment - see SnapshotStore.prune.""")
             .isEqualTo(kept);
     }
 
@@ -116,13 +86,6 @@ class SnapshotRetentionIT extends IntegrationTestBase {
         assertThat(remaining).isSortedAccordingTo(java.util.Comparator.reverseOrder());
     }
 
-    /**
-     * Pruning must not turn history lookups into full log replays.
-     *
-     * <p>This is the assertion that justifies a retention above one, and it fails if someone
-     * later "simplifies" the policy to keeping only the head. It asks for the state at a point in
-     * the past and checks a snapshot older than the head is available to serve it.
-     */
     @Test
     @DisplayName("history at a past point still has a snapshot to start from")
     void historyStillUsesASnapshotAfterPruning() {
@@ -135,24 +98,13 @@ class SnapshotRetentionIT extends IntegrationTestBase {
             Long.class, document);
         long head = remaining.getFirst();
 
-        // JUST BELOW THE HEAD, and the choice is the whole test. This used to ask for
-        // `remaining.getLast()` — the OLDEST surviving snapshot — which with a retention of one is
-        // the head itself, so findLatestUpTo found it and the assertion passed in exactly the case
-        // the javadoc says it exists to fail: "someone later simplifies the policy to keeping only
-        // the head".
-        //
-        // Asking below the head instead makes the head useless as an answer, so only a SECOND
-        // surviving snapshot can satisfy it — which is the property retention above one buys, and
-        // the only one worth asserting here. (Halfway back does not work and it is worth saying
-        // why: retention keeps the NEWEST n, so with n=3 out of 8 snapshots nothing survives near
-        // the start of the document. That is the policy behaving correctly, not a gap.)
         long justBelowHead = head - 1;
 
         assertThat(snapshots.findLatestUpTo(document, justBelowHead))
             .as("""
                 No snapshot survives below the head, so every history lookup would replay the \
                 whole log. Retention of one bounds the table and moves the cost somewhere else \
-                rather than removing it — see the class javadoc.""")
+                rather than removing it - see the class javadoc.""")
             .isPresent()
             .get()
             .satisfies(found -> assertThat(found.upToServerSeq())
@@ -161,15 +113,8 @@ class SnapshotRetentionIT extends IntegrationTestBase {
                 .isLessThan(head));
     }
 
-    /**
-     * The property the whole caching scheme rests on, re-checked after pruning.
-     *
-     * <p>CP5 established that deleting every snapshot changes no result. Pruning is deletion, so
-     * it has to hold afterwards too — otherwise retention would have quietly promoted the cache
-     * to a source of truth, which is the failure the operation-log decision is written to prevent.
-     */
     @Test
-    @DisplayName("pruning changes no result — the log is still the source of truth")
+    @DisplayName("pruning changes no result - the log is still the source of truth")
     void prunedSnapshotsChangeNothing() {
         UUID document = newDocument();
         long headSeq = buildWithSnapshots(document, properties.persistence().snapshotsKeptPerDocument() + 5, 4);

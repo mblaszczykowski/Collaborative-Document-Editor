@@ -1,21 +1,9 @@
 import { idEquals, idPlus, type Id } from './types'
 
-/**
- * A contiguous run of characters from one replica — the unit of storage.
- *
- * A document is not a list of characters but a list of blocks: typing 20 characters in a row is one
- * object, not 20. The justification and the invariants are in the README, "The document is a list of runs".
- *
- * INVARIANT: a block is either entirely alive or entirely deleted. Deleting part of one splits the
- * block first.
- */
 export class Block {
   readonly start: Id
   readonly text: string
-  /** The left origin of the block's FIRST character; null means the start of the document. */
   readonly originLeft: Id | null
-  /** The only mutable field — marking a tombstone is the only change an existing block can
-      undergo without being split. */
   deleted: boolean
 
   constructor(start: Id, text: string, originLeft: Id | null, deleted: boolean) {
@@ -56,13 +44,6 @@ export class Block {
     return value.lamport - this.start.lamport
   }
 
-  /**
-   * Splits the block into [0, offset) and [offset, length).
-   *
-   * The right part's origin is the left part's last character — which makes a split a purely
-   * technical operation that does not change the document's logical structure. This is a key
-   * invariant: if splitting changed meaning, the result would depend on WHEN a block was split.
-   */
   splitAt(offset: number): [Block, Block] {
     if (offset <= 0 || offset >= this.text.length) {
       throw new Error(`split outside the block's interior: offset=${offset}, length=${this.text.length}`)
@@ -78,12 +59,6 @@ export class Block {
     ]
   }
 
-  /**
-   * Whether `other` can be appended to the end of this block without changing meaning.
-   *
-   * This is the fast path for ordinary typing — without it every keystroke would create a separate
-   * block and run-length compression would gain nothing.
-   */
   canAppend(other: Block): boolean {
     return (
       !this.deleted &&
@@ -97,8 +72,4 @@ export class Block {
   append(more: string): Block {
     return new Block(this.start, this.text + more, this.originLeft, this.deleted)
   }
-
-  // describe() used to live here, for the diagnostics view. Its only caller was
-  // RgaDocument.describeBlocks(), which had no caller of its own.
 }
-

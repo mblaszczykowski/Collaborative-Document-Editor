@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Stubbed BEFORE the module loads, and that ordering is the reason for the dynamic import below:
-// `api.ts` reaches `config.ts`, which derives the backend origin from the address at import time,
-// so a static import throws "window is not defined" in the Node test environment before a single
-// assertion runs. The same shape as `ui/session.test.ts`, for the same reason.
 vi.stubGlobal('window', {
   location: {
     search: '',
@@ -15,23 +11,6 @@ vi.stubGlobal('window', {
 })
 
 const { ApiError, api, setAuthToken, setUnauthorizedHandler } = await import('./api')
-
-/**
- * What happens when the server stops recognising our token.
- *
- * <h2>The failure these catch</h2>
- * A token lasts twelve hours and the session outlives the browser, so it lapses far more often
- * while the application is OPEN than in any other way. Exactly one place used to notice — the
- * document-list bootstrap — and what the other callers did instead was worse than silence: the
- * editor showed "We cannot open this document. It may have been deleted, or you may not have
- * access to it — ask whoever sent you the link to share it again", which is untrue and sends the
- * user to bother a colleague who cannot help, and the side panels went on displaying data from
- * before the session ended.
- *
- * <p>Moving the check into `send` covers every REST call at once, including ones written later.
- * The rule that matters, and the one a future edit is most likely to break, is the second test:
- * a 401 counts as an expiry only when a token was actually presented.
- */
 
 const OK = { ok: true, status: 200, json: async () => ({}) } as Response
 const UNAUTHORIZED = { ok: false, status: 401 } as Response
@@ -48,8 +27,6 @@ describe('a 401 ends the session', () => {
   afterEach(() => {
     setUnauthorizedHandler(null)
     setAuthToken(null)
-    // Deliberately NOT `unstubAllGlobals`: that would take the `window` stub above with it, and
-    // every later file sharing this worker would import `config.ts` into an empty global.
   })
 
   it('reports an expiry when a request made WITH a token is refused', async () => {
@@ -62,14 +39,12 @@ describe('a 401 ends the session', () => {
       expired,
       `A 401 went unnoticed. Only one caller used to handle this, so an expiry while the
        application is open surfaced as whatever that particular screen says when a request
-       fails — for the editor, a message telling the user to ask a colleague to re-share a
+       fails - for the editor, a message telling the user to ask a colleague to re-share a
        document the colleague has not touched.`,
     ).toHaveBeenCalledOnce()
   })
 
   it('does NOT report an expiry for a request made with no token', async () => {
-    // The sign-in exchange: no session yet, and 401 is the ordinary answer to a code that is
-    // unknown, already spent, or older than a minute.
     setAuthToken(null)
     vi.stubGlobal('fetch', vi.fn(async () => UNAUTHORIZED))
 
@@ -78,7 +53,7 @@ describe('a 401 ends the session', () => {
     expect(
       expired,
       `A failed sign-in was treated as an expired session. The user is already looking at the
-       sign-in screen, so at best this is noise — but the handler discards the stored identity,
+       sign-in screen, so at best this is noise - but the handler discards the stored identity,
        so it can also throw away a session a concurrent successful exchange has just
        established.`,
     ).not.toHaveBeenCalled()
@@ -92,7 +67,7 @@ describe('a 401 ends the session', () => {
 
     expect(
       expired,
-      'a 404 signed the user out — every deleted document would now end the session',
+      'a 404 signed the user out - every deleted document would now end the session',
     ).not.toHaveBeenCalled()
   })
 
@@ -103,7 +78,7 @@ describe('a 401 ends the session', () => {
     await expect(
       api.listDocuments(),
       `The rejection was swallowed once the handler existed. Whatever was awaiting the request
-       would then wait for ever — a spinner that never resolves, on top of a session that has
+       would then wait for ever - a spinner that never resolves, on top of a session that has
        already ended.`,
     ).rejects.toMatchObject({ status: 401 })
   })

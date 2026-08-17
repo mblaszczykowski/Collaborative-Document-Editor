@@ -8,25 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-/**
- * Reading a document identifier out of a Redis channel name.
- *
- * <table>
- *   <caption>Test -> failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code channelRoundTrip}</td>
- *       <td>Drift between building a channel name and parsing it. The effect is silent and
- *           catastrophic: the instance discards EVERY cluster message, because it cannot assign
- *           any of them to a document. Nothing breaks immediately — anti-entropy pulls the
- *           operations in — but propagation between instances drops from milliseconds to thirty
- *           seconds, and no log shows it.</td></tr>
- *   <tr><td>{@code malformedChannelIsRejected}</td>
- *       <td>A name not matching the pattern throws on the Redis listener thread or — worse —
- *           yields a random UUID that sends the message to the wrong document.</td></tr>
- * </table>
- */
 class ClusterBusTest {
-
     @Test
     @DisplayName("building a channel name and parsing it are mutually inverse")
     void channelRoundTrip() {

@@ -3,20 +3,6 @@ import { api, type DocumentSummary } from '../api'
 import { FailureNote } from './FailureNote'
 import { useFailure } from './useFailure'
 
-/**
- * The document list, with search, renaming and a bin (CP11).
- *
- * **The content preview arrives from the server ready-made**, materialised at snapshot time. The
- * alternative would be opening every document to show its first line — a cost growing with the
- * number of documents times their size, paid on every visit to the list.
- *
- * **Deletion is soft, and the interface says so.** "Delete" moves a document to the bin; the
- * operation log is left untouched, because it is the source of truth. If the button
- * really deleted, it would also erase the document's entire history — and the user would have no
- * way of learning that beforehand.
- */
-
-/** The interval between a keystroke and a query to the server. */
 const SEARCH_DEBOUNCE_MS = 200
 
 export function DocumentList(props: {
@@ -35,38 +21,18 @@ export function DocumentList(props: {
   const failure = useFailure()
   const { attempt } = failure
 
-  // The query goes out only once typing stops. Without this, every keystroke in the search box is
-  // a separate full-text query — exactly the pattern that, in cursor broadcasting, cost us traffic
-  // growing with the square of the number of people.
   useEffect(() => {
     if (debounce.current !== null) window.clearTimeout(debounce.current)
     if (query.trim() === '') {
       setResults(null)
       return
     }
-    /**
-     * The guard against this effect's OWN stale answers.
-     *
-     * Debouncing does not fix out-of-order responses and `useDebouncedValue`'s own documentation
-     * says so, naming this exact failure as the thing it does not cover. `HistoryPanel` carries
-     * the guard; this effect, which is where the pattern was first written down in this
-     * repository, did not.
-     *
-     * The failure is concrete: type "rep", pause long enough for the query to go out, type "ort".
-     * If the answer for "rep" comes back after the answer for "report", the list shows matches for
-     * "rep" while the box reads "report" — a search result set that does not correspond to the
-     * search, with nothing to indicate it. The count in the section label makes it look
-     * authoritative.
-     */
     let stale = false
     debounce.current = window.setTimeout(() => {
       api.searchDocuments(query.trim())
         .then((found) => {
           if (!stale) setResults(found)
         })
-        // Not a message: search runs on its own as the user types, and interrupting them with a
-        // banner for a query they may already have abandoned is worse than leaving the previous
-        // results up. The console keeps the detail.
           .catch((error: unknown) => console.error('the search could not be run', error))
     }, SEARCH_DEBOUNCE_MS)
     return () => {
@@ -83,9 +49,6 @@ export function DocumentList(props: {
     if (showTrash) loadTrash()
   }, [showTrash, loadTrash])
 
-  // Each of the four below used to be an unhandled rejection. Renaming is the one that lies
-  // hardest: the input closes on the way in, so the old title comes back on the next refresh and
-  // the user reads it as their new name having been ignored rather than refused.
   async function rename(id: string, title: string) {
     setRenaming(null)
     if (title.trim() === '') return
@@ -160,16 +123,8 @@ export function DocumentList(props: {
               {entry.preview !== '' && <span className="sb-preview">{entry.preview}</span>}
             </button>
           )}
-          {/* Renaming needs a control of its own.
-              It used to be double-click on the entry plus a `title` saying so, which means there
-              was NO keyboard route to it at all: `dblclick` has no keyboard equivalent, Enter and
-              Space on that button open the document, and a `title` attribute is a mouse hint that
-              a screen reader may never announce. A capability reachable only by pointer is a
-              capability half the users do not have — the same argument the delete button's own
-              `:focus-visible` rule already makes two files away in styles.css.
-
-              The double-click stays: it is the faster gesture for anyone who knows it, and this
-              button is what makes it discoverable rather than folklore. */}
+          {
+}
           <button
             className="sb-edit"
             onClick={() => setRenaming(entry.id)}

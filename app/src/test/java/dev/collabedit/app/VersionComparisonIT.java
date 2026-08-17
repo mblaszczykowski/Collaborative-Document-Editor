@@ -16,34 +16,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/**
- * Comparing and restoring versions of a document that is no longer plain text (CP22).
- *
- * <p>The history layer was written in CP5, when a document was a string, and was not revisited
- * when CP13 gave it formatting and CP14 gave it conversations. Nothing failed: the code kept doing
- * exactly what it said, on a smaller object than the one it was pointed at.
- *
- * <table>
- *   <caption>Test → failure mode</caption>
- *   <tr><th>Test</th><th>What it catches</th></tr>
- *   <tr><td>{@code restoringBringsFormattingBack}</td>
- *       <td>A restore that returns the text and leaves the appearance as it happens to be — so
- *           "restore this version" produces a state that never existed.</td></tr>
- *   <tr><td>{@code restoringLeavesConversationsAlone}</td>
- *       <td>The opposite mistake, made while fixing the first: reconciling comment anchors too,
- *           which would silently detach every conversation started after the target version.
- *           CP14 already ruled that a text change must not delete a conversation.</td></tr>
- *   <tr><td>{@code retypingTheSameWordIsAChange}</td>
- *       <td>The identity diff quietly degenerating into a text diff. If it ever starts comparing
- *           characters instead of identifiers, this is the case that says so — and it is the one
- *           case that makes the whole approach worth having.</td></tr>
- *   <tr><td>{@code segmentsReconstructBothVersions}</td>
- *       <td>A diff that looks plausible and drops or duplicates text. The invariant is exact:
- *           same+removed is the earlier version, same+added is the later one.</td></tr>
- * </table>
- */
 class VersionComparisonIT extends IntegrationTestBase {
-
     private static final Duration PATIENCE = Duration.ofSeconds(10);
 
     @LocalServerPort
@@ -71,15 +44,6 @@ class VersionComparisonIT extends IntegrationTestBase {
             new TokenService.Principal(UUID.randomUUID().toString(), name, "#4C5FD5"));
     }
 
-    /**
-     * Applies a restore the way {@code HistoryController} does — and now it really does.
-     *
-     * <p>This used to take the replica, generate under {@code withLock}, then submit each operation
-     * in a loop. That is the shape {@code generateAndSubmit} was written to REPLACE, because the
-     * two registry lookups have an eviction window between them. So the helper's javadoc had become
-     * false: it exercised a path the product no longer takes, and a regression in the real restore
-     * would not have failed here.
-     */
     private int restoreTo(UUID document, long throughServerSeq) throws Exception {
         var target = history.stateAt(document, throughServerSeq);
         var generated = documents.generateAndSubmit(
@@ -91,8 +55,6 @@ class VersionComparisonIT extends IntegrationTestBase {
     private List<MarkSet.Span> liveFormatting(UUID document) {
         return registry.get(document).withLock(model -> model.formatting());
     }
-
-    // ------------------------------------------------------------------
 
     @Test
     @DisplayName("restoring a version brings its formatting back, not only its text")
@@ -113,8 +75,6 @@ class VersionComparisonIT extends IntegrationTestBase {
             anna.awaitCondition(() -> anna.lastAckSeq() >= 4, PATIENCE, "changed formatting");
         }
 
-        // The state to go back to is bold, no italics. Before CP22 this call returned a String,
-        // so both of those facts were outside what a restore could even express.
         var target = history.stateAt(document, formatted);
         assertThat(target.marks())
             .as("the past state must carry its marks, or there is nothing to restore them from")
@@ -159,7 +119,7 @@ class VersionComparisonIT extends IntegrationTestBase {
         assertThat(liveFormatting(document).stream()
             .anyMatch(span -> span.marks().containsKey("comment")))
             .as("the conversation was started after the target version, and a rollback of the "
-                + "TEXT must not be a way of deleting it — CP14 settled that for deletion, and "
+                + "TEXT must not be a way of deleting it - that was settled for deletion, and "
                 + "restoring is the same question asked by a different button")
             .isTrue();
     }
@@ -188,7 +148,7 @@ class VersionComparisonIT extends IntegrationTestBase {
 
         var segments = history.diff(document, before, after);
         assertThat(segments.stream().anyMatch(s -> s.kind().equals("removed") && s.text().equals(" sat")))
-            .as("the old characters are gone — a text diff reports nothing here, because it has "
+            .as("the old characters are gone - a text diff reports nothing here, because it has "
                 + "nothing to compare but the letters")
             .isTrue();
         assertThat(segments.stream().anyMatch(s -> s.kind().equals("added") && s.text().equals(" sat")))
