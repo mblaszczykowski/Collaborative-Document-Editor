@@ -81,6 +81,10 @@ and `/ws`. That is the only arrangement that works over TLS, since an `https:` p
   restore recorded as new operations.
 - **Access**: workspaces, search, trash, four ordered roles, hashed invitation links, revocation
   that lands mid-session on every instance.
+- **A diagnostics bar** in the app itself: sliders for latency, jitter and drop rate, and a button
+  that cuts the network outright. Open a document in two windows, degrade one of them and watch
+  them still agree. It is how the demo GIF above is recorded, and the fastest way to convince
+  yourself the merge works without reading any of this.
 
 ## Architecture
 
@@ -90,6 +94,12 @@ All four replicas are peers: the browsers run the same algorithm as the instance
 other's operations by the same rule, and neither side has authority over the other. Instances also
 gossip over Redis, which [the cluster](#the-cluster) explains. It is out of the diagram because it
 only affects latency.
+
+CodeMirror 6 is the view and nothing else. A document model of its own, which is what Slate or
+ProseMirror would bring, would be a second source of truth next to the CRDT and the two would have
+to be reconciled on every keystroke. Raw `contenteditable` was the other option, and is a
+well-documented way to lose a week to browser differences. So the editor library holds no state: it
+renders what the CRDT says and reports keystrokes back.
 
 ```
 crdt-core/     the algorithm, as a Maven module with zero Spring dependencies, so it
@@ -106,7 +116,7 @@ app/           Spring Boot 3, Java 21
   suggestions/ accept and reject, server-side operation generation
   cluster/     Redis pub/sub, anti-entropy, permission invalidation
 
-frontend/      React + TypeScript + Vite
+frontend/      React + TypeScript + Vite, CodeMirror 6 as the view only
   crdt/        the second RGA implementation + mark layer + undo
   transport/   STOMP client, offline buffer, gap detection, network simulator
   editor/      the CodeMirror 6 bridge, formatting, remote cursors
@@ -523,34 +533,307 @@ to break the one it named.
 
 ## Performance
 
-One machine: MacBook, Apple Silicon, 10 cores, JDK 25-ea, 4 GB heap, with Postgres and Redis in
-containers alongside. Full tables and methodology in [`docs/performance.md`](docs/performance.md).
-None of the numbers are stamped with the date they were run, which I keep meaning to fix.
+One machine: MacBook, Apple Silicon (aarch64), 10 cores, JDK 25-ea, 4 GB heap, with Postgres and
+Redis in containers alongside. A number without its machine is useless, so it is stated next to
+every table. None of them are stamped with the date they were run, which I keep meaning to fix.
 
-Index structure, JMH, at 100 000 characters:
+One caveat applies to every millisecond here. The same code, same marks, same machine measured
+0.28 ms for 100 marks when the test ran alone and 0.039 ms inside the full suite: a sevenfold
+difference from nothing but JIT warm-up. Absolute times on this rig are comparable only against
+other times measured the same way, which is why each table says how it was run. It is also why
+there is no millisecond threshold in CI.
 
-| Operation | `ArrayBlockList` | `TreapBlockList` |
+### Index structure
+
+JMH (`./mvnw -pl crdt-core test-compile exec:exec@run-benchmarks`), average operation time, 3
+warm-up and 5 measurement iterations of 2 s.
+
+| Operation | Document | `ArrayBlockList` | `TreapBlockList` | Difference |
+|---|---:|---:|---:|---:|
+| Position to identifier | 1 000 | 0.367 µs | 0.065 µs | 5.6x |
+| | 10 000 | 5.510 µs | 0.149 µs | 37x |
+| | 100 000 | **60.2 µs** | **0.286 µs** | **210x** |
+| Identifier to position | 1 000 | 0.187 µs | 0.068 µs | 2.7x |
+| | 10 000 | 2.863 µs | 0.122 µs | 23x |
+| | 100 000 | **40.3 µs** | **0.210 µs** | **192x** |
+| Full insertion | 100 000 | 684 µs | 4.66 µs | 147x |
+| Reading the whole text | 100 000 | 310 µs | 429 µs | **0.72x (treap slower)** |
+
+The shape matters more than the values: for a tenfold larger document the naive scan grows 15x and
+11x, the treap 2.3x and 1.9x. Reading the whole text is 40% slower in the treap, and that is not
+measurement error: walking a tree has worse locality than iterating an array. That runs once per
+document open while lookup runs on every keystroke, so the trade is worth making, and the row is
+here because it is still a trade.
+
+### Propagation between clients
+
+A custom harness rather than Gatling, for the reason recorded in `LoadHarnessIT`: the quantity of
+interest is the gap between events at two *different* clients, so both ends must share one clock.
+Clients and server run in one process and network latency is ~0, so these describe the cost of the
+system, not the experience of a user over the internet. Each client makes 40 insertions at the
+*start* of the document, since typing continuously compresses into one block and bypasses the path
+that scales with size.
+
+| Document | Clients | p50 | p95 | p99 | Convergence |
+|---:|---:|---:|---:|---:|---:|
+| empty | 2 | 27 ms | 29 ms | 30 ms | 55 ms |
+| empty | 10 | 74 ms | 83 ms | 86 ms | 516 ms |
+| empty | 25 | 114 ms | 154 ms | 165 ms | 513 ms |
+| empty | 50 | 202 ms | 360 ms | 374 ms | 499 ms |
+| 10 000 chars | 2 | 9.3 ms | 10 ms | 10 ms | 60 ms |
+| 10 000 chars | 10 | 28 ms | 31 ms | 32 ms | 60 ms |
+| 10 000 chars | 25 | 46 ms | 76 ms | 84 ms | 107 ms |
+| 10 000 chars | 50 | 135 ms | 218 ms | 230 ms | 267 ms |
+| 100 000 chars | 2 | 4.5 ms | 586 ms | 586 ms | 603 ms |
+| 100 000 chars | 10 | 13 ms | 518 ms | 830 ms | 831 ms |
+| 100 000 chars | 25 | 67 ms | 92 ms | 695 ms | 712 ms |
+| 100 000 chars | 50 | 124 ms | 212 ms | 1299 ms | 1647 ms |
+
+All twelve converge. Document size barely affects median latency; after the treap, the data
+structure stopped being the bottleneck. Repeating the table reproduced it within noise except for
+p50 at 10 000 characters and 10 clients, which came out 28 ms once and 43 ms another time. That
+spread is the honest measure of how much to trust the second significant digit.
+
+The fat p99 tails are the price of rate limiting. The harness seeds the 100 000-character document
+with two hundred operations sent without pause, which exhausts the limiter's burst. Nothing is
+lost, the number is worse, and it stays.
+
+<details>
+<summary>My first explanation of that tail was wrong, and fixing what I blamed made it worse</summary>
+
+It used to read: *"rejected operations are retried after a second, and that second is what the p99
+shows"*. Reasonable-sounding: the client waited a hardcoded 1000 ms while the bucket refills at
+60/s, so the real time to one token is ~17 ms, and a sixtyfold overestimate looks like an obvious
+cause. So I made the server send back the exact wait, which the bucket knows anyway.
+
+| 100 000 chars, 50 clients | p99 | rejections |
 |---|---:|---:|
-| Position to identifier | 60.2 µs | **0.286 µs** |
-| Identifier to position | 40.3 µs | **0.210 µs** |
-| Reading the whole text | 310 µs | 429 µs *(treap slower)* |
+| before (fixed 1 s) | 872 ms | 1523 |
+| `retry-after` alone | **1352 ms** | 1614 |
+| `retry-after` + exponential backoff | 826 ms | 1368 |
 
-The shape matters more than the values: for a tenfold larger document the naive scan grows about
-13x, the treap about 2x. Reading the whole text is 40% slower in the treap because walking a tree
-has worse locality than iterating an array. That runs once per document open while lookup runs on
-every keystroke, so the trade is worth making, and the table is here because it is still a trade.
+**The server-supplied wait alone made the tail 55% worse.** The server states the time to one
+token, while the client holds dozens of operations in its buffer, so resending the whole buffer
+every 17 ms is busy-polling: it creates no tokens and does create rejections. Exponential backoff
+removes the regression, and that is where the gain ends, since 826 against 872 ms sits inside this
+rig's spread. What actually bounds the tail is the refill rate times the queued batch: a client
+with N operations behind an empty bucket waits N/60 seconds however often it asks.
 
-Propagation between clients, from the load harness. All twelve scenarios converge:
+What the change does buy, since it does not buy latency: a guessed constant leaves the client, the
+server states a value only it knows, and rejections drop ~10%. It is recorded because the claim
+"it is that one second" was published here and was untrue.
 
-| Document | Clients | p50 | p99 |
+</details>
+
+The harness also generates the full traffic mix. Earlier runs sent text operations only, no
+presence and no formatting, so they described a lighter system than the browser produces. The
+cursor is the most frequent event in the system and was not being sent at all. It now fires every
+other keystroke, and formatting every tenth edit.
+
+### The cost of the mark layer
+
+Every mark pins two tombstones, so formatting can block the garbage collector. Measured by
+[`MarkCostMeasurement`](crdt-core/src/test/java/dev/collabedit/crdt/MarkCostMeasurement.java): 1000
+characters, all text deleted, 100 marks (200 anchors), GC with a fully stable version vector.
+
+| How the text was written | Without marks | With marks (before) | With marks (after) |
+|---|---:|---:|---:|
+| in one run (1 run-length block) | 1000 | **0** (0%) | **1000** (100%) |
+| character by character (1000 blocks) | 1000 | 800 (80%) | **1000** (100%) |
+
+The middle column is what forced the change, and it was worse than predicted. GC worked on blocks,
+not characters, so a block with even one anchored character stayed whole; text written in one run
+is one block, so a single anchor rescued the entire document. The predicted cost was two tombstones
+per mark. The real cost was one whole block per mark, and block size depends on typing history, not
+on formatting.
+
+The fix was taking literally a sentence that had been in the tombstone design from the start. All
+three reasons to keep a tombstone (being an origin, being an anchor, causal stability) need a
+character's **identity**, never its content. So a protected block now drops its content and stays:
+it keeps its identifier, length and position, and loses only characters nobody can see. The mistake
+was never in the protection conditions, but in treating "keep the identity" and "keep everything"
+as one requirement.
+
+That cost one bit per block in the snapshot format, version 2 to 3, and the migration was free: a
+snapshot in an unknown version is ignored rather than migrated, so state rebuilds from the log.
+What it does not fix is the block objects themselves, which still accumulate in a long-edited
+document, and that is now the dominant remaining cost.
+
+<details>
+<summary>The snapshot sizes published here were a property of the test input, not the format</summary>
+
+The line used to read "one bit per block: **107 B to 108 B** at 50 000 characters". A hundred and
+seven bytes for fifty thousand characters is not a fact about the snapshot format.
+`MarkCostMeasurement` built its document by repeating a single character and `SnapshotCodec` gzips
+the result. Gzip of 50 000 identical characters is around 80 bytes; of 50 000 characters of prose,
+around 25 000. Roughly 300x, all of it a property of the input.
+
+The same file already named that exact mistake about a different measurement further down, and the
+lesson never came back to correct this one. Two paragraphs sat in one document, one explaining why
+the other was wrong.
+
+Re-measuring on prose then found a second version of the same error. The first attempt used a cycle
+of thirty-four words and reported 706 B, a ratio of 71:1 where real English gzips at roughly 3:1: a
+short repeating vocabulary sits entirely inside the compressor's window.
+
+| 50 000 characters | snapshot | ratio |
+|---|---:|---:|
+| `"x"` repeated (what used to be published) | 107 B | ~600:1 |
+| thirty-four words cycled (first attempt) | 706 B | 71:1 |
+| **eighty words, pseudo-random order** | **10 901 B** | **4.6:1** |
+
+`MarkCostMeasurement.prose` now draws from an eighty-word vocabulary in deterministic splitmix64
+order and prints its own compression ratio next to the byte count, because a number carrying its
+caveat is quotable and one needing a footnote is not. With 500 marks over that text the snapshot is
+15 779 B, so the per-mark overhead is **9 B** rather than the 8 B measured through degenerate
+input. The delta was the part that was never wrong, since a difference between two snapshots of the
+same text cancels the text out. Still not real English at 4.6:1 against roughly 3:1, so the
+baseline remains an underestimate, which is why the ratio is printed rather than described.
+
+</details>
+
+### Resolving marks, on every keystroke
+
+Computing appearance on a 50 000-character document, median of 11 samples:
+
+| Marks | `O(m²)` before | sweep after | Speed-up |
 |---:|---:|---:|---:|
-| empty | 50 | 202 ms | 374 ms |
-| 10 000 chars | 50 | 135 ms | 230 ms |
-| 100 000 chars | 50 | 124 ms | 1299 ms |
+| 100 | 0.39 ms | 0.27 ms | 1.5x |
+| 400 | 0.58 ms | 0.49 ms | 1.2x |
+| 1600 | 4.18 ms | 1.49 ms | 2.8x |
+| 6400 | **62.1 ms** | **4.72 ms** | **13x** |
 
-Document size barely affects median latency. The p99 tail at 100 000 characters is the rate limiter,
-not the algorithm; `docs/performance.md` has the measurement that disproved my first explanation of
-it, along with the time I blamed the system for an 8 KiB buffer in my own test client.
+The old version walked every mark at every segment; the segments are now walked left to right with
+the active set maintained incrementally, each range entering and leaving once. The usable limit
+moved from hundreds of marks to thousands.
+
+Two things that measurement showed are more interesting than the speed-up. At 100 and 400 marks
+there is practically no difference, because below roughly a thousand the dominant cost is resolving
+anchors through the block index, two lookups per mark: the complexity fix starts paying exactly
+where the limit already was, and not a bit earlier. And the previous measurement was far too noisy
+to compare anything with, timing a single call and giving 0.8 ms once and 4.7 ms another time at
+400 marks.
+
+<details>
+<summary>A row of that table was measuring two things at once</summary>
+
+It also carried a "growth per 4x marks" row, quoting x3.1 to x3.2 for the sweep. That row is gone,
+because the series it summarised was not comparable with itself. Marks were laid every
+`50000 / markCount` characters and each covered a fixed 30, which is fine while the stride exceeds
+30 characters. At 6400 marks the stride is 7, so ranges overlapped four to five deep and, all
+carrying the same type and value, `mergeAdjacent` folded the document into one span. The last row
+measured
+6400 ranges to 1 span while the row above measured 1600 ranges to 1600 spans, and the label said
+only "x4 marks". The row had been added precisely to make the complexity difference visible, and
+was the one row that was not comparable.
+
+The before/after columns stand, since both implementations were fed identical input, so the 13x at
+6400 is real. What does not stand is reading a complexity *shape* off that series. Re-measured with
+width capped at `stride - 1` so ranges stay disjoint:
+
+| Marks | Spans | Resolve | Growth per 4x marks |
+|---:|---:|---:|---:|
+| 100 | 100 | 0.28 ms | |
+| 400 | 400 | 0.48 ms | x1.7 |
+| 1600 | 1600 | 1.43 ms | x3.0 |
+| 6400 | 6400 | 3.27 ms | x2.3 |
+
+Every ratio is at or below x4 for a x4 in marks, so sub-linear in this range, because a fixed cost
+independent of mark count still dominates. `O(m²)` would predict x16. The test asserts
+`spans == markCount` at every step, so overlapping ranges now fail as a broken measurement rather
+than reading as a complexity regression.
+
+Overlap depth is a separate variable, and a cheap one. Holding marks at 1600 and varying width
+gives 1.44, 1.21, 1.07 and 1.30 ms at depths 1, 2, 4 and 8: flat within noise. The sweep's cost is
+driven by how many marks there are, not how deeply they stack, which is what the per-type `TreeSet`
+predicts, since resolving a segment reads only the front of each type.
+
+</details>
+
+### How often the interleaving anomaly fires
+
+RGA's interleaving anomaly is the most-cited weakness of the algorithm this project chose.
+`RgaInterleavingTest` proves it exists by building the case by hand. Fugue is the known fix and was
+declined on budget. Neither said how often a real session hits it.
+
+[`InterleavingMeasurement`](crdt-core/src/test/java/dev/collabedit/crdt/InterleavingMeasurement.java):
+two authors typing 8 characters each at the same point, in complete isolation, exchanging in
+shuffled order. That is the worst case, so every rate is an upper bound. The metric is fragments,
+how many pieces an author's writing is broken into, where one means it survived intact.
+
+The variable is not author count or document size. It is whether the cursor moves forward. RGA
+orders siblings, meaning insertions sharing one origin, by timestamp, and that is the only place
+two authors can mix. Typing forward makes each character the origin of the next, so a run is a
+chain, and a chain cannot be broken by anything arriving concurrently. Going back to the same spot
+produces nothing but siblings.
+
+| Cursor advances with probability | Scenarios interleaved | Median fragments | Worst seen |
+|---:|---:|---:|---:|
+| 1.00, ordinary typing | **0.0%** | 1 | 1 |
+| 0.99 | 1.2% | 1 | 2 |
+| 0.95 | 4.9% | 1 | 2 |
+| 0.90 | 10.9% | 1 | 3 |
+| 0.75 | 25.8% | 1 | 4 |
+| 0.50 | 49.2% | 1 | 7 |
+| 0.25 | 74.3% | 2 | 8 |
+| 0.00, the hand-built case | **100.0%** | 8 | 8 |
+
+More authors meeting at one point, at 90% forward: 2 authors 10.9%, 3 authors 20.3%, 5 authors
+35.9%, 8 authors 52.4%, with worst-case 3 fragments throughout.
+
+The 0.0% in the first row is structural, not statistical, and it is the load-bearing result. A
+separate test asserts it over 2000 trials, so if it ever stops holding, the failure is a merge bug
+rather than a shifted percentage. Fugue stays rejected, now for a measured reason rather than a
+budgetary one: the anomaly needs two people in the same spot, at the same time, with one of them
+going back to fix something, and when it fires the damage is usually one extra fragment rather than
+the shredding the hand-built case shows. That case is p = 0, which is nobody's typing.
+
+<details>
+<summary>The first version of this table was an artefact of java.util.Random</summary>
+
+It reported 0% at p = 0.90 and 100% at p = 0.50: a cliff where the mechanism predicts a smooth
+curve. Chasing it found nothing wrong with the merge rule. The fault was seeding trials with
+`new Random(0)`, `new Random(1)`, and so on.
+
+```
+new Random(0).nextDouble = 0.730968
+new Random(1).nextDouble = 0.730878
+new Random(2).nextDouble = 0.731147
+new Random(9).nextDouble = 0.730162
+```
+
+`java.util.Random` is a linear congruential generator whose *first* output barely moves across
+consecutive small seeds. Every trial made the same decision at the first keystroke, and the first
+keystroke is the only one that matters here, because it decides whether an author gets two children
+of the shared origin. Above 0.731 the answer was always "advance" and nothing interleaved; below
+it, always "stay" and everything did. Two thousand trials per row, to three significant figures,
+describing a property of the random number generator. The seed goes through splitmix64 now, the
+same mixing function `TreapBlockList` uses for heap priorities, for the same reason.
+
+</details>
+
+### The degradation point was my rig, not the system
+
+This section used to end with "I do not know whether the cause lies in the system or in the
+measurement rig". It was the rig. `TestStompClient` built a `StandardWebSocketClient` without
+configuring the JSR-356 container, whose default text buffer is 8 KiB, eight times smaller than the
+frame limit this system declares. Any larger message never reached the test client.
+
+Why that presented as unrecoverable divergence rather than an ordinary dropped frame: broadcasts go
+one operation per frame (~70 B), so the threshold was unreachable and the mechanism looked healthy;
+when an operation was lost the client correctly detected the gap and asked to resynchronise; and
+the resynchronisation response is chunked at 300 operations, about 15 KB, above 8 KiB. The recovery
+path was the only thing the buffer did not let through. Hence the exact symptom recorded here: a
+server holding every operation, some clients permanently a few operations behind, and no error in
+the log. A "fix" shortening the resynchronisation chunk would have repaired the rig and changed
+nothing in the system.
+
+After raising the rig's buffer all twelve scenarios converge, and `BroadcastFanoutIT` gives 3/3
+repeatable convergences at 2, 10, 25 and 50 clients, including on the code from *before* broadcast
+coalescing. Coalescing is therefore justified by latency, not by fixing convergence. What this does
+not prove: clients and server still share one process, so the numbers exclude real network latency.
+Splitting the rig across machines remains undone, but is no longer needed to answer "system or
+rig".
 
 ## Failure modes
 
