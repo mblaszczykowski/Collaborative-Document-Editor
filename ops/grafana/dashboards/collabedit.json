@@ -27,7 +27,7 @@
     {
       "type": "timeseries",
       "title": "Server-side operation latency (p50 / p95 / p99)",
-      "description": "Operation intake -> broadcast to this instance's clients. ONE clock, so the only latency whose number can be quoted without caveats. Client-to-client latency is measured solely in the benchmark harness (CP8) and is NOT here — deliberately, because it would require comparing two different clocks.",
+      "description": "Operation intake -> broadcast to this instance's clients. one clock, so the only latency whose number can be quoted without caveats. Client-to-client latency is measured solely in the benchmark harness and is not here - deliberately, because it would require comparing two different clocks.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -60,7 +60,7 @@
     {
       "type": "timeseries",
       "title": "CRDT merge time (p95)",
-      "description": "The algorithm alone, without transport or persistence. This is where the difference between an O(n) and an O(log n) index shows — a value growing with document size means the indexing structure has stopped keeping up.",
+      "description": "The algorithm alone, without transport or persistence. This is where the difference between an O(n) and an O(log n) index shows - a value growing with document size means the indexing structure has stopped keeping up.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -86,7 +86,7 @@
     {
       "type": "timeseries",
       "title": "Operations per second",
-      "description": "Merges across all instances — the rate the system is actually absorbing. Read it against the sessions panel beside it, because the number alone says nothing: what is bad is this line FLAT while sessions climb, which means frames are arriving and not being merged, and what is worse is this line far above the sessions it could plausibly come from — a merge counted more than once per operation, or the same operation arriving twice from Redis and the log without idempotence catching it. A drop to zero with sessions still connected is the strongest signal on this dashboard: it is the intake path stalled, not a quiet document.",
+      "description": "Merges across all instances - the rate the system is actually absorbing. Read it against the sessions panel beside it, because the number alone says nothing: what is bad is this line FLAT while sessions climb, which means frames are arriving and not being merged, and what is worse is this line far above the sessions it could plausibly come from - a merge counted more than once per operation, or the same operation arriving twice from Redis and the log without idempotence catching it. A drop to zero with sessions still connected is the strongest signal on this dashboard: it is the intake path stalled, not a quiet document.",
       "gridPos": {
         "h": 7,
         "w": 8,
@@ -129,7 +129,7 @@
     {
       "type": "stat",
       "title": "Operations with no cause",
-      "description": "Operations waiting for their origin. Transient values > 0 are normal (the network reorders). A value that STAYS above zero means a permanently missing operation, that is, a corrupt log — see the cluster design.",
+      "description": "Operations waiting for their origin. Transient values > 0 are normal (the network reorders). A value that STAYS above zero means a permanently missing operation, that is, a corrupt log - see the cluster design.",
       "gridPos": {
         "h": 7,
         "w": 8,
@@ -172,7 +172,7 @@
     {
       "type": "timeseries",
       "title": "Gap repairs in the numbering (messages lost by Redis)",
-      "description": "the cluster design: Redis pub/sub loses messages, and that is expected rather than exceptional. NOTE — a permanently zero value is NOT good news: it means the repair mechanism has never fired, so there is no telling whether it works at all. The CP8 chaos test triggers it on purpose.",
+      "description": "the cluster design: Redis pub/sub loses messages, and that is expected rather than exceptional. Note: a permanently zero value is not good news: it means the repair mechanism has never fired, so there is no telling whether it works at all. The chaos test triggers it on purpose.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -189,7 +189,7 @@
     {
       "type": "timeseries",
       "title": "Tombstone share",
-      "description": "Characters deleted but still present in the structure. A monotonically rising value means GC is not working — usually because one hung client is blocking causal stability for the whole document. Note: even a working GC will not reach zero, because a tombstone in the middle of the text is the origin of the next block and must not be removed.",
+      "description": "Characters deleted but still present in the structure. A monotonically rising value means GC is not working - usually because one hung client is blocking causal stability for the whole document. Note: even a working GC will not reach zero, because a tombstone in the middle of the text is the origin of the next block and must not be removed.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -229,7 +229,7 @@
     {
       "type": "timeseries",
       "title": "Characters reclaimed by GC",
-      "description": "Characters given back by tombstone collection, per second. The bad value is PERMANENTLY ZERO while the tombstone share above it rises: that is causal stability standing still, and the usual cause is one replica holding stableVersion back — check 'GC blocked' below and the DEBUG line that names the replica. Zero on a quiet document is normal, so read this panel only together with the tombstone share; neither one means anything alone. Since CP18 a collection can also reclaim characters WITHOUT removing a block, because a protected block drops its content and stays, so this counting characters rather than nodes is deliberate: it measures what actually costs memory.",
+      "description": "Characters given back by tombstone collection, per second. The bad value is permanently zero while the tombstone share above it rises: that is causal stability standing still, and the usual cause is one replica holding stableVersion back - check 'GC blocked' below and the DEBUG line that names the replica. Zero on a quiet document is normal, so read this panel only together with the tombstone share; neither one means anything alone. A collection can also reclaim characters without removing a block, because a protected block drops its content and stays, so this counting characters rather than nodes is deliberate: it measures what actually costs memory.",
       "gridPos": {
         "h": 7,
         "w": 12,
@@ -246,7 +246,7 @@
     {
       "type": "stat",
       "title": "Operations refused (RESYNC_REQUIRED)",
-      "description": "Clients offline for longer than the GC window whose changes could not be merged. Every such event means a user who saw the recovered-draft message — a real, if controlled, inconvenience.",
+      "description": "Clients offline for longer than the GC window whose changes could not be merged. Every such event means a user who saw the recovered-draft message - a real, if controlled, inconvenience.",
       "gridPos": {
         "h": 7,
         "w": 12,
@@ -279,7 +279,7 @@
     {
       "type": "timeseries",
       "title": "GC blocked, and cluster messages dropped",
-      "description": "Two ways the system quietly does more work than it should. GC blocked: a sweep that reclaimed nothing because one replica's version vector is holding the stability boundary back — a value that stays above zero means tombstones grow without bound. Cluster messages dropped: the Redis listener pool was saturated and DISCARDED a message (makes that bus best-effort), so the gap repairs above are doing work the fast path should have done.",
+      "description": "Two ways the system quietly does more work than it should. GC blocked: a sweep that reclaimed nothing because one replica's version vector is holding the stability boundary back - a value that stays above zero means tombstones grow without bound. Cluster messages dropped: the Redis listener pool was saturated and DISCARDED a message (makes that bus best-effort), so the gap repairs above are doing work the fast path should have done.",
       "gridPos": {
         "h": 7,
         "w": 12,
@@ -305,7 +305,7 @@
     {
       "type": "stat",
       "title": "Operations returned by a failed write",
-      "description": "The one place where operations are already broadcast to clients and not yet in the source of truth. Counted in OPERATIONS rather than in batches, because that is the size of the exposure: they are put back in the buffer and retried in the next window, so this is not data loss — but a non-zero rate means the database is the problem, and before this counter existed the only trace was a log line.",
+      "description": "The one place where operations are already broadcast to clients and not yet in the source of truth. Counted in OPERATIONS rather than in batches, because that is the size of the exposure: they are put back in the buffer and retried in the next window, so this is not data loss - but a non-zero rate means the database is the problem, and before this counter existed the only trace was a log line.",
       "gridPos": {
         "h": 7,
         "w": 12,
@@ -331,7 +331,7 @@
     {
       "type": "timeseries",
       "title": "Session disconnects by reason",
-      "description": "This panel exists to close an open question in the README (the 'Degradation point' section): why, above ~10 clients in one document, some of them fall permanently behind even though the server holds the complete set of operations. The BAD VALUE is a rising slow_client_buffer_overflow — the client cannot keep up with delivery, its send queue exceeds send-buffer-size-bytes, and the server tears down its session. The client comes back through reconnect+resync, so from the outside it looks like a brief hiccup rather than lost deliveries. If this series grows with the client count, the bottleneck is BROADCASTING rather than CRDT merging. NOTE: a permanently zero value while clients are diverging does NOT mean all is well — it means the cause lies elsewhere and the hypothesis has to be rejected.",
+      "description": "This panel exists to close an open question in the README (the 'Degradation point' section): why, above ~10 clients in one document, some of them fall permanently behind even though the server holds the complete set of operations. The BAD VALUE is a rising slow_client_buffer_overflow - the client cannot keep up with delivery, its send queue exceeds send-buffer-size-bytes, and the server tears down its session. The client comes back through reconnect+resync, so from the outside it looks like a brief hiccup rather than lost deliveries. If this series grows with the client count, the bottleneck is BROADCASTING rather than CRDT merging. NOTE: a permanently zero value while clients are diverging does NOT mean all is well - it means the cause lies elsewhere and the hypothesis has to be rejected.",
       "gridPos": {
         "h": 8,
         "w": 24,

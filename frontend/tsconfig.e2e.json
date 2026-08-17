@@ -1,10 +1,10 @@
 {
-  // The Playwright scenarios and their configuration — SEVEN TypeScript files that nothing was
+  // The Playwright scenarios and their configuration - SEVEN TypeScript files that nothing was
   // type-checking.
   //
   // `tsconfig.app.json` includes `src`, `tsconfig.test.json` includes `src`, and
   // `tsconfig.node.json` includes exactly `vite.config.ts`. So `e2e/**` and `playwright.config.ts`
-  // were in no project at all: `npm run typecheck` — which CI runs as a gate — walked straight
+  // were in no project at all: `npm run typecheck` - which CI runs as a gate - walked straight
   // past them. The check was `npx tsc -p tsconfig.test.json --listFiles | grep -c /e2e/`, and the
   // answer was 0. A whole test suite outside the compiler is a suite whose breakage is only
   // discovered by running it, and the e2e suite needs a database, a backend and a browser to run.

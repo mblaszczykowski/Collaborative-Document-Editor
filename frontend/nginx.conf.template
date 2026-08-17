@@ -1,29 +1,3 @@
-# Serving the built frontend, and proxying the backend behind the SAME ORIGIN.
-#
-# ## Why this changed
-#
-# The previous version served static files only and said so deliberately: "traffic to the API
-# and the WebSocket goes from the browser STRAIGHT to:8080, so the configuration matches what
-# the client code shows instead of hiding the backend address in a layer the code knows nothing
-# about." That reasoning is good and it held for exactly as long as everything ran on one
-# machine over plain HTTP.
-#
-# It does not survive being hosted. Two origins means two certificates, a CORS preflight on
-# every REST call, and an `Origin` allow-list on the server that has to be kept in step with
-# wherever the frontend happens to be deployed. Worse, the browser refuses a `ws:` socket from
-# an `https:` page outright, so the split origin makes TLS impossible rather than inconvenient.
-#
-# One origin removes all four problems at once, and the honesty concern is answered by the file
-# rather than by the split: BACKEND_ORIGIN is right here, and `config.ts` documents that the
-# same-origin case is the one nginx serves.
-#
-# ## envsubst
-#
-# The nginx image expands ${VARIABLES} in /etc/nginx/templates/*.template at container start,
-# so the upstream is set per deployment without rebuilding the image. Only the variables listed
-# in the Dockerfile's ENV are substituted; nginx's own $variables are written as $$-free plain
-# $ because they are not in that list.
-
 server {
     listen 80;
     server_name _;
@@ -31,22 +5,15 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # A Vite bundle has a hash in its filename, so its content never changes under the same
-    # address — a year of caching is safe here and saves a full download of the application on
-    # every visit.
     location /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    # index.html is the only file WITHOUT a hash, so it decides which version of the bundle the
-    # browser gets. Caching it would mean that after a deploy the user receives an old index
-    # pointing at files that no longer exist.
     location = /index.html {
         add_header Cache-Control "no-cache";
     }
 
-    # The REST half of the application.
     location /api/ {
         proxy_pass ${BACKEND_ORIGIN};
         proxy_http_version 1.1;
@@ -56,9 +23,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # The WebSocket half. The three headers below are what turns a proxied request into an
-    # upgraded one; without them the handshake returns 200 and the client hangs waiting for a
-    # socket that was never opened.
     location /ws {
         proxy_pass ${BACKEND_ORIGIN};
         proxy_http_version 1.1;
@@ -67,16 +31,10 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Longer than the STOMP heartbeat interval (10 s, the transport decision) by a wide margin. nginx
-        # closes an idle proxied connection after 60 s by default, and a WebSocket carrying
-        # nothing but heartbeats looks idle to it in exactly the way the transport decision warns about for
-        # intermediaries generally — this is that intermediary.
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
 
-    # SPA: any unknown path serves index.html, because routing happens on the client. Without
-    # this, reloading the page at a document's address gives a 404 from nginx.
     location / {
         try_files $uri $uri/ /index.html;
     }

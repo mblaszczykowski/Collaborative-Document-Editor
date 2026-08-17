@@ -1,6 +1,6 @@
 {
   "name" : "203-concurrent-add-and-remove-mark",
-  "description" : "Concurrently applying and removing the same formatting. Settled by the total order (lamport, replicaId) — the same one RGA's insertion rule uses.",
+  "description" : "Concurrently applying and removing the same formatting. Settled by the total order (lamport, replicaId) - the same one RGA's insertion rule uses.",
   "operations" : [ {
     "r" : 2,
     "l" : 8,

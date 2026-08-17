@@ -1,43 +1,21 @@
 name: CodeQL
 
-# Why a scanner in a project that argues against dependencies:
-#
-# Three access-control holes shipped in this repository and every one was found by a person
-# reading code. That is the failure plan v3 is about — not carelessness, but relying
-# on somebody noticing. A scanner notices a different class of thing than a reviewer does, and
-# it notices it every time.
-#
-# Expectations are deliberately modest. CodeQL will not find an endpoint nobody authorized;
-# that is what EndpointAuthorizationArchitectureTest is for. It finds injection, path handling,
-# unsafe deserialization and the like — problems this codebase mostly avoids by shape rather
-# than by care, which is exactly why nobody would notice one appearing.
-
 on:
   push:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly, because the query database improves independently of this code: a commit that was
-    # clean in January can be flagged in March without a line of it changing.
     - cron: '0 4 * * 1'
 
-# The same rule ci.yml has and this file did not: a new push to a branch cancels the previous
-# analysis. CodeQL builds the whole reactor before it can query anything, so two runs of a
-# superseded commit are minutes of runner spent on an answer nobody will read.
-#
-# `cancel-in-progress` is NOT set on the scheduled run: the group key includes github.ref, and the
-# weekly cron and a push to main share `refs/heads/main`, so an unqualified setting would let a
-# push cancel the weekly sweep that exists precisely to re-examine code nobody is touching.
-# github.event_name in the key keeps the two apart.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:
-    name: analyze — ${{ matrix.language }}
+    name: analyze - ${{ matrix.language }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60 # the java leg builds the whole reactor before it can query it
+    timeout-minutes: 60
     permissions:
       security-events: write
       contents: read
@@ -66,10 +44,6 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
-      # Manual build rather than autobuild: this project deliberately does not inherit from
-      # spring-boot-starter-parent (see README), and autobuild has been known to guess wrong
-      # about multi-module reactors that do not look conventional. -DskipTests because CodeQL
-      # needs the bytecode, not the test results — those are the `app` job's business.
       - name: Build for analysis
         if: matrix.language == 'java-kotlin'
         run: ./mvnw -B install -DskipTests

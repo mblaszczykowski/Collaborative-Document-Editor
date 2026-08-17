@@ -1,6 +1,6 @@
 {
   "name" : "006-duplicate-while-buffered",
-  "description" : "An operation delivered TWICE while its origin is still missing, then the origin. Distinct from 004: there the duplicate lands in a document that already holds the operation, so a structure-based check catches it. Here both copies go into the PENDING buffer, and a replica that only checks the structure integrates both when the origin arrives — duplicating the text AND putting one identifier in two blocks, which makes a later delete tombstone only one of the copies.",
+  "description" : "An operation delivered TWICE while its origin is still missing, then the origin. Distinct from 004: there the duplicate lands in a document that already holds the operation, so a structure-based check catches it. Here both copies go into the PENDING buffer, and a replica that only checks the structure integrates both when the origin arrives - duplicating the text AND putting one identifier in two blocks, which makes a later delete tombstone only one of the copies.",
   "operations" : [ {
     "r" : 1,
     "l" : 2,

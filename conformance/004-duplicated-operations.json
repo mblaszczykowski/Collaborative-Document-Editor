@@ -1,6 +1,6 @@
 {
   "name" : "004-duplicated-operations",
-  "description" : "Every operation supplied twice. Checks idempotence — without it a retransmission after reconnect duplicates text.",
+  "description" : "Every operation supplied twice. Checks idempotence - without it a retransmission after reconnect duplicates text.",
   "operations" : [ {
     "r" : 1,
     "l" : 0,

@@ -11,15 +11,8 @@
     </parent>
 
     <artifactId>crdt-core</artifactId>
-    <name>crdt-core — the RGA algorithm</name>
+    <name>crdt-core - the RGA algorithm</name>
 
-    <!--
-      A DELIBERATE CONSTRAINT: this module has no dependency on Spring or on anything from the
-      application layer, and never will. The only production dependency is Jackson, and
-      only for serialising operations for transport and persistence. If org.springframework ever
-      appears here, the boundary has leaked and the right move is to back out, not to add an
-      exception.
-    -->
     <dependencies>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -43,7 +36,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- JMH in test scope: the benchmarks are part of verification, not of the artifact. -->
         <dependency>
             <groupId>org.openjdk.jmh</groupId>
             <artifactId>jmh-core</artifactId>
@@ -60,21 +52,7 @@
 
     <build>
         <plugins>
-            <!--
-              src/jmh/java as an additional test source directory.
-              A separate directory rather than src/test/java, because benchmarks are a different
-              kind of code from tests: they have no assertions, take minutes, and are not meant to
-              run in CI on every push. Surefire does not pick them up, because they do not match
-              the *Test pattern.
-            -->
-            <!--
-              The JMH annotation processor, declared EXPLICITLY.
 
-              Since JDK 23, javac does not run processors found on the class path without being
-              told explicitly. The symptom is misleading: compilation passes, the benchmarks
-              build, and only running them ends with "Unable to find the resource:
-              /META-INF/BenchmarkList" — a message that says nothing about the cause.
-            -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -113,22 +91,6 @@
                 </executions>
             </plugin>
 
-            <!--
-              Running the benchmarks:./mvnw -pl crdt-core test-compile exec:exec@run-benchmarks
-              The result lands in crdt-core/target/jmh-result.json and from there in the README.
-
-              This line used to read `mvn -pl crdt-core -Pbenchmark test-compile exec:exec`, and
-              it was wrong in two ways at once. There is no `benchmark` profile in either pom —
-              the execution below is bound to the `run-benchmarks` id and nothing else — and bare
-              `exec:exec` with no id has no configuration to pick up, so the command it published
-              produced a BUILD FAILURE rather than a number. It survived because a comment is the
-              one part of a build file nothing executes: `nightly.yml` and the README's Tests
-              section both had the correct form, and neither reads this.
-
-              `test-compile` is not optional. The benchmarks live in src/jmh/java, added as a test
-              source by build-helper above, so on a clean tree there is nothing on the classpath
-              for JMH to find without it.
-            -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
@@ -145,16 +107,8 @@
                                 <argument>-classpath</argument>
                                 <classpath/>
                                 <argument>org.openjdk.jmh.Main</argument>
-                                <!-- 3 warm-up iterations: the JIT on structures with many
-                                     objects needs a moment before the result stops drifting. -->
                                 <argument>-wi</argument><argument>3</argument>
                                 <argument>-i</argument><argument>5</argument>
-                                <!-- 2 s per iteration instead of the default 10 s. The full
-                                     matrix is 24 combinations (2 implementations × 3 sizes × 4
-                                     operations); at the defaults a run takes half an hour, at
-                                     these ~7 minutes with the same result stability — the
-                                     measured operations take microseconds, so 2 s is still
-                                     hundreds of thousands of repetitions. -->
                                 <argument>-r</argument><argument>2s</argument>
                                 <argument>-w</argument><argument>2s</argument>
                                 <argument>-f</argument><argument>1</argument>

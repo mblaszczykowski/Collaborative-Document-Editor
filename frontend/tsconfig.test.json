@@ -1,5 +1,5 @@
 {
-  // The tests run in Node (vitest), not in a browser — hence a separate configuration.
+  // The tests run in Node (vitest), not in a browser - hence a separate configuration.
   // Adding the Node types to tsconfig.app.json would be simpler, but it would let server APIs into
   // code meant to run in a browser, and the compiler would stop catching their accidental use.
   "extends": "./tsconfig.app.json",

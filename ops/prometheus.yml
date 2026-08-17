@@ -1,29 +1,19 @@
 global:
-  # 5 s instead of the default 15 s. The reason: the CP8 benchmarks run for 1–3 minutes, and at a
-  # 15 s scrape we would get a dozen or so points for a whole run — not enough to see the shape of
-  # the degradation rather than just an average.
   scrape_interval: 5s
   evaluation_interval: 15s
 
 scrape_configs:
   - job_name: collabedit-app
     metrics_path: /actuator/prometheus
-    # Exemplars — without them the jump from a latency histogram to a specific trace (CP7) does
-    # not work.
     scrape_protocols:
       - PrometheusProto
       - OpenMetricsText1.0.0
       - PrometheusText0.0.4
     static_configs:
-      # host.docker.internal: the application starts from an IDE or Maven on the host, not in
-      # compose. Deliberately — the edit-restart cycle is then an order of magnitude shorter than
-      # rebuilding an image, and this is a development environment.
       - targets: ["host.docker.internal:8090"]
         labels:
           instance: app-local
 
-      # The instances started in compose for the horizontal scaling test. Inactive
-      # targets simply show up as "down" — that is not a configuration error.
       - targets: ["host.docker.internal:8081"]
         labels:
           instance: app-2

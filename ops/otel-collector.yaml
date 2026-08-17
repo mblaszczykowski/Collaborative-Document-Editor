@@ -5,9 +5,6 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
-        # CORS is needed because a trace starts in the browser (/ CP7): the
-        # `edit.submit` span is created on the client and sent straight to the collector. Without
-        # it the first span of the end-to-end chain would never arrive.
         cors:
           allowed_origins:
             - "http://localhost:5173"
@@ -15,8 +12,6 @@ receivers:
 
 processors:
   batch:
-    # A 1 s buffer. During a hands-on demo I want to see a trace almost immediately; the default
-    # 5 s means waiting on Grafana while recording the GIF (CP9).
     timeout: 1s
     send_batch_size: 512
 
@@ -25,16 +20,6 @@ exporters:
     endpoint: tempo:4317
     tls:
       insecure: true
-
-  # A `debug` exporter (verbosity: basic) used to be declared here and appeared in no pipeline, so
-  # it printed nothing and configured nothing. Removed rather than wired in, because a declared
-  # component nobody references is the same failure as the `gc.window-days` property nothing read
-  #: it answers "is spans-not-arriving diagnosable?" with a yes it has not earned.
-  #
-  # To use it while debugging a span that never reaches Tempo, add both lines back:
-  # debug: { verbosity: detailed }
-  # and put `debug` in the traces pipeline's exporters list. Two lines, and they belong in a
-  # working tree rather than in the committed config.
 
 service:
   pipelines:

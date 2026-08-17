@@ -1,6 +1,6 @@
 {
   "name" : "002-concurrent-same-position",
-  "description" : "Two replicas insert in the same place. The operations are supplied in the reverse order to how they were generated — the result must be identical.",
+  "description" : "Two replicas insert in the same place. The operations are supplied in the reverse order to how they were generated - the result must be identical.",
   "operations" : [ {
     "r" : 2,
     "l" : 2,

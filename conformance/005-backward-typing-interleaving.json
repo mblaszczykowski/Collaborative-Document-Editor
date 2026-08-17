@@ -1,6 +1,6 @@
 {
   "name" : "005-backward-typing-interleaving",
-  "description" : "Backward typing by two replicas. Pins the KNOWN RGA LIMITATION: the result is an interleaving. The TS implementation must interleave THE SAME WAY — agreement matters more than whether the result is pleasing.",
+  "description" : "Backward typing by two replicas. Pins the KNOWN RGA LIMITATION: the result is an interleaving. The TS implementation must interleave THE SAME WAY - agreement matters more than whether the result is pleasing.",
   "operations" : [ {
     "r" : 1,
     "l" : 0,

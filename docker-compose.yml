@@ -1,19 +1,3 @@
-# The local development environment and the demo.
-#
-# The rule for this file: no value without a comment saying why that one (CLAUDE.md, "What to
-# avoid"). If a value is the default, that is written down too, along with when it will stop being
-# enough.
-#
-# Infrastructure only (for working on the code):  docker compose up -d
-#     you then start the backend from your IDE or with ./mvnw -pl app spring-boot:run
-# The whole application, with nothing installed but Docker:
-#     docker compose --profile app up -d      -> the frontend on http://localhost:5173
-# The observability stack (CP7):                  docker compose --profile observability up -d
-#
-# A previous version of this header promised that `docker compose up -d` brought up the "full
-# stack", while the file contained only postgres and redis and there were no Dockerfiles at all.
-# A comment describing behaviour that does not exist is worse than no comment.
-
 services:
 
   postgres:
@@ -22,44 +6,19 @@ services:
     environment:
       POSTGRES_DB: collabedit
       POSTGRES_USER: collabedit
-      # The password is in the repository in plain text, because this environment is purely
-      # local and never leaves the compose network. In production: a secret from an external
-      # store — see the README's "what I would do differently in production" section.
       POSTGRES_PASSWORD: collabedit
     ports:
-      # NOT 5432. The default port is very often already taken by a locally installed Postgres,
-      # and then the application connects to SOMEBODY ELSE'S database and fails with
-      # 'role "collabedit" does not exist' — a confusing message, because the role does exist in
-      # the container. Found on the first end-to-end run. Shifting the port is cheaper than
-      # explaining this to everyone who clones the repository.
-      #
-      # BOUND TO 127.0.0.1, not to every interface. "55432:5432" publishes on 0.0.0.0, so the
-      # database — with the password three lines above, in the repository, in plain text — is
-      # reachable from anything that can route to this machine: the coffee shop's wifi, the
-      # conference network, a container on the same host. The comment on that password says the
-      # environment "never leaves the compose network", and that was true of the value and false of
-      # the port. Local development is unaffected: the application connects to localhost.
       - "127.0.0.1:55432:5432"
     command:
-      # Log slow queries above 200 ms. The value is chosen for the operation-log decision: reading "the document's
-      # state at time T" (a snapshot plus a tail replay) is the heaviest query in the system, and
-      # I want the log to show when it starts crossing that threshold rather than finding out
-      # from the CP8 benchmarks.
       - "postgres"
       - "-c"
       - "log_min_duration_statement=200"
       - "-c"
-      # max_connections defaults to 100. The application's HikariCP pool is 10 per instance (see
-      # application.yml), so 100 covers several instances + the tests + psql with room to spare.
-      # Raised deliberately, so that the multi-instance chaos test fails on what it tests rather
-      # than on exhausted connections.
       - "max_connections=200"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U collabedit -d collabedit"]
-      # 5 s is a compromise: a fast start in CI without flooding the logs over a long-lived
-      # container.
       interval: 5s
       timeout: 3s
       retries: 10
@@ -68,34 +27,13 @@ services:
     image: redis:7-alpine
     container_name: collabedit-redis
     ports:
-      # As above — the port is shifted so it does not collide with a local installation, and bound
-      # to the loopback address rather than to every interface.
-      #
-      # This one matters more than Postgres, and it is worth being precise about why. Redis here has
-      # NO requirepass, and the cluster messages on it are unauthenticated by design (makes
-      # this bus best-effort and puts the authority in Postgres). Published on 0.0.0.0 that is an
-      # open pub/sub bus: anything on the network could publish onto collabedit:doc:*:ops and have
-      # every instance merge the operations, or onto collabedit:permissions:invalidate, or simply
-      # subscribe and read every document's edits as they happen. None of that needs a password,
-      # because there is nothing to guess.
-      #
-      # Binding to 127.0.0.1 is the fix that fits this file's purpose — it is the local development
-      # environment, and the application, the tests and redis-cli all reach it through localhost.
-      # A deployment that genuinely needs Redis reachable off-box needs requirepass and a network
-      # policy, which is a different file and a different conversation.
       - "127.0.0.1:56379:6379"
     command:
       - "redis-server"
-      # NO persistence (--save "") deliberately. Redis is purely the unreliable fast path for
-      # pub/sub here — it holds nothing whose loss would matter. The source of truth
-      # is Postgres. Enabling AOF/RDB would give a false sense that this data is important.
       - "--save"
       - ""
       - "--appendonly"
       - "no"
-      # A memory limit — when full, Redis rejects writes rather than growing without bound. That
-      # is EXACTLY the message-loss scenario the anti-entropy from the cluster design exists to repair, so I
-      # want to be able to induce it in the chaos test (CP8).
       - "--maxmemory"
       - "256mb"
       - "--maxmemory-policy"
@@ -106,13 +44,6 @@ services:
       timeout: 3s
       retries: 10
 
-  # ---------------------------------------------------------------------------
-  # The application. A separate `app` profile, because when working on the code the backend is
-  # started from an IDE or with `mvnw spring-boot:run` — an image is then a redundant rebuild step
-  # on every change. The profile exists for somebody who wants to SEE the application working, not
-  # to work on it.
-  # ---------------------------------------------------------------------------
-
   app:
     build:
       context: .
@@ -120,55 +51,17 @@ services:
     container_name: collabedit-app
     profiles: ["app"]
     environment:
-      # Addresses INSIDE the compose network — service names and default ports, not the ones
-      # shifted for the host's benefit. The container has no conflict with a local Postgres,
-      # because it cannot see the host.
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/collabedit
       SPRING_DATASOURCE_USERNAME: collabedit
       SPRING_DATASOURCE_PASSWORD: collabedit
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
-      # The collector is in a separate profile, so by default it is absent. Without disabling
-      # this, the application buries the log in trace export warnings — noise that looks like a
-      # failure and is the absence of an optional service.
       OTEL_SDK_DISABLED: "true"
-      # The secret is in the repository in plain text for the same reason as the Postgres
-      # password: the environment is purely local, and the name says outright what this is not.
-      #
-      # Since CP16 TokenService HAS no default and refuses to start without a secret — before
-      # that, this line could be omitted and you would get a server signing tokens with a key
-      # known to everyone who read the repository. A public instance must take this value from
-      # the environment, never from a file in the image.
-      #
-      # AND THE PREVIOUS LINE MADE THAT IMPOSSIBLE. It read
-      #
-      # COLLABEDIT_AUTH_SECRET: local-development-secret-not-for-production
-      #
-      # which Compose treats as a literal: an environment variable of the same name on the host
-      # does NOT override a value written in the file. So the sentence above told the reader to
-      # supply the secret from the environment, and the line beneath it silently ignored them —
-      # every deployment of this compose file signed tokens with a key printed in the repository,
-      # including the deployments that had done exactly what the comment asked.
-      #
-      # `${VAR:-default}` is what makes the instruction true: the host's value wins when it is set,
-      # and the local default applies when it is not, so `docker compose --profile app up` still
-      # works with nothing configured.
       COLLABEDIT_AUTH_SECRET: ${COLLABEDIT_AUTH_SECRET:-local-development-secret-not-for-production}
-      # The identity providers, passed through from the host — and unlike the secret above, with
-      # NO default, because there is no such thing as a local default OAuth application. An empty
-      # value is how "no provider" is spelled: `CollabEditProperties.Auth.Provider.configured()`
-      # treats blank as absent, so with nothing set the container starts with federated sign-in
-      # unavailable rather than with a half-configured registration that fails at the redirect.
-      #
-      # Compose reads `.env` from this directory automatically, which is where these belong —
-      # `.env` is in .gitignore, and .env.example documents the names without the values. A client
-      # secret written into this file would be committed, and a committed OAuth secret is one
-      # `git push` away from being everyone's.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      # Off unless asked for. See DevLoginDisabledIT for why the default is the security property.
       COLLABEDIT_DEV_LOGIN: ${COLLABEDIT_DEV_LOGIN:-false}
     ports:
       - "8090:8090"
@@ -183,30 +76,15 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Empty = same origin. nginx inside this container proxies /api and /ws to the app
-        # service, so the browser only ever talks to localhost:5173. That removes the CORS
-        # preflight on every REST call and, more importantly, is the only arrangement that
-        # can ever work over TLS — a page on https may not open a ws: socket.
         VITE_API_BASE: ""
-        # Browser tracing points at the collector published by the observability profile.
-        # Empty would disable it; it is named here because `docker compose --profile app
-        # --profile observability up` is the combination the README documents for CP7.
         VITE_OTLP_ENDPOINT: "http://localhost:4318"
     container_name: collabedit-frontend
     profiles: ["app"]
     ports:
-      # 5173, the same as Vite's development mode — so the address is identical however the app
-      # was started, and the origin allowed in the configuration (`http://localhost:*`) matches
-      # with no code changes.
       - "5173:80"
     depends_on:
       app:
         condition: service_healthy
-
-  # ---------------------------------------------------------------------------
-  # The observability stack (CP7). A separate profile, because it is unnecessary for working on
-  # the CRDT itself and eats memory.
-  # ---------------------------------------------------------------------------
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.115.1
@@ -216,8 +94,8 @@ services:
     volumes:
       - ./ops/otel-collector.yaml:/etc/otel-collector.yaml:ro
     ports:
-      - "4317:4317"   # OTLP gRPC — how the application speaks
-      - "4318:4318"   # OTLP HTTP — how the browser speaks (CP7, a trace starts on the client)
+      - "4317:4317"
+      - "4318:4318"
 
   prometheus:
     image: prom/prometheus:v3.0.1
@@ -225,19 +103,11 @@ services:
     profiles: ["observability"]
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
-      # Exemplars: they let you jump from a specific latency histogram bucket straight to the
-      # trace that produced it. Without them "p99 is high" leads to no particular request.
       - "--enable-feature=exemplar-storage"
-      # 7 days of retention — this is a portfolio project, we need no more, and the default 15
-      # days occupies space for nothing.
       - "--storage.tsdb.retention.time=7d"
     volumes:
       - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
-    # ops/prometheus.yml scrapes the app on the HOST (see the comment there for why), through
-    # host.docker.internal. Docker Desktop provides that name automatically; plain Linux Docker
-    # does not, so without this line scraping simply resolves to nothing and every panel in the
-    # Grafana dashboard is empty — with no error anywhere to say why.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -259,14 +129,9 @@ services:
     container_name: collabedit-grafana
     profiles: ["observability"]
     environment:
-      # Anonymous access with the Admin role — this is a local demo, and a login screen ruins the
-      # CP9 GIF recording. Not in production, obviously.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
-      # The dashboards and data sources are provisioned from the repository (./ops/grafana)
-      # rather than clicked together by hand — otherwise they cannot be reproduced or reviewed in
-      # a pull request.
       GF_INSTALL_PLUGINS: ""
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro

@@ -1,7 +1,1 @@
-# The Node version is pinned per project, not globally.
-#
-# A concrete reason: rolldown (the engine behind Vite 8 and Vitest 4) requires
-# ^20.19.0 || >=22.12.0. On Node 20.18 npm SILENTLY skips the native binding as not satisfying
-# `engines`, the install succeeds, and the tests only blow up at run time with "Cannot find native
-# binding" — a message that points at npm rather than at the Node version.
 nodejs 22.14.0

@@ -1,6 +1,6 @@
 {
   "name" : "201-mark-inherited-by-concurrent-insert",
-  "description" : "Text typed into the middle of a bold range by a replica that has not seen the bold yet. It MUST inherit the formatting — this is the entire reason a mark is a range between anchors rather than a character attribute (CP13).",
+  "description" : "Text typed into the middle of a bold range by a replica that has not seen the bold yet. It MUST inherit the formatting - this is the entire reason a mark is a range between anchors rather than a character attribute.",
   "operations" : [ {
     "r" : 1,
     "l" : 0,

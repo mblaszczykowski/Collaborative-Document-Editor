@@ -11,7 +11,7 @@
     </parent>
 
     <artifactId>app</artifactId>
-    <name>app — WebSocket, persistence, cluster</name>
+    <name>app - WebSocket, persistence, cluster</name>
 
     <dependencies>
         <dependency>
@@ -29,23 +29,6 @@
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
 
-        <!--
-          The OpenID Connect client, and the one place this project takes a dependency ON a
-          framework for a decision it had previously made itself.
-
-          The structural-authorization decision rejected Spring Security for AUTHORIZATION, and
-          that still stands: DocumentAccessGuard and DocumentAccessInterceptor decide what a role
-          may do, per endpoint and per frame, and this dependency does not touch either of them.
-          What it brings is AUTHENTICATION — the OAuth 2.0 authorization-code exchange, the
-          provider's JWKS, signature and issuer validation, nonce and state handling — which is
-          cryptography against a spec, is fully solved, and is precisely the kind of thing this
-          project has no business reimplementing to prove a point.
-
-          The trade it forces is real and is handled in SecurityConfig: this starter pulls in
-          Spring Security, whose default is to secure every request. That default is turned OFF
-          deliberately, because turning it on would put two authorization systems in the request
-          path and make it ambiguous which one refused you.
-        -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-oauth2-client</artifactId>
@@ -67,8 +50,6 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- Flyway rather than ddl-auto: the shape of the tables follows directly from the operation-log decision,
-             so a schema change should be a commit to review, not a side effect of startup. -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -83,14 +64,12 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Tracing (CP7). The starter instruments HTTP and JDBC automatically; the spans for
-             the CRDT path are created by hand, because that is the interesting one here. -->
         <dependency>
             <groupId>io.opentelemetry.instrumentation</groupId>
             <artifactId>opentelemetry-spring-boot-starter</artifactId>
         </dependency>
 
-        <!-- Metrics → Prometheus (CP7) -->
+        <!-- Metrics → Prometheus -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
@@ -108,7 +87,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Integration tests against a REAL Postgres, not a mock (CLAUDE.md §3.2). -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -119,8 +97,6 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- Redis comes up in a plain GenericContainer rather than a dedicated module: all we
-             need is a port, and every extra test dependency is another version to track. -->
     </dependencies>
 
     <build>

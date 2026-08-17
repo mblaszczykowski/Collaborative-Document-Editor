@@ -3,10 +3,6 @@ apiVersion: 1
 providers:
   - name: collabedit
     type: file
-    # The dashboards are files in the repository (./ops/grafana/dashboards), not state clicked
-    # together in the UI. The reason: a hand-built dashboard disappears on
-    # `docker compose down -v` and cannot be reviewed in a pull request. A dashboard change should
-    # be a commit.
     allowUiUpdates: false
     options:
       path: /var/lib/grafana/dashboards

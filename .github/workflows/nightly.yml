@@ -1,32 +1,18 @@
-name: Nightly — deep property tests and benchmarks
+name: Nightly - deep property tests and benchmarks
 
 on:
   schedule:
-    # 03:00 UTC. Every run of the property tests searches — the seed is random on pull requests
-    # too (see the note on jqwik.tries in the root pom, which used to claim otherwise). What this
-    # run adds is DEPTH: 10× the tries, so it reaches case shapes a 1000-try run rarely does. A
-    # counterexample found overnight goes into the repository as an ordinary regression test.
     - cron: '0 3 * * *'
   workflow_dispatch:
 
-# Nothing here writes to the repository either. `ci.yml` has carried this block since it was
-# noticed there; this file inherited the repository default for longer, which is the same gap in
-# the same place twice. The artifact uploads below need no token scope — `upload-artifact` uses the
-# Actions API, not `contents`.
 permissions:
   contents: read
 
-# Every job below has an explicit timeout-minutes. The default is GitHub's 360, which is not a
-# timeout so much as an absence of one: a hung Testcontainers wait or a JMH fork that never
-# finishes would burn six hours of runner before anyone found out, and on a nightly schedule
-# nobody is watching. The values are each roughly 4–6× the observed runtime, chosen to catch
-# "stuck" rather than "slow on a loaded runner" — a timeout that fires on ordinary variance
-# teaches people to ignore red, which is worse than no timeout at all.
 jobs:
   thorough-property-tests:
-    name: Property tests — 10 000 tries
+    name: Property tests - 10 000 tries
     runs-on: ubuntu-latest
-    timeout-minutes: 60 # observed ~8 min; 10× the tries of the PR run
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -47,7 +33,7 @@ jobs:
   benchmarks:
     name: JMH benchmarks
     runs-on: ubuntu-latest
-    timeout-minutes: 45 # observed ~7 min of JMH plus the build
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -56,10 +42,6 @@ jobs:
           java-version: '21'
           cache: maven
 
-      # Numbers from a GitHub runner exist to detect REGRESSIONS between runs, not to be quoted
-      # in the README. The runner is shared and variable, so its results are not comparable
-      # between days in any defensible way. The README's numbers come from one described machine
-      # — see the Performance section.
       - name: JMH
         run: ./mvnw -B -pl crdt-core test-compile exec:exec@run-benchmarks
 
@@ -69,34 +51,9 @@ jobs:
           path: crdt-core/target/jmh-result.json
 
   simulation:
-    name: Deterministic simulation — 20 000 seeds per scenario
+    name: Deterministic simulation - 20 000 seeds per scenario
     runs-on: ubuntu-latest
-    timeout-minutes: 90 # observed ~1 s for 200 seeds; 100× that plus the build
-    # The pull-request run explores 200 seeds in under a second, which confirms known-good
-    # behaviour. This one goes a hundred times deeper: 20 000 seeds per scenario, still without
-    # Docker because the simulation touches no infrastructure.
-    #
-    # THIS JOB DOES NOT SEARCH, AND THIS COMMENT USED TO SAY IT DID. `ClusterSimulationTest.seeds`
-    # is `IntStream.rangeClosed(1, SEED_COUNT)`, so the seeds are 1..20 000 — the same twenty
-    # thousand schedules, every night, for ever. After the first green run the marginal value of
-    # the second is zero, and the job costs the same. That is the exact argument `pom.xml` makes
-    # against a fixed jqwik seed ("a fresh 1000 cases on every pull request SEARCHES, while the
-    # same 1000 forever only confirms") — made correctly there and contradicted here, in the same
-    # repository, about the same class of test.
-    #
-    # It cannot be fixed from this file: the range starts at 1 in the test and no system property
-    # moves it. The change needed on that side is small and precise — read a base
-    # (`Long.getLong("simulation.seed-base", 1L)`) and stream `base.. base + SEED_COUNT - 1`,
-    # then have this job pass `-Dsimulation.seed-base=$RANDOM_BASE` and echo the base it used, so
-    # a counterexample is still one `-Dsimulation.seed-base=` away from replaying. No flag is
-    # passed here until that lands, deliberately: a knob nothing reads is how
-    # `collabedit.gc.window-days` sat in the configuration for five checkpoints doing nothing
-    # while looking implemented.
-    #
-    # Same division of labour as the property tests above — confirm on every change, go deeper
-    # overnight. The difference from the chaos job below is that anything found here comes with
-    # a seed, so it converts into a permanent regression test instead of a note saying it once
-    # went red.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -107,16 +64,6 @@ jobs:
 
       - run: ./mvnw -B install -DskipTests
 
-      # `-Dsurefire.failIfNoSpecifiedTests=false` was removed from this command, and its absence is
-      # the point. With the flag, renaming or moving ClusterSimulationTest leaves this job green
-      # having executed nothing — a nightly sweep of twenty thousand schedules reduced to a
-      # successful no-op, reported as success. That is the same failure `pom.xml` documents at
-      # length two doors down and has now been bitten by twice in this repository: *Properties
-      # classes that did not match Surefire's default patterns (test count 15 → 5, build green),
-      # and *Measurement in CP15 (passed when run directly, never ran in the build, build green).
-      # The class exists, so the flag was never needed for this job to pass; it was only ever
-      # covering for the day the class stops existing under that name. Without it, that day is a
-      # red build with "No tests matching pattern" in it.
       - name: Simulation sweep
         run: >-
           ./mvnw -B -pl app test
@@ -126,27 +73,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          # The report contains the failing seed and the full event history. That pair is the
-          # entire deliverable: paste the seed into REGRESSION_SEEDS and the interleaving
-          # replays exactly, on any machine.
           name: simulation-counterexamples
           path: app/target/surefire-reports/
 
   chaos:
-    name: Cluster chaos — 10 consecutive runs
+    name: Cluster chaos - 10 consecutive runs
     runs-on: ubuntu-latest
-    timeout-minutes: 90 # ten runs at ~6 s of test plus Testcontainers start-up each
-    # ClusterChaosIT already runs on EVERY pull request, because the `app` job in ci.yml calls
-    # `mvnw install`, which runs all of the module's tests. Repeating the same thing here would be
-    # a duplicate with no value.
-    #
-    # This job does something a single run cannot: it searches for NON-DETERMINISM. The chaos test
-    # stops Redis mid-write and relies on the anti-entropy sweep, so its outcome depends on how
-    # events line up in time. A test that passes once may have passed by chance; a test that passes
-    # ten times in a row under varying runner load is much stronger evidence.
-    #
-    # The same principle as the property tests above — the nightly run SEARCHES for
-    # counterexamples rather than confirming the ones already found.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -155,9 +88,6 @@ jobs:
           java-version: '21'
           cache: maven
 
-      # Testcontainers brings up Postgres and Redis itself (IntegrationTestBase), so this job
-      # needs no `services:` — unlike the e2e job, where the stack has to live outside the JVM
-      # because a browser uses it.
       - run: ./mvnw -B install -DskipTests
 
       - name: Cluster chaos ×10
@@ -168,15 +98,12 @@ jobs:
             if ! ./mvnw -B -pl app test -Dtest=ClusterChaosIT; then
               failed=$((failed + 1))
               echo "::error::Run $run failed"
-              # The reports overwrite each other between runs, so we set the failed one aside.
               mkdir -p failed-runs
               cp -r app/target/surefire-reports "failed-runs/run-$run"
             fi
             echo "::endgroup::"
           done
           echo "Failed runs: $failed/10"
-          # One failure in ten is NOT noise — it is precisely the non-determinism this job is
-          # looking for. We tolerate none.
           [ "$failed" -eq 0 ]
 
       - uses: actions/upload-artifact@v4
@@ -186,33 +113,9 @@ jobs:
           path: failed-runs/
 
   measurements:
-    name: Load harness + broadcast fan-out — the two tests nothing ran
+    name: Load harness + broadcast fan-out - the two tests nothing ran
     runs-on: ubuntu-latest
-    timeout-minutes: 60 # observed ~10 min for the harness, ~2 min for the fan-out
-    # WHY THIS JOB EXISTS. `LoadHarnessIT` is guarded by `-Dbenchmark=true` and `BroadcastFanoutIT`
-    # by `-Dfanout=true`, and until now neither flag appeared in any workflow in this repository.
-    # So neither test had run in CI, ever — while the README quotes twelve rows of the harness's
-    # output as measured fact and names `BroadcastFanoutIT` in the **Verified** column of the
-    # failure-modes table, under a heading that promises the marked rows have a test that checks
-    # them. Two ways to fix that: strike the citations, or make them true. This is the second.
-    #
-    # PLAN-v3 §5.1 asked for a nightly harness job and got half an answer: CP19 closed with a gate
-    # on the SHAPE of the complexity instead, because the runner's own spread (28 ms against 43 ms
-    # on identical code) exceeds the regression a millisecond threshold would have to detect. That
-    # finding rules out a *threshold*. It does not rule out *running the thing* — and the half that
-    # was dropped is the half that keeps the published numbers honest.
-    #
-    # THIS JOB THEREFORE DOES NOT FAIL ON A NUMBER, and that is deliberate rather than lax. What it
-    # does:
-    # - archives the harness output, so a drift in the twelve README rows is visible to anyone
-    # who looks rather than discovered by a reader with a stopwatch;
-    # - runs the fan-out test, which asserts CONVERGENCE (3/3 rounds at 2, 10, 25 and 50 clients)
-    # rather than a duration. That is a correctness property and it does gate this job — which
-    # is exactly what the README's Verified column claims about it, and now the first time
-    # anything automatic has checked the claim.
-    #
-    # `continue-on-error` on the harness step, not on the fan-out step: a slow runner must not
-    # redden the build, a non-converging cluster must.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -221,26 +124,15 @@ jobs:
           java-version: '21'
           cache: maven
 
-      # Testcontainers again — both classes extend IntegrationTestBase.
       - run:./mvnw -B install -DskipTests
 
-      # No -Dsurefire.failIfNoSpecifiedTests=false here either, and for the same reason as in the
-      # simulation job: with these two classes named explicitly, a rename must turn this job red
-      # rather than turn it into a no-op that reports success. That matters more here than
-      # anywhere else in this file — these tests spent their whole life not running, and the
-      # symptom was indistinguishable from running and passing.
-      # `set -o pipefail` is load-bearing, not hygiene. A pipeline's exit status is the LAST
-      # command's, so `mvnw … | tee` reports tee's success and a failing test would leave the step
-      # green — which would make this job a more elaborate version of the problem it was written to
-      # fix: something that looks like it checks the fan-out claim and does not. GitHub runs `run:`
-      # under `bash -e`, and -e does not imply pipefail.
       - name: Load harness (~10 min)
         continue-on-error: true
         run: |
           set -o pipefail
           ./mvnw -B -pl app test -Dtest=LoadHarnessIT -Dbenchmark=true | tee load-harness.txt
 
-      - name: Broadcast fan-out — convergence at 2 / 10 / 25 / 50 clients
+      - name: Broadcast fan-out - convergence at 2 / 10 / 25 / 50 clients
         run: |
           set -o pipefail
           ./mvnw -B -pl app test -Dtest=BroadcastFanoutIT -Dfanout=true | tee fanout.txt
@@ -248,11 +140,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          # Archived on success as well as on failure. The value is the series: the README's
-          # numbers come from one described machine and these come from a shared runner, so they
-          # are not comparable to the README — they are comparable to LAST NIGHT'S run of this
-          # job, which is the only comparison a runner can honestly support (the same argument
-          # the JMH job above makes about its own numbers).
           name: measurements
           path: |
             load-harness.txt

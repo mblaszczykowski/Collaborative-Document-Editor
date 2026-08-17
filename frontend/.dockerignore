@@ -1,20 +1,8 @@
-# What must NOT go into the frontend image's build context.
-#
-# A second file rather than one at the repository root, because Docker reads the `.dockerignore`
-# at the root of the BUILD CONTEXT — and `docker build ./frontend` makes that this directory. The
-# root file covers `docker build -f app/Dockerfile .`; it does nothing here.
-#
-# It matters more here than there, because `frontend/Dockerfile` does `COPY . .`: without this,
-# a local `node_modules/` is shipped to the daemon and copied into the image, where `npm ci` has
-# just installed the exact tree the lockfile specifies. That is the reproducibility the Dockerfile's
-# own comment argues for, undone by whatever happens to be lying around.
-
 node_modules/
 dist/
 *.tsbuildinfo
 .vite/
 
-# Test and demo artefacts — the recordings alone run to megabytes.
 test-results/
 playwright-report/
 .playwright/
