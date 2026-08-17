@@ -14,58 +14,8 @@ TypeScript in the browser. A browser and a server that order two concurrent inse
 will split a document permanently, and having written both is how I keep them honest about it.
 Formatting, comments and suggestions are built on that same core.
 
-It works. There is one cluster path I know is broken, at the bottom of [Limitations](#limitations).
-
-## Running it
-
-JDK 21, Node 22.12+, Docker.
-
-```bash
-docker compose --profile app up -d          # everything, on http://localhost:5173
-```
-
-To work on the code instead, run the dependencies and the two halves separately:
-
-```bash
-docker compose up -d postgres redis
-export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)   # no default; see below
-export COLLABEDIT_DEV_LOGIN=true                           # or configure a provider
-
-./mvnw -pl app spring-boot:run              # backend on :8090
-cd frontend && npm install && npm run dev   # frontend on :5173
-```
-
-| Variable | Default | |
-|---|---|---|
-| `COLLABEDIT_AUTH_SECRET` | *none, refuses to start* | Signs session tokens. A secret committed here would let any reader mint a token for any user, so there is no fallback. |
-| `COLLABEDIT_DEV_LOGIN` | `false` | Serves the name-only login. 404 when off. |
-| `GOOGLE_CLIENT_ID` / `_SECRET` | unset | Enables the Google button. Both halves required, or it advertises a button that fails at the token exchange. |
-| `GITHUB_CLIENT_ID` / `_SECRET` | unset | Same, for GitHub. |
-| `COLLABEDIT_APP_URL` | `localhost:5173` | Where a finished sign-in returns to. |
-| `COLLABEDIT_PORT` | `8090` | Must match the registered redirect URI. |
-
-With no provider and no dev login the app starts and the login screen says there is no way in. That
-is intended. Register the redirect URI as `http://localhost:8090/login/oauth2/code/{google,github}`.
-That path is Spring Security's, not ours, and pointing it at the app instead is the usual first
-mistake. `cp .env.example .env` if you prefer a file; Compose reads it and it is gitignored.
-
-```bash
-./mvnw install                         # everything, integration tests on a real Postgres
-./mvnw -pl crdt-core -Pthorough test   # 10 000 property tries, as in the nightly run
-cd frontend && npm test                # client unit tests
-cd frontend && npm run e2e             # two browsers, needs a running stack
-```
-
-A failing property prints its seed; `@Property(seed = "...")` replays it. On colima rather than
-Docker Desktop, Testcontainers needs `DOCKER_HOST`,
-`TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock` and `api.version=1.44` in
-`~/.docker-java.properties`; all three failures read as "no Docker".
-
-Off a laptop, the frontend resolves the backend at build time
-([`config.ts`](frontend/src/config.ts)) and defaults to its own origin with nginx proxying `/api`
-and `/ws`. That is the only arrangement that works over TLS, since an `https:` page may not open a
-`ws:` socket. Separate origins need `VITE_API_BASE` at build time and
-`COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS` on the backend.
+`docker compose --profile app up -d` starts the whole thing on :5173; [Running
+it](#running-it) covers developing against it.
 
 ## Features
 
@@ -889,6 +839,57 @@ Deliberate simplifications, and the ones that turned out worse than I assumed.
   `head > appliedServerSeq` never fires. A client there can stay permanently one operation behind.
   Reproduced under load, not fixed. It needs a decision about how documents load in the cluster
   rather than a patch, and I have not made it yet.
+
+## Running it
+
+JDK 21, Node 22.12+, Docker.
+
+```bash
+docker compose --profile app up -d          # everything, on http://localhost:5173
+```
+
+To work on the code instead, run the dependencies and the two halves separately:
+
+```bash
+docker compose up -d postgres redis
+export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)   # no default; see below
+export COLLABEDIT_DEV_LOGIN=true                           # or configure a provider
+
+./mvnw -pl app spring-boot:run              # backend on :8090
+cd frontend && npm install && npm run dev   # frontend on :5173
+```
+
+| Variable | Default | |
+|---|---|---|
+| `COLLABEDIT_AUTH_SECRET` | *none, refuses to start* | Signs session tokens. A secret committed here would let any reader mint a token for any user, so there is no fallback. |
+| `COLLABEDIT_DEV_LOGIN` | `false` | Serves the name-only login. 404 when off. |
+| `GOOGLE_CLIENT_ID` / `_SECRET` | unset | Enables the Google button. Both halves required, or it advertises a button that fails at the token exchange. |
+| `GITHUB_CLIENT_ID` / `_SECRET` | unset | Same, for GitHub. |
+| `COLLABEDIT_APP_URL` | `localhost:5173` | Where a finished sign-in returns to. |
+| `COLLABEDIT_PORT` | `8090` | Must match the registered redirect URI. |
+
+With no provider and no dev login the app starts and the login screen says there is no way in. That
+is intended. Register the redirect URI as `http://localhost:8090/login/oauth2/code/{google,github}`.
+That path is Spring Security's, not ours, and pointing it at the app instead is the usual first
+mistake. `cp .env.example .env` if you prefer a file; Compose reads it and it is gitignored.
+
+```bash
+./mvnw install                         # everything, integration tests on a real Postgres
+./mvnw -pl crdt-core -Pthorough test   # 10 000 property tries, as in the nightly run
+cd frontend && npm test                # client unit tests
+cd frontend && npm run e2e             # two browsers, needs a running stack
+```
+
+A failing property prints its seed; `@Property(seed = "...")` replays it. On colima rather than
+Docker Desktop, Testcontainers needs `DOCKER_HOST`,
+`TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock` and `api.version=1.44` in
+`~/.docker-java.properties`; all three failures read as "no Docker".
+
+Off a laptop, the frontend resolves the backend at build time
+([`config.ts`](frontend/src/config.ts)) and defaults to its own origin with nginx proxying `/api`
+and `/ws`. That is the only arrangement that works over TLS, since an `https:` page may not open a
+`ws:` socket. Separate origins need `VITE_API_BASE` at build time and
+`COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS` on the backend.
 
 ## Observability
 
