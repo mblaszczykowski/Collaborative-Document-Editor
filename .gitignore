@@ -1,7 +1,5 @@
 # Java / Maven
 target/
-# jqwik's failure store: rewritten by every test run, so a local property failure would
-# otherwise dirty a tracked file and get committed by accident.
 .jqwik-database
 out/
 *.class
@@ -30,11 +28,11 @@ dist/
 bench/results/
 bench/target/
 
-# Demo recording intermediates (the GIF goes into the repository, the video does not).
-# The path has to match RECORDINGS in tools/make-gif.sh — the previous version pointed at
-# demo/recordings/, a directory that never existed, so the rule covered nothing and 1.5 MB of
-# recordings ended up in the repository's history.
 frontend/demo-recordings/
 test-results/
 playwright-report/
 .playwright/
+
+# Local agent/editor instructions
+CLAUDE.md
+.claude/
