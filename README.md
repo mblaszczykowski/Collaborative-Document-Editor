@@ -572,7 +572,7 @@ cd frontend && npm install && npm run dev   # frontend on :5173
 | `COLLABEDIT_PORT` | `8090` | Must match the registered redirect URI. |
 
 With no provider and no dev login, the login screen says there is no way in. Register the redirect
-URI as `http://localhost:8090/login/oauth2/code/{google,github}` — that path is Spring Security's,
+URI as `http://localhost:8090/login/oauth2/code/{google,github}`. That path is Spring Security's,
 not ours, and pointing it at the app is the usual first mistake. `cp .env.example .env` works too.
 
 ```bash
