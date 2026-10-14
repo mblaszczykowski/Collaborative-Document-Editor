@@ -16,7 +16,7 @@ ENV VITE_OTLP_ENDPOINT=${VITE_OTLP_ENDPOINT}
 
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM nginx:1.31-alpine
 
 COPY --from=build /src/dist /usr/share/nginx/html
 
