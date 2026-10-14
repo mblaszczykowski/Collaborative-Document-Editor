@@ -27,7 +27,7 @@
         <jmh.version>1.37</jmh.version>
 
         <testcontainers.version>1.21.3</testcontainers.version>
-        <otel.version>2.13.3</otel.version>
+        <otel.version>2.32.0</otel.version>
 
         <surefire.version>3.5.2</surefire.version>
         <compiler-plugin.version>3.13.0</compiler-plugin.version>
