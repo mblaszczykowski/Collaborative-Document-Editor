@@ -34,6 +34,8 @@ export class MarkSet {
     return this.operations.has(idToString(opId))
   }
 
+  all(): Op[] { return [...this.operations.values()] }
+
   get size(): number {
     return this.operations.size
   }

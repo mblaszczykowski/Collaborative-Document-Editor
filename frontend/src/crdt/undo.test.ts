@@ -230,7 +230,7 @@ describe('undo of text', () => {
       expect(elapsed).toBeLessThan(150)
     })
 
-    it('redo puts my text back, in one piece', () => {
+    it('redo preserves the collaborator text between my runs', () => {
       const me = new RgaDocument(1)
       const undo = new UndoManager(me)
       const insert = me.insert(0, 'abc')
@@ -242,7 +242,7 @@ describe('undo of text', () => {
       undo.undo()
       expect(me.text).toBe('X')
       undo.redo()
-      expect(me.text).toContain('abc')
+      expect(me.text).toBe('aXbc')
     })
   })
 
@@ -276,5 +276,32 @@ describe('undo of text', () => {
       undo.undo()
       expect(document.text).toBe('abcd')
     })
+  })
+})
+
+describe('mixed formatting inverse', () => {
+  it('restores each preexisting mark run after extending bold', () => {
+    const model = documentWith('abcdef')
+    model.addMark(0, 2, 'bold', null)
+    const undo = new UndoManager(model)
+    const before = model.formatting()
+    model.addMark(0, 4, 'bold', null)
+    undo.recordMarkChange('bold', 0, 4, before, null)
+    undo.undo()
+    expect(model.formatting()).toEqual([{ from: 0, to: 2, marks: new Map([['bold', null]]) }])
+    undo.redo()
+    expect(model.formatting()[0]).toMatchObject({ from: 0, to: 4 })
+  })
+
+  it('retains delete identity across a cached document reload', () => {
+    const model = documentWith('abc')
+    const op = model.delete(0, 1)
+    const restored = new RgaDocument(1)
+    restored.restoreFrom(structuredClone(model.cachedState()))
+    expect(restored.apply(op)).toBe('duplicate')
+    expect(restored.text).toBe('bc')
+    const simultaneous = { ...op, id: { replicaId: 2, lamport: 10 } }
+    expect(restored.apply(simultaneous)).toBe('applied')
+    expect(restored.version.get(2)).toBe(10)
   })
 })

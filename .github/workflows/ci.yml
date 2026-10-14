@@ -64,8 +64,8 @@ jobs:
 
       - name: The images still build
         run: |
-          docker build -f app/Dockerfile -t collabedit-app:ci.
-          docker build -t collabedit-frontend:ci./frontend
+          docker build -f app/Dockerfile -t collabedit-app:ci .
+          docker build -t collabedit-frontend:ci ./frontend
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -146,6 +146,7 @@ jobs:
           timeout 120 bash -c 'until curl -fsS http://localhost:8090/actuator/health > /dev/null; do sleep 2; done'
         env:
           COLLABEDIT_AUTH_SECRET: ci-only-secret-long-enough-to-be-accepted
+          COLLABEDIT_DEV_LOGIN: 'true'
       - run: |
           npm run dev > /tmp/vite.log 2>&1 &
           timeout 60 bash -c 'until curl -fsS http://localhost:5173 > /dev/null; do sleep 1; done'
@@ -157,6 +158,18 @@ jobs:
       - run: npm run demo
         working-directory: frontend
 
+      - name: Production first-visit offline reload
+        run: |
+          npm run build
+          npm run preview -- --host localhost --port 4173 > /tmp/preview.log 2>&1 &
+          timeout 60 bash -c 'until curl -fsS http://localhost:4173 > /dev/null; do sleep 1; done'
+          npx playwright test e2e/offline-shell.spec.ts
+        working-directory: frontend
+        env:
+          VITE_API_BASE: http://localhost:8090
+          E2E_APP_URL: http://localhost:4173
+          E2E_PRODUCTION: 'true'
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -165,3 +178,4 @@ jobs:
             frontend/test-results/
             /tmp/backend.log
             /tmp/vite.log
+            /tmp/preview.log

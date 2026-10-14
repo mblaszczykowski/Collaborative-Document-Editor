@@ -79,7 +79,7 @@ public final class OpCodec {
             side.intValue() == 0 ? Anchor.Side.BEFORE : Anchor.Side.AFTER);
     }
 
-    static final long MAX_LAMPORT = 1L << 50;
+    public static final long MAX_LAMPORT = 1L << 50;
 
     private static long requireLamport(long lamport) {
         if (lamport < 0 || lamport > MAX_LAMPORT) {

@@ -25,12 +25,15 @@ public class RevokedAccessFilter implements ChannelInterceptor {
     private final PermissionService permissions;
     private final SessionLifecycle sessions;
     private final DocumentMetrics metrics;
+    private final org.springframework.beans.factory.ObjectProvider<org.springframework.messaging.simp.SimpMessagingTemplate> messaging;
 
     public RevokedAccessFilter(PermissionService permissions, SessionLifecycle sessions,
-                               DocumentMetrics metrics) {
+                               DocumentMetrics metrics,
+                               org.springframework.beans.factory.ObjectProvider<org.springframework.messaging.simp.SimpMessagingTemplate> messaging) {
         this.permissions = permissions;
         this.sessions = sessions;
         this.metrics = metrics;
+        this.messaging = messaging;
     }
 
     @Override
@@ -41,7 +44,18 @@ public class RevokedAccessFilter implements ChannelInterceptor {
             return message;
         }
 
-        UUID documentId = DocumentAccessInterceptor.documentIdOf(accessor.getDestination());
+        String destination = accessor.getDestination();
+        boolean errorQueue = destination != null && destination.contains("/queue/errors");
+        if (sessions.expired(accessor.getSessionId()) && !errorQueue) {
+            notifyError(accessor, "SESSION_EXPIRED", "Your session expired. Sign in again to send pending work.");
+            metrics.recordOutboundDrop("session_expired");
+            return null;
+        }
+
+        UUID documentId = DocumentAccessInterceptor.documentIdOf(destination);
+        if (documentId == null && accessor.getHeader(SessionAttributes.DOCUMENT_ID) instanceof UUID tagged) {
+            documentId = tagged;
+        }
         if (documentId == null) {
             return message;
         }
@@ -64,9 +78,11 @@ public class RevokedAccessFilter implements ChannelInterceptor {
             stillPermitted = permissions.roleOf(userId, documentId).isPresent();
         } catch (RuntimeException e) {
             log.warn("Could not check access to document {} for user {} while delivering a frame; "
-                + "delivering it rather than stopping the document's broadcasts", documentId,
+                + "dropping content until authorization is available", documentId,
                 userId, e);
-            return message;
+            notifyError(accessor, "ACCESS_UNAVAILABLE", "Document updates are paused while access cannot be verified. Reconnect when the server recovers.");
+            metrics.recordOutboundDrop("authorization_unavailable");
+            return null;
         }
 
         if (!stillPermitted) {
@@ -77,4 +93,14 @@ public class RevokedAccessFilter implements ChannelInterceptor {
         }
         return message;
     }
+    private void notifyError(SimpMessageHeaderAccessor accessor, String code, String explanation) {
+        if (!sessions.shouldNotify(accessor.getSessionId(), code)) { return; }
+        try {
+            messaging.getObject().convertAndSendToUser(accessor.getSessionId(), "/queue/errors",
+                new Messages.ErrorMessage(code, explanation), SessionAttributes.forUser(accessor));
+        } catch (RuntimeException e) {
+            log.debug("Could not report {} to session {}", code, accessor.getSessionId());
+        }
+    }
+
 }

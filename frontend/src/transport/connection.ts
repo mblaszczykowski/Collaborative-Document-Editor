@@ -31,6 +31,7 @@ export interface ConnectionHandlers {
   hasOperation: (replicaId: number, lamport: number) => boolean
   hasApplied: (op: Op) => boolean
   onRemoteOps: (ops: Op[]) => void
+  persistApplied?: () => Promise<void>
   versionVector: () => Map<number, number>
   onPresence: (entries: PresenceEntry[], complete: boolean) => void
   onStateChange: (state: ConnectionState, pendingCount: number) => void
@@ -66,6 +67,10 @@ export class DocumentConnection {
   readonly simulator = new NetworkSimulator((payload) => this.publishOp(payload as Op))
 
   private readonly documentId: string
+  private readonly userId?: string
+  private readonly receipts = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>()
+  private readonly persisting = new Set<string>()
+  private readonly sentAt = new Map<string, number>()
   private readonly token: string
   private readonly handlers: ConnectionHandlers
 
@@ -74,26 +79,30 @@ export class DocumentConnection {
     token: string,
     initialServerSeq: number,
     handlers: ConnectionHandlers,
+    userId?: string,
   ) {
     this.documentId = documentId
     this.token = token
     this.handlers = handlers
+    this.userId = userId
     this.lastServerSeq = initialServerSeq
   }
 
   async restoreOfflineBuffer(): Promise<Op[]> {
-    const stored = await offlineStore.pending(this.documentId)
+    const stored = await offlineStore.pending(this.documentId, this.userId)
     const live: Op[] = []
+    if (this.handlers.persistApplied) await this.handlers.persistApplied()
     for (const op of stored) {
       if (this.handlers.hasApplied(op)) {
         void offlineStore
-          .forget(this.documentId, op)
+          .forget(this.documentId, op, this.userId)
           .catch((error: unknown) => this.reportStorageFailure(error))
         continue
       }
       this.unacknowledged.set(keyOf(op.id), op)
       live.push(op)
     }
+    if (live.length > 0) { this.remember(live); this.handlers.onRemoteOps(live) }
     this.setState(this.state)
     return live
   }
@@ -154,6 +163,12 @@ export class DocumentConnection {
           message: string
           retryAfterMillis?: number
         }
+        if (['ACCESS_DENIED', 'SESSION_EXPIRED', 'OPERATION_REJECTED', 'BAD_OPERATION',
+          'REPLICA_ID_CONFLICT', 'RESYNC_REQUIRED'].includes(error.code)) this.rejectReceipts()
+        if (error.code === 'ACCESS_UNAVAILABLE') {
+          this.gapDetected = true
+          this.setState('resyncing')
+        }
         if (error.code === 'RATE_LIMITED') {
           this.scheduleRetryAfterThrottling(error.retryAfterMillis)
           return
@@ -171,6 +186,12 @@ export class DocumentConnection {
 
   private reportProgress(): void {
     if (!this.client?.connected) return
+    for (const [key, op] of this.unacknowledged) {
+      if (!this.persisting.has(key) && Date.now() - (this.sentAt.get(key) ?? 0) >= 10_000) {
+        this.sentAt.set(key, Date.now())
+        this.simulator.transmit(op)
+      }
+    }
     if (this.gapDetected) {
       this.gapDetected = false
       this.setState('resyncing')
@@ -219,7 +240,7 @@ export class DocumentConnection {
     this.throttleRetryTimer = window.setTimeout(() => {
       this.throttleRetryTimer = null
       for (const op of this.unacknowledged.values()) {
-        this.publishOp(op)
+        if (!this.persisting.has(keyOf(op.id))) this.publishOp(op)
       }
     }, delay)
   }
@@ -250,7 +271,7 @@ export class DocumentConnection {
     })
 
     for (const op of this.unacknowledged.values()) {
-      this.publishOp(op)
+      if (!this.persisting.has(keyOf(op.id))) this.publishOp(op)
     }
   }
 
@@ -264,46 +285,51 @@ export class DocumentConnection {
     this.remember(ops)
     this.handlers.onRemoteOps(ops)
 
-    for (const op of ops) {
-      const key = keyOf(op.id)
-      const mine = this.unacknowledged.get(key)
-      if (mine !== undefined) {
-        this.unacknowledged.delete(key)
-        void offlineStore
-          .forget(this.documentId, mine)
-          .catch((error: unknown) => this.reportStorageFailure(error))
+    this.afterCacheSaved(() => {
+      for (const op of ops) this.acknowledge(op.id)
+      if (payload.last !== false) {
+        this.lastServerSeq = Math.max(this.lastServerSeq, payload.headServerSeq)
+        const browserOnline = typeof navigator === 'undefined' || navigator.onLine !== false
+        if (this.state !== 'offline' && this.client?.connected !== false
+          && browserOnline && !this.simulator.current.partitioned) this.setState('online')
+        else this.setState(this.state)
       }
-    }
+    })
+  }
 
-    if (payload.last !== false) {
-      this.lastServerSeq = Math.max(this.lastServerSeq, payload.headServerSeq)
-      this.setState('online')
-    }
+  private afterCacheSaved(action: () => void): void {
+    if (!this.handlers.persistApplied) { action(); return }
+    void this.handlers.persistApplied().then(() => {
+      if (!this.disposed) action()
+    }).catch((error: unknown) => this.reportStorageFailure(error))
+  }
+
+  private acknowledge(id: Id): boolean {
+    const key = keyOf(id)
+    const op = this.unacknowledged.get(key)
+    if (!op) return false
+    this.unacknowledged.delete(key)
+    this.sentAt.delete(key)
+    this.resolveReceipt(key)
+    void offlineStore.forget(this.documentId, op, this.userId)
+      .catch((error: unknown) => this.reportStorageFailure(error))
+    return true
   }
 
   private onAcks(message: IMessage): void {
     const acks = JSON.parse(message.body) as { r: number; l: number; serverSeq: number }[]
-    let mine = false
-    for (const ack of acks) {
-      const key = keyOf({ replicaId: ack.r, lamport: ack.l })
-      if (!this.handled.has(key) && !this.handlers.hasOperation(ack.r, ack.l)) {
-        this.gapDetected = true
+    this.afterCacheSaved(() => {
+      let mine = false
+      for (const ack of acks) {
+        const id = { replicaId: ack.r, lamport: ack.l }
+        const key = keyOf(id)
+        if (!this.handled.has(key) && !this.handlers.hasOperation(ack.r, ack.l)) this.gapDetected = true
+        if (this.acknowledge(id)) mine = true
+        this.lastServerSeq = Math.max(this.lastServerSeq, ack.serverSeq)
       }
-
-      const acknowledged = this.unacknowledged.get(key)
-      this.unacknowledged.delete(key)
-      if (acknowledged !== undefined) {
-        mine = true
-        void offlineStore
-          .forget(this.documentId, acknowledged)
-          .catch((error: unknown) => this.reportStorageFailure(error))
-      }
-      this.lastServerSeq = Math.max(this.lastServerSeq, ack.serverSeq)
-    }
-    if (mine) {
-      this.throttleRounds = 0
-    }
-    this.setState(this.state)
+      if (mine) this.throttleRounds = 0
+      this.setState(this.state)
+    })
   }
 
   private onPresence(message: IMessage): void {
@@ -341,20 +367,55 @@ export class DocumentConnection {
     }
   }
 
+  waitForDurable(op: Op): Promise<void> {
+    if (this.disposed) return Promise.reject(new Error('The document connection closed.'))
+    const key = keyOf(op.id)
+    if (!this.unacknowledged.has(key)) return Promise.resolve()
+    let receipt = this.receipts.get(key)
+    if (!receipt) {
+      let resolve!: () => void
+      let reject!: (error: Error) => void
+      const promise = new Promise<void>((done, refused) => { resolve = done; reject = refused })
+      receipt = { promise, resolve, reject }
+      this.receipts.set(key, receipt)
+    }
+    return receipt.promise
+  }
+
+  hasPending(op: Op): boolean { return this.unacknowledged.has(keyOf(op.id)) }
+
+  private resolveReceipt(key: string): void {
+    this.receipts.get(key)?.resolve()
+    this.receipts.delete(key)
+  }
+
+  private rejectReceipts(): void {
+    for (const receipt of this.receipts.values()) receipt.reject(new Error('The document connection closed before saving.'))
+    this.receipts.clear()
+  }
+
   send(op: Op): void {
+    this.persisting.add(keyOf(op.id))
     this.unacknowledged.set(keyOf(op.id), op)
     this.remember([op])
     void offlineStore
-      .remember(this.documentId, op)
+      .remember(this.documentId, op, this.userId)
       .catch((error: unknown) => this.reportStorageFailure(error))
+      .then(() => {
+        this.persisting.delete(keyOf(op.id))
+        if (!this.disposed && this.unacknowledged.has(keyOf(op.id))) {
+          this.sentAt.set(keyOf(op.id), Date.now())
+          this.simulator.transmit(op)
+        }
+      })
     this.setState(this.state)
-    this.simulator.transmit(op)
   }
 
   private publishOp(op: Op): void {
-    if (!this.client?.connected) {
+    if (!this.client?.connected || !this.unacknowledged.has(keyOf(op.id)) || this.persisting.has(keyOf(op.id))) {
       return
     }
+    this.sentAt.set(keyOf(op.id), Date.now())
     traceOperation(
       'edit.submit',
       { 'collabedit.op.type': op.kind, 'collabedit.op.lamport': op.id.lamport },
@@ -393,11 +454,14 @@ export class DocumentConnection {
     this.handlers.onStateChange(state, this.pendingCount)
   }
 
+  pendingOperations(): Op[] { return [...this.unacknowledged.values()] }
+
   async abandonBuffer(): Promise<void> {
+    this.rejectReceipts()
     this.unacknowledged.clear()
     this.handled.clear()
     this.handledOrder.length = 0
-    await offlineStore.clear(this.documentId)
+    await offlineStore.clear(this.documentId, this.userId)
     this.setState(this.state)
   }
 
@@ -410,6 +474,7 @@ export class DocumentConnection {
 
   disconnect(): void {
     this.disposed = true
+    this.rejectReceipts()
     window.removeEventListener('offline', this.handleBrowserOffline)
     window.removeEventListener('online', this.handleBrowserOnline)
     this.clearProgressTimer()

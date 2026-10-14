@@ -39,19 +39,19 @@ public class CommentService implements ThreadDocumentResolver, CommentAnchorAuth
     public UUID openThread(UUID documentId, String authorId, String quotedText, String body,
                            String clientId) {
         if (clientId != null) {
-            UUID existing = threadByClientId(clientId);
+            UUID existing = threadByClientId(documentId, authorId, clientId, quotedText, body);
             if (existing != null) {
                 return existing;
             }
         }
         UUID threadId = UUID.randomUUID();
         int inserted = jdbc.update(
-            "INSERT INTO comment_threads (id, doc_id, created_by, quoted_text, client_id) "
-                + "VALUES (?, ?, ?, ?, ?) "
-                + "ON CONFLICT (client_id) WHERE client_id IS NOT NULL DO NOTHING",
-            threadId, documentId, authorId, quotedText, clientId);
+            "INSERT INTO comment_threads (id, doc_id, created_by, quoted_text, client_id, initial_body) "
+                + "VALUES (?, ?, ?, ?, ?, ?) "
+                + "ON CONFLICT (doc_id, created_by, client_id) WHERE client_id IS NOT NULL DO NOTHING",
+            threadId, documentId, authorId, quotedText, clientId, body);
         if (inserted == 0) {
-            UUID winner = threadByClientId(clientId);
+            UUID winner = threadByClientId(documentId, authorId, clientId, quotedText, body);
             if (winner != null) {
                 return winner;
             }
@@ -68,7 +68,7 @@ public class CommentService implements ThreadDocumentResolver, CommentAnchorAuth
 
     public UUID addMessage(UUID threadId, String authorId, String body, String clientId) {
         if (clientId != null) {
-            UUID existing = messageByClientId(clientId);
+            UUID existing = messageByClientId(threadId, authorId, clientId, body);
             if (existing != null) {
                 return existing;
             }
@@ -77,10 +77,10 @@ public class CommentService implements ThreadDocumentResolver, CommentAnchorAuth
         int inserted = jdbc.update(
             "INSERT INTO comment_messages (id, thread_id, author_id, body, client_id) "
                 + "VALUES (?, ?, ?, ?, ?) "
-                + "ON CONFLICT (client_id) WHERE client_id IS NOT NULL DO NOTHING",
+                + "ON CONFLICT (thread_id, author_id, client_id) WHERE client_id IS NOT NULL DO NOTHING",
             messageId, threadId, authorId, body, clientId);
         if (inserted == 0) {
-            UUID winner = messageByClientId(clientId);
+            UUID winner = messageByClientId(threadId, authorId, clientId, body);
             if (winner != null) {
                 return winner;
             }
@@ -90,14 +90,28 @@ public class CommentService implements ThreadDocumentResolver, CommentAnchorAuth
         return messageId;
     }
 
-    private UUID threadByClientId(String clientId) {
-        return jdbc.query("SELECT id FROM comment_threads WHERE client_id = ?",
-            (rs, rowNum) -> (UUID) rs.getObject("id"), clientId).stream().findFirst().orElse(null);
+    private UUID threadByClientId(UUID documentId, String authorId, String clientId,
+                                  String quotedText, String body) {
+        return jdbc.query("SELECT id, quoted_text, initial_body FROM comment_threads "
+                + "WHERE doc_id = ? AND created_by = ? AND client_id = ?",
+            (rs, rowNum) -> {
+                if (!java.util.Objects.equals(quotedText, rs.getString("quoted_text"))
+                    || !java.util.Objects.equals(body, rs.getString("initial_body"))) {
+                    throw new IllegalStateException("This comment retry key was already used with different content.");
+                }
+                return (UUID) rs.getObject("id");
+            }, documentId, authorId, clientId).stream().findFirst().orElse(null);
     }
 
-    private UUID messageByClientId(String clientId) {
-        return jdbc.query("SELECT id FROM comment_messages WHERE client_id = ?",
-            (rs, rowNum) -> (UUID) rs.getObject("id"), clientId).stream().findFirst().orElse(null);
+    private UUID messageByClientId(UUID threadId, String authorId, String clientId, String body) {
+        return jdbc.query("SELECT id, body FROM comment_messages "
+                + "WHERE thread_id = ? AND author_id = ? AND client_id = ?",
+            (rs, rowNum) -> {
+                if (!java.util.Objects.equals(body, rs.getString("body"))) {
+                    throw new IllegalStateException("This reply retry key was already used with different content.");
+                }
+                return (UUID) rs.getObject("id");
+            }, threadId, authorId, clientId).stream().findFirst().orElse(null);
     }
 
     public boolean resolve(UUID threadId, String userId) {

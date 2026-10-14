@@ -31,6 +31,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
+        // SUBSCRIBE must finish before a following SEND asks the application to reply to it.
+        // Ordering is per session; separate collaborators still run concurrently.
+        registry.setPreserveReceiveOrder(true);
         registry.addEndpoint("/ws")
             .setAllowedOriginPatterns(
                 properties.websocket().allowedOriginPatterns().toArray(String[]::new));

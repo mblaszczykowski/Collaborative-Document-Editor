@@ -37,6 +37,8 @@ interface Internals {
   parseOps: (message: { body: string }) => Op[]
   onAcks: (message: { body: string }) => void
   resynchronize: () => void
+  reportProgress: () => void
+  handleBrowserOffline: () => void
   client: { connected: boolean; publish: (frame: unknown) => void } | null
   gapDetected: boolean
 }
@@ -51,6 +53,8 @@ interface Harness {
 function open(
   holds: (replicaId: number, lamport: number) => boolean = () => false,
   applied: (op: Op) => boolean = () => false,
+  remote: (ops: Op[]) => void = () => {},
+  persistApplied?: () => Promise<void>,
 ): Harness {
   let pending = -1
   let state = 'never reported'
@@ -58,7 +62,8 @@ function open(
     onSession: () => {},
     hasOperation: holds,
     hasApplied: applied,
-    onRemoteOps: () => {},
+    onRemoteOps: remote,
+    persistApplied,
     versionVector: () => new Map(),
     onPresence: () => {},
     onStateChange: (next, count) => {
@@ -206,4 +211,110 @@ describe('gap detection', () => {
 
     expect(inside.gapDetected).toBe(true)
   })
+})
+
+describe('replay and acknowledgement retry', () => {
+  it('reapplies durable unsent operations to the local document before connecting', async () => {
+    restorable = [HELLO]
+    const apply = vi.fn()
+    const harness = open(() => false, () => false, apply)
+    await harness.link.restoreOfflineBuffer()
+    expect(apply).toHaveBeenCalledWith([HELLO])
+    expect(harness.link.pendingCount).toBe(1)
+  })
+
+  it('retries an unacknowledged dropped operation without reconnecting', async () => {
+    const harness = open()
+    const publish = vi.fn()
+    harness.inside.client = { connected: true, publish }
+    harness.link.simulator.update({ packetLoss: 1 })
+    harness.link.send(HELLO)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(publish).not.toHaveBeenCalled()
+    harness.link.simulator.update({ packetLoss: 0 })
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 20_000)
+    harness.inside.reportProgress()
+    clock.mockRestore()
+    expect(publish.mock.calls.some(([frame]) => (frame as { destination: string }).destination.endsWith('/op'))).toBe(true)
+  })
+
+  it('does not transmit a held partition operation after its buffer was abandoned', async () => {
+    const harness = open()
+    const publish = vi.fn()
+    harness.inside.client = { connected: true, publish }
+    harness.link.simulator.update({ partitioned: true })
+    harness.link.send(HELLO)
+    await Promise.resolve()
+    await Promise.resolve()
+    await harness.link.abandonBuffer()
+    harness.link.simulator.update({ partitioned: false })
+    expect(publish).not.toHaveBeenCalled()
+  })
+})
+
+it('completes an anchor receipt only after its operation is durably acknowledged', async () => {
+  const harness = open()
+  harness.link.send(HELLO)
+  const complete = vi.fn()
+  const receipt = harness.link.waitForDurable(HELLO).then(complete)
+  await Promise.resolve()
+  expect(complete).not.toHaveBeenCalled()
+  harness.inside.onAcks(acks([{ r: HELLO.id.replicaId, l: HELLO.id.lamport, serverSeq: 1 }]))
+  await receipt
+  expect(complete).toHaveBeenCalledTimes(1)
+})
+
+it('rejects an anchor receipt on disconnect so its comment stays queued for retry', async () => {
+  const harness = open()
+  harness.link.send(HELLO)
+  const receipt = harness.link.waitForDurable(HELLO)
+  harness.link.disconnect()
+  await expect(receipt).rejects.toThrow('before saving')
+})
+
+it('retains acknowledged changes until their canonical cache transaction completes', async () => {
+  let cached!: () => void
+  const cache = new Promise<void>(resolve => { cached = resolve })
+  const harness = open(() => false, () => false, () => {}, () => cache)
+  harness.link.send(HELLO)
+  const complete = vi.fn()
+  const receipt = harness.link.waitForDurable(HELLO).then(complete)
+  harness.inside.onAcks(acks([{ r: HELLO.id.replicaId, l: HELLO.id.lamport, serverSeq: 1 }]))
+  expect(harness.link.pendingCount).toBe(1)
+  expect(forgotten).toEqual([])
+  expect(complete).not.toHaveBeenCalled()
+  cached()
+  await receipt
+  expect(harness.link.pendingCount).toBe(0)
+  expect(forgotten).toEqual([HELLO])
+})
+
+it('keeps sync-echoed operations recoverable while the canonical cache is being written', async () => {
+  let cached!: () => void
+  const cache = new Promise<void>(resolve => { cached = resolve })
+  const harness = open(() => false, () => false, () => {}, () => cache)
+  harness.link.send(HELLO)
+  harness.inside.onSyncResponse(syncResponse([HELLO], 1))
+  expect(harness.link.pendingCount).toBe(1)
+  expect(forgotten).toEqual([])
+  cached()
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(harness.link.pendingCount).toBe(0)
+  expect(forgotten).toEqual([HELLO])
+})
+
+
+it('a delayed cache commit cannot mark the document online after the browser goes offline', async () => {
+  let cached!: () => void
+  const cache = new Promise<void>(resolve => { cached = resolve })
+  const harness = open(() => false, () => false, () => {}, () => cache)
+  harness.inside.onSyncResponse(syncResponse([], 1))
+  harness.inside.handleBrowserOffline()
+  cached()
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(harness.state()).toBe('offline')
 })

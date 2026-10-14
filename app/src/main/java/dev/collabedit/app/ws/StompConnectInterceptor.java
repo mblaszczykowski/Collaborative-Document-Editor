@@ -44,7 +44,7 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
         registration.interceptors(revoked);
     }
 
-    private ChannelInterceptor sessionState() {
+    ChannelInterceptor sessionState() {
         return new ChannelInterceptor() {
             @Override
             public Message<?> preSend(Message<?> message, MessageChannel channel) {
@@ -56,7 +56,18 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
                 if (StompCommand.CONNECT.equals(accessor.getCommand())) {
                     authenticate(accessor);
                     sessions.begin(accessor.getSessionId(),
-                        SessionAttributes.userId(accessor));
+                        SessionAttributes.userId(accessor),
+                        (Long) accessor.getSessionAttributes().get(SessionAttributes.EXPIRES_AT));
+                } else if ((StompCommand.SEND.equals(accessor.getCommand())
+                    || StompCommand.SUBSCRIBE.equals(accessor.getCommand()))
+                    && SessionAttributes.expired(accessor)) {
+                    // Error-queue subscription remains possible so the client can hear the refusal.
+                    if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())
+                        && "/user/queue/errors".equals(accessor.getDestination())) {
+                        return message;
+                    }
+                    access.notifyExpired(accessor);
+                    return null;
                 } else if (StompCommand.DISCONNECT.equals(accessor.getCommand())) {
                     sessions.end(accessor.getSessionId());
                 }
@@ -69,17 +80,19 @@ public class StompConnectInterceptor implements WebSocketMessageBrokerConfigurer
         List<String> presented = accessor.getNativeHeader("token");
         String token = presented == null || presented.isEmpty() ? null : presented.getFirst();
 
-        TokenService.Principal principal = tokens.verify(token)
+        TokenService.VerifiedToken verified = tokens.verifyWithExpiry(token)
             .orElseThrow(() -> new IllegalArgumentException(
                 "no valid token in the CONNECT frame"));
 
+        TokenService.Principal principal = verified.principal();
         Map<String, Object> attributes = accessor.getSessionAttributes();
         if (attributes == null) {
             throw new IllegalStateException("session without attributes");
         }
+        attributes.put(SessionAttributes.EXPIRES_AT, verified.expiresAtEpochSecond());
         attributes.put(SessionAttributes.USER_ID, principal.userId());
         attributes.put(SessionAttributes.DISPLAY_NAME, principal.displayName());
         attributes.put(SessionAttributes.COLOR, principal.color());
-        attributes.put(SessionAttributes.REPLICA_ID, replicaIds.next());
+        attributes.put(SessionAttributes.REPLICA_ID, replicaIds.nextFor(principal.userId()));
     }
 }

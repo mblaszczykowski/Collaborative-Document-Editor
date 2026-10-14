@@ -184,7 +184,10 @@ class EndpointAuthorizationArchitectureTest {
             for (String destination : method.getAnnotation(MessageMapping.class).value()) {
                 Matcher matcher = DESTINATION_PLACEHOLDER.matcher(destination);
                 String concrete = matcher.replaceFirst(UUID.randomUUID().toString());
-                if (DocumentAccessInterceptor.documentIdOf(concrete) == null) {
+                boolean sessionIdentity = "/session".equals(concrete)
+                    && method.isAnnotationPresent(RequiresAuthentication.class)
+                    && describe(method).equals("DocumentStompController#onSession");
+                if (!sessionIdentity && DocumentAccessInterceptor.documentIdOf(concrete) == null) {
                     unreachable.add(describe(method) + " -> " + destination);
                 }
             }
@@ -194,7 +197,8 @@ class EndpointAuthorizationArchitectureTest {
             .as("""
                 STOMP destinations that DocumentAccessInterceptor cannot resolve a document \
                 from, which means frames sent to them are never authorized. A destination must \
-                carry the document id where the interceptor looks for it - /doc/{documentId}/…""")
+                carry the document id where the interceptor looks for it - /doc/{documentId}/…
+                The pinned authenticated /session identity endpoint is the only exception.""")
             .isEmpty();
     }
 

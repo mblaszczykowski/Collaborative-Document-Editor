@@ -99,6 +99,13 @@ class DocumentAccessGuardTest {
     }
 
     @Test
+    void missingIdentityIs401ForDocumentEndpointsWithoutLookingUpTheResource() throws Exception {
+        assertThat(guard.preHandle(documentRequest(null), response, handler("needsRead"))).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+        org.mockito.Mockito.verifyNoInteractions(permissions, threads);
+    }
+
+    @Test
     @DisplayName("a role that is too weak for the capability is refused as 404")
     void insufficientRoleIsDenied() throws Exception {
         when(permissions.roleOf(any(), any())).thenReturn(Optional.of(Role.VIEWER));

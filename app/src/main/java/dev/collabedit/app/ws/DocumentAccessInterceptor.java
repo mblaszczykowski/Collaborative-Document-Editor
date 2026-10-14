@@ -9,6 +9,7 @@ import dev.collabedit.crdt.MarkTypes;
 import dev.collabedit.crdt.OpCodec;
 import java.io.IOException;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -96,19 +97,36 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             return deny(command, destination, userId, Refusal.UNKNOWN_DESTINATION);
         }
 
+        if (command == StompCommand.SEND && "/app/session".equals(destination)) {
+            if (userId == null) { return null; }
+            RateLimiter.Decision pace = rateLimiter.allowOperation(accessor.getSessionId(), System.currentTimeMillis());
+            if (!pace.allowed()) {
+                notifyRateLimited(accessor, destination, pace.retryAfterMillis());
+                return null;
+            }
+            return message;
+        }
         UUID documentId = documentIdOf(destination);
         if (documentId == null) {
             return PRIVATE_USER_QUEUES.contains(destination)
                 ? message
 : deny(command, destination, userId, Refusal.UNKNOWN_DESTINATION);
         }
-        Role role = permissions.roleOf(userId, documentId).orElse(null);
+        Role role;
+        try {
+            role = permissions.roleOf(userId, documentId).orElse(null);
+        } catch (RuntimeException e) {
+            notifyError(accessor, "ACCESS_UNAVAILABLE", "Access could not be verified. Retry after the server recovers.");
+            return null;
+        }
 
         if (role == null) {
+            notifyError(accessor, "ACCESS_DENIED", "Your access to this document has ended. Pending work was not accepted.");
             return deny(command, destination, userId, Refusal.NO_ACCESS);
         }
         if (command == StompCommand.SEND
             && !allowedToSend(role, destination, message, userId, documentId)) {
+            notifyError(accessor, "ACCESS_DENIED", "Your current role does not permit this change. Pending work was not accepted.");
             return deny(command, destination, userId, Refusal.ROLE);
         }
         RateLimiter.Decision pace = command == StompCommand.SEND
@@ -165,6 +183,24 @@ public class DocumentAccessInterceptor implements ChannelInterceptor {
             return value.isTextual() ? UUID.fromString(value.asText()) : null;
         } catch (IOException | IllegalArgumentException e) {
             return null;
+        }
+    }
+
+    void notifyExpired(StompHeaderAccessor accessor) {
+        Map<String, Object> attributes = accessor.getSessionAttributes();
+        if (attributes != null && Boolean.TRUE.equals(attributes.get(SessionAttributes.EXPIRED_NOTIFIED))) {
+            return;
+        }
+        notifyError(accessor, "SESSION_EXPIRED", "Your session expired. Sign in again to send your pending work.");
+        if (attributes != null) { attributes.put(SessionAttributes.EXPIRED_NOTIFIED, true); }
+    }
+
+    private void notifyError(StompHeaderAccessor accessor, String code, String explanation) {
+        try {
+            messaging.getObject().convertAndSendToUser(accessor.getSessionId(), "/queue/errors",
+                new Messages.ErrorMessage(code, explanation), SessionAttributes.forUser(accessor));
+        } catch (RuntimeException e) {
+            log.debug("Could not deliver {} to session {}", code, accessor.getSessionId());
         }
     }
 

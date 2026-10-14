@@ -1,12 +1,14 @@
 import { useCallback, useState } from 'react'
 import { api, type Suggestion } from '../api'
 import { FailureNote } from './FailureNote'
+import { useScopedDraft } from './scopedDraft'
 import { usePanelData } from './usePanelData'
 
 const NO_SUGGESTIONS: Suggestion[] = []
 
 export function SuggestionsPanel(props: {
   documentId: string
+  userId: string
   revision: number
   canPropose: boolean
   canDecide: boolean
@@ -16,7 +18,7 @@ export function SuggestionsPanel(props: {
 }) {
   const { documentId, revision, canPropose, canDecide, selection } = props
 
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useScopedDraft(props.userId, documentId, 'suggestion')
   const [busy, setBusy] = useState(false)
 
   const panel = usePanelData({
@@ -32,7 +34,7 @@ export function SuggestionsPanel(props: {
     setBusy(true)
     try {
       const done = await failure.attempt(
-        'That text is no longer there - somebody changed it while you were writing.',
+        'Could not update this suggestion. Check your connection and document access, then try again.',
         action,
       )
       if (done) await panel.refresh()
@@ -40,6 +42,14 @@ export function SuggestionsPanel(props: {
     } finally {
       setBusy(false)
     }
+  }
+
+  function submitInsertion() {
+    if (busy || draft.trim() === '' || draft.length > 8192) return
+    const sentText = draft
+    void run(() => props.onProposeInsertion(sentText)).then(sent => {
+      if (sent) setDraft(current => current === sentText ? '' : current)
+    })
   }
 
   return (
@@ -66,23 +76,27 @@ export function SuggestionsPanel(props: {
             <input
               value={draft}
               placeholder="Propose inserting…"
+              aria-label="Proposed insertion text"
+              maxLength={8192}
+              disabled={busy}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && draft !== '') {
-                  void run(() => props.onProposeInsertion(draft)).then((sent) => {
-                    if (sent) setDraft('')
-                  })
+                if (event.key === 'Enter' && draft.trim() !== '' && !busy && !event.nativeEvent.isComposing) {
+                  submitInsertion()
                 }
               }}
             />
+            <button className="suggest-action" onClick={submitInsertion}
+              disabled={busy || draft.trim() === '' || draft.length > 8192}>
+              {busy ? 'Sending…' : 'Propose insertion'}
+            </button>
             <p className="suggest-hint">
-              Inserted after the selection, or at the start of the document when nothing is
-              selected.
+              Inserted after the selection, or at your cursor when nothing is selected.
             </p>
           </div>
         )}
 
-        {suggestions.length === 0 && <div className="rp-empty">No open suggestions.</div>}
+        {suggestions.length === 0 && !failure.message && <div className="rp-empty">{panel.loading ? 'Loading suggestions…' : 'No open suggestions.'}</div>}
 
         {suggestions.map((suggestion) => (
           <div key={suggestion.id} className="suggest-entry">

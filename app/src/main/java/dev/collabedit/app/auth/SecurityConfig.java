@@ -11,9 +11,20 @@ import org.springframework.security.web.SecurityFilterChain;
 @Configuration
 public class SecurityConfig {
     private final CollabEditProperties properties;
+    private final org.springframework.core.env.Environment environment;
 
-    public SecurityConfig(CollabEditProperties properties) {
+    public SecurityConfig(CollabEditProperties properties, org.springframework.core.env.Environment environment) {
         this.properties = properties;
+        this.environment = environment;
+    }
+
+    private boolean isPrivateManagementEndpoint(jakarta.servlet.http.HttpServletRequest request) {
+        int managementPort = environment.getProperty("management.server.port", Integer.class, 0);
+        int applicationPort = environment.getProperty("server.port", Integer.class, 8090);
+        String path = request.getServletPath();
+        return managementPort > 0 && managementPort != applicationPort
+            && request.getLocalPort() == managementPort
+            && (path.equals("/actuator") || path.startsWith("/actuator/"));
     }
 
     @Bean
@@ -22,7 +33,14 @@ public class SecurityConfig {
                                            OidcLoginSuccess oidcSuccess,
                                            OidcLoginFailure oidcFailure) throws Exception {
         http
-            .authorizeHttpRequests(requests -> requests.anyRequest().permitAll())
+            .authorizeHttpRequests(requests -> {
+                if (environment.acceptsProfiles(org.springframework.core.env.Profiles.of("production"))) {
+                    requests.requestMatchers(this::isPrivateManagementEndpoint).permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/**").denyAll();
+                }
+                requests.anyRequest().permitAll();
+            })
             .csrf(AbstractHttpConfigurer::disable)
             .httpBasic(AbstractHttpConfigurer::disable)
             .formLogin(AbstractHttpConfigurer::disable)

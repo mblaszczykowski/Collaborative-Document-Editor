@@ -1,10 +1,20 @@
 stateDiagram-v2
     direction LR
     [*] --> Connecting
-    Connecting --> Live: socket open
-    Connecting --> Refused: RESYNC_REQUIRED
-    Live --> Offline: offline / socket error
-    Offline --> Connecting: online, backoff
-    Live --> Resynchronising: ack for an unseen op
-    Resynchronising --> Live: state replaced
-    Refused --> [*]: kept as a Recovered draft
+    Connecting --> Resynchronising: socket open, join and sync
+    Resynchronising --> Live: final sync chunk applied
+    Live --> Offline: offline or socket close
+    Resynchronising --> Offline: offline or socket close
+    Connecting --> Offline: connection fails
+    Offline --> Connecting: online or reconnect backoff
+    Live --> Resynchronising: unseen ack or access check unavailable
+    Resynchronising --> Connecting: SNAPSHOT_REQUIRED, reopen snapshot
+    Live --> Recovering: stale anchor or replica conflict
+    Resynchronising --> Recovering: stale anchor or replica conflict
+    Recovering --> Connecting: private recovered draft saved, reopen original
+    Recovering --> Offline: recovery fails, local backup retained
+    note right of Offline
+        Cached document can reopen offline.
+        Account and actor lock gate editing.
+        Unsent operations remain in IndexedDB.
+    end note

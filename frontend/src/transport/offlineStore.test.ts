@@ -204,6 +204,25 @@ describe('a transaction that aborts', () => {
   it('rejects instead of hanging for ever', async () => {
     recorder.abortNext = true
 
-    await expect(offlineStore.remember('doc-1', op(1))).rejects.toThrow
+    await expect(offlineStore.remember('doc-1', op(1))).rejects.toThrow()
+  })
+})
+
+describe('account isolation', () => {
+  it('never loads or clears another user’s pending changes or undo', async () => {
+    await offlineStore.remember('shared', op(1), 'anna')
+    await offlineStore.remember('shared', op(2), 'marek')
+    await offlineStore.saveUndo('shared', { undo: ['anna'] }, 'anna')
+    expect(await offlineStore.pending('shared', 'marek')).toEqual([op(2)])
+    expect(await offlineStore.loadUndo('shared', 'marek')).toBeNull()
+    await offlineStore.clear('shared', 'marek')
+    expect(await offlineStore.pending('shared', 'anna')).toEqual([op(1)])
+  })
+
+  it('isolates queued comments even when both users can access a document', async () => {
+    await offlineStore.queueComment({ userId: 'anna', clientId: 'anna-1', documentId: 'shared',
+      kind: 'thread', body: 'private draft', queuedAt: 1 })
+    expect(await offlineStore.pendingComments('shared', 'marek')).toEqual([])
+    expect(await offlineStore.pendingComments('shared', 'anna')).toHaveLength(1)
   })
 })

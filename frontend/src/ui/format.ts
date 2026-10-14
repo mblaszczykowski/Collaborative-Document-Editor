@@ -6,8 +6,11 @@ export function initials(name: string): string {
     .join('')
 }
 
-export function wordCount(characters: number): string {
-  const words = Math.max(0, Math.round(characters / 6))
+export function wordCount(text: string): string {
+  let words = 0
+  for (const part of new Intl.Segmenter(undefined, { granularity: 'word' }).segment(text)) {
+    if (part.isWordLike) words++
+  }
   return words === 1 ? '1 word' : `${words} words`
 }
 
@@ -15,10 +18,18 @@ export function peopleLabel(count: number): string {
   return count === 1 ? '1 person' : `${count} people`
 }
 
+export function characterCount(text: string): number {
+  let count = 0
+  for (const _part of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) count++
+  return count
+}
+
 export function formatTime(iso: string): string {
   const at = new Date(iso)
-  const secondsAgo = Math.floor((Date.now() - at.getTime()) / 1000)
+  const secondsAgo = Math.max(0, Math.floor((Date.now() - at.getTime()) / 1000))
   if (secondsAgo < 60) return `${secondsAgo}s ago`
   if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)} min ago`
-  return at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  return secondsAgo < 86400
+    ? at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    : at.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }

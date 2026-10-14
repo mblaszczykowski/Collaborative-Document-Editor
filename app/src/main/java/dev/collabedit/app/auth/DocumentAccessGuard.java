@@ -67,6 +67,12 @@ public class DocumentAccessGuard implements HandlerInterceptor {
             return true;
         }
 
+        // Authentication failure is independent of resource existence. A uniform 401 also
+        // lets every client entry point recover an expired session consistently.
+        if (TokenAuthFilter.principalOf(request).isEmpty()) {
+            response.setStatus(HttpStatus.UNAUTHORIZED.value());
+            return false;
+        }
         UUID documentId = documentIdFor(request, guarded);
         if (documentId == null) {
             response.setStatus(DENIED.value());

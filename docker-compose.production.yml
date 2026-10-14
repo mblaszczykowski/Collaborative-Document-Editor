@@ -1,0 +1,18 @@
+# Use behind a TLS reverse proxy; the base compose intentionally binds ports to loopback.
+services:
+  app:
+    environment:
+      SPRING_PROFILES_ACTIVE: production
+      COLLABEDIT_AUTH_SECRET: ${COLLABEDIT_AUTH_SECRET:?Set a private signing secret}
+      COLLABEDIT_APP_URL: ${COLLABEDIT_APP_URL:?Set the external HTTPS application URL}
+      COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS: ${COLLABEDIT_ALLOWED_ORIGINS:?Set allowed external HTTPS origins}
+      COLLABEDIT_DEV_LOGIN: "false"
+      SPRING_DATASOURCE_PASSWORD: ${COLLABEDIT_DATABASE_PASSWORD:?Set a private database password}
+      MANAGEMENT_SERVER_PORT: "8091"
+      MANAGEMENT_SERVER_ADDRESS: "0.0.0.0"
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${COLLABEDIT_DATABASE_PASSWORD:?Set a private database password}
+  prometheus:
+    volumes:
+      - ./ops/prometheus.production.yml:/etc/prometheus/prometheus.yml:ro

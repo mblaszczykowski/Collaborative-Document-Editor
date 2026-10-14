@@ -73,11 +73,13 @@ public class HistoryController {
     @PostMapping("/restore")
     @RequiresDocumentAccess(Capability.WRITE_TEXT)
     public ResponseEntity<RestoreResult> restore(@PathVariable("documentId") UUID documentId,
-                                                 @Valid @RequestBody RestoreRequest body) {
+                                                 @Valid @RequestBody RestoreRequest body,
+                                                 jakarta.servlet.http.HttpServletRequest request) {
         var target = history.stateAt(documentId, body.throughServerSeq());
 
         List<Op> generated = documents.generateAndSubmit(
-            documentId, document -> history.restoreOperations(document, target), null);
+            documentId, document -> history.restoreOperations(document, target),
+            dev.collabedit.app.auth.TokenAuthFilter.requiredCallerId(request));
 
         log.info("Restored document {} to its state at server_seq={} ({} operations)",
             documentId, body.throughServerSeq(), generated.size());

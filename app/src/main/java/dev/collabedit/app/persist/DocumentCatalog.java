@@ -89,6 +89,13 @@ public class DocumentCatalog {
             SUMMARY, query, query, workspaceId, workspaceId, callerId, callerId, callerId, limit);
     }
 
+    public boolean ownsWorkspace(UUID workspaceId, String userId) {
+        Integer found = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM workspaces WHERE id = ? AND owner_id = ?", Integer.class,
+            workspaceId, userId);
+        return found != null && found > 0;
+    }
+
     public void create(UUID documentId, String title, UUID workspaceId) {
         jdbc.update(
             "INSERT INTO documents (id, title, workspace_id, visibility) VALUES (?, ?, ?, 'private')",
@@ -98,6 +105,25 @@ public class DocumentCatalog {
     public boolean rename(UUID documentId, String title) {
         return jdbc.update("UPDATE documents SET title = ?, updated_at = now() "
             + "WHERE id = ? AND deleted_at IS NULL", title, documentId) == 1;
+    }
+
+    public boolean rename(UUID documentId, String title, String text) {
+        String preview = text.length() <= PREVIEW_LENGTH ? text : text.substring(0, PREVIEW_LENGTH);
+        return jdbc.update("UPDATE documents SET title = ?, preview_text = ?, "
+            + "search_vector = to_tsvector('simple', ? || ' ' || ?), updated_at = now() "
+            + "WHERE id = ? AND deleted_at IS NULL", title, preview, title, indexable(text),
+            documentId) == 1;
+    }
+
+    public boolean rename(UUID documentId, String title, String text, long throughServerSeq) {
+        String preview = text.length() <= PREVIEW_LENGTH ? text : text.substring(0, PREVIEW_LENGTH);
+        return jdbc.update("UPDATE documents SET title = ?, "
+            + "preview_text = CASE WHEN next_server_seq = ? THEN ? ELSE preview_text END, "
+            + "search_vector = CASE WHEN next_server_seq = ? "
+            + "THEN to_tsvector('simple', ? || ' ' || ?) ELSE search_vector END, "
+            + "updated_at = now() WHERE id = ? AND deleted_at IS NULL", title,
+            throughServerSeq + 1, preview, throughServerSeq + 1, title, indexable(text),
+            documentId) == 1;
     }
 
     public boolean softDelete(UUID documentId) {
@@ -115,6 +141,14 @@ public class DocumentCatalog {
         jdbc.update("UPDATE documents SET preview_text = ?, "
                 + "search_vector = to_tsvector('simple', title || ' ' || ?) WHERE id = ?",
             preview, indexable(text), documentId);
+    }
+
+    public boolean updatePreview(UUID documentId, String text, long throughServerSeq) {
+        String preview = text.length() <= PREVIEW_LENGTH ? text : text.substring(0, PREVIEW_LENGTH);
+        return jdbc.update("UPDATE documents SET preview_text = ?, "
+            + "search_vector = to_tsvector('simple', title || ' ' || ?) "
+            + "WHERE id = ? AND next_server_seq = ?", preview, indexable(text), documentId,
+            throughServerSeq + 1) == 1;
     }
 
     public static final int PREVIEW_LENGTH = 200;

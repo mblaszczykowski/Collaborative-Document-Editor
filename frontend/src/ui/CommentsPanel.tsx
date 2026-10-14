@@ -1,17 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { offlineStore } from '../transport/offlineStore'
-import { ApiError, api, type CommentThread } from '../api'
+import { useScopedDraft } from './scopedDraft'
+import { offlineStore, type QueuedComment } from '../transport/offlineStore'
+import { api, type CommentThread } from '../api'
 import type { Id } from '../crdt/types'
 import type { AnchorOutcome } from '../editor/useCollaborativeDocument'
 import { FailureNote } from './FailureNote'
+import { COMMENTS_CHANGED, commentsChanged } from '../transport/commentOutbox'
 import { clientId } from './browser'
 import { formatTime, initials } from './format'
 import { usePanelData } from './usePanelData'
-
-function permanentlyRefused(error: unknown): boolean {
-  if (!(error instanceof ApiError)) return false
-  return error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429
-}
 
 const MAX_QUOTE_LENGTH = 8_192
 
@@ -23,19 +20,22 @@ const NO_THREADS: CommentThread[] = []
 
 export function CommentsPanel(props: {
   documentId: string
+  userId: string
+  ready?: boolean
   selection: string
   revision: number
   onAnchor: (threadId: string) => void
   captureAnchor: () => { from: Id; to: Id } | null
-  onAnchorAt: (threadId: string, range: { from: Id; to: Id }) => AnchorOutcome
+  onAnchorAt: (threadId: string, range: { from: Id; to: Id }) => Promise<AnchorOutcome>
   readOnly?: boolean
 }) {
   const [showResolved, setShowResolved] = useState(false)
-  const [draft, setDraft] = useState('')
-  const [replyTo, setReplyTo] = useState<string | null>(null)
-  const [replyDraft, setReplyDraft] = useState('')
+  const [draft, setDraft] = useScopedDraft(props.userId, props.documentId, 'comment')
+  const [replyTo, setReplyTo] = useScopedDraft(props.userId, props.documentId, 'reply-thread')
+  const [replyDraft, setReplyDraft] = useScopedDraft(props.userId, props.documentId, `reply:${replyTo || 'none'}`)
+  const [blocked, setBlocked] = useState<QueuedComment[]>([])
+  const queueing = useRef(false)
   const [queued, setQueued] = useState(0)
-  const [neverAnchored, setNeverAnchored] = useState<ReadonlySet<string>>(new Set)
 
   const panel = usePanelData({
     load: useCallback(
@@ -47,134 +47,50 @@ export function CommentsPanel(props: {
     describe: 'the comments',
   })
   const threads = panel.data
-  const { failure } = panel
+  const { failure, refresh } = panel
 
   async function open() {
-    if (draft.trim() === '') return
     const body = draft.trim()
-    const quotedText = quoteOf(props.selection)
-    setDraft('')
+    if (!body || body.length > 4000 || !props.selection || queueing.current) return
+    queueing.current = true
     try {
-      const key = clientId
-      const anchor = props.captureAnchor()
-      try {
-        const created = await api.openThread(props.documentId, quotedText, body, key())
-        props.onAnchor(created.id)
-      } catch {
-        await offlineStore.queueComment({
-          clientId: key(),
-          documentId: props.documentId,
-          kind: 'thread',
-          quotedText,
-          anchor: anchor ?? undefined,
-          body,
-          queuedAt: Date.now(),
-        })
-        setQueued((current) => current + 1)
-      }
-    } catch (error) {
-      console.error('the comment could not be queued', error)
-      setDraft(body)
-      failure.report('This browser will not let the editor keep unsent comments, so this one '
-        + 'could not be saved. It is back in the box - try again when you are connected.')
-    }
-    await panel.refresh()
+      await offlineStore.queueComment({ clientId: clientId(), userId: props.userId,
+        documentId: props.documentId, kind: 'thread', quotedText: quoteOf(props.selection),
+        anchor: props.captureAnchor() ?? undefined, body, queuedAt: Date.now() })
+      setDraft(current => current.trim() === body ? '' : current)
+      commentsChanged()
+    } catch {
+      failure.report('The comment could not be saved locally. Its text is still in the box; try again when browser storage is available.')
+    } finally { queueing.current = false }
   }
 
   async function reply(threadId: string) {
-    if (replyDraft.trim() === '') return
     const body = replyDraft.trim()
-    setReplyDraft('')
-    setReplyTo(null)
+    if (!body || body.length > 4000 || queueing.current) return
+    queueing.current = true
     try {
-      const key = clientId
-      try {
-        await api.replyToThread(threadId, body, key())
-      } catch {
-        await offlineStore.queueComment({
-          clientId: key(),
-          documentId: props.documentId,
-          kind: 'reply',
-          threadId,
-          body,
-          queuedAt: Date.now(),
-        })
-        setQueued((current) => current + 1)
-      }
-    } catch (error) {
-      console.error('the reply could not be queued', error)
-      setReplyDraft(body)
-      setReplyTo(threadId)
-      failure.report('This browser will not let the editor keep unsent comments, so this reply '
-        + 'could not be saved. It is back in the box - try again when you are connected.')
-    }
-    await panel.refresh()
+      await offlineStore.queueComment({ clientId: clientId(), userId: props.userId,
+        documentId: props.documentId, kind: 'reply', threadId, body, queuedAt: Date.now() })
+      setReplyDraft(current => current.trim() === body ? '' : current)
+      setReplyTo('')
+      commentsChanged()
+    } catch {
+      failure.report('The reply could not be saved locally. Its text is still in the box; try again when browser storage is available.')
+    } finally { queueing.current = false }
   }
 
-  const live = useRef({ refresh: panel.refresh, report: failure.report,
-    onAnchorAt: props.onAnchorAt })
-  live.current = { refresh: panel.refresh, report: failure.report,
-    onAnchorAt: props.onAnchorAt }
-
-  const flush = useCallback(async () => {
-    const waiting = await offlineStore.pendingComments(props.documentId).catch(() => [])
-    if (waiting.length === 0) {
-      setQueued(0)
-      return
-    }
-    let sent = 0
-    let dropped = 0
-    const unanchored: string[] = []
-    for (const entry of waiting) {
-      try {
-        if (entry.kind === 'thread') {
-          const created = await api.openThread(
-            entry.documentId,
-            entry.quotedText ?? '',
-            entry.body,
-            entry.clientId,
-          )
-          if (entry.anchor !== undefined) {
-            if (live.current.onAnchorAt(created.id, entry.anchor) === 'gone') {
-              unanchored.push(created.id)
-            }
-          } else {
-            unanchored.push(created.id)
-          }
-        } else if (entry.threadId !== undefined) {
-          await api.replyToThread(entry.threadId, entry.body, entry.clientId)
-        }
-        await offlineStore.forgetComment(entry.clientId)
-        sent++
-      } catch (error) {
-        if (permanentlyRefused(error)) {
-          await offlineStore.forgetComment(entry.clientId).catch(() => {})
-          const status = error instanceof ApiError ? error.status : 0
-          live.current.report(status === 403 || status === 404
-            ? 'One comment could not be posted - you no longer have access to this document.'
-: 'One comment could not be posted: the server refused it and will refuse it again, '
-              + 'so it has not been kept. Nothing else in the queue is affected.')
-          dropped++
-          continue
-        }
-        break
-      }
-    }
-    if (unanchored.length > 0) {
-      setNeverAnchored((current) => new Set([...current,...unanchored]))
-    }
-    setQueued(waiting.length - sent - dropped)
-    if (sent > 0) await live.current.refresh()
-  }, [props.documentId])
-
   useEffect(() => {
-    const run = () => void flush().catch((error: unknown) => {
-      console.error('the comment outbox could not be drained', error)
-    })
-    run()
-    window.addEventListener('online', run)
-    return () => window.removeEventListener('online', run)
-  }, [flush])
+    let cancelled = false
+    const update = () => {
+      void offlineStore.pendingComments(props.documentId, props.userId).then(entries => {
+        if (!cancelled) { setQueued(entries.length); setBlocked(entries.filter(entry => entry.blocked)) }
+      }).catch(() => {})
+      void refresh()
+    }
+    update()
+    window.addEventListener(COMMENTS_CHANGED, update)
+    return () => { cancelled = true; window.removeEventListener(COMMENTS_CHANGED, update) }
+  }, [props.documentId, props.userId, refresh])
 
   async function toggleResolved(thread: CommentThread) {
     try {
@@ -197,7 +113,7 @@ export function CommentsPanel(props: {
       <div className="rp-header">
         Comments
         {queued > 0 && (
-          <span className="rp-queued" title="Waiting for a connection">
+          <span className="rp-queued" title="Saved unsent comments, including any refused posts">
             {queued} unsent
           </span>
         )}
@@ -215,25 +131,41 @@ export function CommentsPanel(props: {
         <div className="comment-new">
           {props.readOnly ? (
             <div className="rp-empty">Your role lets you read comments, but not add them.</div>
-          ) : props.selection === '' ? (
+          ) : props.selection === '' && draft === '' ? (
             <div className="rp-empty">Select a fragment of text to comment on it.</div>
           ) : (
             <>
-              <div className="comment-quote">“{props.selection}”</div>
+              {props.selection ? <div className="comment-quote">“{props.selection}”</div>
+                : <p className="suggest-hint">Select text to attach this saved draft before posting.</p>}
               <textarea
                 className="comment-draft"
                 value={draft}
                 placeholder="Your comment"
+                aria-label="Your comment"
+                maxLength={4000}
                 onChange={(event) => setDraft(event.target.value)}
               />
-              <button className="comment-submit" onClick={() => void open()} disabled={draft.trim() === ''}>
+              <button className="comment-submit" onClick={() => void open()} disabled={draft.trim() === '' || draft.trim().length > 4000 || props.selection === '' || props.ready === false}>
                 Comment
               </button>
             </>
           )}
         </div>
 
-        {threads.length === 0 && <div className="rp-empty">No comments.</div>}
+        {blocked.map(entry => (
+          <div className="comment-thread" key={entry.clientId}>
+            <strong>Unsent comment saved for recovery</strong>
+            <p className="suggest-hint">{entry.blocked}</p>
+            <textarea className="comment-draft" readOnly value={entry.body}
+              aria-label="Unsent comment text — copy to recover" />
+            <button className="comment-submit" disabled={props.readOnly} onClick={() => {
+              setDraft(current => current ? `${current}\n${entry.body}` : entry.body)
+            }}>Copy to draft</button>
+            <p className="suggest-hint">The backup stays saved here until you choose to recover it.</p>
+          </div>
+        ))}
+
+        {threads.length === 0 && !failure.message && <div className="rp-empty">{panel.loading ? 'Loading comments…' : 'No comments.'}</div>}
 
         {threads.map((thread) => (
           <div
@@ -244,19 +176,11 @@ export function CommentsPanel(props: {
           >
             <div className="comment-quote">
               “{thread.quotedText}”
-              {!thread.anchored && (neverAnchored.has(thread.id) ? (
-                <span
-                  className="comment-detached-mark"
-                  title="This comment was written without a connection. By the time it was sent it
-                         had no text to attach to, so it stands on its own."
-                >
-                  never anchored
-                </span>
-              ): (
-                <span className="comment-detached-mark" title="The anchored text was deleted">
+              {!thread.anchored && (
+                <span className="comment-detached-mark" title="The original text is no longer available">
                   detached
                 </span>
-              ))}
+              )}
             </div>
 
             {thread.messages.map((message) => (
@@ -276,17 +200,23 @@ export function CommentsPanel(props: {
 
             <div className="comment-actions">
               {props.readOnly ? null : replyTo === thread.id ? (
+                <>
                 <input
                   className="comment-reply"
                   value={replyDraft}
                   autoFocus
                   placeholder="Reply"
+                  aria-label="Reply to comment"
+                  maxLength={4000}
                   onChange={(event) => setReplyDraft(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter') void reply(thread.id)
-                    if (event.key === 'Escape') setReplyTo(null)
+                    if (event.key === 'Enter' && !event.nativeEvent.isComposing) void reply(thread.id)
+                    if (event.key === 'Escape') setReplyTo('')
                   }}
                 />
+                <button className="comment-submit" onClick={() => void reply(thread.id)}
+                  disabled={!replyDraft.trim() || replyDraft.trim().length > 4000}>Post reply</button>
+                </>
               ) : (
                 <button className="comment-action" onClick={() => setReplyTo(thread.id)}>
                   Reply

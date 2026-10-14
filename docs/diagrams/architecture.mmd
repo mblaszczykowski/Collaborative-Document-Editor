@@ -1,11 +1,20 @@
-graph TB
-    C1["Browser<br/>RGA replica (TypeScript)"]
-    C2["Browser<br/>RGA replica (TypeScript)"]
-    S1["Instance 1<br/>RGA replica (Java)"]
-    S2["Instance 2<br/>RGA replica (Java)"]
-    DB[("Postgres operation log<br/>source of truth")]
+flowchart TB
+    C1["Browser 1<br/>TypeScript RGA and editor"]
+    C2["Browser 2<br/>TypeScript RGA and editor"]
+    L1[("Account-scoped IndexedDB<br/>outbox, snapshot and undo")]
+    SW["Service worker<br/>public app assets only"]
+    S1["Instance 1<br/>Java RGA, access checks and batching"]
+    S2["Instance 2<br/>Java RGA, access checks and batching"]
+    DB[("Postgres<br/>durable operation log, snapshots<br/>identity, access and discussions")]
+    R[("Redis<br/>best-effort cluster delivery<br/>presence and invalidation")]
 
-    C1 <-->|STOMP over WebSocket| S1
-    C2 <-->|STOMP over WebSocket| S2
-    S1 -->|append, replay| DB
-    S2 -->|append, replay| DB
+    C1 <-->|REST and STOMP over WebSocket| S1
+    C2 <-->|REST and STOMP over WebSocket| S2
+    C1 <-->|keep unsent work| L1
+    SW -->|offline reload| C1
+    S1 <-->|append and replay| DB
+    S2 <-->|append and replay| DB
+    S1 <-->|after commit| R
+    R <-->|after commit| S2
+    S1 -->|anti-entropy repairs delivery gaps| DB
+    S2 -->|anti-entropy repairs delivery gaps| DB

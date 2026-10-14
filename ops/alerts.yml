@@ -1,0 +1,34 @@
+groups:
+  - name: collaboration
+    rules:
+      - alert: CollaborationBackendUnavailable
+        expr: up{job="collabedit-app",instance=~"app-local|app-production"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: The collaboration backend cannot be scraped
+          description: Check backend health, container networking, and Postgres connectivity.
+      - alert: CollaborationWritesFailing
+        expr: increase(op_write_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Document operations are failing to persist
+          description: Check Postgres availability and write backlog before restarting the backend.
+      - alert: CollaborationDependenciesStalled
+        expr: crdt_pending_operations > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Operations have unresolved dependencies
+          description: Check cluster repair, rejected operations, and replica sequence lag.
+      - alert: CollaborationClusterMessagesDropped
+        expr: increase(cluster_messages_dropped_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Cluster delivery is dropping messages
+          description: Check Redis and listener capacity; verify anti-entropy repairs complete.

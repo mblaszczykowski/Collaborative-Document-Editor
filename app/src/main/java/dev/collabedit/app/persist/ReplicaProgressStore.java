@@ -55,7 +55,8 @@ public class ReplicaProgressStore {
                  OR (departed_at IS NOT NULL AND departed_at > now() - make_interval(secs => ?)))
             """,
             (rs, rowNum) -> rs.getString("version"),
-            documentId, unresponsiveTimeoutMs / 1000.0, offlineGraceMillis / 1000.0);
+            documentId, Math.max(unresponsiveTimeoutMs, offlineGraceMillis) / 1000.0,
+            offlineGraceMillis / 1000.0);
 
         List<VersionVector> live = new ArrayList<>(rows.size());
         for (String row : rows) {

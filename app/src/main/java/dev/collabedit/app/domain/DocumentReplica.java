@@ -12,6 +12,8 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.NavigableSet;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
@@ -24,6 +26,8 @@ public class DocumentReplica {
     private final ReentrantLock lock = new ReentrantLock();
 
     private volatile long appliedServerSeq;
+
+    private final NavigableSet<Long> appliedBeyondPrefix = new TreeSet<>();
 
     private final List<PendingOperation> unwritten = new ArrayList<>();
 
@@ -83,6 +87,19 @@ public class DocumentReplica {
         }
     }
 
+    void invalidateCommittedState() {
+        lock.lock();
+        try {
+            if (!unwritten.isEmpty() || flushesInFlight > 0) {
+                throw new IllegalStateException("cannot discard uncommitted replica work");
+            }
+            evicted = true;
+            pendingBroadcast.clear();
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private void refuseIfEvicted() {
         if (evicted) {
             throw new StaleReplicaException(documentId);
@@ -98,11 +115,39 @@ public class DocumentReplica {
         }
     }
 
+    public <T> T withActiveLock(Function<RgaDocument, T> action) {
+        return withLock(document -> {
+            refuseIfEvicted();
+            return action.apply(document);
+        });
+    }
+
+    public void checkAdmission(Op op, int cap) {
+        withActiveLock(document -> {
+            DocumentService.checkClockBudget(document, op);
+            if (unwritten.size() >= cap && !document.hasSeen(op)) {
+                throw new DocumentService.WriteBufferFullException();
+            }
+            if (document.pendingCount() >= cap && !document.canApplyWithoutBuffering(op)) {
+                throw new RgaDocument.PendingOverflowException();
+            }
+            return null;
+        });
+    }
+
     public boolean merge(Op op, String userId, String traceparent, long nowMillis) {
+        return merge(op, userId, traceparent, nowMillis, Integer.MAX_VALUE);
+    }
+
+    public boolean merge(Op op, String userId, String traceparent, long nowMillis, int cap) {
         lock.lock();
         try {
             refuseIfEvicted();
-            RgaDocument.ApplyResult result = document.apply(op);
+            if (unwritten.size() >= cap && !document.hasSeen(op)) {
+                throw new DocumentService.WriteBufferFullException();
+            }
+            DocumentService.checkClockBudget(document, op);
+            RgaDocument.ApplyResult result = document.apply(op, cap);
             lastActivityMillis = nowMillis;
             lastEditMillis = nowMillis;
             if (result.isNews()) {
@@ -137,15 +182,16 @@ public class DocumentReplica {
         try {
             refuseIfEvicted();
             List<Op> news = new ArrayList<>();
-            long highest = appliedServerSeq;
             for (StoredOperation stored : incoming) {
+                if (stored.serverSeq() <= appliedServerSeq) {
+                    continue;
+                }
                 if (document.apply(stored.op()).isNews()) {
                     pendingBroadcast.add(new PendingOperation(stored.op(), null, null));
                     news.add(stored.op());
                 }
-                highest = Math.max(highest, stored.serverSeq());
+                observeSequence(stored.serverSeq());
             }
-            appliedServerSeq = highest;
             if (!news.isEmpty()) {
                 lastActivityMillis = nowMillis;
                 lastEditMillis = nowMillis;
@@ -262,11 +308,11 @@ public class DocumentReplica {
     }
 
     public boolean hasPendingWork() {
-        return !unwritten.isEmpty() || !pendingBroadcast.isEmpty();
+        return withLock(document -> !unwritten.isEmpty() || !pendingBroadcast.isEmpty());
     }
 
     public boolean hasPendingBroadcast() {
-        return !pendingBroadcast.isEmpty();
+        return withLock(document -> !pendingBroadcast.isEmpty());
     }
 
     public int unwrittenCount() {
@@ -285,8 +331,8 @@ public class DocumentReplica {
     public void flushCompleted(long highestServerSeq) {
         lock.lock();
         try {
-            if (highestServerSeq > appliedServerSeq) {
-                appliedServerSeq = highestServerSeq;
+            if (highestServerSeq > 0) {
+                observeSequence(highestServerSeq);
             }
             flushesInFlight--;
         } finally {
@@ -294,10 +340,33 @@ public class DocumentReplica {
         }
     }
 
+    public void flushCompleted(List<StoredOperation> written) {
+        lock.lock();
+        try {
+            for (StoredOperation stored : written) {
+                observeSequence(stored.serverSeq());
+            }
+            flushesInFlight--;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void observeSequence(long sequence) {
+        if (sequence <= appliedServerSeq) {
+            return;
+        }
+        appliedBeyondPrefix.add(sequence);
+        while (appliedBeyondPrefix.remove(appliedServerSeq + 1)) {
+            appliedServerSeq++;
+        }
+    }
+
     public <T> Optional<T> withConsistentState(BiFunction<RgaDocument, Long, T> action) {
         lock.lock();
         try {
-            if (flushesInFlight > 0 || !unwritten.isEmpty()) {
+            if (evicted || flushesInFlight > 0 || !unwritten.isEmpty()
+                || document.pendingCount() > 0 || !appliedBeyondPrefix.isEmpty()) {
                 return Optional.empty();
             }
             return Optional.of(action.apply(document, appliedServerSeq));

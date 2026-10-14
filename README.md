@@ -5,15 +5,19 @@ into the same paragraph.
 
 ![Two people editing at once, one loses the network, changes merge on reconnect, a version is rolled back](docs/demo.gif)
 
+The recorded demos show an earlier UI. Current validation and remaining work are listed in
+[docs/review-fix-status.md](docs/review-fix-status.md).
+
 The merge algorithm is an RGA-style CRDT, written from scratch twice: Java on the server,
 TypeScript in the browser. Formatting, comments and suggestions are built on the same core.
 
-`docker compose --profile app up -d` starts everything on :5173. See [Running it](#running-it).
+Enable local demo login or configure an OIDC provider before starting the stack on :5173.
+See [Running it](#running-it) for the complete commands.
 
 ## Features
 
-- **Editing** by any number of participants, ~130 ms propagation at 50 clients. Cursors and
-  presence across instances.
+- **Editing** by multiple participants, with cursors and presence across instances. Current
+  capacity and propagation latency have not been benchmarked after the durability changes.
 - **Offline editing** into IndexedDB, surviving a tab close, draining on reconnect.
 - **Undo** that takes back only your own operations.
 - **Rich text**: six inline styles, plus headings, quotes and lists.
@@ -21,8 +25,8 @@ TypeScript in the browser. Formatting, comments and suggestions are built on the
 - **Suggestions**: edits as proposals over the real text. Operations are generated server-side, so
   a suggester cannot write directly.
 - **History**: time travel to any point, diff two versions by character identity, restore.
-- **Access control**: workspaces, search, trash, four roles, invitation links, revocation that
-  lands mid-session.
+- **Access control**: four document roles, invitation links, search, trash, and revocation during
+  a session. Workspace APIs exist; complete workspace membership and UI flows remain unfinished.
 - **A diagnostics bar** in the app with latency, jitter and drop-rate sliders and a button that
   cuts the network. Open a document in two windows and break one of them.
 
@@ -30,9 +34,9 @@ TypeScript in the browser. Formatting, comments and suggestions are built on the
 
 ![Two browsers and two backend instances, each holding an RGA replica, all appending to and replaying from one Postgres operation log](docs/diagrams/architecture.svg)
 
-All four replicas are peers. Browsers run the same algorithm as the instances and merge by the same
-rule; neither side is an authority. Instances also gossip over Redis, covered under
-[Cluster](#cluster).
+All four replicas use the same merge rule. Browsers apply edits optimistically; the backend
+authorizes them, reserves their payload identities, and records the canonical operation log in
+Postgres. Instances also gossip over Redis, covered under [Cluster](#cluster).
 
 ```
 crdt-core/     the algorithm. A Maven module with no Spring dependencies, so it can be
@@ -125,21 +129,24 @@ the first outranks the incoming one, so does the rest. Typing appends into the p
 replica, lamport and origin line up. A deleted block keeps its identity and length so it can still
 serve as an origin.
 
-`RgaDocument` reaches the block list through an interface with two implementations. `ArrayBlockList`
-is O(n) for everything; `TreapBlockList` is O(log n), a BST keyed by document order with heap
-priorities for balance, each node carrying its subtree's visible and total length. Priorities are a
-splitmix64 hash of the block identifier rather than random, so every replica builds the same tree
-and a failing test reproduces.
+`RgaDocument` reaches the Java block list through an interface with two implementations.
+`ArrayBlockList` uses linear scans for position and identity lookups; `TreapBlockList` gives expected
+O(log n) indexed lookups and updates, with each node carrying its subtree's visible and total
+length. Full text reads, GC, formatting resolution, and insertion scans still depend on the
+document or affected range size. The browser currently uses an array. Treap priorities are a
+splitmix64 hash of the block identifier rather than random, so an identical block structure
+reproduces its tree shape without a separate random seed.
 
 Naive implementation first, then tests, then JMH, then the tree. The commit history shows that
 order.
 
 ### Tombstones and GC
 
-A tombstone cannot be dropped on a whim, because another replica may still hold an operation whose
-origin is that character. The condition is causal stability: every replica that could still refer
-to it has seen the deletion. The server takes the component-wise minimum of the version vectors
-connected replicas report.
+A tombstone keeps its identifier and length so old operations can still resolve their origins and
+insert retries cannot resurrect deleted text. GC releases its text payload after the deletion is
+causally stable. The server takes the component-wise minimum of its version vector and reported
+replica vectors retained within the seven-day offline grace period. A server crash or unrecorded
+departure receives the same grace as a clean disconnect.
 
 ```
   A { 1:120, 2:88, 3:200 }   B { 1:118, 2:91, 3:200 }   C { 1:120, 2:88, 3:196 }
@@ -152,24 +159,25 @@ week and deleted a second ago has an insertion far below the meet, so its tombst
 collectable while a peer 10 ms behind still displayed the text. That is what `Block.deletedBy` is
 for; `GcSafetyTest` pins it.
 
-Two more things are held back, both found the same way: anchors of buffered operations, and every
-character in a buffered delete range rather than just the first.
+All collected blocks retain identity skeletons, including buffered-operation and mark anchors.
+Adjacent compatible skeletons coalesce. This reclaims payload memory, rather than promising that
+all historical identity metadata disappears.
 
-A replica offline past the GC window (7 days) is refused with `RESYNC_REQUIRED` and its local
-version kept as a "Recovered draft".
-
-Protected blocks drop their content and keep their identity. All three reasons to keep a tombstone
-(origin, anchor, causal stability) need only the identifier, never the characters. Before that, GC
-worked on whole blocks, so one anchored character kept a block alive, and text written in one run
-is one block: a single mark could rescue an entire document from collection.
+Offline duration alone no longer makes a retained origin unusable. An operation whose identity is
+missing below a legacy GC boundary, or whose clock exceeds the supported budget, receives
+`RESYNC_REQUIRED`. Recovery freezes editing while it creates a durable recovered draft containing
+supported formatting. If recovery fails, the local outbox is retained and export remains available.
 
 ### Lamport clock notes
 
 **The version vector does not deduplicate.** Per-replica counters are not contiguous, since the
 clock jumps whenever someone else's operation arrives. Replica A legitimately produces lamports
 1, 2, 47, 48, 103, and "everything from A up to 48" cannot distinguish a lost message from a jump.
-An `Insert` is a duplicate if its identifier is already in the structure. A `Delete` is not checked
-at all, since setting a tombstone twice is a no-op. Detecting gaps is the transport's job.
+An `Insert` is a duplicate if its identifier is already in the structure. Deletes track observed
+operation IDs so a new concurrent deletion still contributes causal metadata and receives an
+acknowledgment. Format-5 snapshots retain winning deletion metadata rather than every observed
+delete ID; application replay skips entries already covered by the contiguous log boundary and
+validates retries against the canonical operation log. Detecting gaps is the transport's job.
 
 **The clock does not buy convergence.** These notes used to claim, with a counterexample, that
 skipping the bump on receipt causes divergence. That was wrong. I removed the bump and ran 200 000
@@ -233,10 +241,13 @@ thread briefly exists without one, and the highlight arrives over the CRDT while
 arrives over REST, so the highlight shows up first. Offline, a comment goes to an outbox with its
 anchor and an idempotency key.
 
-**Suggestions** do not modify the document or live in a side buffer. Typing in suggest mode inserts
-real text carrying a `suggest-insert` mark; deleting adds `suggest-delete` over text that stays.
-Accepting drops the mark. Rejecting generates the undo operations server-side. No new anchor
-mechanism, no new merge rule, no change to the character layer.
+**Suggestions** operate on the real document. An insertion proposal inserts text with a
+`suggest-insert` mark; a deletion proposal adds `suggest-delete` while leaving the text in place.
+Accepting an insertion removes its proposal mark; rejecting it deletes the proposed range.
+Accepting a deletion deletes the range; rejecting it removes the proposal mark. The backend stages
+these commands separately and commits their operations and proposal metadata together before
+returning success. The UI exposes explicit proposal controls rather than intercepting every typed
+edit as a complete suggest-mode editor.
 
 ## Undo
 
@@ -249,14 +260,17 @@ different identity. Yjs does the same.
 
 A stack entry stores a character identifier, not an offset. Undoing formatting is not "remove the
 mark" either: the inverse of "make this bold" is "restore what this range had before", which
-differs if somebody else's mark of the same type was already there. If the anchor has since been
-deleted the entry is skipped rather than guessed at.
+differs if somebody else's mark of the same type was already there. Deleted text can still leave a
+resolvable identity anchor. If that identity is missing, the entry is skipped rather than guessed
+at. Deletion entries retain supported formatting; large undo operations are split to respect
+transport limits.
 
 ## History and diffs
 
 The operation log in Postgres is the source of truth. Snapshots are a cache: deleting all of them
 changes only load time, which `snapshotsAreOnlyACache` verifies. Time travel is a replay,
-`GET /history/at?seq=`. Restore is recorded as new operations, so it appears in the history itself.
+`GET /api/documents/{id}/history/at?seq=`. Restore is recorded as new operations, so it appears in
+the history itself.
 
 Diffs compare two versions by character identity, which answers something a text diff cannot:
 
@@ -267,16 +281,21 @@ Diffs compare two versions by character identity, which answers something a text
   identity diff  1@40..1@44 gone, 2@81..2@85 new     ->  a change, by a named author
 ```
 
-Restore uses a common prefix and suffix rather than a full Myers diff. A restore is usually a
-rollback of one recent edit, so the differing region is short.
+Restore uses a common prefix and suffix rather than a full Myers diff. It generates bounded insert
+and delete operations, commits them before reporting success, and records the acting user.
+Formatting is restored; comment and suggestion marks are excluded because their conversation
+records have a separate lifecycle. Canonical replay reads the log in bounded pages. History
+pagination and retention/compaction remain future work.
 
 ## Offline and reconnect
 
-Editing continues into an IndexedDB buffer that survives a tab close and drains on reconnect.
+Editing continues into an account-scoped IndexedDB buffer that survives a tab close and drains on
+reconnect. This guarantee depends on browser storage availability; storage failures are reported.
 
 An operation leaves that buffer on the **write** acknowledgement, never the broadcast. If an
-instance dies in between, the operation is on other screens but not in the log, and the client
-retransmits.
+instance dies in between, the operation may be on other screens but not in the log, and the client
+retransmits. A durable payload-identity claim rejects conflicting reuse of an operation ID before
+speculative merge. Retrying an already committed operation produces another acknowledgment.
 
 The reverse failure is silent. A broadcast to one client is lost; nothing errors and the client has
 a hole it cannot see. Watching `server_seq` does not help, because that cursor advances on
@@ -287,27 +306,36 @@ acknowledgement carries the operation's identity, and the client checks whether 
 That check started as "does my replica contain character 7@41", which is exact for inserts and
 always false for deletes and marks, whose identifiers never name a character. One backspace by
 anybody set the gap flag and the client resynchronised from zero every 15 seconds. It is a bounded
-window of handled identities now.
+window of handled identities now. A periodic reconciliation also retries aged unacknowledged
+operations while the socket remains connected, so lost submissions and acknowledgments do not
+require a disconnect to recover.
 
-![Client connection states, with the two exits: resynchronising on a detected gap, and a refusal past the collection window](docs/diagrams/connection-states.svg)
+![Client connection states, resynchronization, pending work, authentication and recovery](docs/diagrams/connection-states.svg)
 
-`Refused` is the only state a client cannot leave on its own. The heartbeat is a backstop; the
-client reacts to the browser's `online`/`offline` events and socket errors, which fire immediately.
+Expired sessions and denied access suspend editing and retain pending work; they require renewed
+authentication or access. Recovery and snapshot resynchronization have explicit busy/error states.
+The heartbeat is a backstop; the client also reacts to browser connectivity events and socket
+errors. The application shell is cached for later offline reloads after a successful online load;
+first-ever offline access and unavailable browser storage cannot provide the same guarantee.
 
 ## Cluster
 
-Every backend instance is an ordinary CRDT replica and a peer of the others and of the browsers. No
-leader, no distributed lock, no session affinity.
+Every backend instance is a CRDT replica. There is no application leader or required session
+affinity; Postgres document-row locks serialize identity claims and canonical log sequence
+assignment.
 
-Redis is a fast path with no delivery guarantee. A lost message costs latency, not correctness: the
-log is authoritative and anti-entropy pulls the difference back. `ClusterChaosIT` pauses the Redis
-container mid-write, and `redisOutageIsRepairedByAntiEntropy` covers the repair. A deterministic
+Redis is a fast path with no delivery guarantee. The log is authoritative and anti-entropy repairs
+missed operations. The replay cursor tracks a contiguous prefix, and a local flush cannot skip an
+earlier remote write. HTTP snapshots reconstruct committed state at their declared boundary;
+buffered dependencies prevent incomplete states from being labeled as complete. `ClusterChaosIT`
+pauses the Redis container mid-write, and `redisOutageIsRepairedByAntiEntropy` covers the repair. A deterministic
 simulation drives the same scenarios from a seed instead of thread interleaving, so failures come
 back reproducible.
 
 ## Auth
 
-Sign-in is federated through an OpenID Connect provider, so the application never sees a password.
+Production sign-in uses configured OpenID Connect providers, so the application never sees a
+provider password. Local development can explicitly enable the separate name-only demo login.
 
 ```
 browser --1--> /oauth2/authorization/google --> server --2--> Google
@@ -330,9 +358,19 @@ Before this, `POST /api/login` took a name, minted a UUID and checked nothing, s
 "Anna" tomorrow were different users. `link` visibility grants EDITOR to anyone signed in, and
 signing in cost nothing.
 
-The session lives in `localStorage`, once per browser. It used to be `sessionStorage`, per tab, so
-two tabs could hold two people, which is the demo this project gets judged on. `?tab-session` keeps
-that for the demo under `COLLABEDIT_DEV_LOGIN`.
+The session normally lives in `localStorage`, shared across tabs in the same browser. `?tab-session`
+selects tab-local `sessionStorage`, useful when demonstrating separate people. The name-only demo
+login requires `COLLABEDIT_DEV_LOGIN`; tab-local storage does not bypass authentication. When browser
+storage is unavailable, the session uses a memory fallback.
+
+WebSocket sessions retain the verified token deadline and enforce it on inbound and outbound
+traffic. Unknown authorization pauses delivery rather than allowing confidential broadcasts.
+Client replica identities are allocated durably in Postgres and belong to an account; old owned
+identities remain valid for offline replay. Server identities use a separate negative namespace.
+Historical identities with unambiguous account ownership are migrated; ambiguous identities are
+reserved rather than assigned to another account and can require draft recovery.
+Local sign-out removes the browser session but does not revoke copies of an already issued bearer
+token; those remain valid until their original deadline.
 
 Three holes turned up in review, all of them only visible after using the product for an afternoon:
 
@@ -350,7 +388,7 @@ Three holes turned up in review, all of them only visible after using the produc
 Two doors, HTTP and WebSocket, one `PermissionService` behind both. The HTTP rule: declare what
 access you need or your handler does not run.
 
-![Every request passes one interceptor: a handler declaring no access requirement is answered with 500 and never runs](docs/diagrams/authorization.svg)
+![HTTP declarations, token checks and document capabilities enforce access; WebSocket frames are checked on entry and confidential delivery](docs/diagrams/authorization.svg)
 
 1. **The default branch refuses**, so a new controller fails closed. `HistoryController` spent weeks
    serving the full content of any document and letting a reader overwrite it. It answers 500 rather
@@ -372,23 +410,25 @@ unchecked as a private queue, and then matched every document's broadcast.
 
 ## Tests
 
+Current test inventory for the standard validation commands, as of 2026-10-14:
+
 | Layer | Tests |
 |---|---:|
-| `crdt-core`: property, invariants, conformance vectors, snapshot bytes, marks, GC safety | 87 |
-| `app`: integration on real Postgres and Redis, cluster chaos, permissions, presence, architecture | 227 |
-| `frontend`: agreement with Java, CodeMirror bridge, snapshot decoding, undo, gap detection | 134 |
-| end-to-end: two browser contexts, failing on any uncaught console error | 21 |
-| **total** | **469** |
+| `crdt-core`: property, invariants, conformance vectors, snapshot bytes, marks, GC safety | 101 |
+| `app`: unit/integration, deterministic simulation, cluster, security, presence, architecture | 1,504 (2 skipped) |
+| `frontend`: CRDT agreement, editor bridge, snapshot budgets, undo, transport, UI helpers | 204 |
+| end-to-end: configured browser scenarios, including built-container runs | 29 |
 
-The deterministic cluster simulation is counted separately. Its 1207 is a count of seeds, not
-assertions.
+The app count includes 1,207 parameterized deterministic simulation cases. Those are seeds,
+not additional assertions. Counts vary with Maven profiles and test filters; final run results and
+commands are recorded in [docs/review-fix-status.md](docs/review-fix-status.md).
 
 Property tests of the algorithm come first, then integration tests against real Postgres and Redis
-via Testcontainers, then chaos and seeded simulation, then ordinary unit tests. The load harness,
-JMH and the fan-out measurement run nightly.
+via Testcontainers, then chaos and seeded simulation, then ordinary unit tests. The nightly workflow
+is configured to run the load harness, JMH, and fan-out measurements; it does not establish that
+the historical figures below describe the current build.
 
-I also mutate production code to check the suite goes red. That found three tests verifying
-nothing:
+Earlier mutation checks found three tests that failed to detect broken implementations:
 
 - Removing the Lamport clock bump left all fifteen property tests green. See
   [Lamport clock notes](#lamport-clock-notes).
@@ -398,6 +438,12 @@ nothing:
   mid-text where an older rule already protected the character.
 
 ## Performance
+
+The figures below are historical measurements from before the October 2026 review fixes. They
+are retained to explain earlier algorithm choices, not as validated capacity or latency claims
+for the current build. Durable per-operation payload claims, revised batching/replay, identity
+retention, and updated measurement clients require fresh runs. This validation did not rerun the
+load harness, JMH, or fan-out benchmarks.
 
 One machine: MacBook, Apple Silicon, 10 cores, JDK 25-ea, 4 GB heap, Postgres and Redis in
 containers alongside. Clients and server share one process, so these exclude real network latency.
@@ -421,8 +467,8 @@ JMH, average operation time:
 
 The shape matters more than the values. For ten times the document the naive scan grows 15x and
 11x, the treap 2.3x and 1.9x. Reading the whole text is 40% slower in the treap, since walking a
-tree has worse locality than iterating an array. That runs once per document open, lookup runs on
-every keystroke.
+tree has worse locality than iterating an array. Full text assembly remains linear and is used by
+snapshots, previews, and editor synchronization; indexed lookups are also used during editing.
 
 Propagation between clients, from a custom harness. Both ends share a clock, which is why it is not
 Gatling. Each client makes 40 insertions at the *start* of the document; typing at the end
@@ -443,7 +489,8 @@ compresses into one block and skips the path that scales.
 | 100 000 chars | 25 | 67 ms | 92 ms | 695 ms | 712 ms |
 | 100 000 chars | 50 | 124 ms | 212 ms | 1299 ms | 1647 ms |
 
-All twelve converge. Document size barely affects median latency. Repeat runs reproduced the table
+All twelve scenarios converged in that historical run. Document size barely affected its median
+latency. Repeat runs of that version reproduced the table
 within noise except p50 at 10 000 chars and 10 clients, which came out 28 ms once and 43 ms another
 time, which is about how much to trust the second digit.
 
@@ -499,8 +546,10 @@ The degradation point I could not explain turned out to be my test client, not t
 default text buffer is 8 KiB. Broadcasts are one operation per frame (~70 B) so nothing hit it, but
 resynchronisation is chunked at 300 operations, about 15 KB. The recovery path was the only thing
 the buffer blocked, which is why it looked like unrecoverable divergence with no error in the log.
-After raising it, all twelve scenarios converge and `BroadcastFanoutIT` gives 3/3 at 2, 10, 25 and
-50 clients.
+After raising it, all twelve scenarios converged in the historical run and `BroadcastFanoutIT`
+reported 3/3 at 2, 10, 25 and 50 clients. That result has not been re-established for the current
+durability changes. Current synchronization and generated operations are split by transport
+budgets rather than relying on a fixed operation count.
 
 ## Failure modes
 
@@ -513,9 +562,9 @@ After raising it, all twelve scenarios converge and `BroadcastFanoutIT` gives 3/
 | **Broadcast to a client lost** | Client sees an ack for an operation it never got, resynchronises. | gap-detection tests |
 | **Two people edit the same character** | Both kept, ordered by `(lamport, replicaId)`. | `concurrentEditOfSameCharacterKeepsBoth`, property `convergence` |
 | **Two people move the same paragraph** | **Two copies.** Replicas agree, so the guarantee holds and the result is still wrong. | `concurrentMovesOfTheSameParagraphDuplicateIt` |
-| **Client offline past the GC window** | Refused, and the local version is kept separately. | `staleOperationIsRejectedExplicitly` |
-| **Very large document** | Latency barely moves. Tombstones grow with edit count. | JMH, load harness |
-| **Rate limit exceeded** | Frame refused with the exact wait, client retries from its buffer. | harness: 351 rejections, zero lost operations |
+| **Late edit after payload GC** | Retained identities resolve the edit; legacy missing identities or clock-budget violations require recovery. | `lateInsertionSurvivesGcAndReload`, stale-anchor and clock-budget regressions |
+| **Very large document** | Snapshot byte/structure limits are enforced; current latency and capacity remain unmeasured. | snapshot budget tests; historical JMH/load figures only |
+| **Rate limit exceeded** | Frame refused with a retry delay; the client retries from its buffer. | transport retry and integration tests |
 | **Deleting formatted text** | Formatting stays on what survived. | `garbageCollectionSparesMarkAnchors` |
 | **Deleting commented text** | Thread stays, marked detached, quoting the original fragment. | `threadSurvivesDeletionOfAnchoredText` |
 | **Access revoked mid-session** | Applies on every instance, 5 s cache TTL. Frames are re-checked individually, so the session survives and the permission does not. | `revokedAccessTerminatesLiveSubscription`, `PermissionClusterInvalidationIT` |
@@ -531,25 +580,37 @@ After raising it, all twelve scenarios converge and `BroadcastFanoutIT` gives 3/
   routing.
 - **The account model is thin.** No account page, no linking Google to GitHub, no revocation beyond
   the token's twelve-hour life, no account deletion.
-- **Invitations are multi-use** until they expire or are revoked. Now that every user arrives with
-  a verified email, binding an invitation to an address is the obvious next step.
-- **`link` visibility grants edit to anyone with the address**, which is the intended meaning. It
+- **Invitations are multi-use** until they expire or are revoked; they are not currently bound to
+  a recipient account or verified email address.
+- **`link` visibility grants edit to any authenticated account with the address**, which is the intended meaning. It
   used to be worse: the document list published those URLs to every signed-in user, so 132 of 133
   documents on a dev instance were world-editable.
-- **GC reclaims less than I assumed.** Causal stability needs every replica to have seen the
-  deletion, so one client that closed a laptop holds the window open for everyone in that document.
-- **A cluster message for a document whose replica is still loading is dropped**, and anti-entropy
-  cannot find it afterwards, because the fresh replica is labelled at log head so
-  `head > appliedServerSeq` never fires. A client there stays permanently one operation behind.
-  Reproduced under load, not fixed.
+- **GC retains identity metadata.** A silent or departed replica can delay payload reclamation for
+  seven days. After reclamation, compact skeletons still consume memory and snapshots grow with
+  editing history. The browser currently represents contentless blocks with bounded placeholders.
+- **Large collections need pagination and retention policies.** Document lists, search, trash, and
+  history have result limits; complete cursor pagination and operation/mark-history compaction
+  remain unfinished. Queue bounds are counts rather than a full per-document byte budget.
+- **Recovery preserves supported text formatting, not conversation records.** Comments and
+  suggestion records are separate; their marks are excluded from recovered drafts and historical
+  formatting restoration. Recovery can fail, in which case pending local work remains available.
+- **Deployment validation is not a production capacity test.** The production profile and private
+  management listener are covered. A seeded V13-to-V14 comment-retry migration fixture is tested;
+  a populated upgrade fixture for the whole installation and a backup/restore drill remain undone.
 
 ## Running it
 
 JDK 21, Node 22.12+, Docker.
 
 ```bash
+export COLLABEDIT_AUTH_SECRET=$(openssl rand -base64 32)
+export COLLABEDIT_DEV_LOGIN=true            # local name-only demo; disable for production
 docker compose --profile app up -d          # everything, on http://localhost:5173
 ```
+
+Alternatively copy `.env.example` to `.env`, provide a signing secret, and enable demo login or fill
+in an OIDC provider's credentials. The example leaves demo login disabled and the secret empty;
+copying it alone does not create a working sign-in configuration.
 
 To work on the code, run the dependencies and the two halves separately:
 
@@ -564,16 +625,17 @@ cd frontend && npm install && npm run dev   # frontend on :5173
 
 | Variable | Default | |
 |---|---|---|
-| `COLLABEDIT_AUTH_SECRET` | none, refuses to start | Signs session tokens. No fallback on purpose. |
+| `COLLABEDIT_AUTH_SECRET` | none in the application | Required for signing; local Compose has a demonstration-only fallback. |
 | `COLLABEDIT_DEV_LOGIN` | `false` | Name-only login. 404 when off. |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | unset | Enables the Google button. Both halves needed. |
 | `GITHUB_CLIENT_ID` / `_SECRET` | unset | Same, for GitHub. |
-| `COLLABEDIT_APP_URL` | `localhost:5173` | Where sign-in returns to. |
+| `COLLABEDIT_APP_URL` | `http://localhost:5173` | Where sign-in returns to. |
 | `COLLABEDIT_PORT` | `8090` | Must match the registered redirect URI. |
 
 With no provider and no dev login, the login screen says there is no way in. Register the redirect
 URI as `http://localhost:8090/login/oauth2/code/{google,github}`. That path is Spring Security's,
-not ours, and pointing it at the app is the usual first mistake. `cp .env.example .env` works too.
+not ours, and pointing it at the app is the usual first mistake. When using the nginx frontend,
+register the callback on that externally visible origin because nginx proxies the OAuth routes.
 
 ```bash
 ./mvnw install                         # everything, integration tests on real Postgres
@@ -582,14 +644,65 @@ cd frontend && npm test
 cd frontend && npm run e2e             # two browsers, needs a running stack
 ```
 
-A failing property prints its seed; `@Property(seed = "...")` replays it. On colima, Testcontainers
-needs `DOCKER_HOST`, `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock` and
-`api.version=1.44` in `~/.docker-java.properties`. All three failures look like "no Docker".
+A failing property prints its seed; `@Property(seed = "...")` replays it. If Testcontainers cannot
+reach Colima, point `DOCKER_HOST` at its socket and use
+`TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock` for containers. Docker client/API
+version configuration is a separate compatibility check when negotiation fails. The validation
+record contains the environment and commands used for this review.
 
 For deployment, the frontend resolves the backend at build time
 ([`config.ts`](frontend/src/config.ts)) and defaults to its own origin with nginx proxying `/api`
 and `/ws`, since an `https:` page cannot open a `ws:` socket. Separate origins need `VITE_API_BASE`
 at build time and `COLLABEDIT_WEBSOCKET_ALLOWEDORIGINPATTERNS` on the backend.
+
+Compose is a local-development configuration: published ports bind to loopback. For deployment
+behind a TLS reverse proxy, combine it with `docker-compose.production.yml`, set a private
+`COLLABEDIT_AUTH_SECRET`, `COLLABEDIT_DATABASE_PASSWORD`, and HTTPS `COLLABEDIT_APP_URL`, and
+configure a provider and allowed WebSocket origins. The `production` profile refuses development
+login and the demonstration signing secret. The production overlay serves metrics on port 8091
+within the private Compose network without publishing that port. Do not expose it through the
+public proxy. Changing the password variable does not rotate an existing
+Postgres volume's credentials automatically.
+
+Set `COLLABEDIT_ALLOWED_ORIGINS` to the external HTTPS origins. Keep nginx and the backend on a
+private or loopback network, and configure the outer TLS proxy to overwrite `X-Forwarded-Proto`
+and `X-Forwarded-Host`; nginx preserves those headers for OAuth redirects. Do not expose these
+trusted proxy listeners directly to untrusted clients.
+
+The nginx frontend proxies `/api`, `/ws`, `/oauth2`, and `/login/oauth2` to port 8090. When using
+same-origin nginx login, register the callback on the externally visible frontend origin rather
+than the direct backend origin.
+
+Migration V16 invalidates derived snapshots so document state is rebuilt from the operation log
+under the corrected replay rules. It preserves operations and document content but may increase
+the first load time after upgrade. Garbage collection releases deleted text payloads while
+retaining compact character identities needed to recognize old insert replays; monitor
+`crdt_gc_retained_identity_blocks` for long-lived document growth.
+
+Migration V17 adds durable payload identity claims before speculative operation merging. Claims
+contain a SHA-256 fingerprint, have a document foreign key with cascading deletion, and are removed
+in the same transaction that appends the corresponding canonical operation. This adds a database
+transaction per newly submitted operation while preserving batched log writes; include that cost
+in propagation-latency measurements.
+
+Operation clocks may advance at most 100 million ticks ahead of the current replica and must
+leave one million ticks below the codec ceiling. These bounds prevent one malformed edit from
+poisoning every collaborator's next operation and accommodate the bounded offline operation
+buffer. Exceptional offline work beyond this budget receives `RESYNC_REQUIRED`; preserve it
+through recovery or export before discarding the local buffer. The Java and TypeScript wire
+clock ceiling remains unchanged.
+
+Format-5 snapshot decoding is bounded on both clients and servers: 16 MiB compressed, 64 MiB
+decompressed, 16 MiB per text field, and 16,777,216 aggregate UTF-16 units including deleted-content
+placeholders and mark JSON. Structural limits are 200,000 blocks, 100,000 marks, and 50,000 entries
+per version vector. Invalid counters, flags, UTF-8, overlapping identities, truncated fields, and
+trailing decoded payload bytes are rejected. The browser cancels gzip expansion at the byte limit
+before allocating the complete result. Very large valid snapshots can exceed these supported load
+limits: the server treats them as cache misses and replays the canonical log, while the browser
+refuses the snapshot. Reducing the browser's deleted-content placeholder storage remains a separate
+optimization; these limits bound its current allocation rather than changing snapshot format.
+
+The baseline review and proposed improvement backlog are in [docs/app-review.md](docs/app-review.md).
 
 ## Observability
 
@@ -609,8 +722,15 @@ which is not the same as healthy.
 docker compose --profile observability up -d   # Prometheus, Tempo, Grafana on :3001
 ```
 
-Point it at a backend started from Maven, not `--profile app`: the containerised one sets
-`OTEL_SDK_DISABLED`, so a browser span arrives with no server span to join.
+For container tracing, enable both profiles and build the browser export endpoint explicitly:
+
+```bash
+OTEL_SDK_DISABLED=false VITE_OTLP_ENDPOINT=http://localhost:4318 \
+  docker compose --profile app --profile observability up -d --build
+```
+
+The default disables exporters when the collector is absent. Prometheus includes collaboration
+alert rules in `ops/alerts.yml`; configure notification routing for a deployed monitoring stack.
 
 ---
 

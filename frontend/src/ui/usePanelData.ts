@@ -5,6 +5,7 @@ import { useFailure, type Failure } from './useFailure'
 
 export interface PanelData<T> {
   data: T
+  loading: boolean
   refresh: () => Promise<void>
   failure: Failure
 }
@@ -16,26 +17,43 @@ export function usePanelData<T>({ load, revision, initial, describe }: {
   describe: string
 }): PanelData<T> {
   const [data, setData] = useState<T>(initial)
-  const failure = useFailure()
-
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const actions = useFailure()
   const latest = useRef(0)
+  const { dismiss: dismissAction } = actions
+  const dismiss = useCallback(() => { dismissAction(); setLoadError(null) }, [dismissAction])
 
   const refresh = useCallback(async () => {
     const ticket = ++latest.current
+    setLoading(true)
     try {
       const loaded = await load()
       if (ticket !== latest.current) return
       setData(loaded)
+      setLoadError(null)
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) return
-      console.error(`could not load ${describe}`, error)
+      if (ticket !== latest.current) return
+      if (error instanceof ApiError && error.status === 404) {
+        setLoadError(`The document is no longer available, so ${describe} could not be loaded.`)
+      } else {
+        console.error(`could not load ${describe}`, error)
+        setLoadError(`Could not load ${describe}. Check your connection; the editor will retry automatically.`)
+      }
+    } finally {
+      if (ticket === latest.current) setLoading(false)
     }
   }, [load, describe])
 
+  const invalidate = useCallback(() => { latest.current++ }, [])
   const settledRevision = useDebouncedValue(revision)
   useEffect(() => {
     void refresh()
-  }, [refresh, settledRevision])
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refresh()
+    }, 10_000)
+    return () => { window.clearInterval(timer); invalidate() }
+  }, [refresh, settledRevision, invalidate])
 
-  return { data, refresh, failure }
+  return { data, loading, refresh, failure: { ...actions, message: actions.message ?? loadError, dismiss } }
 }

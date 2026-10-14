@@ -86,9 +86,8 @@ public class HistoryService {
             from = 0;
         }
 
-        for (StoredOperation stored : operations.loadRange(documentId, from, throughServerSeq)) {
-            document.apply(stored.op());
-        }
+        operations.forEachInRange(documentId, from, throughServerSeq,
+            stored -> document.apply(stored.op()));
         return document;
     }
 
@@ -203,7 +202,7 @@ public class HistoryService {
         int removeFrom = prefix;
         int removeTo = current.length() - suffix;
         if (removeTo > removeFrom) {
-            generated.add(replica.delete(removeFrom, removeTo - removeFrom));
+            generated.addAll(DocumentService.deleteInChunks(replica, removeFrom, removeTo - removeFrom));
         }
         String insert = targetText.substring(prefix, targetText.length() - suffix);
         int at = prefix;
@@ -280,7 +279,9 @@ public class HistoryService {
     }
 
     private static boolean isConversation(String markType) {
-        return MarkTypes.COMMENT.equals(markType);
+        return MarkTypes.COMMENT.equals(markType)
+            || MarkTypes.SUGGEST_INSERT.equals(markType)
+            || MarkTypes.SUGGEST_DELETE.equals(markType);
     }
 
     private static Map<String, String> marksAt(List<MarkSet.Span> spans, int position) {

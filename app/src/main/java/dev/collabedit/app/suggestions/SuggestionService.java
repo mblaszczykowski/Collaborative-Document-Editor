@@ -51,20 +51,22 @@ public class SuggestionService {
         }
         UUID suggestionId = UUID.randomUUID();
 
-        record(suggestionId, documentId, authorId, Kind.INSERT, text);
-
         List<Op> generated = documents.generateAndSubmit(documentId, document -> {
-            Integer anchor = afterId == null ? -1 : visibleIndexOf(document, afterId);
+            Integer anchor = afterId == null ? Integer.valueOf(-1) : visibleIndexOf(document, afterId);
             if (anchor == null) {
                 return null;
             }
             int position = anchor + 1;
             List<Op> ops = new ArrayList<>();
-            ops.add(document.insert(position, text));
+            int at = position;
+            for (String piece : DocumentService.splitForInsert(text)) {
+                ops.add(document.insert(at, piece));
+                at += piece.length();
+            }
             ops.add(document.addMark(position, position + text.length(),
                 MarkTypes.SUGGEST_INSERT, suggestionId.toString()));
             return ops;
-        }, null);
+        }, authorId, () -> record(suggestionId, documentId, authorId, Kind.INSERT, text));
 
         if (generated == null) {
             return Optional.empty();
@@ -77,18 +79,7 @@ public class SuggestionService {
     public Optional<UUID> proposeDeletion(UUID documentId, String authorId, Id fromId, Id toId) {
         UUID suggestionId = UUID.randomUUID();
 
-        String quoted = registry.get(documentId).withLock(document -> {
-            Integer from = visibleIndexOf(document, fromId);
-            Integer to = visibleIndexOf(document, toId);
-            if (from == null || to == null || to < from) {
-                return null;
-            }
-            return document.text().substring(from, to + 1);
-        });
-        if (quoted == null) {
-            return Optional.empty();
-        }
-        record(suggestionId, documentId, authorId, Kind.DELETE, quoted);
+        String[] quoted = new String[1];
 
         List<Op> generated = documents.generateAndSubmit(documentId, document -> {
             Integer from = visibleIndexOf(document, fromId);
@@ -96,9 +87,10 @@ public class SuggestionService {
             if (from == null || to == null || to < from) {
                 return null;
             }
+            quoted[0] = document.text().substring(from, to + 1);
             return List.of(document.addMark(from, to + 1,
                 MarkTypes.SUGGEST_DELETE, suggestionId.toString()));
-        }, null);
+        }, authorId, () -> record(suggestionId, documentId, authorId, Kind.DELETE, quoted[0]));
 
         if (generated == null) {
             return Optional.empty();
@@ -119,15 +111,6 @@ public class SuggestionService {
             : MarkTypes.SUGGEST_DELETE;
         boolean textStays = accept == (kind == Kind.INSERT);
 
-        int updated = jdbc.update("""
-            UPDATE suggestions
-               SET resolved_at = now(), resolved_by = ?, resolution = ?
-             WHERE id = ? AND doc_id = ? AND resolved_at IS NULL
-            """, userId, accept ? "accepted" : "rejected", suggestionId, documentId);
-        if (updated == 0) {
-            return Outcome.ALREADY_RESOLVED;
-        }
-
         try {
             documents.generateAndSubmit(documentId, document -> {
                 Range range = rangeOf(document, markType, suggestionId.toString());
@@ -138,13 +121,21 @@ public class SuggestionService {
                 if (textStays) {
                     ops.add(document.removeMark(range.from(), range.to(), markType));
                 } else {
-                    ops.add(document.delete(range.from(), range.to() - range.from()));
+                    ops.addAll(DocumentService.deleteInChunks(document, range.from(), range.to() - range.from()));
                 }
                 return ops;
-            }, null);
-        } catch (RuntimeException e) {
-            reopen(suggestionId, documentId);
-            throw e;
+            }, userId, () -> {
+                int updated = jdbc.update("""
+                    UPDATE suggestions
+                       SET resolved_at = now(), resolved_by = ?, resolution = ?
+                     WHERE id = ? AND doc_id = ? AND resolved_at IS NULL
+                    """, userId, accept ? "accepted" : "rejected", suggestionId, documentId);
+                if (updated == 0) {
+                    throw new AlreadyResolvedException();
+                }
+            });
+        } catch (AlreadyResolvedException already) {
+            return Outcome.ALREADY_RESOLVED;
         }
 
         log.info("Suggestion {} {} by {}", suggestionId, accept ? "accepted" : "rejected", userId);
@@ -155,19 +146,7 @@ public class SuggestionService {
         RESOLVED, ALREADY_RESOLVED, UNKNOWN
     }
 
-    private void reopen(UUID suggestionId, UUID documentId) {
-        try {
-            jdbc.update("""
-                UPDATE suggestions
-                   SET resolved_at = NULL, resolved_by = NULL, resolution = NULL
-                 WHERE id = ? AND doc_id = ? AND resolved_at IS NOT NULL
-                """, suggestionId, documentId);
-        } catch (RuntimeException e) {
-            log.error("Suggestion {} was settled but could not be applied OR reopened; its mark is "
-                + "still in document {} and the proposal is hidden from the panel",
-                suggestionId, documentId, e);
-        }
-    }
+    private static class AlreadyResolvedException extends RuntimeException { }
 
     private boolean existsAtAll(UUID documentId, UUID suggestionId) {
         return !jdbc.queryForList("SELECT 1 FROM suggestions WHERE id = ? AND doc_id = ?",
@@ -240,6 +219,9 @@ public class SuggestionService {
     }
 
     private static Integer visibleIndexOf(RgaDocument document, Id id) {
+        if (id == null) {
+            return null;
+        }
         int visible = 0;
         for (Block block : document.blocks()) {
             if (block.deleted() || !block.hasContent()) {

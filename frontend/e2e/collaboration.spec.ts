@@ -1,5 +1,5 @@
 import { type Page } from '@playwright/test'
-import { expect, test, freshDocument, joinAs, typeInto } from './helpers'
+import { expect, test, freshDocument, joinAs, typeInto, expectOfflineErrors } from './helpers'
 
 async function documentText(page: Page): Promise<string> {
   return page.locator('.cm-content').evaluate((root) => {
@@ -31,7 +31,8 @@ test('two people type at once and see the same text', async ({ browser, request 
   await expect(anna.locator('.cm-content')).toContainText('and the next', { timeout: 10_000 })
 
   expect(await documentText(anna)).toBe(await documentText(marek))
-  expect(await crdtCharacters(anna)).toBe(await crdtCharacters(marek))
+  await expect.poll(async () => [await crdtCharacters(anna), await crdtCharacters(marek)])
+    .toEqual(['34 characters', '34 characters'])
 
   await anna.context().close()
   await marek.context().close()
@@ -66,6 +67,7 @@ test('cutting the network does not block typing, and the changes merge on return
   await typeInto(anna, 'base. ')
   await expect(marek.locator('.cm-content')).toContainText('base.', { timeout: 10_000 })
 
+  expectOfflineErrors(marek, true)
   await marek.context().setOffline(true)
   await expect(marek.locator('.save-state.offline')).toBeVisible({ timeout: 20_000 })
   await marek.locator('.cm-content').click()
@@ -85,7 +87,9 @@ test('cutting the network does not block typing, and the changes merge on return
   await expect(marek.locator('.cm-content')).toContainText('online', { timeout: 30_000 })
 
   expect(await documentText(anna)).toBe(await documentText(marek))
-  expect(await crdtCharacters(anna)).toBe(await crdtCharacters(marek))
+  await expect.poll(async () => [await crdtCharacters(anna), await crdtCharacters(marek)])
+    .toEqual(['19 characters', '19 characters'])
+  expectOfflineErrors(marek, false)
 
   await anna.context().close()
   await marek.context().close()
@@ -106,6 +110,7 @@ test('history lets the document be rewound to an earlier version', async ({ brow
   await expect(anna.getByTestId('char-count')).toContainText('20 characters')
   await anna.waitForTimeout(500)
 
+  await anna.getByRole('button', { name: 'Change history', exact: true }).click()
   const entries = anna.locator('.history-entry')
   await expect(entries.first()).toBeVisible({ timeout: 10_000 })
 
@@ -137,10 +142,12 @@ test('operations survive a page reload and arrive once it is back', async ({
   await typeInto(anna, 'beginning ')
   await expect(marek.locator('.cm-content')).toContainText('beginning', { timeout: 10_000 })
 
+  expectOfflineErrors(marek, true)
   await marek.context().setOffline(true)
   await marek.locator('.cm-content').click()
   await marek.keyboard.press('Control+End')
   await marek.keyboard.type('buffered', { delay: 25 })
+  await expect(marek.locator('.cm-content')).toContainText('buffered')
   await expect(anna.locator('.cm-content')).not.toContainText('buffered')
 
   await marek.context().setOffline(false)
@@ -149,6 +156,7 @@ test('operations survive a page reload and arrive once it is back', async ({
 
   await expect(anna.locator('.cm-content')).toContainText('buffered', { timeout: 20_000 })
   expect(await documentText(marek)).toBe(await documentText(anna))
+  expectOfflineErrors(marek, false)
 
   await anna.context().close()
   await marek.context().close()

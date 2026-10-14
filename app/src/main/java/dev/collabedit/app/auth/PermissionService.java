@@ -30,6 +30,9 @@ public class PermissionService {
     }
 
     private final Map<CacheKey, CachedRole> cache = new ConcurrentHashMap<>();
+    // A fill must be ordered with invalidation; database reads happen outside this short lock.
+    private final Object cacheGenerationLock = new Object();
+    private long cacheGeneration;
     private final JdbcTemplate jdbc;
     private final PermissionInvalidationBus invalidations;
 
@@ -56,13 +59,25 @@ public class PermissionService {
         CacheKey key = new CacheKey(userId, documentId);
         long now = System.currentTimeMillis();
 
-        CachedRole cached = cache.get(key);
-        if (cached != null && cached.expiresAtMillis() > now) {
-            return cached.role();
+        for (;;) {
+            long generation;
+            synchronized (cacheGenerationLock) {
+                CachedRole cached = cache.get(key);
+                if (cached != null && cached.expiresAtMillis() > now) {
+                    return cached.role();
+                }
+                generation = cacheGeneration;
+            }
+            Optional<Role> resolved = resolve(userId, documentId);
+            synchronized (cacheGenerationLock) {
+                if (generation != cacheGeneration) {
+                    now = System.currentTimeMillis();
+                    continue;
+                }
+                cache.put(key, new CachedRole(resolved, now + CACHE_TTL.toMillis()));
+                return resolved;
+            }
         }
-        Optional<Role> resolved = resolve(userId, documentId);
-        cache.put(key, new CachedRole(resolved, now + CACHE_TTL.toMillis()));
-        return resolved;
     }
 
     public boolean canRead(String userId, UUID documentId) {
@@ -87,6 +102,10 @@ public class PermissionService {
     }
 
     private Optional<Role> resolve(String userId, UUID documentId) {
+        return resolve(userId, documentId, true);
+    }
+
+    private Optional<Role> resolve(String userId, UUID documentId, boolean includeLinkAccess) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
             SELECT d.owner_id,
                    d.visibility,
@@ -101,10 +120,14 @@ public class PermissionService {
         if (rows.isEmpty()) {
             return Optional.empty();
         }
-        return roleFrom(userId, rows.getFirst());
+        return roleFrom(userId, rows.getFirst(), includeLinkAccess);
     }
 
     private static Optional<Role> roleFrom(String userId, Map<String, Object> row) {
+        return roleFrom(userId, row, true);
+    }
+
+    private static Optional<Role> roleFrom(String userId, Map<String, Object> row, boolean includeLinkAccess) {
         if (userId.equals(row.get("owner_id"))) {
             return Optional.of(Role.OWNER);
         }
@@ -114,7 +137,7 @@ public class PermissionService {
         if (row.get("workspace_role") != null) {
             return Optional.of(Role.parse((String) row.get("workspace_role")));
         }
-        if ("link".equals(row.get("visibility"))) {
+        if (includeLinkAccess && "link".equals(row.get("visibility"))) {
             return Optional.of(Role.EDITOR);
         }
         return Optional.empty();
@@ -126,7 +149,10 @@ public class PermissionService {
     }
 
     void invalidateLocally(UUID documentId) {
-        cache.keySet().removeIf(key -> key.documentId().equals(documentId));
+        synchronized (cacheGenerationLock) {
+            cacheGeneration++;
+            cache.keySet().removeIf(key -> key.documentId().equals(documentId));
+        }
         log.debug("Dropped cached permissions for document {}", documentId);
         try {
             onAccessChanged.accept(documentId);
@@ -157,32 +183,61 @@ public class PermissionService {
         }
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public void grant(UUID documentId, String userId, Role role) {
+        lockDocument(documentId);
         jdbc.update("""
             INSERT INTO document_members (doc_id, user_id, role) VALUES (?, ?, ?)
             ON CONFLICT (doc_id, user_id) DO UPDATE SET role = EXCLUDED.role
             """, documentId, userId, role.wire());
-        invalidate(documentId);
+        invalidateAfterCommit(documentId);
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public boolean revoke(UUID documentId, String userId) {
+        lockDocument(documentId);
         int removed = jdbc.update("DELETE FROM document_members WHERE doc_id = ? AND user_id = ?",
             documentId, userId);
-        invalidate(documentId);
+        invalidateAfterCommit(documentId);
         return removed > 0;
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public void setVisibility(UUID documentId, String visibility) {
         if (!"private".equals(visibility) && !"link".equals(visibility)) {
             throw new IllegalArgumentException("unknown visibility: " + visibility);
         }
+        lockDocument(documentId);
         jdbc.update("UPDATE documents SET visibility = ? WHERE id = ?", visibility, documentId);
-        invalidate(documentId);
+        invalidateAfterCommit(documentId);
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public void setOwner(UUID documentId, String ownerId) {
+        lockDocument(documentId);
         jdbc.update("UPDATE documents SET owner_id = ? WHERE id = ?", ownerId, documentId);
-        invalidate(documentId);
+        invalidateAfterCommit(documentId);
+    }
+
+    boolean lockDocument(UUID documentId) {
+        return !jdbc.queryForList("SELECT id FROM documents WHERE id = ? AND deleted_at IS NULL FOR UPDATE",
+            UUID.class, documentId).isEmpty();
+    }
+
+    Optional<Role> uncachedRoleOf(String userId, UUID documentId) {
+        // An invitation must create membership even if the document is temporarily public by link.
+        return resolve(userId, documentId, false);
+    }
+
+    private void invalidateAfterCommit(UUID documentId) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() { invalidate(documentId); }
+                });
+        } else {
+            invalidate(documentId);
+        }
     }
 
     public record Settings(String ownerId, String visibility) {

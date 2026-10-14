@@ -124,7 +124,7 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - run:./mvnw -B install -DskipTests
+      - run: ./mvnw -B install -DskipTests
 
       - name: Load harness (~10 min)
         continue-on-error: true

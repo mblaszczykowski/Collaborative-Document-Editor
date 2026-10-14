@@ -15,7 +15,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-@DisplayName("An operation anchored to collected characters is refused, for every operation type")
+@DisplayName("Missing legacy identities below a persisted GC boundary are refused")
 class UnanchoredOperationTest {
     private record Fixture(DocumentReplica replica, Id collected, Id alive) {
     }
@@ -40,8 +40,18 @@ class UnanchoredOperationTest {
             .as("the fixture's premise: GC has to have actually collected something")
             .isGreaterThan(0);
         assertThat(document.contains(collected))
-            .as("the fixture's premise: the collected character must be gone from the structure")
-            .isFalse();
+            .as("current GC releases payload while preserving identity")
+            .isTrue();
+        assertThat(document.tombstoneContentCount()).isZero();
+
+        // Simulate a legacy snapshot that removed identity altogether. Current GC no longer
+        // creates it, but stale-anchor validation must still distinguish it from a future cause.
+        var saved = document.snapshot();
+        document = RgaDocument.restore(1, new TreapBlockList(),
+            new dev.collabedit.crdt.DocumentSnapshot(saved.formatVersion(), saved.clock(),
+                saved.maxSeen(), saved.blocks().stream().filter(block -> !block.deleted()).toList(),
+                saved.marks(), saved.gcWatermark()));
+        assertThat(document.contains(collected)).isFalse();
 
         return new Fixture(
             new DocumentReplica(UUID.randomUUID(), document, 0, System.currentTimeMillis()),

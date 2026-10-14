@@ -64,7 +64,13 @@ public class TokenService {
         return ENCODER.encodeToString(value.getBytes(StandardCharsets.UTF_8));
     }
 
+    public record VerifiedToken(Principal principal, long expiresAtEpochSecond) { }
+
     public Optional<Principal> verify(String token) {
+        return verifyWithExpiry(token).map(VerifiedToken::principal);
+    }
+
+    public Optional<VerifiedToken> verifyWithExpiry(String token) {
         if (token == null) {
             return Optional.empty();
         }
@@ -88,13 +94,13 @@ public class TokenService {
             return Optional.empty();
         }
         try {
-            if (Long.parseLong(parts[3]) < Instant.now().getEpochSecond()) {
+            if (Long.parseLong(parts[3]) <= Instant.now().getEpochSecond()) {
                 return Optional.empty();
             }
-            return Optional.of(new Principal(
+            return Optional.of(new VerifiedToken(new Principal(
                 new String(DECODER.decode(parts[0]), StandardCharsets.UTF_8),
                 new String(DECODER.decode(parts[1]), StandardCharsets.UTF_8),
-                new String(DECODER.decode(parts[2]), StandardCharsets.UTF_8)));
+                new String(DECODER.decode(parts[2]), StandardCharsets.UTF_8)), Long.parseLong(parts[3])));
         } catch (IllegalArgumentException e) {
             return Optional.empty();
         }

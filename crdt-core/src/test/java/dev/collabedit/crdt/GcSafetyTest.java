@@ -146,4 +146,45 @@ class GcSafetyTest {
                 + "other replica has deleted")
             .isEmpty();
     }
+
+    @Test
+    void collectedInsertReplayDoesNotResurrectAcrossSnapshot() {
+        RgaDocument author = new RgaDocument(1);
+        Op.Insert inserted = author.insert(0, "abc");
+        author.delete(0, 3);
+        assertThat(author.gc(author.version())).isEqualTo(3);
+        RgaDocument restored = RgaDocument.restore(2, new TreapBlockList(),
+            SnapshotCodec.decode(SnapshotCodec.encode(author.snapshot())));
+        assertThat(restored.apply(inserted)).isEqualTo(RgaDocument.ApplyResult.DUPLICATE);
+        assertThat(restored.text()).isEmpty();
+        assertThat(restored.blocks()).allMatch(block -> !block.hasContent());
+    }
+
+    @Test
+    void concurrentDeletesAreNewOperationsAndConvergeMetadata() {
+        RgaDocument first = new RgaDocument(1);
+        Op.Insert seed = first.insert(0, "abc");
+        RgaDocument second = new RgaDocument(2);
+        second.apply(seed);
+        Op.Delete left = first.delete(0, 3);
+        Op.Delete right = second.delete(0, 3);
+        assertThat(first.apply(right)).isEqualTo(RgaDocument.ApplyResult.APPLIED);
+        assertThat(second.apply(left)).isEqualTo(RgaDocument.ApplyResult.APPLIED);
+        assertThat(first.apply(right)).isEqualTo(RgaDocument.ApplyResult.DUPLICATE);
+        assertThat(first.version()).isEqualTo(second.version());
+        assertThat(first.snapshot().blocks().getFirst().deletedBy())
+            .isEqualTo(second.snapshot().blocks().getFirst().deletedBy());
+    }
+
+    @Test
+    void fullDependencyBufferStillAcceptsItsMissingCause() {
+        RgaDocument author = new RgaDocument(1);
+        Op.Insert cause = author.insert(0, "A");
+        Op.Insert waiting = author.insert(1, "B");
+        RgaDocument replica = new RgaDocument(2);
+        assertThat(replica.apply(waiting, 1)).isEqualTo(RgaDocument.ApplyResult.BUFFERED);
+        assertThat(replica.apply(cause, 1)).isEqualTo(RgaDocument.ApplyResult.APPLIED);
+        assertThat(replica.pendingCount()).isZero();
+        assertThat(replica.text()).isEqualTo("AB");
+    }
 }

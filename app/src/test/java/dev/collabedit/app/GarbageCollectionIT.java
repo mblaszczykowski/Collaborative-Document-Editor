@@ -1,7 +1,6 @@
 package dev.collabedit.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import dev.collabedit.app.domain.DocumentRegistry;
 import dev.collabedit.app.domain.RegistryTestAccess;
@@ -31,8 +30,8 @@ class GarbageCollectionIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("a late client's operation anchored to a collected tombstone is refused explicitly")
-    void staleOperationIsRejectedExplicitly() throws Exception {
+    @DisplayName("a late insertion still resolves after tombstone payload GC and snapshot reload")
+    void lateInsertionSurvivesGcAndReload() throws Exception {
         UUID document = newDocument("GC");
 
         RgaDocument active = new RgaDocument(301);
@@ -57,11 +56,12 @@ class GarbageCollectionIT extends IntegrationTestBase {
             .as("GC did not run, so the test is not checking what it was meant to")
             .isFalse();
 
-        assertThatThrownBy(() -> documents.submit(document, staleOperation, "u2"))
-            .as("an operation with no anchor point was accepted - the text would land in a "
-                + "random place or vanish without a trace")
-            .isInstanceOf(DocumentService.ResyncRequiredException.class)
-            .hasMessageContaining("garbage collection");
+        String before = documents.textOf(document);
+        documents.submit(document, staleOperation, "u2");
+        assertThat(documents.textOf(document))
+            .as("the retained identity locates the late insertion without resurrecting deleted text")
+            .isEqualTo(before + "XYZ");
+        documents.flushAll();
 
         awaitPersistedGcWatermark(document);
         RegistryTestAccess.forget(registry, document);
@@ -71,11 +71,11 @@ class GarbageCollectionIT extends IntegrationTestBase {
                 + "against nothing")
             .isFalse();
 
-        assertThatThrownBy(() -> documents.submit(document, staleOperation, "u2"))
-            .as("after a reload the same operation was accepted - the refusal only ever worked "
-                + "while the replica happened to still be in memory")
-            .isInstanceOf(DocumentService.ResyncRequiredException.class)
-            .hasMessageContaining("garbage collection");
+        assertThat(documents.textOf(document)).isEqualTo(before + "XYZ");
+        documents.submit(document, staleOperation, "u2");
+        assertThat(documents.textOf(document))
+            .as("retry after reload recognizes the canonical operation and cannot duplicate its text")
+            .isEqualTo(before + "XYZ");
     }
 
     @Test

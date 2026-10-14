@@ -18,6 +18,32 @@ public class SessionLifecycle {
 
     private final Map<String, String> userBySession = new ConcurrentHashMap<>();
 
+    private final Map<String, Map<String, Long>> noticesBySession = new ConcurrentHashMap<>();
+
+    boolean shouldNotify(String sessionId, String code) {
+        if (sessionId == null || !userBySession.containsKey(sessionId)) { return false; }
+        Map<String, Long> notices = noticesBySession.computeIfAbsent(sessionId, id -> new ConcurrentHashMap<>());
+        boolean[] send = new boolean[1];
+        long now = System.currentTimeMillis();
+        notices.compute(code, (key, previous) -> {
+            if (previous == null || now - previous >= 30_000) { send[0] = true; return now; }
+            return previous;
+        });
+        return send[0];
+    }
+
+    private final Map<String, Long> expiresBySession = new ConcurrentHashMap<>();
+
+    public boolean expired(String sessionId) {
+        Long expiry = sessionId == null ? null : expiresBySession.get(sessionId);
+        return expiry != null && expiry <= java.time.Instant.now().getEpochSecond();
+    }
+
+    void begin(String sessionId, String userId, long expiresAt) {
+        begin(sessionId, userId);
+        if (sessionId != null) { expiresBySession.put(sessionId, expiresAt); }
+    }
+
     private final Map<Integer, String> userByReplica = new ConcurrentHashMap<>();
 
     private final RateLimiter rateLimiter;
@@ -81,6 +107,8 @@ public class SessionLifecycle {
         userBySession.computeIfPresent(sessionId, (id, user) -> {
             ended[0] = true;
             rateLimiter.forget(sessionId);
+            expiresBySession.remove(sessionId);
+            noticesBySession.remove(sessionId);
             Integer replicaId = replicaBySession.remove(sessionId);
             if (replicaId != null) {
                 userByReplica.remove(replicaId, user);

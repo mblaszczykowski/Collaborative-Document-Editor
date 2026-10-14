@@ -1,28 +1,32 @@
 import { context, propagation, trace, type Span } from '@opentelemetry/api'
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
-import { resourceFromAttributes } from '@opentelemetry/resources'
-import { BatchSpanProcessor, WebTracerProvider } from '@opentelemetry/sdk-trace-web'
-import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
+import type { WebTracerProvider } from '@opentelemetry/sdk-trace-web'
 import { TRACE_ENDPOINT } from '../config'
 
 let provider: WebTracerProvider | null = null
+let starting = false
 
 export function initialiseTracing(): void {
-  if (provider !== null) return
+  if (provider !== null || starting) return
   if (TRACE_ENDPOINT === null) return
 
-  provider = new WebTracerProvider({
-    resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: 'collabedit-frontend' }),
-    spanProcessors: [
-      new BatchSpanProcessor(
-        new OTLPTraceExporter({ url: `${TRACE_ENDPOINT}/v1/traces` }),
-        {
-          scheduledDelayMillis: 1000,
-        },
-      ),
-    ],
+  starting = true
+  void Promise.all([
+    import('@opentelemetry/sdk-trace-web'),
+    import('@opentelemetry/exporter-trace-otlp-http'),
+    import('@opentelemetry/resources'),
+  ]).then(([sdk, exporter, resources]) => {
+    provider = new sdk.WebTracerProvider({
+      resource: resources.resourceFromAttributes({ 'service.name': 'collabedit-frontend' }),
+      spanProcessors: [new sdk.BatchSpanProcessor(
+        new exporter.OTLPTraceExporter({ url: `${TRACE_ENDPOINT}/v1/traces` }),
+        { scheduledDelayMillis: 1000 },
+      )],
+    })
+    provider.register()
+  }).catch((error: unknown) => {
+    starting = false
+    console.warn('Tracing could not be initialized', error)
   })
-  provider.register()
 }
 
 const tracer = () => trace.getTracer('collabedit')

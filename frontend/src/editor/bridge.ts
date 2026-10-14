@@ -14,6 +14,24 @@ function pieceEnd(text: string, offset: number): number {
   return splitsAPair && end - 1 > offset ? end - 1 : end
 }
 
+export function* insertPieces(text: string): Generator<string> {
+  for (let offset = 0; offset < text.length;) {
+    const end = pieceEnd(text, offset)
+    yield text.slice(offset, end)
+    offset = end
+  }
+}
+
+export function deletePieces(document: RgaDocument, from: number, count: number): Op[] {
+  const ops: Op[] = []
+  while (count > 0) {
+    const size = Math.min(count, 1024)
+    ops.push(document.delete(from, size))
+    count -= size
+  }
+  return ops
+}
+
 export function changesToOps(
   document: RgaDocument,
   changes: ChangeSet,
@@ -25,14 +43,17 @@ export function changesToOps(
   })
 
   const ops: Op[] = []
+  const apply = () => {
   for (let i = collected.length - 1; i >= 0; i--) {
     const change = collected[i]
 
     if (change.toA > change.fromA) {
       const removed = document.text.slice(change.fromA, change.toA)
       const anchor = change.fromA > 0 ? document.idAtVisible(change.fromA - 1) : null
-      ops.push(document.delete(change.fromA, change.toA - change.fromA))
-      undo?.recordDelete(anchor, removed)
+      const removedLast = document.idAtVisible(change.toA - 1)
+      const marks = undo?.captureMarks(change.fromA, change.toA)
+      ops.push(...deletePieces(document, change.fromA, change.toA - change.fromA))
+      undo?.recordDelete(anchor, removed, marks, removedLast)
     }
 
     if (change.inserted.length > 0) {
@@ -46,6 +67,9 @@ export function changesToOps(
       }
     }
   }
+  }
+  if (undo) undo.transact(apply)
+  else apply()
   return ops
 }
 

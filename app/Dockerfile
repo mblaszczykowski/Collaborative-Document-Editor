@@ -37,6 +37,6 @@ EXPOSE 8090
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=40s --retries=5 \
-    CMD curl --fail --silent http://localhost:8090/actuator/health || exit 1
+    CMD curl --fail --silent "http://localhost:${MANAGEMENT_SERVER_PORT:-${COLLABEDIT_PORT:-8090}}/actuator/health" || exit 1
 
 ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]

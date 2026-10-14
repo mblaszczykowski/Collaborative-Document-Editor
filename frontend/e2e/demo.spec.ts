@@ -1,5 +1,5 @@
 import { type APIRequestContext, type Browser, type Page } from '@playwright/test'
-import { expect, test, freshDocument as sharedFreshDocument } from './helpers'
+import { expect, test, freshDocument as sharedFreshDocument, expectOfflineErrors, watchConsole, expectDocumentUnavailableErrors } from './helpers'
 
 const APP = process.env.E2E_APP_URL ?? 'http://localhost:5173'
 
@@ -25,10 +25,12 @@ async function joinAs(
       : undefined,
   })
   const page = await context.newPage()
+  watchConsole(page, name)
   await page.goto(`${APP}/?doc=${documentId}`)
   await page.getByPlaceholder('Your name').fill(name)
   await page.getByRole('button', { name: 'Get started' }).click()
   await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.cm-content')).not.toHaveAttribute('aria-readonly', 'true', { timeout: 15_000 })
   return page
 }
 
@@ -54,6 +56,7 @@ test('demo: concurrent editing, working offline and rewinding a version', async 
   await expect(anna.locator('.cm-content')).toContainText('Stabilising', { timeout: 10_000 })
   await anna.waitForTimeout(900)
 
+  expectOfflineErrors(marek, true)
   await marek.context().setOffline(true)
   await expect(marek.locator('.save-state.offline')).toBeVisible({ timeout: 20_000 })
   await marek.waitForTimeout(600)
@@ -68,8 +71,10 @@ test('demo: concurrent editing, working offline and rewinding a version', async 
   await marek.context().setOffline(false)
   await expect(anna.locator('.cm-content')).toContainText('no network', { timeout: 30_000 })
   await expect(marek.locator('.cm-content')).toContainText('online', { timeout: 30_000 })
+  expectOfflineErrors(marek, false)
   await anna.waitForTimeout(1200)
 
+  await anna.getByRole('button', { name: 'Change history', exact: true }).click()
   await anna.locator('.history-entry').last().click()
   await expect(anna.locator('.history-preview')).not.toContainText('Loading…', {
     timeout: 10_000,
@@ -79,6 +84,8 @@ test('demo: concurrent editing, working offline and rewinding a version', async 
 
   await expect(marek.locator('.cm-content')).not.toContainText('no network', { timeout: 20_000 })
   await anna.waitForTimeout(1500)
+  expectDocumentUnavailableErrors(anna, documentId, false)
+  expectDocumentUnavailableErrors(marek, documentId, false)
 
   await anna.context().close()
   await marek.context().close()
@@ -133,6 +140,8 @@ test('demo: formatting, comments and the bin', async ({ browser, request }) => {
 
   const row = anna.locator('.sb-row').filter({ has: anna.locator('.sb-item.active') })
   await row.hover()
+  expectDocumentUnavailableErrors(anna, documentId, true)
+  expectDocumentUnavailableErrors(marek, documentId, true)
   await row.locator('.sb-delete').click()
   await expect(anna.locator('.sb-item.active')).toHaveCount(0, { timeout: 10_000 })
   await anna.waitForTimeout(800)
@@ -145,6 +154,8 @@ test('demo: formatting, comments and the bin', async ({ browser, request }) => {
     anna.locator('.sb-item:not(.deleted)', { hasText: DEMO_TITLE }).last(),
   ).toBeVisible({ timeout: 10_000 })
   await anna.waitForTimeout(1500)
+  expectDocumentUnavailableErrors(anna, documentId, false)
+  expectDocumentUnavailableErrors(marek, documentId, false)
 
   await anna.context().close()
   await marek.context().close()

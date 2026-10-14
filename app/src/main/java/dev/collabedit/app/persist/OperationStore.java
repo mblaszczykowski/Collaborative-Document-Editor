@@ -6,11 +6,11 @@ import dev.collabedit.crdt.OpCodec;
 import java.sql.PreparedStatement;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
+import java.util.Optional;
+import java.util.function.Consumer;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -33,7 +33,8 @@ public class OperationStore {
             throw new IllegalArgumentException("no such document " + documentId);
         }
 
-        Set<String> alreadyStored = existingKeys(documentId, operations);
+        Map<String, Op> alreadyStored = existingOperations(documentId, operations);
+        Map<String, String> claims = claimedHashes(documentId, operations);
 
         List<Object[]> rows = new ArrayList<>(operations.size());
         List<StoredOperation> appended = new ArrayList<>(operations.size());
@@ -41,8 +42,16 @@ public class OperationStore {
         long seq = nextSeq;
         for (PendingOperation pending : operations) {
             Op op = pending.op();
-            if (!alreadyStored.add(key(op))) {
+            Op previous = alreadyStored.putIfAbsent(key(op), op);
+            if (previous != null) {
+                requireSamePayload(op, previous);
                 continue;
+            }
+            String claimed = claims.get(key(op));
+            if (claimed != null && !claimed.equals(
+                fingerprint(op))) {
+                throw new dev.collabedit.app.domain.DocumentService.ReplicaIdConflictException(
+                    "operation identity has a different payload");
             }
             rows.add(new Object[] {
                 documentId,
@@ -71,36 +80,118 @@ public class OperationStore {
             rows);
         jdbc.update("UPDATE documents SET next_server_seq = ?, updated_at = now() WHERE id = ?",
             seq, documentId);
+        jdbc.batchUpdate("DELETE FROM operation_identity_claims "
+            + "WHERE doc_id = ? AND replica_id = ? AND lamport = ?", appended.stream()
+                .map(stored -> new Object[] {documentId, stored.op().id().replicaId(),
+                    stored.op().id().lamport()}).toList());
 
         return appended;
     }
 
-    private static final String EXISTING_KEYS_SQL =
-        "SELECT replica_id, lamport FROM operations "
-            + "WHERE doc_id = ? AND (replica_id, lamport) IN (SELECT * FROM unnest(?, ?))";
-
-    private Set<String> existingKeys(UUID documentId, List<PendingOperation> operations) {
-        if (operations.isEmpty()) {
-            return new HashSet<>();
+    /** Serialize identity claims across instances before any speculative model mutation. */
+    @Transactional
+    public Optional<StoredOperation> claim(UUID documentId, Op op) {
+        jdbc.queryForObject("SELECT next_server_seq FROM documents WHERE id = ? FOR UPDATE",
+            Long.class, documentId);
+        Optional<StoredOperation> stored = find(documentId, op.id());
+        if (stored.isPresent()) {
+            requireSamePayload(op, stored.get().op());
+            return stored;
         }
-        Integer[] replicas = new Integer[operations.size()];
-        Long[] lamports = new Long[operations.size()];
-        for (int i = 0; i < operations.size(); i++) {
-            Id id = operations.get(i).op().id();
+        String hash = fingerprint(op);
+        String claimed = jdbc.queryForObject(
+            "INSERT INTO operation_identity_claims(doc_id, replica_id, lamport, payload_hash) "
+                + "VALUES (?, ?, ?, ?) ON CONFLICT (doc_id, replica_id, lamport) "
+                + "DO UPDATE SET payload_hash = operation_identity_claims.payload_hash "
+                + "RETURNING payload_hash", String.class, documentId, op.id().replicaId(),
+            op.id().lamport(), hash);
+        if (!hash.equals(claimed)) {
+            throw new dev.collabedit.app.domain.DocumentService.ReplicaIdConflictException(
+                "operation identity has a different payload");
+        }
+        return Optional.empty();
+    }
+
+    private static String fingerprint(Op op) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(
+                OpCodec.encode(op).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private static void requireSamePayload(Op received, Op stored) {
+        if (!received.equals(stored)) {
+            throw new dev.collabedit.app.domain.DocumentService.ReplicaIdConflictException(
+                "operation identity has a different payload");
+        }
+    }
+
+    /** Commit a generated command and its metadata in the same database transaction. */
+    @Transactional
+    public List<StoredOperation> commitGenerated(UUID documentId,
+                                                 List<PendingOperation> pending,
+                                                 Runnable metadata) {
+        List<StoredOperation> stored = append(documentId, pending);
+        metadata.run();
+        return stored;
+    }
+
+    public Optional<StoredOperation> find(UUID documentId, Id id) {
+        return jdbc.query("SELECT payload, server_seq, user_id, created_at FROM operations "
+            + "WHERE doc_id = ? AND replica_id = ? AND lamport = ?", STORED,
+            documentId, id.replicaId(), id.lamport()).stream().findFirst();
+    }
+
+    public int allocateServerReplicaId() {
+        Long id = jdbc.queryForObject("SELECT nextval('server_replica_id_seq')", Long.class);
+        if (id == null || id > Integer.MAX_VALUE) {
+            throw new IllegalStateException("server replica identity space exhausted");
+        }
+        return -id.intValue();
+    }
+
+    private Map<String, Op> existingOperations(UUID documentId, List<PendingOperation> pending) {
+        Map<String, Op> existing = new java.util.HashMap<>();
+        queryIdentities("operations", "payload", documentId, pending,
+            (key, value) -> existing.put(key, OpCodec.decode(value)));
+        return existing;
+    }
+
+    private Map<String, String> claimedHashes(UUID documentId, List<PendingOperation> pending) {
+        Map<String, String> existing = new java.util.HashMap<>();
+        queryIdentities("operation_identity_claims", "payload_hash", documentId, pending,
+            existing::put);
+        return existing;
+    }
+
+    private void queryIdentities(String table, String valueColumn, UUID documentId,
+                                 List<PendingOperation> pending,
+                                 java.util.function.BiConsumer<String, String> consumer) {
+        if (pending.isEmpty()) {
+            return;
+        }
+        Integer[] replicas = new Integer[pending.size()];
+        Long[] lamports = new Long[pending.size()];
+        for (int i = 0; i < pending.size(); i++) {
+            Id id = pending.get(i).op().id();
             replicas[i] = id.replicaId();
             lamports[i] = id.lamport();
         }
-
-        List<String> found = jdbc.query(
-            connection -> {
-                PreparedStatement statement = connection.prepareStatement(EXISTING_KEYS_SQL);
-                statement.setObject(1, documentId);
-                statement.setArray(2, connection.createArrayOf("int4", replicas));
-                statement.setArray(3, connection.createArrayOf("int8", lamports));
-                return statement;
-            },
-            (rs, rowNum) -> rs.getInt("replica_id") + ":" + rs.getLong("lamport"));
-        return new HashSet<>(found);
+        // Table/column names are fixed private callers, never request values.
+        jdbc.query(connection -> {
+            PreparedStatement statement = connection.prepareStatement(
+                "SELECT replica_id, lamport, " + valueColumn + " FROM " + table
+                    + " WHERE doc_id = ? AND (replica_id, lamport) "
+                    + "IN (SELECT * FROM unnest(?, ?))");
+            statement.setObject(1, documentId);
+            statement.setArray(2, connection.createArrayOf("int4", replicas));
+            statement.setArray(3, connection.createArrayOf("int8", lamports));
+            return statement;
+        }, (org.springframework.jdbc.core.RowCallbackHandler) row -> consumer.accept(
+            row.getInt("replica_id") + ":" + row.getLong("lamport"), row.getString(valueColumn)));
     }
 
     private static String opTypeCode(Op op) {
@@ -157,6 +248,23 @@ public class OperationStore {
             "SELECT payload, server_seq, user_id, created_at FROM operations "
                 + "WHERE doc_id = ? AND server_seq > ? AND server_seq <= ? ORDER BY server_seq",
             STORED, documentId, afterServerSeq, throughServerSeq);
+    }
+
+    public void forEachInRange(UUID documentId, long afterServerSeq, long throughServerSeq,
+                               Consumer<StoredOperation> consumer) {
+        long cursor = afterServerSeq;
+        while (cursor < throughServerSeq) {
+            List<StoredOperation> batch = jdbc.query(
+                "SELECT payload, server_seq, user_id, created_at FROM operations "
+                    + "WHERE doc_id = ? AND server_seq > ? AND server_seq <= ? "
+                    + "ORDER BY server_seq LIMIT 1000", STORED, documentId, cursor,
+                throughServerSeq);
+            if (batch.isEmpty()) {
+                break;
+            }
+            batch.forEach(consumer);
+            cursor = batch.getLast().serverSeq();
+        }
     }
 
     public record TimelineEntry(long throughServerSeq, String userId, String displayName,

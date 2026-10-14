@@ -10,9 +10,11 @@ const COMMENT_STORE = 'comments'
 const VERSION = 3
 
 export interface QueuedComment {
+  userId?: string
   clientId: string
   documentId: string
   kind: 'thread' | 'reply'
+  blocked?: string
   threadId?: string
   quotedText?: string
   anchor?: { from: { replicaId: number; lamport: number }; to: { replicaId: number; lamport: number } }
@@ -86,7 +88,9 @@ function transact<T>(
       new Promise<T>((resolve, reject) => {
         const transaction = open.transaction(storeName, mode)
         const request = action(transaction.objectStore(storeName))
-        request.onsuccess = () => resolve(request.result)
+        let result: T
+        request.onsuccess = () => { result = request.result }
+        transaction.oncomplete = () => resolve(result)
         request.onerror = () => reject(request.error)
         transaction.onabort = () =>
           reject(transaction.error ?? new Error(`the ${storeName} transaction was aborted`))
@@ -113,8 +117,13 @@ function transactUntilComplete(
   )
 }
 
+function scope(documentId: string, userId?: string): string {
+  return userId ? JSON.stringify([userId, documentId]) : documentId
+}
+
 export const offlineStore = {
-  async remember(documentId: string, op: Op): Promise<void> {
+  async remember(documentId: string, op: Op, userId?: string): Promise<void> {
+    documentId = scope(documentId, userId)
     const entry: StoredEntry = {
       key: `${documentId}:${op.id.replicaId}@${op.id.lamport}`,
       documentId,
@@ -124,20 +133,23 @@ export const offlineStore = {
     await transact('readwrite', (store) => store.put(entry))
   },
 
-  async forget(documentId: string, op: Op): Promise<void> {
+  async forget(documentId: string, op: Op, userId?: string): Promise<void> {
+    documentId = scope(documentId, userId)
     await transact('readwrite', (store) =>
       store.delete(`${documentId}:${op.id.replicaId}@${op.id.lamport}`),
     )
   },
 
-  async pending(documentId: string): Promise<Op[]> {
+  async pending(documentId: string, userId?: string): Promise<Op[]> {
+    documentId = scope(documentId, userId)
     const all = await transact<StoredEntry[]>('readonly', (store) =>
       store.index('byDocument').getAll(documentId),
     )
     return all.sort((a, b) => a.queuedAt - b.queuedAt).map((entry) => decodeOp(entry.op))
   },
 
-  async clear(documentId: string): Promise<void> {
+  async clear(documentId: string, userId?: string): Promise<void> {
+    documentId = scope(documentId, userId)
     await transactUntilComplete('readwrite', (store) => {
       const scan = store.index('byDocument').openCursor(IDBKeyRange.only(documentId))
       scan.onsuccess = () => {
@@ -149,28 +161,38 @@ export const offlineStore = {
     })
   },
 
-  async saveUndo(documentId: string, state: unknown): Promise<void> {
+  async saveUndo(documentId: string, state: unknown, userId?: string): Promise<void> {
+    documentId = scope(documentId, userId)
     await transact('readwrite', (store) => store.put({ documentId, state }), UNDO_STORE)
+  },
+
+  async saveDocument(documentId: string, state: unknown, userId: string): Promise<void> {
+    await this.saveUndo(`cache:${documentId}`, state, userId)
+  },
+
+  async loadDocument<T>(documentId: string, userId: string): Promise<T | null> {
+    return this.loadUndo<T>(`cache:${documentId}`, userId)
   },
 
   async queueComment(entry: QueuedComment): Promise<void> {
     await transact('readwrite', (store) => store.put(entry), COMMENT_STORE)
   },
 
-  async pendingComments(documentId: string): Promise<QueuedComment[]> {
+  async pendingComments(documentId: string, userId?: string): Promise<QueuedComment[]> {
     const all = await transact<QueuedComment[]>(
       'readonly',
       (store) => store.index('byDocument').getAll(documentId),
       COMMENT_STORE,
     )
-    return all.sort((a, b) => a.queuedAt - b.queuedAt)
+    return all.filter(entry => entry.userId === userId).sort((a, b) => a.queuedAt - b.queuedAt)
   },
 
   async forgetComment(clientId: string): Promise<void> {
     await transact('readwrite', (store) => store.delete(clientId), COMMENT_STORE)
   },
 
-  async loadUndo<T>(documentId: string): Promise<T | null> {
+  async loadUndo<T>(documentId: string, userId?: string): Promise<T | null> {
+    documentId = scope(documentId, userId)
     const row = await transact<{ documentId: string; state: T } | undefined>(
       'readonly',
       (store) => store.get(documentId),

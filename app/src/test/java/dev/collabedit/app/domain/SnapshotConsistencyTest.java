@@ -15,10 +15,14 @@ import org.junit.jupiter.api.Test;
 @DisplayName("A snapshot is refused unless its label describes the state")
 class SnapshotConsistencyTest {
     private static DocumentReplica replica() {
+        return replica(0);
+    }
+
+    private static DocumentReplica replica(long through) {
         return new DocumentReplica(
             UUID.randomUUID(),
             new RgaDocument(1, new TreapBlockList()),
-            0,
+            through,
             System.currentTimeMillis());
     }
 
@@ -29,7 +33,7 @@ class SnapshotConsistencyTest {
     @Test
     @DisplayName("an idle replica may be snapshotted, at its current sequence number")
     void idleReplicaIsConsistent() {
-        DocumentReplica replica = replica();
+        DocumentReplica replica = replica(6);
         RgaDocument client = new RgaDocument(2, new TreapBlockList());
         replica.applyRemote(
             List.of(new StoredOperation(anInsert(client), 7, "u1", Instant.EPOCH)),
@@ -84,11 +88,11 @@ class SnapshotConsistencyTest {
         replica.merge(anInsert(client), "u1", null, System.currentTimeMillis());
         replica.drainForFlush(100);
 
-        replica.flushCompleted(42);
+        replica.flushCompleted(1);
 
         assertThat(replica.withConsistentState((document, seq) -> seq))
             .as("the flush finished, so the state and the number agree again")
-            .contains(42L);
+            .contains(1L);
     }
 
     @Test
@@ -97,21 +101,21 @@ class SnapshotConsistencyTest {
         DocumentReplica replica = replica();
         RgaDocument client = new RgaDocument(2, new TreapBlockList());
         replica.merge(anInsert(client), "u1", null, System.currentTimeMillis());
-        replica.drainForFlush(100);
-
+        var batch = replica.drainForFlush(100);
+        replica.requeueUnwritten(batch.writes());
         replica.flushCompleted(0);
 
         assertThat(replica.withConsistentState((document, seq) -> seq))
             .as("""
-                A flush that appended nothing left the counter raised, so this replica will never \
-                be snapshotted again.""")
-            .isPresent();
+                A failed flush must preserve its speculative writes for retry; a snapshot cannot \
+                label them as committed.""")
+            .isEmpty();
     }
 
     @Test
     @DisplayName("remote operations and their label move together, so no snapshot sees them unlabelled")
     void remoteOperationsAreLabelledAsTheyAreApplied() {
-        DocumentReplica replica = replica();
+        DocumentReplica replica = replica(40);
         RgaDocument client = new RgaDocument(2, new TreapBlockList());
 
         List<StoredOperation> incoming = List.of(
@@ -133,7 +137,7 @@ class SnapshotConsistencyTest {
     @Test
     @DisplayName("a duplicate from the cluster still advances the label")
     void duplicatesStillAdvanceTheLabel() {
-        DocumentReplica replica = replica();
+        DocumentReplica replica = replica(8);
         RgaDocument client = new RgaDocument(2, new TreapBlockList());
         StoredOperation stored =
             new StoredOperation(anInsert(client), 9, "u1", Instant.EPOCH);
@@ -173,7 +177,7 @@ class SnapshotConsistencyTest {
     @Test
     @DisplayName("concurrent flushes are counted, not toggled")
     void overlappingFlushesEachHaveToEnd() {
-        DocumentReplica replica = replica();
+        DocumentReplica replica = replica(9);
         RgaDocument client = new RgaDocument(2, new TreapBlockList());
         replica.merge(anInsert(client), "u1", null, System.currentTimeMillis());
         replica.drainForFlush(100);
@@ -187,5 +191,45 @@ class SnapshotConsistencyTest {
 
         replica.flushCompleted(11);
         assertThat(replica.withConsistentState((document, seq) -> seq)).contains(11L);
+    }
+
+    @Test
+    void localFlushCannotSkipMissingRemoteSequence() {
+        DocumentReplica replica = replica();
+        RgaDocument local = new RgaDocument(2);
+        replica.merge(local.insert(0, "B"), "u", null, 0);
+        replica.drainForFlush(100);
+        replica.flushCompleted(2);
+        assertThat(replica.appliedServerSeq()).isZero();
+        assertThat(replica.withConsistentState((document, seq) -> document.snapshot())).isEmpty();
+
+        RgaDocument remote = new RgaDocument(3);
+        replica.applyRemote(List.of(new StoredOperation(remote.insert(0, "A"), 1,
+            "other", Instant.EPOCH)), 0);
+        assertThat(replica.appliedServerSeq()).isEqualTo(2);
+        assertThat(replica.withConsistentState((document, seq) -> document.text())).isPresent();
+        assertThat(replica.withLock(RgaDocument::text)).contains("A", "B");
+    }
+
+    @Test
+    void unresolvedRemoteOperationCannotBeSnapshotted() {
+        DocumentReplica replica = replica();
+        var waiting = new Op.Insert(new dev.collabedit.crdt.Id(2, 1),
+            new dev.collabedit.crdt.Id(2, 0), "B");
+        replica.applyRemote(List.of(new StoredOperation(waiting, 1, "u", Instant.EPOCH)), 0);
+        assertThat(replica.withConsistentState((document, seq) -> document.snapshot())).isEmpty();
+    }
+
+    @Test
+    void oldDeleteReplayAfterRestoreDoesNotRebroadcastOrChangeTheSnapshot() {
+        RgaDocument author = new RgaDocument(2);
+        var inserted = author.insert(0, "abc");
+        var deleted = author.delete(0, 3);
+        RgaDocument restored = RgaDocument.restore(-1, new TreapBlockList(), author.snapshot());
+        var replica = new DocumentReplica(UUID.randomUUID(), restored, 2, 0);
+        assertThat(replica.applyRemote(List.of(new StoredOperation(deleted, 2, "u", Instant.EPOCH)), 0))
+            .isEmpty();
+        assertThat(replica.hasPendingBroadcast()).isFalse();
+        assertThat(replica.appliedServerSeq()).isEqualTo(2);
     }
 }

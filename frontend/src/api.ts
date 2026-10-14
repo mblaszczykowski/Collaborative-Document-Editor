@@ -18,6 +18,7 @@ export interface DocumentSummary {
   workspaceId: string | null
   preview: string
   updatedAt: string
+  role?: DocumentState['role']
 }
 
 export interface DocumentState {
@@ -61,17 +62,19 @@ export class ApiError extends Error {
 
 async function send<T>(path: string, init: RequestInit | undefined, expectBody: boolean): Promise<T> {
   const method = init?.method ?? 'GET'
+  const requestToken = authToken
   let response: Response
   try {
     response = await fetch(`${BASE}${path}`, {
     ...init,
+      signal: init?.signal ?? AbortSignal.timeout(15_000),
       headers: { 'Content-Type': 'application/json',...authHeaders(),...(init?.headers ?? {}) },
     })
   } catch (cause) {
     throw new ApiError(method, path, 0, { cause })
   }
   if (!response.ok) {
-    if (response.status === 401) {
+    if (response.status === 401 && requestToken === authToken) {
       reportUnauthorized()
     }
     throw new ApiError(method, path, response.status)
@@ -177,11 +180,13 @@ export const api = {
   snapshot: async (
     documentId: string,
   ): Promise<{ bytes: Uint8Array; throughServerSeq: number } | null> => {
+    const requestToken = authToken
     const response = await fetch(`${BASE}/documents/${documentId}/snapshot`, {
       headers: authHeaders(),
+      signal: AbortSignal.timeout(15_000),
     })
     if (!response.ok) {
-      if (response.status === 401) {
+      if (response.status === 401 && requestToken === authToken) {
         reportUnauthorized()
       }
       return null
@@ -213,10 +218,10 @@ export const api = {
   restoreDocument: (id: string) =>
     requestNoContent(`/documents/${id}/restore`, { method: 'POST' }),
 
-  createRecovered: (title: string, text: string) =>
+  createRecovered: (title: string, text: string, marks?: WireSpan[]) =>
     request<DocumentSummary>('/documents/recovered', {
       method: 'POST',
-      body: JSON.stringify({ title, text }),
+      body: JSON.stringify({ title, text, marks }),
     }),
 
   createDocument: (title: string) =>

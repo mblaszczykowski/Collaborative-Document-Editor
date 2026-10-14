@@ -24,7 +24,7 @@ import org.springframework.web.socket.messaging.WebSocketStompClient;
 public class TestStompClient implements AutoCloseable {
     private final StompSession session;
     private final UUID documentId;
-    private final RgaDocument document;
+    private volatile RgaDocument document;
 
     private final Object documentLock = new Object();
 
@@ -67,6 +67,13 @@ public class TestStompClient implements AutoCloseable {
                 connectHeaders,
                 new StompSessionHandlerAdapter() { })
             .get(10, java.util.concurrent.TimeUnit.SECONDS);
+
+        java.util.concurrent.CompletableFuture<Integer> assigned = new java.util.concurrent.CompletableFuture<>();
+        subscribe("/user/queue/session", java.util.Map.class, payload -> {
+            assigned.complete(((Number) ((Map<?, ?>) payload).get("replicaId")).intValue());
+        });
+        publish("/app/session", Map.of());
+        this.document = new RgaDocument(assigned.get(10, java.util.concurrent.TimeUnit.SECONDS), new TreapBlockList());
 
         subscribe("/topic/doc/" + documentId + "/ops", List.class, payload -> {
             for (Object entry : (List<?>) payload) {
@@ -192,19 +199,30 @@ public class TestStompClient implements AutoCloseable {
     }
 
     public Op markReturningOp(int from, int to, String type, String value) {
+        return markReturningOp(from, to, type, value, op -> { });
+    }
+
+    public Op markReturningOp(int from, int to, String type, String value,
+                              java.util.function.Consumer<Op> beforeSend) {
         Op op;
         synchronized (documentLock) {
             op = document.addMark(from, to, type, value);
         }
+        beforeSend.accept(op);
         send(op);
         return op;
     }
 
     public Op insertReturningOp(int position, String text) {
+        return insertReturningOp(position, text, op -> { });
+    }
+
+    public Op insertReturningOp(int position, String text, java.util.function.Consumer<Op> beforeSend) {
         Op op;
         synchronized (documentLock) {
             op = document.insert(position, text);
         }
+        beforeSend.accept(op);
         send(op);
         return op;
     }
@@ -217,9 +235,13 @@ public class TestStompClient implements AutoCloseable {
         send(op);
     }
 
+    public void sendRawOperation(Op op) {
+        send(op);
+    }
+
     private void send(Op op) {
-        publish("/app/doc/" + documentId + "/op", Map.of("op", OpCodec.toJson(op)));
         unacknowledged.put(op.id().replicaId() + "@" + op.id().lamport(), op);
+        publish("/app/doc/" + documentId + "/op", Map.of("op", OpCodec.toJson(op)));
     }
 
     private final Map<String, Op> unacknowledged = new java.util.concurrent.ConcurrentHashMap<>();

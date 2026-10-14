@@ -1,4 +1,4 @@
-import { Annotation, Compartment, EditorState } from '@codemirror/state'
+import { Annotation, Compartment, EditorState, EditorSelection } from '@codemirror/state'
 import { EditorView, keymap, drawSelection } from '@codemirror/view'
 import { defaultKeymap } from '@codemirror/commands'
 import { useEffect, useRef } from 'react'
@@ -40,6 +40,7 @@ export function Editor(props: EditorProps) {
   useEffect(() => {
     if (!host.current) return
 
+    let selectionAnchors: { head: CursorAnchor | null; anchor: CursorAnchor | null } | null = null
     let cursorTimer: number | null = null
     let pendingCursor: { head: CursorAnchor | null; anchor: CursorAnchor | null } | null = null
 
@@ -66,7 +67,7 @@ export function Editor(props: EditorProps) {
     }
 
     const state = EditorState.create({
-      doc: '',
+      doc: latest.current.document.text,
       extensions: [
         keymap.of([
           { key: 'Mod-b', run: () => toggleMark('bold'), preventDefault: true },
@@ -81,11 +82,14 @@ export function Editor(props: EditorProps) {
         formattingField,
         remoteCursorsField,
         EditorView.lineWrapping,
+        EditorView.contentAttributes.of({ 'aria-label': 'Document content' }),
         readOnlyCompartment.current.of(
-          EditorState.readOnly.of(latest.current.readOnly ?? false),
+          [EditorState.readOnly.of(latest.current.readOnly ?? false),
+            EditorView.editable.of(!(latest.current.readOnly ?? false))],
         ),
         EditorView.updateListener.of((update) => {
           const current = latest.current
+          if (update.selectionSet && !update.docChanged) current.undo.breakGroup()
 
           if (update.docChanged && !update.transactions.some((t) => t.annotation(remoteChange))) {
             const ops = changesToOps(current.document, update.changes, current.undo)
@@ -106,7 +110,10 @@ export function Editor(props: EditorProps) {
           }
 
           if (update.selectionSet || update.docChanged) {
-            reportCursor(update.state, current, scheduleCursor)
+            reportCursor(update.state, current, (head, anchor) => {
+              selectionAnchors = { head, anchor }
+              scheduleCursor(head, anchor)
+            })
 
             const selection = update.state.selection.main
             current.onSelectionChange(
@@ -121,21 +128,31 @@ export function Editor(props: EditorProps) {
 
     const editor = new EditorView({ state, parent: host.current })
     view.current = editor
+    reportCursor(editor.state, latest.current, (head, anchor) => {
+      selectionAnchors = { head, anchor }
+      scheduleCursor(head, anchor)
+    })
 
     latest.current.registerRemoteApply(() => {
       const current = latest.current
       const target = current.document.text
       const change = minimalChange(editor.state.doc.toString(), target)
       if (change === null) return
-      editor.dispatch({ changes: change, annotations: remoteChange.of(true) })
+      const resolve = (anchor: CursorAnchor | null) => anchor === null ? null
+        : current.document.anchorPosition(anchor.charId, anchor.side)
+      const head = resolve(selectionAnchors?.head ?? null)
+      const anchor = resolve(selectionAnchors?.anchor ?? selectionAnchors?.head ?? null)
+      editor.dispatch({ changes: change, annotations: remoteChange.of(true),
+        ...(head !== null && anchor !== null ? { selection: EditorSelection.single(anchor, head) } : {}) })
     })
 
     return () => {
       if (cursorTimer !== null) window.clearTimeout(cursorTimer)
+      latest.current.registerRemoteApply(() => {})
       editor.destroy()
       view.current = null
     }
-  }, [])
+  }, [props.document])
 
   useEffect(() => {
     view.current?.dispatch({ effects: setRemoteCursors.of(props.remoteCursors) })
@@ -148,7 +165,8 @@ export function Editor(props: EditorProps) {
   useEffect(() => {
     view.current?.dispatch({
       effects: readOnlyCompartment.current.reconfigure(
-        EditorState.readOnly.of(props.readOnly ?? false),
+        [EditorState.readOnly.of(props.readOnly ?? false),
+          EditorView.editable.of(!(props.readOnly ?? false))],
       ),
     })
   }, [props.readOnly])

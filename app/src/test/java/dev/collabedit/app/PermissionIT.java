@@ -110,8 +110,8 @@ class PermissionIT extends IntegrationTestBase {
         assertThat(foreign.body()).doesNotContain("secret content");
 
         assertThat(get("/api/documents/" + document, null).statusCode())
-            .as("a request with no token received a private document's content")
-            .isEqualTo(404);
+            .as("a request with no token must reauthenticate without learning whether the document exists")
+            .isEqualTo(401);
     }
 
     @Test

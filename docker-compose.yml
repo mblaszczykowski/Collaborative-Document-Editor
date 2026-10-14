@@ -56,15 +56,18 @@ services:
       SPRING_DATASOURCE_PASSWORD: collabedit
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
-      OTEL_SDK_DISABLED: "true"
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       COLLABEDIT_AUTH_SECRET: ${COLLABEDIT_AUTH_SECRET:-local-development-secret-not-for-production}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       COLLABEDIT_DEV_LOGIN: ${COLLABEDIT_DEV_LOGIN:-false}
+      COLLABEDIT_APP_URL: ${COLLABEDIT_APP_URL:-http://localhost:5173}
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,11 +80,13 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE: ""
-        VITE_OTLP_ENDPOINT: "http://localhost:4318"
+        VITE_OTLP_ENDPOINT: ${VITE_OTLP_ENDPOINT:-}
     container_name: collabedit-frontend
     profiles: ["app"]
+    environment:
+      BACKEND_ORIGIN: http://app:8090
     ports:
-      - "5173:80"
+      - "127.0.0.1:5173:80"
     depends_on:
       app:
         condition: service_healthy
@@ -94,8 +99,8 @@ services:
     volumes:
       - ./ops/otel-collector.yaml:/etc/otel-collector.yaml:ro
     ports:
-      - "4317:4317"
-      - "4318:4318"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
 
   prometheus:
     image: prom/prometheus:v3.0.1
@@ -107,11 +112,12 @@ services:
       - "--storage.tsdb.retention.time=7d"
     volumes:
       - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
 
   tempo:
     image: grafana/tempo:2.6.1
@@ -122,7 +128,7 @@ services:
       - ./ops/tempo.yaml:/etc/tempo.yaml:ro
       - tempo-data:/var/tempo
     ports:
-      - "3200:3200"
+      - "127.0.0.1:3200:3200"
 
   grafana:
     image: grafana/grafana:11.4.0
@@ -137,7 +143,7 @@ services:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     depends_on:
       - prometheus
       - tempo

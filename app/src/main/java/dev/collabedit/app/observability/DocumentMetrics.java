@@ -111,6 +111,23 @@ public class DocumentMetrics {
             .description("Tombstones / all characters, across in-memory documents")
             .register(registry);
 
+        Gauge.builder("crdt.gc.retained.identity.blocks", documents, loaded -> {
+            long count = 0;
+            for (var replica : loaded.loaded()) {
+                count += replica.withLock(document -> {
+                    long retained = 0;
+                    for (var block : document.blocks()) {
+                        if (!block.hasContent()) {
+                            retained++;
+                        }
+                    }
+                    return retained;
+                });
+            }
+            return count;
+        }).description("Content-free identity blocks retained for safe insert replay")
+            .register(registry);
+
         Gauge.builder("crdt.pending.operations", documents,
                 loaded -> replicaCounts(loaded).pending)
             .description("Operations waiting for their cause - a sustained value > 0 means corruption")

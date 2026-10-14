@@ -27,6 +27,16 @@ function FormattedPreview({ text, marks = [] }: { text: string; marks?: WireSpan
         if (piece.marks.underline !== undefined) node = <u>{node}</u>
         if (piece.marks.italic !== undefined) node = <em>{node}</em>
         if (piece.marks.bold !== undefined) node = <strong>{node}</strong>
+        if (piece.marks.link) {
+          try {
+            if (['http:', 'https:', 'mailto:'].includes(new URL(piece.marks.link).protocol)) {
+              node = <a href={piece.marks.link} target="_blank" rel="noopener noreferrer">{node}</a>
+            }
+          } catch { /* Invalid legacy URLs remain readable text. */ }
+        }
+        const blockClasses = ['heading', 'quote', 'list'].filter(type => piece.marks[type] !== undefined)
+          .map(type => `cm-mark-${type}`).join(' ')
+        if (blockClasses) node = <span className={blockClasses} data-level={piece.marks.heading ?? undefined}>{node}</span>
         if (piece.marks.comment !== undefined) {
           node = <span className="preview-commented">{node}</span>
         }
@@ -38,7 +48,7 @@ function FormattedPreview({ text, marks = [] }: { text: string; marks?: WireSpan
 
 function Comparison({ segments }: { segments: DiffSegment[] }) {
   if (segments.every((segment) => segment.kind === 'same')) {
-    return <div className="history-diff empty">No changes to the content.</div>
+    return <div className="history-diff empty">No text changes. Formatting may differ between these versions.</div>
   }
   return (
     <div className="history-diff">
@@ -96,7 +106,7 @@ export function HistoryPanel(
   }
 
   async function restore() {
-    if (selected === null) return
+    if (selected === null || restoring) return
     setRestoring(true)
     try {
       const done = await failure.attempt('Could not restore that version. Nothing was changed.',
@@ -104,7 +114,9 @@ export function HistoryPanel(
           await api.restore(documentId, selected.throughServerSeq)
         })
       if (!done) return
+      await panel.refresh()
       setSelected(null)
+      wanted.current = null
       setPreview(null)
       setDiff(null)
     } finally {
@@ -119,7 +131,7 @@ export function HistoryPanel(
         {failure.message !== null && (
           <FailureNote message={failure.message} onDismiss={failure.dismiss} />
         )}
-        {versions.length === 0 && <div className="rp-empty">No changes yet.</div>}
+        {versions.length === 0 && !failure.message && <div className="rp-empty">{panel.loading ? 'Loading history…' : 'No changes yet.'}</div>}
 
         {versions.map((version) => (
           <div key={version.throughServerSeq}>

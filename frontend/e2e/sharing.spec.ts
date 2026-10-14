@@ -8,8 +8,10 @@ async function ownerWithDocument(browser: Parameters<typeof joinAs>[0], name: st
   await page.getByRole('button', { name: 'Get started' }).click()
   await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
 
+  const previous = new URL(page.url()).searchParams.get('doc')
   await page.getByRole('button', { name: '+ New document' }).click()
-  await page.waitForURL(/[?&]doc=/, { timeout : 15_000 })
+  await page.waitForURL((url) => url.searchParams.has('doc') && url.searchParams.get('doc') !== previous,
+    { timeout: 15_000 })
   await expect(page.locator('.editor-host')).toBeVisible({ timeout: 15_000 })
   return page
 }

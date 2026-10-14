@@ -67,8 +67,13 @@ public class InviteService {
             new Invite(hash, documentId, role, createdBy, now, expiresAt));
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public Optional<Role> redeem(String token, String userId) {
         if (token == null || token.isBlank() || userId == null) {
+            return Optional.empty();
+        }
+        Optional<UUID> target = documentOf(token);
+        if (target.isEmpty() || !permissions.lockDocument(target.get())) {
             return Optional.empty();
         }
         List<Row> rows = jdbc.query("""
@@ -76,7 +81,8 @@ public class InviteService {
               FROM document_invites
              WHERE token_hash = ?
                AND revoked_at IS NULL
-               AND expires_at > now()
+               AND expires_at > clock_timestamp()
+             FOR UPDATE
             """,
             (rs, rowNum) -> new Row((UUID) rs.getObject("doc_id"), Role.parse(rs.getString("role"))),
             hashOf(token));
@@ -86,7 +92,7 @@ public class InviteService {
         }
         Row invite = rows.getFirst();
 
-        Role existing = permissions.roleOf(userId, invite.documentId()).orElse(null);
+        Role existing = permissions.uncachedRoleOf(userId, invite.documentId()).orElse(null);
         if (existing != null && existing.atLeast(invite.role())) {
             return Optional.of(existing);
         }
@@ -102,7 +108,7 @@ public class InviteService {
         }
         return jdbc.query("""
             SELECT doc_id FROM document_invites
-             WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > now()
+             WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > clock_timestamp()
             """,
             (rs, rowNum) -> (UUID) rs.getObject("doc_id"),
             hashOf(token)).stream().findFirst();
@@ -112,7 +118,7 @@ public class InviteService {
         return jdbc.query("""
             SELECT token_hash, doc_id, role, created_by, created_at, expires_at
               FROM document_invites
-             WHERE doc_id = ? AND revoked_at IS NULL AND expires_at > now()
+             WHERE doc_id = ? AND revoked_at IS NULL AND expires_at > clock_timestamp()
              ORDER BY created_at DESC
             """,
             (rs, rowNum) -> new Invite(
@@ -125,7 +131,9 @@ public class InviteService {
             documentId);
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public boolean revoke(UUID documentId, String inviteId) {
+        if (!permissions.lockDocument(documentId)) { return false; }
         int updated = jdbc.update("""
             UPDATE document_invites SET revoked_at = now()
              WHERE token_hash = ? AND doc_id = ? AND revoked_at IS NULL

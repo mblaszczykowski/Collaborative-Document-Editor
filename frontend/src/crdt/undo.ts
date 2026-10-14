@@ -1,6 +1,8 @@
 import type { RgaDocument } from './document'
 import { idEquals } from './types'
 import type { Id, Op } from './types'
+import type { Span } from './marks'
+import { deletePieces, insertPieces } from '../editor/bridge'
 
 interface UndoableInsert {
   kind: 'insert'
@@ -12,6 +14,8 @@ interface UndoableDelete {
   kind: 'delete'
   after: Id | null
   text: string
+  marks?: SavedSpan[]
+  removedLast?: Id
 }
 
 interface UndoableMark {
@@ -23,12 +27,17 @@ interface UndoableMark {
   after: string | null | undefined
 }
 
-type UndoEntry = UndoableInsert | UndoableDelete | UndoableMark
+interface SavedSpan { from: number; to: number; marks: [string, string | null][] }
+interface UndoGroup { kind: 'group'; entries: UndoEntry[] }
+type UndoEntry = UndoableInsert | UndoableDelete | UndoableMark | UndoGroup
 
 function isUndoEntry(value: unknown): value is UndoEntry {
   if (typeof value !== 'object' || value === null) return false
   const entry = value as Record<string, unknown>
   switch (entry['kind']) {
+    case 'group':
+      return Array.isArray(entry['entries']) && entry['entries'].length > 0
+        && entry['entries'].every(isUndoEntry)
     case 'insert':
       return isId(entry['first'])
         && typeof entry['length'] === 'number'
@@ -52,7 +61,8 @@ function isUndoEntry(value: unknown): value is UndoEntry {
 function isId(value: unknown): value is Id {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
-  return typeof candidate['replicaId'] === 'number' && typeof candidate['lamport'] === 'number'
+  return Number.isSafeInteger(candidate['replicaId']) && Number.isSafeInteger(candidate['lamport'])
+    && (candidate['lamport'] as number) >= 0
 }
 
 function isMarkValue(value: unknown): value is string | null | undefined {
@@ -69,6 +79,19 @@ export class UndoManager {
   private static readonly COALESCE_WINDOW_MS = 1000
 
   private lastRecordedAt = 0
+  private transaction: UndoEntry[] | null = null
+
+  breakGroup(): void { this.lastRecordedAt = 0 }
+
+  transact(action: () => void): void {
+    if (this.transaction !== null) { action(); return }
+    this.transaction = []
+    try { action() } finally {
+      const entries = this.transaction
+      this.transaction = null
+      if (entries.length > 0) this.push(entries.length === 1 ? entries[0] : { kind: 'group', entries })
+    }
+  }
 
   private readonly document: RgaDocument
 
@@ -115,11 +138,13 @@ export class UndoManager {
 
     const previous = this.undoStack.at(-1)
     if (
-      previous !== undefined &&
+      this.transaction === null && previous !== undefined &&
       previous.kind === 'insert' &&
       this.withinWindow() &&
       previous.first.replicaId === first.replicaId &&
-      previous.first.lamport + previous.length === first.lamport
+      previous.first.lamport + previous.length === first.lamport &&
+      (this.document.visibleIndicesOf(previous.first, previous.length).at(-1) ?? -2) + 1
+        === this.document.visibleIndexOf(first)
     ) {
       previous.length += length
       this.lastRecordedAt = Date.now()
@@ -131,11 +156,15 @@ export class UndoManager {
     this.push({ kind: 'insert', first, length })
   }
 
-  recordDelete(after: Id | null, text: string): void {
+  recordDelete(after: Id | null, text: string, marks?: SavedSpan[], removedLast?: Id): void {
     if (this.applying) return
+    removedLast ??= this.document.lastDeletedId
 
     const previous = this.undoStack.at(-1)
-    if (previous !== undefined && previous.kind === 'delete' && this.withinWindow()) {
+    if (this.transaction === null && !marks?.length && previous !== undefined
+      && previous.kind === 'delete' && !previous.marks?.length && this.withinWindow()
+      && (idEquals(previous.after, after)
+        || (removedLast !== undefined && idEquals(previous.after, removedLast)))) {
       if (idEquals(previous.after, after)) {
         previous.text = previous.text + text
       } else {
@@ -148,7 +177,7 @@ export class UndoManager {
       return
     }
 
-    this.push({ kind: 'delete', after, text })
+    this.push({ kind: 'delete', after, text, marks, removedLast })
   }
 
   private withinWindow(): boolean {
@@ -156,6 +185,35 @@ export class UndoManager {
   }
 
   private push(entry: UndoEntry): void {
+    if (this.transaction !== null) { this.transaction.push(entry); return }
+    const previous = this.undoStack.at(-1)
+    if (entry.kind === 'delete' && previous?.kind === 'delete' && this.withinWindow()
+      && (idEquals(entry.after, previous.after)
+        || (entry.removedLast !== undefined && idEquals(previous.after, entry.removedLast)))) {
+      const forward = idEquals(entry.after, previous.after)
+      const shift = (spans: SavedSpan[] | undefined, amount: number) => (spans ?? [])
+        .map(span => ({ ...span, from: span.from + amount, to: span.to + amount }))
+      previous.marks = forward ? [...(previous.marks ?? []), ...shift(entry.marks, previous.text.length)]
+        : [...(entry.marks ?? []), ...shift(previous.marks, entry.text.length)]
+      previous.text = forward ? previous.text + entry.text : entry.text + previous.text
+      previous.after = entry.after
+      previous.removedLast = entry.removedLast
+      this.redoStack.length = 0
+      this.lastRecordedAt = Date.now()
+      this.onChange?.()
+      return
+    }
+    if (entry.kind === 'insert' && previous?.kind === 'insert' && this.withinWindow()
+      && previous.first.replicaId === entry.first.replicaId
+      && previous.first.lamport + previous.length === entry.first.lamport
+      && (this.document.visibleIndicesOf(previous.first, previous.length).at(-1) ?? -2) + 1
+        === this.document.visibleIndexOf(entry.first)) {
+      previous.length += entry.length
+      this.redoStack.length = 0
+      this.lastRecordedAt = Date.now()
+      this.onChange?.()
+      return
+    }
     this.lastRecordedAt = Date.now()
     this.undoStack.push(entry)
     if (this.undoStack.length > UndoManager.LIMIT) {
@@ -174,26 +232,54 @@ export class UndoManager {
   }
 
   private step(from: UndoEntry[], to: UndoEntry[]): Op[] {
-    const entry = from.pop()
-    if (entry === undefined) return []
-
     this.applying = true
     try {
-      const result =
-        entry.kind === 'insert'
-          ? this.revertInsert(entry)
-          : entry.kind === 'delete'
-            ? this.revertDelete(entry)
-            : this.revertMark(entry)
-      if (result === null) {
-        return this.step(from, to)
+      while (from.length > 0) {
+        const result = this.revert(from.pop()!)
+        if (result === null) continue
+        to.push(result.inverse)
+        this.onChange?.()
+        return result.ops
       }
-      to.push(result.inverse)
       this.onChange?.()
-      return result.ops
-    } finally {
-      this.applying = false
+      return []
+    } finally { this.applying = false }
+  }
+
+  private revert(entry: UndoEntry): { ops: Op[]; inverse: UndoEntry } | null {
+    if (entry.kind !== 'group') {
+      return entry.kind === 'insert' ? this.revertInsert(entry)
+        : entry.kind === 'delete' ? this.revertDelete(entry) : this.revertMark(entry)
     }
+    const ops: Op[] = []
+    const inverses: UndoEntry[] = []
+    for (const child of [...entry.entries].reverse()) {
+      const result = this.revert(child)
+      if (result !== null) { ops.push(...result.ops); inverses.push(result.inverse) }
+    }
+    return inverses.length > 0 ? { ops, inverse: { kind: 'group', entries: inverses } } : null
+  }
+
+  captureMarks(from: number, to: number): SavedSpan[] {
+    return this.document.formatting().filter(span => span.from < to && span.to > from)
+      .map(span => ({ from: Math.max(from, span.from) - from,
+        to: Math.min(to, span.to) - from, marks: [...span.marks] }))
+  }
+
+  recordMarkChange(type: string, from: number, to: number, before: Span[], after: string | null | undefined): void {
+    const boundaries = new Set([from, to])
+    for (const span of before) {
+      if (span.from > from && span.from < to) boundaries.add(span.from)
+      if (span.to > from && span.to < to) boundaries.add(span.to)
+    }
+    const points = [...boundaries].sort((a, b) => a - b)
+    this.transact(() => {
+      for (let i = 0; i < points.length - 1; i++) {
+        const start = points[i], end = points[i + 1]
+        const previous = before.find(span => span.from <= start && span.to >= end)?.marks.get(type)
+        this.recordMark(type, this.document.idAtVisible(start), this.document.idAtVisible(end - 1), previous, after)
+      }
+    })
   }
 
   recordMark(
@@ -231,20 +317,20 @@ export class UndoManager {
       return null
     }
 
-    const text = alive.map((index) => before[index]).join('')
-    const anchor = alive[0] > 0 ? this.document.idAtVisible(alive[0] - 1) : null
-
     const ops: Op[] = []
+    const inverses: UndoEntry[] = []
     for (let end = alive.length; end > 0;) {
       let start = end - 1
-      while (start > 0 && alive[start - 1] === alive[start] - 1) {
-        start--
-      }
-      ops.push(this.document.delete(alive[start], end - start))
+      while (start > 0 && alive[start - 1] === alive[start] - 1) start--
+      const from = alive[start], to = alive[end - 1] + 1
+      const after = from > 0 ? this.document.idAtVisible(from - 1) : null
+      const marks = this.captureMarks(from, to)
+      const text = before.slice(from, to)
+      ops.push(...deletePieces(this.document, from, to - from))
+      inverses.push({ kind: 'delete', after, text, marks })
       end = start
     }
-
-    return { ops, inverse: { kind: 'delete', after: anchor, text } }
+    return { ops, inverse: { kind: 'group', entries: inverses } }
   }
 
   private revertDelete(entry: UndoableDelete): { ops: Op[]; inverse: UndoEntry } | null {
@@ -252,14 +338,27 @@ export class UndoManager {
     if (entry.after === null) {
       position = 0
     } else {
-      const anchor = this.document.visibleIndexOf(entry.after)
+      const anchor = this.document.anchorPosition(entry.after, 'after')
       if (anchor === null) {
         return null
       }
-      position = anchor + 1
+      position = anchor
     }
 
-    const op = this.document.insert(position, entry.text)
-    return { ops: [op], inverse: { kind: 'insert', first: op.id, length: entry.text.length } }
+    const ops: Op[] = []
+    const entries: UndoEntry[] = []
+    let offset = 0
+    for (const piece of insertPieces(entry.text)) {
+      const op = this.document.insert(position + offset, piece)
+      ops.push(op)
+      entries.push({ kind: 'insert', first: op.id, length: piece.length })
+      offset += piece.length
+    }
+    for (const span of entry.marks ?? []) {
+      for (const [type, value] of span.marks) {
+        ops.push(this.document.addMark(position + span.from, position + span.to, type, value))
+      }
+    }
+    return { ops, inverse: { kind: 'group', entries } }
   }
 }

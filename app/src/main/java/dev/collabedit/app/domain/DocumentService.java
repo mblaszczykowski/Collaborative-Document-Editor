@@ -15,11 +15,16 @@ import dev.collabedit.crdt.DocumentSnapshot;
 import dev.collabedit.crdt.Op;
 import dev.collabedit.crdt.RgaDocument;
 import dev.collabedit.crdt.VersionVector;
+import dev.collabedit.crdt.TreapBlockList;
 import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -33,6 +38,19 @@ public class DocumentService {
     private static final Logger log = LoggerFactory.getLogger(DocumentService.class);
 
     public static final int MAX_INSERT_CHARACTERS = 8192;
+    static final long MAX_CLOCK_AHEAD = 100_000_000L;
+    static final long CLOCK_HEADROOM = 1_000_000L;
+
+    static void checkClockBudget(RgaDocument document, Op op) {
+        if (document.hasSeen(op)) {
+            return;
+        }
+        if (op.maxLamport() > dev.collabedit.crdt.OpCodec.MAX_LAMPORT - CLOCK_HEADROOM
+            || op.maxLamport() > document.clock() + MAX_CLOCK_AHEAD) {
+            throw new ResyncRequiredException("This edit exceeds the supported offline clock budget. "
+                + "Reopen the document and recover or export pending work before discarding it.");
+        }
+    }
 
     public static List<String> splitForInsert(String text) {
         List<String> pieces = new ArrayList<>();
@@ -46,6 +64,16 @@ public class DocumentService {
             from = to;
         }
         return pieces;
+    }
+
+    public static List<Op> deleteInChunks(RgaDocument document, int from, int count) {
+        List<Op> generated = new ArrayList<>();
+        while (count > 0) {
+            int size = Math.min(1_024, count);
+            generated.add(document.delete(from, size));
+            count -= size;
+        }
+        return generated;
     }
 
     private final DocumentRegistry registry;
@@ -93,12 +121,83 @@ public class DocumentService {
 
     public List<Op> generateAndSubmit(UUID documentId, Function<RgaDocument, List<Op>> generator,
                                       String userId) {
-        long now = System.currentTimeMillis();
+        return generateAndSubmit(documentId, generator, userId, () -> { });
+    }
+
+    public List<Op> generateAndSubmit(UUID documentId, Function<RgaDocument, List<Op>> generator,
+                                      String userId, Runnable metadata) {
         List<List<Op>> result = new ArrayList<>(1);
         result.add(null);
-        onActiveReplica(documentId,
-            replica -> result.set(0, replica.generateAndEnqueue(generator, userId, now)));
+        onActiveReplica(documentId, replica -> replica.withActiveLock(live -> {
+            // Serialize against the flow scheduler and drain earlier browser edits first.
+            while (replica.unwrittenCount() > 0) {
+                flush(replica);
+            }
+            repairFrom(replica, replica.appliedServerSeq());
+            if (live.pendingCount() > 0) {
+                throw new ResyncRequiredException("document has unresolved operation dependencies");
+            }
+            // Generate on a detached state: a failed transaction must not change the live model.
+            RgaDocument staged = RgaDocument.restore(live.replicaId(), new TreapBlockList(),
+                live.snapshot());
+            List<Op> generated = generator.apply(staged);
+            result.set(0, generated);
+            if (generated == null) {
+                return null;
+            }
+            for (Op op : generated) {
+                checkClockBudget(live, op);
+            }
+            List<PendingOperation> pending = generated.stream()
+                .map(op -> new PendingOperation(op, userId, null)).toList();
+            List<StoredOperation> stored = operations.commitGenerated(documentId, pending, metadata);
+            try {
+                replica.applyRemote(stored, System.currentTimeMillis());
+                // Other instances may have committed between repair and this command.
+                repairFrom(replica, replica.appliedServerSeq());
+            } catch (RuntimeException postCommitFailure) {
+                // The command already committed. Do not return failure and invite its repetition.
+                registry.discardCommittedReplica(documentId, replica);
+                log.warn("Committed command for {} will be replayed on the next load", documentId,
+                    postCommitFailure);
+            }
+            acknowledgeAndPublish(documentId, stored);
+            return null;
+        }));
         return result.getFirst();
+    }
+
+    /** The HTTP snapshot contains only committed operations through its exact replay boundary. */
+    public record DurableState(DocumentSnapshot snapshot, long throughServerSeq) { }
+
+    public DurableState durableState(UUID documentId) {
+        long head = operations.maxServerSeq(documentId);
+        var saved = snapshots.findLatestUpTo(documentId, head);
+        RgaDocument model = saved.isPresent()
+            ? RgaDocument.restore(0, new TreapBlockList(), saved.get().snapshot())
+            : new RgaDocument(0, new TreapBlockList());
+        long from = saved.map(SnapshotStore.LoadedSnapshot::upToServerSeq).orElse(0L);
+        long lastConsistent = replayThrough(documentId, model, from, head);
+        if (model.pendingCount() > 0) {
+            // An out-of-order submitted dependency may not be committed yet. Return the last
+            // complete prefix; the browser will retrieve the unresolved tail through sync.
+            model = saved.isPresent()
+                ? RgaDocument.restore(0, new TreapBlockList(), saved.get().snapshot())
+                : new RgaDocument(0, new TreapBlockList());
+            replayThrough(documentId, model, from, lastConsistent);
+        }
+        return new DurableState(model.snapshot(), lastConsistent);
+    }
+
+    private long replayThrough(UUID documentId, RgaDocument model, long from, long through) {
+        long[] consistent = {from};
+        operations.forEachInRange(documentId, from, through, stored -> {
+            model.apply(stored.op());
+            if (model.pendingCount() == 0) {
+                consistent[0] = stored.serverSeq();
+            }
+        });
+        return consistent[0];
     }
 
     private void onActiveReplica(UUID documentId, Consumer<DocumentReplica> action) {
@@ -123,6 +222,21 @@ public class DocumentService {
     }
 
     public void submit(UUID documentId, Op op, String userId) {
+        try {
+            onActiveReplica(documentId, replica -> replica.checkAdmission(op,
+                properties.persistence().maxPendingOperations()));
+        } catch (RgaDocument.PendingOverflowException overflow) {
+            metrics.recordPendingOverflow();
+            throw new ResyncRequiredException(overflow.getMessage());
+        }
+        var existing = operations.claim(documentId, op);
+        if (existing.isPresent()) {
+            if (!existing.get().op().equals(op)) {
+                throw new ReplicaIdConflictException("operation identity has a different payload");
+            }
+            acknowledgeAndPublish(documentId, List.of(existing.get()));
+            return;
+        }
         DocumentReplica replica = registry.get(documentId);
 
         if (replica.isPermanentlyUnanchored(op)) {
@@ -130,8 +244,6 @@ public class DocumentService {
             throw new ResyncRequiredException(
                 "operation " + op.id() + " points at a character removed by garbage collection");
         }
-
-        refuseIfPendingBufferFull(replica);
 
         boolean isNews;
         String traceparent = tracer.currentTraceparent();
@@ -143,26 +255,25 @@ public class DocumentService {
         metrics.recordMerge(merging);
     }
 
-    private void refuseIfPendingBufferFull(DocumentReplica replica) {
-        int cap = properties.persistence().maxPendingOperations();
-        int pending = replica.pendingCount();
-        if (pending < cap) {
-            return;
+    public static class WriteBufferFullException extends RuntimeException {
+        public WriteBufferFullException() {
+            super("the persistence buffer is full; retry after outstanding writes finish");
         }
-        metrics.recordPendingOverflow();
-        throw new ResyncRequiredException(
-            "this replica is already holding " + pending + " operations waiting for a cause, "
-                + "which is the configured maximum - resynchronise instead of sending more");
     }
 
     private boolean mergeRetryingIfEvicted(UUID documentId, DocumentReplica replica, Op op,
                                            String userId, String traceparent) {
         try {
-            return replica.merge(op, userId, traceparent, System.currentTimeMillis());
+            return replica.merge(op, userId, traceparent, System.currentTimeMillis(),
+                properties.persistence().maxPendingOperations());
+        } catch (RgaDocument.PendingOverflowException overflow) {
+            metrics.recordPendingOverflow();
+            throw new ResyncRequiredException(overflow.getMessage());
         } catch (DocumentReplica.StaleReplicaException stale) {
             log.debug("Replica of {} was evicted mid-merge; reloading and retrying", documentId);
             return registry.get(documentId)
-                .merge(op, userId, traceparent, System.currentTimeMillis());
+                .merge(op, userId, traceparent, System.currentTimeMillis(),
+                    properties.persistence().maxPendingOperations());
         }
     }
 
@@ -260,6 +371,13 @@ public class DocumentService {
     }
 
     private void flush(DocumentReplica replica) {
+        replica.withActiveLock(document -> {
+            flushLocked(replica);
+            return null;
+        });
+    }
+
+    private void flushLocked(DocumentReplica replica) {
         DocumentReplica.OutboundBatch outbound =
             replica.drainForFlush(properties.persistence().opBatchMaxSize());
 
@@ -294,14 +412,24 @@ public class DocumentService {
             }
             throw e;
         } finally {
-            replica.flushCompleted(appended.isEmpty() ? 0 : appended.getLast().serverSeq());
+            replica.flushCompleted(appended);
         }
 
         if (appended.isEmpty()) {
             return;
         }
-        onBroadcast.accept(replica.documentId(), appended);
-        cluster.publish(replica.documentId(), appended);
+        repairFrom(replica, replica.appliedServerSeq());
+        acknowledgeAndPublish(replica.documentId(), appended);
+    }
+
+    private void acknowledgeAndPublish(UUID documentId, List<StoredOperation> stored) {
+        try {
+            onBroadcast.accept(documentId, stored);
+        } catch (RuntimeException e) {
+            // Clients reconcile durable operation IDs on retry even when broker delivery fails.
+            log.warn("Acknowledgment delivery failed for document {}", documentId, e);
+        }
+        cluster.publish(documentId, stored);
     }
 
     private void returnToBuffer(DocumentReplica replica, List<PendingOperation> batch) {
@@ -333,7 +461,7 @@ public class DocumentService {
                 metrics.recordGc(reclaimed);
                 log.debug("GC of document {}: reclaimed {} tombstone characters",
                     replica.documentId(), reclaimed);
-            } else if (document.tombstoneCount() > 0) {
+            } else if (document.tombstoneContentCount() > 0) {
                 Integer lagging = VersionVector.laggingReplica(stable, document.version());
                 if (lagging != null) {
                     metrics.recordGcBlocked();
@@ -354,11 +482,37 @@ public class DocumentService {
         replica.snapshotTaken(captured.count);
 
         try {
-            catalog.updatePreview(replica.documentId(), captured.text);
+            catalog.updatePreview(replica.documentId(), captured.text, captured.seq);
         } catch (RuntimeException e) {
             log.warn("The preview and search vector for document {} could not be updated; the "
                 + "snapshot itself is stored", replica.documentId(), e);
         }
+    }
+
+    private final Map<UUID, Long> indexedThrough = new ConcurrentHashMap<>();
+
+    public void invalidateSearchIndex(UUID documentId) {
+        indexedThrough.remove(documentId);
+    }
+
+    @Scheduled(fixedDelay = 5_000, scheduler = SchedulingConfig.MAINTENANCE)
+    public void refreshSearchIndexes() {
+        Set<UUID> loaded = new HashSet<>();
+        for (DocumentReplica replica : registry.loaded()) {
+            loaded.add(replica.documentId());
+            try {
+                replica.withConsistentState((document, seq) -> {
+                    if (!Long.valueOf(seq).equals(indexedThrough.get(replica.documentId()))
+                        && catalog.updatePreview(replica.documentId(), document.text(), seq)) {
+                        indexedThrough.put(replica.documentId(), seq);
+                    }
+                    return true;
+                });
+            } catch (RuntimeException e) {
+                log.warn("Search index refresh failed for document {}", replica.documentId(), e);
+            }
+        }
+        indexedThrough.keySet().retainAll(loaded);
     }
 
     public void recordProgress(UUID documentId, int replicaId, VersionVector version) {

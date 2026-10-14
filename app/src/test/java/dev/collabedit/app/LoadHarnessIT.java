@@ -1,5 +1,7 @@
 package dev.collabedit.app;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import dev.collabedit.app.auth.TokenService;
 import dev.collabedit.crdt.Op;
 import java.util.ArrayList;
@@ -98,16 +100,17 @@ class LoadHarnessIT extends IntegrationTestBase {
                 Thread.ofVirtual().start(() -> {
                     try {
                         for (int i = 0; i < OPERATIONS_PER_CLIENT; i++) {
-                            Op op = client.insertReturningOp(0, "x");
-                            sentAt.put(key(op), System.nanoTime());
+                            String character = String.valueOf((char) (0x410 + clients.indexOf(client)));
+                            client.insertReturningOp(0, character,
+                                op -> sentAt.put(key(op), System.nanoTime()));
 
                             if (i % 2 == 0) {
                                 client.sendPresence();
                             }
 
                             if (i % 10 == 9 && client.text().length() >= 2) {
-                                Op mark = client.markReturningOp(0, 2, "bold", null);
-                                sentAt.put(key(mark), System.nanoTime());
+                                client.markReturningOp(0, 2, "bold", null,
+                                    op -> sentAt.put(key(op), System.nanoTime()));
                             }
                         }
                     } finally {
@@ -115,12 +118,14 @@ class LoadHarnessIT extends IntegrationTestBase {
                     }
                 });
             }
-            done.await(120, TimeUnit.SECONDS);
+            assertThat(done.await(120, TimeUnit.SECONDS)).as("all load writers finish").isTrue();
             long elapsedNanos = System.nanoTime() - startedAt;
 
             int expectedLength = documentSize + clientCount * OPERATIONS_PER_CLIENT;
             long convergenceStart = System.nanoTime();
             boolean converged = awaitConvergence(clients, expectedLength, 150_000);
+            assertThat(converged).as("all clients converge to identical content").isTrue();
+            assertThat(documentsService().textOf(document)).isEqualTo(clients.getFirst().text());
             long convergenceNanos = System.nanoTime() - convergenceStart;
 
             long totalOperations = (long) clientCount * OPERATIONS_PER_CLIENT;
@@ -128,7 +133,7 @@ class LoadHarnessIT extends IntegrationTestBase {
 
             List<Long> measured = new ArrayList<>(latencies);
             Collections.sort(measured);
-            List<Long> steady = measured.subList(measured.size() / 5, measured.size());
+            List<Long> steady = measured;
 
             int serverLength = documentsService().textOf(document).length();
             int minClient = clients.stream().mapToInt(c -> c.text().length()).min().orElse(0);
@@ -159,7 +164,9 @@ class LoadHarnessIT extends IntegrationTestBase {
                                      long timeoutMillis) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMillis;
         while (System.currentTimeMillis() < deadline) {
-            boolean all = clients.stream().allMatch(c -> c.text().length() == expectedLength);
+            String canonical = clients.getFirst().text();
+            boolean all = canonical.length() == expectedLength
+                && clients.stream().allMatch(c -> c.text().equals(canonical));
             if (all) {
                 return true;
             }

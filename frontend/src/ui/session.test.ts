@@ -131,3 +131,26 @@ describe('where the session is kept', () => {
     expect(local.getItem('collabedit.session'), 'the bad entry was left to fail again').toBeNull()
   })
 })
+
+describe('untrusted or unavailable browser storage', () => {
+  it('discards valid JSON without a session shape', async () => {
+    const local = stubStorage()
+    local.setItem('collabedit.session', JSON.stringify({ userId: 'u' }))
+    const app = await load('', local, stubStorage())
+    expect(app.loadSession()).toBeNull()
+    expect(local.getItem('collabedit.session')).toBeNull()
+  })
+
+  it('can sign in and sign out when browser storage is blocked', async () => {
+    const blocked = stubStorage()
+    blocked.getItem = () => { throw new Error('blocked') }
+    blocked.setItem = () => { throw new Error('blocked') }
+    blocked.removeItem = () => { throw new Error('blocked') }
+    const app = await load('', blocked, blocked)
+    expect(app.loadSession()).toBeNull()
+    app.rememberSession(SESSION)
+    expect(app.loadSession()).toEqual(SESSION)
+    app.forgetSession()
+    expect(app.loadSession()).toBeNull()
+  })
+})

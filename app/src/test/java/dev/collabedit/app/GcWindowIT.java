@@ -128,8 +128,8 @@ class GcWindowIT extends IntegrationTestBase {
     }
 
     @Test
-    @DisplayName("a connected but silent replica is still excluded after the shorter timeout")
-    void connectedButSilentReplicaIsExcluded() {
+    @DisplayName("an unrecorded departure receives offline grace but expires after the window")
+    void silentReplicaReceivesOfflineGraceUntilWindowExpires() {
         UUID document = newDocument();
         DocumentReplica replica = replicaWithHistory(document);
 
@@ -139,11 +139,11 @@ class GcWindowIT extends IntegrationTestBase {
         age(document, DEPARTED, Duration.ofMinutes(10));
 
         assertThat(stableFor(document, replica).get(DEPARTED))
-            .as("""
-                A connected client that stopped reporting ten minutes ago is still holding GC \
-                back. One hung tab then blocks compaction for the whole document, which is the \
-                negative consequence the tombstone-collection design introduced the shorter \
-                timeout to avoid.""")
+            .as("a crashed server cannot record departure; it must preserve the same offline grace")
+            .isEqualTo(1L);
+        age(document, DEPARTED, Duration.ofDays(14));
+        assertThat(stableFor(document, replica).get(DEPARTED))
+            .as("offline retention is bounded even when no departure was recorded")
             .isEqualTo(4L);
     }
 

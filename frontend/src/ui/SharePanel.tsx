@@ -27,10 +27,14 @@ export function SharePanel(props: {
   const failure = useFailure()
   const { attempt } = failure
   const panel = useRef<HTMLDivElement>(null)
+  const mutation = useRef(false)
+  const latestLoad = useRef(0)
 
   const reload = useCallback(async () => {
+    const ticket = ++latestLoad.current
     await attempt('Could not load who has access to this document.', async () => {
-      setState(await api.access(documentId))
+      const loaded = await api.access(documentId)
+      if (ticket === latestLoad.current) setState(loaded)
     })
   }, [documentId, attempt])
 
@@ -77,6 +81,8 @@ export function SharePanel(props: {
   }, [])
 
   async function createInvite() {
+    if (mutation.current) return
+    mutation.current = true
     setBusy(true)
     try {
       await attempt('Could not create the invitation link.', async () => {
@@ -89,8 +95,17 @@ export function SharePanel(props: {
       })
       await reload()
     } finally {
+      mutation.current = false
       setBusy(false)
     }
+  }
+
+  async function change(message: string, action: () => Promise<void>) {
+    if (mutation.current) return
+    mutation.current = true
+    setBusy(true)
+    try { if (await attempt(message, action)) await reload() }
+    finally { mutation.current = false; setBusy(false) }
   }
 
   async function copy(link: string) {
@@ -107,36 +122,19 @@ export function SharePanel(props: {
   }
 
   async function changeRole(userId: string, role: Role) {
-    if (await attempt('Could not change that person’s role.', async () => {
-      await api.setMemberRole(documentId, userId, role)
-    })) {
-      await reload()
-    }
+    await change('Could not change that person’s role.', () => api.setMemberRole(documentId, userId, role))
   }
 
   async function remove(userId: string) {
-    if (await attempt('Could not remove that person from the document.', async () => {
-      await api.removeMember(documentId, userId)
-    })) {
-      await reload()
-    }
+    await change('Could not remove that person from the document.', () => api.removeMember(documentId, userId))
   }
 
   async function setVisibility(visibility: 'private' | 'link') {
-    if (await attempt('Could not change who can open this document.', async () => {
-      await api.setVisibility(documentId, visibility)
-    })) {
-      await reload()
-    }
+    await change('Could not change who can open this document.', () => api.setVisibility(documentId, visibility))
   }
 
   async function revokeInvite(inviteId: string) {
-    if (await attempt('Could not revoke that invitation link - it may still work.',
-      async () => {
-        await api.revokeInvite(documentId, inviteId)
-      })) {
-      await reload()
-    }
+    await change('Could not revoke that invitation link - it may still work.', () => api.revokeInvite(documentId, inviteId))
   }
 
   return (
@@ -162,7 +160,8 @@ export function SharePanel(props: {
         )}
 
         {state === null ? (
-          <p className="share-loading">Loading…</p>
+          failure.message !== null ? <button onClick={() => void reload()}>Try again</button>
+            : <p className="share-loading" role="status">Loading…</p>
         ) : (
           <>
             <section className="share-section">
@@ -175,6 +174,7 @@ export function SharePanel(props: {
 }
                 <select
                   aria-label="Role for the invitation link"
+                  disabled={busy}
                   value={inviteRole}
                   onChange={(event) => setInviteRole(event.target.value as Role)}
                 >
@@ -191,13 +191,12 @@ export function SharePanel(props: {
 
               {freshLink !== null && (
                 <div className="share-fresh">
-                  <input readOnly value={freshLink} onFocus={(e) => e.target.select()} />
+                  <input aria-label="Invitation link" readOnly value={freshLink} onFocus={(e) => e.target.select()} />
                   <button className="btn-outline" onClick={() => void copy(freshLink)}>
                     {copied ? 'Copied' : 'Copy'}
                   </button>
                   <p className="share-hint">
-                    Shown once. The server keeps only a hash of it, so this panel can list the
-                    invitation later but never show the link again.
+                    Copy this invitation now. You can create another link later.
                   </p>
                   {copyByHand && (
                     <p className="share-hint">
@@ -220,6 +219,7 @@ export function SharePanel(props: {
                       </span>
                       <button
                         className="share-action"
+                        disabled={busy}
                         onClick={() => void revokeInvite(invite.id)}
                       >
                         Revoke
@@ -242,6 +242,7 @@ export function SharePanel(props: {
                     <span>{member.displayName}</span>
                     <select
                       aria-label={`Role for ${member.displayName}`}
+                      disabled={busy}
                       value={member.role}
                       onChange={(event) =>
                         void changeRole(member.userId, event.target.value as Role)
@@ -253,7 +254,7 @@ export function SharePanel(props: {
                         </option>
                       ))}
                     </select>
-                    <button className="share-action" onClick={() => void remove(member.userId)}>
+                    <button className="share-action" disabled={busy} onClick={() => void remove(member.userId)}>
                       Remove
                     </button>
                   </li>
@@ -269,6 +270,7 @@ export function SharePanel(props: {
               <div className="share-row">
                 <select
                   aria-label="Who can open this document"
+                  disabled={busy}
                   value={state.visibility}
                   onChange={(event) =>
                     void setVisibility(event.target.value as 'private' | 'link')

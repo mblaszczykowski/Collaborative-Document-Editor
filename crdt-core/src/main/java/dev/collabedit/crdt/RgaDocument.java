@@ -3,11 +3,11 @@ package dev.collabedit.crdt;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NavigableSet;
-import java.util.TreeSet;
 
 public final class RgaDocument {
     private final int replicaId;
@@ -18,6 +18,8 @@ public final class RgaDocument {
     private final Map<Integer, Long> maxSeen = new HashMap<>();
 
     private final Map<Id, Op> pending = new LinkedHashMap<>();
+
+    private final Set<Id> seenDeletes = new HashSet<>();
 
     private VersionVector gcWatermark = VersionVector.empty();
 
@@ -80,6 +82,7 @@ public final class RgaDocument {
         }
 
         Op.Delete op = new Op.Delete(deleteId, targets);
+        seenDeletes.add(deleteId);
         clock += op.span();
         observeVersion(op);
         return op;
@@ -155,6 +158,16 @@ public final class RgaDocument {
     }
 
     public ApplyResult apply(Op op) {
+        return apply(op, Integer.MAX_VALUE);
+    }
+
+    public static class PendingOverflowException extends RuntimeException {
+        public PendingOverflowException() {
+            super("too many operations waiting for a cause (missing dependencies)");
+        }
+    }
+
+    public ApplyResult apply(Op op, int pendingLimit) {
         observeClock(op);
         if (isAlreadyKnown(op)) {
             return ApplyResult.DUPLICATE;
@@ -164,38 +177,42 @@ public final class RgaDocument {
             drainPending();
             return ApplyResult.APPLIED;
         }
+        if (pending.containsKey(op.id())) {
+            return ApplyResult.DUPLICATE;
+        }
+        if (pending.size() >= pendingLimit) {
+            throw new PendingOverflowException();
+        }
         if (pending.putIfAbsent(op.id(), op) != null) {
             return ApplyResult.DUPLICATE;
         }
         return ApplyResult.BUFFERED;
     }
 
-    private boolean isAlreadyKnown(Op op) {
+    public boolean hasSeen(Op op) {
+        return isAlreadyKnown(op) || pending.containsKey(op.id());
+    }
+
+    public boolean canApplyWithoutBuffering(Op op) {
+        if (hasSeen(op)) {
+            return true;
+        }
         return switch (op) {
-            case Op.Insert insert -> blocks.locateId(insert.id()) != null;
-            case Op.Delete delete -> isEntirelyDeleted(delete);
-            case Op.AddMark mark -> marks.contains(mark.id());
-            case Op.RemoveMark mark -> marks.contains(mark.id());
+            case Op.Insert insert -> insert.originLeft() == null
+                || blocks.locateId(insert.originLeft()) != null;
+            case Op.Delete delete -> delete.targets().stream().allMatch(this::isRangeFullyPresent);
+            case Op.AddMark mark -> MarkSet.anchorsResolvable(mark, blocks);
+            case Op.RemoveMark mark -> MarkSet.anchorsResolvable(mark, blocks);
         };
     }
 
-    private boolean isEntirelyDeleted(Op.Delete op) {
-        for (Op.Range range : op.targets()) {
-            long cursor = range.start().lamport();
-            long end = cursor + range.length();
-            while (cursor < end) {
-                BlockList.Locator loc = blocks.locateId(new Id(range.start().replicaId(), cursor));
-                if (loc == null) {
-                    return false;
-                }
-                Block block = blocks.get(loc.blockIndex());
-                if (!block.deleted()) {
-                    return false;
-                }
-                cursor += block.length() - loc.offset();
-            }
-        }
-        return true;
+    private boolean isAlreadyKnown(Op op) {
+        return switch (op) {
+            case Op.Insert insert -> blocks.locateId(insert.id()) != null;
+            case Op.Delete delete -> seenDeletes.contains(delete.id());
+            case Op.AddMark mark -> marks.contains(mark.id());
+            case Op.RemoveMark mark -> marks.contains(mark.id());
+        };
     }
 
     public void applyAll(Iterable<Op> ops) {
@@ -233,6 +250,7 @@ public final class RgaDocument {
         for (Op.Range range : op.targets()) {
             markRangeDeleted(range, op.id());
         }
+        seenDeletes.add(op.id());
         return true;
     }
 
@@ -333,41 +351,25 @@ public final class RgaDocument {
     }
 
     public int gc(VersionVector stable) {
-        Map<Integer, NavigableSet<Long>> referenced = new HashMap<>();
-        for (Block block : blocks) {
-            if (block.originLeft() != null) {
-                addReference(referenced, block.originLeft());
-            }
-        }
-        for (Op mark : marks.all()) {
-            addReferences(referenced, mark);
-        }
-
-        List<Op.Range> awaitedRanges = new ArrayList<>();
-        for (Op waiting : pending.values()) {
-            addReferences(referenced, waiting);
-            if (waiting instanceof Op.Delete delete) {
-                awaitedRanges.addAll(delete.targets());
-            }
-        }
-
+        // Keep identity skeletons after reclaiming content. Removing an unreferenced block
+        // loses insert deduplication across retries and snapshot restoration.
         int reclaimed = 0;
-        for (int i = blocks.size() - 1; i >= 0; i--) {
-            Block block = blocks.get(i);
-            if (!block.deleted()) {
-                continue;
-            }
-            if (!isDeletionStable(block, stable)) {
-                continue;
-            }
-            if (!isAnyCharReferenced(block, referenced) && !isInAwaitedRange(block, awaitedRanges)) {
-                blocks.remove(i);
-                reclaimed += block.hasContent() ? block.length() : 0;
-                continue;
-            }
-            if (block.hasContent()) {
+        for (Block block : blocks) {
+            if (block.deleted() && block.hasContent() && isDeletionStable(block, stable)) {
                 block.dropContent();
                 reclaimed += block.length();
+            }
+        }
+        for (int i = blocks.size() - 1; i > 0; i--) {
+            Block left = blocks.get(i - 1);
+            Block right = blocks.get(i);
+            if (!left.hasContent() && !right.hasContent()
+                && right.start().isDirectSuccessorOf(left.lastId())
+                && left.lastId().equals(right.originLeft())
+                && java.util.Objects.equals(left.deletedBy(), right.deletedBy())) {
+                blocks.set(i - 1, Block.withoutContent(left.start(),
+                    left.length() + right.length(), left.originLeft(), left.deletedBy()));
+                blocks.remove(i);
             }
         }
         gcWatermark = gcWatermark.join(stable);
@@ -380,59 +382,6 @@ public final class RgaDocument {
             return false;
         }
         return deletedBy.lamport() <= stable.get(deletedBy.replicaId());
-    }
-
-    private static void addReferences(Map<Integer, NavigableSet<Long>> referenced, Op op) {
-        switch (op) {
-            case Op.AddMark add -> {
-                addReference(referenced, add.start().charId());
-                addReference(referenced, add.end().charId());
-            }
-            case Op.RemoveMark remove -> {
-                addReference(referenced, remove.start().charId());
-                addReference(referenced, remove.end().charId());
-            }
-            case Op.Insert insert -> {
-                if (insert.originLeft() != null) {
-                    addReference(referenced, insert.originLeft());
-                }
-            }
-            case Op.Delete delete -> {
-                for (Op.Range range : delete.targets()) {
-                    addReference(referenced, range.start());
-                }
-            }
-        }
-    }
-
-    private static void addReference(Map<Integer, NavigableSet<Long>> referenced, Id id) {
-        referenced.computeIfAbsent(id.replicaId(), replica -> new TreeSet<>()).add(id.lamport());
-    }
-
-    private static boolean isInAwaitedRange(Block block, List<Op.Range> awaited) {
-        for (Op.Range range : awaited) {
-            if (range.start().replicaId() != block.start().replicaId()) {
-                continue;
-            }
-            long rangeFrom = range.start().lamport();
-            long rangeTo = rangeFrom + range.length();
-            long blockFrom = block.start().lamport();
-            long blockTo = blockFrom + block.length();
-            if (blockFrom < rangeTo && rangeFrom < blockTo) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isAnyCharReferenced(
-        Block block, Map<Integer, NavigableSet<Long>> referenced) {
-        NavigableSet<Long> lamports = referenced.get(block.start().replicaId());
-        if (lamports == null) {
-            return false;
-        }
-        long start = block.start().lamport();
-        return !lamports.subSet(start, true, start + block.length(), false).isEmpty();
     }
 
     public VersionVector gcWatermark() {
@@ -454,6 +403,9 @@ public final class RgaDocument {
         for (Block block : snapshot.blocks()) {
             storage.insert(storage.size(),
                 copyOf(block));
+            if (block.deletedBy() != null) {
+                document.seenDeletes.add(block.deletedBy());
+            }
         }
         document.clock = snapshot.clock();
         document.maxSeen.putAll(snapshot.maxSeen());
@@ -488,6 +440,16 @@ public final class RgaDocument {
 
     public int tombstoneCount() {
         return blocks.totalLength() - blocks.visibleLength();
+    }
+
+    public int tombstoneContentCount() {
+        int characters = 0;
+        for (Block block : blocks) {
+            if (block.deleted() && block.hasContent()) {
+                characters += block.length();
+            }
+        }
+        return characters;
     }
 
     public int blockCount() {

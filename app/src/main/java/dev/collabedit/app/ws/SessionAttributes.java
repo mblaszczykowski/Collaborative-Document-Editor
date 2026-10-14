@@ -9,6 +9,15 @@ public final class SessionAttributes {
     public static final String USER_ID = "userId";
     public static final String DISPLAY_NAME = "displayName";
     public static final String COLOR = "color";
+    public static final String EXPIRES_AT = "expiresAtEpochSecond";
+    public static final String EXPIRED_NOTIFIED = "expiredNotified";
+
+    public static boolean expired(SimpMessageHeaderAccessor headers) {
+        Map<String, Object> attributes = headers.getSessionAttributes();
+        Object expiry = attributes == null ? null : attributes.get(EXPIRES_AT);
+        return expiry instanceof Long value && value <= java.time.Instant.now().getEpochSecond();
+    }
+
     public static final String REPLICA_ID = "replicaId";
 
     private SessionAttributes() {
@@ -36,6 +45,16 @@ public final class SessionAttributes {
         Map<String, Object> attributes = headers.getSessionAttributes();
         Object value = attributes == null ? null : attributes.get(key);
         return value == null ? null : value.toString();
+    }
+
+    public static final String DOCUMENT_ID = "collabedit.documentId";
+
+    public static MessageHeaders forDocument(SimpMessageHeaderAccessor source, java.util.UUID documentId) {
+        SimpMessageHeaderAccessor accessor = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
+        accessor.setSessionId(source.getSessionId());
+        accessor.setHeader(DOCUMENT_ID, documentId);
+        accessor.setLeaveMutable(true);
+        return accessor.getMessageHeaders();
     }
 
     public static MessageHeaders forUser(SimpMessageHeaderAccessor source) {

@@ -77,20 +77,23 @@ class BroadcastFanoutIT extends IntegrationTestBase {
                 Thread.ofVirtual().start(() -> {
                     try {
                         for (int i = 0; i < OPERATIONS_PER_CLIENT; i++) {
-                            client.insert(0, "x");
+                            client.insert(0, String.valueOf((char) (0x410 + clients.indexOf(client))));
                         }
                     } finally {
                         done.countDown();
                     }
                 });
             }
-            done.await(60, TimeUnit.SECONDS);
+            assertThat(done.await(60, TimeUnit.SECONDS)).as("all fanout writers finish").isTrue();
 
             int expected = clientCount * OPERATIONS_PER_CLIENT;
             long started = System.currentTimeMillis();
             boolean converged = false;
             while (System.currentTimeMillis() - started < CONVERGENCE_TIMEOUT_MS) {
-                if (clients.stream().allMatch(c -> c.text().length() == expected)) {
+                String canonical = clients.getFirst().text();
+                if (canonical.length() == expected
+                    && clients.stream().allMatch(c -> c.text().equals(canonical))
+                    && documents.textOf(document).equals(canonical)) {
                     converged = true;
                     break;
                 }

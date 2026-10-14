@@ -39,6 +39,12 @@ export class RgaDocument {
   private readonly maxSeen = new Map<number, number>()
   private pending = new Map<string, Op>()
 
+  private lastDeletedCharacter: Id | undefined
+
+  get lastDeletedId(): Id | undefined { return this.lastDeletedCharacter }
+
+  private readonly deleteIds = new Set<string>()
+
   private readonly marks = new MarkSet()
 
   private replicaIdValue: number
@@ -67,7 +73,9 @@ export class RgaDocument {
   }
 
   restoreFrom(snapshot: DecodedSnapshot): void {
-    this.blocks = snapshot.blocks
+    this.blocks = snapshot.blocks.map(block => new Block(block.start, block.text, block.originLeft, block.deleted))
+    this.deleteIds.clear()
+    for (const target of snapshot.deleteIds ?? []) this.deleteIds.add(idToString(target))
     this.clock = snapshot.clock
     this.maxSeen.clear()
     for (const [replicaId, lamport] of snapshot.maxSeen) {
@@ -78,6 +86,13 @@ export class RgaDocument {
       this.marks.apply(mark)
     }
     this.pending.clear()
+  }
+
+  cachedState(): DecodedSnapshot {
+    return { formatVersion: 5, clock: this.clock, maxSeen: this.version,
+      blocks: this.blocks.map(block => new Block(block.start, block.text, block.originLeft, block.deleted)),
+      marks: this.marks.all(), gcWatermark: new Map(),
+      deleteIds: [...this.deleteIds].map(key => { const [replicaId, lamport] = key.split('@').map(Number); return { replicaId, lamport } }) }
   }
 
   insert(visibleIndex: number, text: string): InsertOp {
@@ -125,9 +140,12 @@ export class RgaDocument {
       remaining -= target.length
     }
 
+    const last = targets.at(-1)!
+    this.lastDeletedCharacter = id(last.start.replicaId, last.start.lamport + last.length - 1)
     const op: DeleteOp = { kind: 'delete', id: id(this.replicaIdValue, this.clock), targets }
     this.clock += opSpan(op)
     this.locallyGenerated++
+    this.deleteIds.add(idToString(op.id))
     this.observeVersion(op)
     return op
   }
@@ -239,6 +257,11 @@ export class RgaDocument {
     }
   }
 
+  markOperation(type: string, value: string): AddMarkOp | null {
+    return [...this.marks.all()].reverse().find((op): op is AddMarkOp =>
+      op.kind === 'addMark' && op.type === type && op.value === value) ?? null
+  }
+
   get markCount(): number {
     return this.marks.size
   }
@@ -273,22 +296,7 @@ export class RgaDocument {
     if (isMarkOp(op)) {
       return this.marks.has(op.id)
     }
-    return this.isEntirelyDeleted(op)
-  }
-
-  private isEntirelyDeleted(op: DeleteOp): boolean {
-    for (const range of op.targets) {
-      let cursor = range.start.lamport
-      const end = cursor + range.length
-      while (cursor < end) {
-        const found = this.locateId(id(range.start.replicaId, cursor))
-        if (found === null) return false
-        const block = this.blocks[found.blockIndex]
-        if (!block.deleted) return false
-        cursor += block.length - found.offset
-      }
-    }
-    return true
+    return this.deleteIds.has(idToString(op.id))
   }
 
   private tryApply(op: Op): boolean {
@@ -310,6 +318,7 @@ export class RgaDocument {
     for (const range of op.targets) {
       this.markRangeDeleted(range)
     }
+    this.deleteIds.add(idToString(op.id))
     return true
   }
 
@@ -431,6 +440,10 @@ export class RgaDocument {
       throw new RangeError(`no visible character at position ${visibleIndex}`)
     }
     return this.blocks[found.blockIndex].idAt(found.offset)
+  }
+
+  anchorPosition(target: Id, side: 'before' | 'after'): number | null {
+    return this.anchorIndex()({ charId: target, side }) ?? null
   }
 
   visibleIndexOf(target: Id): number | null {

@@ -16,6 +16,12 @@ import jakarta.validation.constraints.Size;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.time.Instant;
+import java.util.Map;
+import java.util.Set;
+import dev.collabedit.crdt.MarkTypes;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -43,6 +49,14 @@ public class DocumentRestController {
 
     private static final int MAX_TITLE_LENGTH = 256;
 
+    public record DocumentSummaryWithRole(UUID id, String title, UUID workspaceId, String preview,
+                                          Instant updatedAt, String role) {
+        static DocumentSummaryWithRole of(DocumentCatalog.DocumentSummary summary, Role role) {
+            return new DocumentSummaryWithRole(summary.id(), summary.title(), summary.workspaceId(),
+                summary.preview(), summary.updatedAt(), role.wire());
+        }
+    }
+
     public record DocumentState(UUID id, String title, String text, long headServerSeq,
                                 String role) {
     }
@@ -50,7 +64,7 @@ public class DocumentRestController {
     @GetMapping("/documents")
     @RequiresAuthentication("Returns only what the caller may read; the filter is per row, "
         + "below, because the answer is a list rather than one document.")
-    public ResponseEntity<List<DocumentCatalog.DocumentSummary>> list(
+    public ResponseEntity<List<DocumentSummaryWithRole>> list(
         @RequestParam(value = "q", required = false)
         @Size(max = MAX_SEARCH_QUERY) String query,
         @RequestParam(value = "workspace", required = false) UUID workspaceId,
@@ -61,7 +75,8 @@ public class DocumentRestController {
 : catalog.list(caller, workspaceId, LIST_LIMIT);
 
         return ResponseEntity.ok(
-            found.stream().filter(doc -> permissions.canRead(caller, doc.id())).toList());
+            found.stream().flatMap(doc -> permissions.roleOf(caller, doc.id()).stream()
+                .map(role -> DocumentSummaryWithRole.of(doc, role))).toList());
     }
 
     private static final int LIST_LIMIT = 200;
@@ -69,10 +84,11 @@ public class DocumentRestController {
     @GetMapping("/documents/trash")
     @RequiresAuthentication("Same shape as the list above: filtered per row, so no single "
         + "document is being authorized here.")
-    public ResponseEntity<List<DocumentCatalog.DocumentSummary>> trash(HttpServletRequest request) {
+    public ResponseEntity<List<DocumentSummaryWithRole>> trash(HttpServletRequest request) {
         String caller = TokenAuthFilter.requiredCallerId(request);
         return ResponseEntity.ok(catalog.listDeleted(caller, LIST_LIMIT).stream()
-            .filter(doc -> permissions.roleOfDeleted(caller, doc.id()).isPresent())
+            .flatMap(doc -> permissions.roleOfDeleted(caller, doc.id()).stream()
+                .map(role -> DocumentSummaryWithRole.of(doc, role)))
             .toList());
     }
 
@@ -93,15 +109,26 @@ public class DocumentRestController {
 
     private DocumentCatalog.DocumentSummary createOwned(String title, UUID workspaceId,
                                                         String ownerId) {
+        if (workspaceId != null && !catalog.ownsWorkspace(workspaceId, ownerId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "workspace is not owned by caller");
+        }
         UUID id = UUID.randomUUID();
         catalog.create(id, title, workspaceId);
         permissions.setOwner(id, ownerId);
         return catalog.find(id).orElseThrow();
     }
 
+    public record RecoveredSpan(int from, int to,
+                                @Size(max = 16) Map<@Size(max = 32) String,
+                                    @Size(max = 2048) String> marks) { }
+
     public record RecoveredRequest(@Size(max = MAX_TITLE_LENGTH) String title,
-                                   @Size(max = MAX_RECOVERED_CHARACTERS) String text) {
-    }
+                                   @Size(max = MAX_RECOVERED_CHARACTERS) String text,
+                                   @Size(max = 10_000) List<@Valid RecoveredSpan> marks) { }
+
+    private static final Set<String> RECOVERABLE_MARKS = Set.of(MarkTypes.BOLD, MarkTypes.ITALIC,
+        MarkTypes.UNDERLINE, MarkTypes.STRIKETHROUGH, MarkTypes.CODE, MarkTypes.LINK,
+        MarkTypes.HEADING, MarkTypes.QUOTE, MarkTypes.LIST);
 
     private static final int MAX_SEARCH_QUERY = 256;
 
@@ -117,10 +144,17 @@ public class DocumentRestController {
             @Valid @RequestBody RecoveredRequest request, HttpServletRequest httpRequest) {
         String title = request.title == null || request.title.isBlank()
             ? "Recovered draft" : request.title;
-        DocumentCatalog.DocumentSummary created = createOwned(
-            title, null, TokenAuthFilter.requiredCallerId(httpRequest));
-
         String text = request.text == null ? "" : request.text;
+        List<RecoveredSpan> marks = request.marks == null ? List.of() : request.marks;
+        for (RecoveredSpan span : marks) {
+            if (span == null || span.from() < 0 || span.to() <= span.from()
+                || span.to() > text.length() || span.marks() == null) {
+                throw new IllegalArgumentException("recovered formatting range is invalid");
+            }
+        }
+        String caller = TokenAuthFilter.requiredCallerId(httpRequest);
+        DocumentCatalog.DocumentSummary created = createOwned(title, null, caller);
+
         if (!text.isEmpty()) {
             documents.generateAndSubmit(created.id(), model -> {
                 List<Op> inserts = new ArrayList<>();
@@ -129,8 +163,16 @@ public class DocumentRestController {
                     inserts.add(model.insert(at, piece));
                     at += piece.length();
                 }
+                for (RecoveredSpan span : marks) {
+                    for (Map.Entry<String, String> mark : span.marks().entrySet()) {
+                        if (RECOVERABLE_MARKS.contains(mark.getKey())) {
+                            inserts.add(model.addMark(span.from(), span.to(), mark.getKey(),
+                                mark.getValue()));
+                        }
+                    }
+                }
                 return inserts;
-            }, null);
+            }, caller);
         }
         return ResponseEntity.ok(catalog.find(created.id()).orElseThrow());
     }
@@ -145,9 +187,12 @@ public class DocumentRestController {
         if (body.title() == null || body.title().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
-        return catalog.rename(documentId, body.title.trim())
-            ? ResponseEntity.noContent().build()
-            : ResponseEntity.notFound().build();
+        DocumentService.DurableState state = documents.durableState(documentId);
+        String text = dev.collabedit.crdt.RgaDocument.restore(0,
+            new dev.collabedit.crdt.TreapBlockList(), state.snapshot()).text();
+        boolean renamed = catalog.rename(documentId, body.title.trim(), text, state.throughServerSeq());
+        documents.invalidateSearchIndex(documentId);
+        return renamed ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
     }
 
     @DeleteMapping("/documents/{documentId}")
@@ -176,9 +221,13 @@ public class DocumentRestController {
                                               HttpServletRequest request) {
         Role role = DocumentAccessGuard.resolvedRole(request).orElseThrow();
         return catalog.find(documentId)
-            .map(summary -> ResponseEntity.ok(new DocumentState(
-                documentId, summary.title(), documents.textOf(documentId),
-                documents.headServerSeq(documentId), role.wire())))
+            .map(summary -> {
+                DocumentService.DurableState state = documents.durableState(documentId);
+                String text = dev.collabedit.crdt.RgaDocument.restore(0,
+                    new dev.collabedit.crdt.TreapBlockList(), state.snapshot()).text();
+                return ResponseEntity.ok(new DocumentState(documentId, summary.title(), text,
+                    state.throughServerSeq(), role.wire()));
+            })
                     .orElseGet(() -> ResponseEntity.notFound().build());
     }
 

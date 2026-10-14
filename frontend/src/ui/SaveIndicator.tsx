@@ -3,15 +3,15 @@ import type { ConnectionState } from '../transport/connection'
 export function SaveIndicator({ state, pending }: { state: ConnectionState; pending: number }) {
   if (state === 'offline') {
     return (
-      <span className="save-state offline">
+      <span className="save-state offline" role="status" aria-live="polite">
         <span className="save-dot" />
-        Working offline
+        {pending > 0 ? `Working offline · ${pending} unsent changes` : 'Working offline'}
       </span>
     )
   }
   if (pending > 0) {
     return (
-      <span className="save-state pending">
+      <span className="save-state pending" role="status" aria-live="polite">
         <span className="save-dot" />
         Saving…
       </span>
@@ -19,14 +19,14 @@ export function SaveIndicator({ state, pending }: { state: ConnectionState; pend
   }
   if (state === 'connecting' || state === 'resyncing') {
     return (
-      <span className="save-state pending">
+      <span className="save-state pending" role="status" aria-live="polite">
         <span className="save-dot" />
         Connecting…
       </span>
     )
   }
   return (
-    <span className="save-state saved">
+    <span className="save-state saved" role="status" aria-live="polite">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
         <polyline points="20 6 9 17 4 12" />
       </svg>

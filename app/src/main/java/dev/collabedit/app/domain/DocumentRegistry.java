@@ -22,7 +22,7 @@ import org.springframework.stereotype.Component;
 public class DocumentRegistry {
     private static final Logger log = LoggerFactory.getLogger(DocumentRegistry.class);
 
-    private final int serverReplicaId = -Math.abs(UUID.randomUUID().hashCode() % 1_000_000) - 1;
+    private final int serverReplicaId;
 
     private final Map<UUID, DocumentReplica> replicas = new ConcurrentHashMap<>();
     private final OperationStore operations;
@@ -32,6 +32,7 @@ public class DocumentRegistry {
     public DocumentRegistry(OperationStore operations, SnapshotStore snapshots,
                             CollabEditProperties properties) {
         this.operations = operations;
+        this.serverReplicaId = operations.allocateServerReplicaId();
         this.snapshots = snapshots;
         this.properties = properties;
     }
@@ -104,12 +105,12 @@ public class DocumentRegistry {
             fromSeq = 0;
         }
 
-        List<StoredOperation> tail = operations.loadAfter(documentId, fromSeq);
-        long applied = headSeq;
-        for (StoredOperation stored : tail) {
+        int[] replayed = {0};
+        operations.forEachInRange(documentId, fromSeq, headSeq, stored -> {
             document.apply(stored.op());
-            applied = Math.max(applied, stored.serverSeq());
-        }
+            replayed[0]++;
+        });
+        long applied = headSeq;
 
         if (document.pendingCount() > 0) {
             log.error("After replay, document {} has {} operations with no cause - the log may be corrupt",
@@ -117,7 +118,7 @@ public class DocumentRegistry {
         }
 
         log.info("Loaded document {}: snapshot={}, operations from the log={}, characters={}, tombstones={}, time={}ms",
-            documentId, snapshot.isPresent(), tail.size(), document.visibleLength(),
+            documentId, snapshot.isPresent(), replayed[0], document.visibleLength(),
             document.tombstoneCount(), (System.nanoTime() - started) / 1_000_000);
 
         return new DocumentReplica(documentId, document, applied, System.currentTimeMillis());
@@ -153,6 +154,11 @@ public class DocumentRegistry {
             log.debug("Released {} idle documents", evicted);
         }
         return evicted;
+    }
+
+    void discardCommittedReplica(UUID documentId, DocumentReplica replica) {
+        replica.invalidateCommittedState();
+        replicas.remove(documentId, replica);
     }
 
     void forget(UUID documentId) {

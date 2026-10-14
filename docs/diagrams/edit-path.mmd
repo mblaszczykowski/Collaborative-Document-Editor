@@ -1,18 +1,26 @@
 sequenceDiagram
     autonumber
     participant E as Editor
-    participant L as Replica (browser)
+    participant L as Browser replica
+    participant IDB as Account-scoped outbox
     participant S as Instance 1
     participant DB as Postgres log
+    participant R as Redis
     participant O as Instance 2
 
     E->>L: keystroke
-    L->>L: insert, assign id 7@41
-    L-->>E: painted, no round trip
-    L->>S: SEND 7@41, a copy stays in the outbox
-    S->>S: merge, then broadcast to its own clients
-    S->>O: publish over Redis (best effort)
-    S->>DB: append
-    DB-->>S: server_seq 918
-    S-->>L: ack 7@41 at 918
-    Note over L,S: the outbox releases here, never on the broadcast
+    L->>L: insert and assign operation id
+    L-->>E: paint without a server round trip
+    L->>IDB: persist operation
+    IDB-->>L: transaction committed
+    L->>S: SEND operation
+    S->>S: validate session, access and actor ownership
+    S->>S: merge and broadcast to local clients
+    S->>DB: append batch with stable identity claim
+    DB-->>S: commit and server sequence
+    S-->>L: durable acknowledgment
+    L->>IDB: forget acknowledged operation
+    S->>R: publish committed operations, best effort
+    R->>O: merge and deliver to other clients
+    Note over S,O: anti-entropy replays Postgres to repair missed delivery
+    Note over L,S: a fast broadcast never releases the outbox

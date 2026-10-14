@@ -28,6 +28,7 @@ public class DocumentStompController {
     private final DocumentRegistry registry;
     private final PresenceService presence;
     private final SessionLifecycle sessions;
+    private final dev.collabedit.app.auth.ReplicaIdAllocator replicaIds;
     private final SimpMessagingTemplate messaging;
     private final EditTracer tracer;
     private final CollabEditProperties properties;
@@ -36,7 +37,8 @@ public class DocumentStompController {
     public DocumentStompController(DocumentService documents, DocumentRegistry registry,
                                    PresenceService presence, SessionLifecycle sessions,
                                    SimpMessagingTemplate messaging, EditTracer tracer,
-                                   CollabEditProperties properties, DocumentMetrics metrics) {
+                                   CollabEditProperties properties, DocumentMetrics metrics,
+                                   dev.collabedit.app.auth.ReplicaIdAllocator replicaIds) {
         this.documents = documents;
         this.registry = registry;
         this.presence = presence;
@@ -45,6 +47,7 @@ public class DocumentStompController {
         this.tracer = tracer;
         this.properties = properties;
         this.metrics = metrics;
+        this.replicaIds = replicaIds;
     }
 
     @MessageMapping("/doc/{documentId}/op")
@@ -61,6 +64,10 @@ public class DocumentStompController {
 
         String userId = SessionAttributes.userId(headers);
 
+        if (!replicaIds.owns(userId, op.id().replicaId())) {
+            sendError(headers, "REPLICA_ID_CONFLICT", "This operation identity does not belong to your account.");
+            return;
+        }
         String liveOwner = sessions.userOfReplica(op.id().replicaId());
         if (liveOwner != null && !liveOwner.equals(userId)) {
             log.warn("Refused operation {} in document {}: replica {} is in use by another "
@@ -75,6 +82,10 @@ public class DocumentStompController {
             span.attribute("collabedit.op.lamport", op.id().lamport());
             try {
                 documents.submit(documentId, op, userId);
+            } catch (DocumentService.WriteBufferFullException e) {
+                sendError(headers, "RATE_LIMITED", e.getMessage());
+            } catch (DocumentService.ReplicaIdConflictException e) {
+                sendError(headers, "REPLICA_ID_CONFLICT", e.getMessage());
             } catch (DocumentService.ResyncRequiredException e) {
                 span.fail(e);
                 log.info("Rejected operation {} in document {}: {}",
@@ -123,7 +134,15 @@ public class DocumentStompController {
             return;
         }
 
-        sendSync(headers, head, missing);
+        sendSync(headers, documentId, head, missing);
+    }
+
+    @dev.collabedit.app.auth.RequiresAuthentication("Returns only the authenticated socket identity; carries no document data.")
+    @MessageMapping("/session")
+    public void onSession(SimpMessageHeaderAccessor headers) {
+        messaging.convertAndSendToUser(headers.getSessionId(), "/queue/session",
+            new Messages.SessionInfo(SessionAttributes.replicaId(headers), SessionAttributes.userId(headers)),
+            SessionAttributes.forUser(headers));
     }
 
     @MessageMapping("/doc/{documentId}/join")
@@ -155,11 +174,11 @@ public class DocumentStompController {
             VersionVector.of(report.version()));
     }
 
-    private void sendSync(SimpMessageHeaderAccessor headers, long head,
+    private void sendSync(SimpMessageHeaderAccessor headers, UUID documentId, long head,
                           List<StoredOperation> operations) {
         if (operations.isEmpty()) {
             messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
-                new Messages.SyncResponse(List.of(), head, true), SessionAttributes.forUser(headers));
+                new Messages.SyncResponse(List.of(), head, true), SessionAttributes.forDocument(headers, documentId));
             return;
         }
         List<JsonNode> encoded =
@@ -170,7 +189,7 @@ public class DocumentStompController {
             boolean last = i == chunks.size() - 1;
             messaging.convertAndSendToUser(headers.getSessionId(), "/queue/sync",
                 new Messages.SyncResponse(chunks.get(i), head, last),
-                SessionAttributes.forUser(headers));
+                SessionAttributes.forDocument(headers, documentId));
         }
     }
 

@@ -1,4 +1,4 @@
-import { expect, test, deleteDocument, freshDocument, joinAs, typeInto } from './helpers'
+import { expect, test, deleteDocument, freshDocument, joinAs, typeInto, expectDocumentUnavailableErrors } from './helpers'
 
 function unique(name: string): string {
   return `${name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -32,6 +32,7 @@ test('renaming from the list is visible immediately', async ({ browser, request 
 
   await expect(page.locator('.sidebar')).toContainText(after, { timeout: 10_000 })
   await expect(page.locator('.sidebar')).not.toContainText(before)
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(after)
 
   await page.context().close()
 })
@@ -46,9 +47,10 @@ test('a deleted document disappears from the list, and the bin restores it', asy
 
   const row = page.locator('.sb-row', { hasText: doomedTitle })
   await row.hover()
+  expectDocumentUnavailableErrors(page, doomed, true)
   await row.getByRole('button', { name: /Delete/ }).click()
 
-  await expect(page.locator('.sidebar')).not.toContainText(doomedTitle, { timeout: 10_000 })
+  await expect(page.locator('.sb-item:not(.deleted)', { hasText: doomedTitle })).toHaveCount(0, { timeout: 10_000 })
 
   await page.locator('.sb-trash-toggle').click()
   const trashed = page.locator('.sb-row', { hasText: doomedTitle })
@@ -60,6 +62,9 @@ test('a deleted document disappears from the list, and the bin restores it', asy
   await expect(
     page.locator('.sb-item:not(.deleted)', { hasText: doomedTitle }),
   ).toBeVisible({ timeout: 10_000 })
+  await expect(page.locator('.unavailable-banner')).toHaveCount(0)
+  await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'true')
+  expectDocumentUnavailableErrors(page, doomed, false)
 
   await page.context().close()
 })
@@ -91,6 +96,7 @@ test('a document that cannot be opened says so plainly', async ({ browser, reque
   const page = await joinAs(browser, 'Anna', documentId)
   await expect(page.locator('.cm-content')).toBeVisible({ timeout: 15_000 })
 
+  expectDocumentUnavailableErrors(page, documentId, true)
   await deleteDocument(request, documentId)
 
   const returning = await joinAs(browser, 'Anna', documentId, { waitForEditor: false })

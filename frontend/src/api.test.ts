@@ -17,10 +17,10 @@ const UNAUTHORIZED = { ok: false, status: 401 } as Response
 const NOT_FOUND = { ok: false, status: 404 } as Response
 
 describe('a 401 ends the session', () => {
-  let expired: ReturnType<typeof vi.fn>
+  let expired: ReturnType<typeof vi.fn<() => void>>
 
   beforeEach(() => {
-    expired = vi.fn()
+    expired = vi.fn<() => void>()
     setUnauthorizedHandler(expired)
   })
 
@@ -69,6 +69,17 @@ describe('a 401 ends the session', () => {
       expired,
       'a 404 signed the user out - every deleted document would now end the session',
     ).not.toHaveBeenCalled()
+  })
+
+  it('does not sign out a newer session when an old request returns 401', async () => {
+    let answer!: (response: Response) => void
+    setAuthToken('old-token')
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { answer = resolve })))
+    const pending = api.listDocuments()
+    setAuthToken('new-token')
+    answer(UNAUTHORIZED)
+    await expect(pending).rejects.toMatchObject({ status: 401 })
+    expect(expired).not.toHaveBeenCalled()
   })
 
   it('still throws, so the caller can unwind', async () => {

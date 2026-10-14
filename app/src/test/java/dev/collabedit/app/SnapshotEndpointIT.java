@@ -136,7 +136,7 @@ class SnapshotEndpointIT extends IntegrationTestBase {
         }
 
         assertThat(fetchSnapshot(document, stranger.token()).statusCode()).isEqualTo(404);
-        assertThat(fetchSnapshot(document, null).statusCode()).isEqualTo(404);
+        assertThat(fetchSnapshot(document, null).statusCode()).isEqualTo(401);
     }
 
     @Test

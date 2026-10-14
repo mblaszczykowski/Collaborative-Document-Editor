@@ -22,9 +22,9 @@ COPY --from=build /src/dist /usr/share/nginx/html
 
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 
-ENV BACKEND_ORIGIN=http://app:8080
+ENV BACKEND_ORIGIN=http://app:8090
 
 EXPOSE 80
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --quiet --spider http://localhost/ || exit 1
+    CMD wget --quiet --spider http://127.0.0.1/ || exit 1
