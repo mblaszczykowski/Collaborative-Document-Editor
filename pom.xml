@@ -21,8 +21,8 @@
 
         <spring-boot.version>3.5.0</spring-boot.version>
         <jackson.version>2.18.2</jackson.version>
-        <jqwik.version>1.9.2</jqwik.version>
-        <assertj.version>3.26.3</assertj.version>
+        <jqwik.version>1.10.2</jqwik.version>
+        <assertj.version>3.27.7</assertj.version>
         <junit.version>5.11.4</junit.version>
         <jmh.version>1.37</jmh.version>
 
