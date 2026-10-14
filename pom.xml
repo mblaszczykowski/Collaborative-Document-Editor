@@ -32,7 +32,7 @@
         <surefire.version>3.5.2</surefire.version>
         <compiler-plugin.version>3.13.0</compiler-plugin.version>
         <build-helper.version>3.6.0</build-helper.version>
-        <exec-plugin.version>3.5.0</exec-plugin.version>
+        <exec-plugin.version>3.6.4</exec-plugin.version>
 
         <jqwik.tries>1000</jqwik.tries>
     </properties>
