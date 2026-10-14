@@ -1,4 +1,4 @@
-FROM eclipse-temurin:21-jdk AS build
+FROM eclipse-temurin:24-jdk AS build
 WORKDIR /src
 
 COPY .mvn/ .mvn/
@@ -16,7 +16,7 @@ RUN ./mvnw -B -q -pl app -am -DskipTests package
 WORKDIR /build
 RUN cp /src/app/target/*.jar app.jar && java -Djarmode=tools -jar app.jar extract --layers --launcher
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:24-jre
 WORKDIR /app
 
 RUN apt-get update \
